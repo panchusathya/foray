@@ -15,6 +15,7 @@ node modules. Start services from the repo root:
 |---|---|---|---|
 | API (FastAPI) | `.venv/bin/python -m juicebox.cli serve --reload` | 8000 | Docs at `/docs`, health at `/health`. |
 | Web (React/Vite dev) | `cd packages/web && npm run dev` | 5173 | Proxies `/v1` + `/health` to the API (see `vite.config.js`), so the API must be running. |
+| Worker | `.venv/bin/python -m juicebox.cli work --once` | — | Drains the job queue (outreach + sourcing agents). Loop: `juicebox work`. |
 | Ingest webhook (Node) | `cd packages/ingest && npm run serve` | 8787 | Optional. Webhook-only; health at `/healthz` (`/` returns 404 by design). |
 
 `packages/ingest` has **zero npm dependencies**, so it needs no install step.

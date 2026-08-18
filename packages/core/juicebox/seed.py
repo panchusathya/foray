@@ -360,7 +360,11 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
     """Idempotent: re-running tops up candidates without duplicating the workspace."""
     org = db.scalar(select(Org).where(Org.slug == "demo"))
     if org is None:
-        org = Org(name="Juicebox Demo", slug="demo")
+        org = Org(
+            name="Juicebox Demo",
+            slug="demo",
+            postal_address="100 Demo Street, San Francisco, CA 94105",
+        )
         db.add(org)
         db.flush()
 

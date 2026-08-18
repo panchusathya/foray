@@ -1,8 +1,8 @@
 """The searchable corpus: a per-org snapshot of candidates ready for retrieval.
 
-Held in process and rebuilt when the underlying rows change (detected via row
-count + latest ``updated_at``). At the scale this ships for, rebuilding is
-cheap; the interface is the seam where you would drop in pgvector/OpenSearch.
+SQLite (and ``RETRIEVAL_BACKEND=memory``) keep an in-process BM25 + numpy
+snapshot, rebuilt when row count or latest ``updated_at`` changes. Postgres
+uses ``PostgresIndex`` (FTS + pgvector) and only hydrates the shortlist.
 """
 
 from __future__ import annotations
@@ -20,6 +20,24 @@ from ..enrich import taxonomy as tx
 from ..llm.embeddings import get_embedder, tokenize
 from ..models import Candidate
 from .bm25 import BM25Index
+
+
+@dataclass
+class SearchPool:
+    """The candidates the engine will score, plus the retrieval signals.
+
+    ``docs[i]`` aligns with ``lexical[i]``, ``vector[i]``, ``fusion[i]``.
+    ``total_matched`` is how many people survived hard filters, which can be
+    larger than ``len(docs)`` once the corpus outgrows the retrieval pool.
+    """
+
+    docs: list[CandidateDoc]
+    lexical: list[float]
+    vector: list[float]
+    fusion: list[float]
+    total_matched: int
+    excluded: dict[str, int] = field(default_factory=dict)
+    backend: str = "memory"
 
 
 @dataclass
@@ -186,7 +204,60 @@ class CorpusIndex:
             "documents": len(self.docs),
             "vocabulary": self.bm25.vocabulary_size,
             "embedding_dim": int(self.embeddings.shape[1]) if self.embeddings.size else 0,
+            "backend": "memory",
         }
+
+    def search_pool(self, parsed, pool_size: int) -> SearchPool:
+        """Filter, retrieve, RRF — the original in-process algorithm."""
+        from ..config import get_settings
+        from ..llm.embeddings import cosine_similarity, get_embedder, tokenize
+        from . import fusion
+        from .filters import apply_filters
+
+        outcome = apply_filters(self.docs, parsed)
+        mask = outcome.mask
+        if not mask.any():
+            return SearchPool(
+                docs=[],
+                lexical=[],
+                vector=[],
+                fusion=[],
+                total_matched=0,
+                excluded=outcome.excluded,
+                backend="memory",
+            )
+
+        retrieval_text = parsed.retrieval_text()
+        lexical = self.bm25.score(tokenize(retrieval_text))
+        if retrieval_text:
+            query_vector = get_embedder().embed([retrieval_text], input_type="query")[0]
+            vector = cosine_similarity(self.embeddings, query_vector)
+        else:
+            vector = np.zeros(len(self.docs), dtype=np.float32)
+
+        settings = get_settings()
+        fused = fusion.reciprocal_rank_fusion(
+            [
+                fusion.rank_positions(lexical, mask),
+                fusion.rank_positions(vector, mask),
+            ],
+            weights=[1.0, 1.0],
+            k=settings.rrf_k,
+        )
+        for position in np.flatnonzero(mask):
+            fused.setdefault(int(position), 0.0)
+        normalized = fusion.normalize_scores(fused)
+        pool = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[: max(pool_size, 0)]
+
+        return SearchPool(
+            docs=[self.docs[position] for position, _ in pool],
+            lexical=[float(lexical[position]) for position, _ in pool],
+            vector=[float(vector[position]) for position, _ in pool],
+            fusion=[float(normalized.get(position, 0.0)) for position, _ in pool],
+            total_matched=int(mask.sum()),
+            excluded=outcome.excluded,
+            backend="memory",
+        )
 
 
 _cache: dict[str, CorpusIndex] = {}
@@ -244,7 +315,7 @@ def _load_embeddings(db: Session, org_id: str, docs: list[CandidateDoc]) -> np.n
     return matrix
 
 
-def get_index(db: Session, org_id: str, *, force: bool = False) -> CorpusIndex:
+def get_memory_index(db: Session, org_id: str, *, force: bool = False) -> CorpusIndex:
     fingerprint = _fingerprint(db, org_id)
     with _lock:
         cached = _cache.get(org_id)
@@ -257,6 +328,22 @@ def get_index(db: Session, org_id: str, *, force: bool = False) -> CorpusIndex:
     with _lock:
         _cache[org_id] = index
     return index
+
+
+def get_index(db: Session, org_id: str, *, force: bool = False):
+    """Return the retrieval backend for this database.
+
+    SQLite (and ``RETRIEVAL_BACKEND=memory``) keep the in-process BM25+numpy
+    snapshot. Postgres answers FTS + pgvector queries and only hydrates the
+    shortlist into ``CandidateDoc``s.
+    """
+    from ..config import get_settings
+
+    if get_settings().uses_postgres_retrieval:
+        from .postgres import PostgresIndex
+
+        return PostgresIndex(db, org_id)
+    return get_memory_index(db, org_id, force=force)
 
 
 def invalidate(org_id: str | None = None) -> None:

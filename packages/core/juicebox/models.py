@@ -20,8 +20,11 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from .types import EmbeddingVector
 
 
 def utcnow() -> datetime:
@@ -54,6 +57,8 @@ class Org(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("org"))
     name: Mapped[str] = mapped_column(String(200))
     slug: Mapped[str] = mapped_column(String(80), unique=True)
+    # CAN-SPAM requires a physical postal address on commercial mail.
+    postal_address: Mapped[str] = mapped_column(String(400), default="")
 
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
@@ -134,7 +139,7 @@ class Candidate(Base, TimestampMixin):
     years_experience: Mapped[float] = mapped_column(Float, default=0.0)
 
     doc_text: Mapped[str] = mapped_column(Text, default="")
-    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[list | None] = mapped_column(EmbeddingVector, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(80), default="")
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -376,6 +381,19 @@ class Enrollment(Base, TimestampMixin):
 
 class Message(Base, TimestampMixin):
     __tablename__ = "messages"
+    __table_args__ = (
+        # One outbound attempt per sequence step. Inbound replies share step_id
+        # and must not collide. A crash after the provider accepted the mail
+        # can still retry the provider; it cannot insert a second row.
+        Index(
+            "uq_messages_enrollment_step_outbound",
+            "enrollment_id",
+            "step_id",
+            unique=True,
+            sqlite_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
+            postgresql_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("msg"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
@@ -410,6 +428,47 @@ class Message(Base, TimestampMixin):
 
     enrollment: Mapped[Enrollment] = relationship()
     candidate: Mapped[Candidate] = relationship()
+
+
+class Suppression(Base, TimestampMixin):
+    """Org-level do-not-contact list. Emails are stored lowercased."""
+
+    __tablename__ = "suppressions"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_suppression_org_email"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sup"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(String(40), default="unsubscribe")
+    # unsubscribe | bounce | manual
+    source: Mapped[str] = mapped_column(String(40), default="manual")
+    # tracking | reply | bounce | api
+    source_message_id: Mapped[str] = mapped_column(String(40), default="")
+
+
+class Job(Base, TimestampMixin):
+    """Durable work queue. The worker claims rows; the API never waits on them."""
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("org_id", "idempotency_key", name="uq_job_org_idempotency"),
+        Index("ix_jobs_claim", "status", "run_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("job"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(80), index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    # queued | running | succeeded | failed | cancelled
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str] = mapped_column(String(80), default="")
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # --------------------------------------------------------------------------

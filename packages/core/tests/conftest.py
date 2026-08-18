@@ -227,3 +227,51 @@ def loaded_org(client, account, sample_candidates):
     )
     assert response.status_code == 200, response.text
     return account
+
+
+@pytest.fixture
+def outreach_fixture(session, account, sample_candidates):
+    from juicebox.models import Candidate, Project, Sequence, SequenceStep
+    from juicebox.repository import upsert_candidates
+
+    upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+    project = Project(
+        org_id=account["org_id"],
+        name="Founding ML Engineer",
+        role_title="Senior Machine Learning Engineer",
+        location="San Francisco",
+    )
+    session.add(project)
+    session.flush()
+
+    sequence = Sequence(
+        org_id=account["org_id"],
+        project_id=project.id,
+        name="Three touch",
+        from_email="talent@acme-talent.com",
+        from_name="Acme Talent",
+        personalize=False,
+    )
+    session.add(sequence)
+    session.flush()
+    session.add_all(
+        [
+            SequenceStep(
+                sequence_id=sequence.id,
+                step_order=0,
+                delay_days=0,
+                subject_template="{{ role_title }} at {{ project_name }}",
+                body_template="Hi {{ first_name }},\n\n{{ opening_line }}\n\nBest,\nAcme",
+            ),
+            SequenceStep(
+                sequence_id=sequence.id,
+                step_order=1,
+                delay_days=3,
+                subject_template="Re: {{ role_title }}",
+                body_template="Following up, {{ first_name }}.",
+            ),
+        ]
+    )
+    session.commit()
+    candidates = session.query(Candidate).order_by(Candidate.full_name).all()
+    return {"sequence": sequence, "project": project, "candidates": candidates}

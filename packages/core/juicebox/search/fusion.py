@@ -6,7 +6,12 @@ similarity live on incomparable scales; ranks are the only thing they share.
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+from typing import TypeVar
+
 import numpy as np
+
+K = TypeVar("K", bound=Hashable)
 
 
 def rank_positions(scores: np.ndarray, mask: np.ndarray | None = None) -> dict[int, int]:
@@ -28,25 +33,25 @@ def rank_positions(scores: np.ndarray, mask: np.ndarray | None = None) -> dict[i
 
 
 def reciprocal_rank_fusion(
-    rankings: list[dict[int, int]],
+    rankings: list[dict[K, int]],
     *,
     weights: list[float] | None = None,
     k: int = 60,
-) -> dict[int, float]:
+) -> dict[K, float]:
     """Standard RRF: score(d) = sum_i w_i / (k + rank_i(d))."""
     if weights is None:
         weights = [1.0] * len(rankings)
     if len(weights) != len(rankings):
         raise ValueError("weights and rankings must be the same length")
 
-    fused: dict[int, float] = {}
+    fused: dict[K, float] = {}
     for ranking, weight in zip(rankings, weights, strict=True):
         for doc_index, rank in ranking.items():
             fused[doc_index] = fused.get(doc_index, 0.0) + weight / (k + rank)
     return fused
 
 
-def normalize_scores(values: dict[int, float]) -> dict[int, float]:
+def normalize_scores(values: dict[K, float]) -> dict[K, float]:
     """Min-max the fused scores into 0..1 so they can be blended with others."""
     if not values:
         return {}

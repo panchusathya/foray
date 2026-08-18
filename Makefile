@@ -53,9 +53,8 @@ ingest-server: ## Run the inbound ingestion webhook on :8787
 	cd packages/ingest && npm run serve
 
 .PHONY: worker
-worker: ## Send every due outreach step, then run every due sourcing agent
-	$(BIN)/python -m juicebox.cli run-outreach
-	$(BIN)/python -m juicebox.cli run-agents
+worker: ## Drain due jobs from the queue (outreach + sourcing agents)
+	$(BIN)/python -m juicebox.cli work --once
 
 # ----------------------------------------------------------------- test ----
 

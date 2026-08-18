@@ -6,6 +6,8 @@ upgrade head` always targets the same database the app would open.
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from alembic import context
 from sqlalchemy import pool
 
@@ -13,8 +15,24 @@ from juicebox.config import get_settings
 from juicebox.db import get_engine
 from juicebox.models import Base
 
+with suppress(ImportError):
+    from pgvector.sqlalchemy import Vector as _PgVector  # noqa: F401
+
 config = context.config
 target_metadata = Base.metadata
+
+# Postgres-only search artifacts live in juicebox.search.schema, not the ORM,
+# so autogenerate / `alembic check` must not try to drop them.
+_PASSTHROUGH_COLUMNS = {"search_tsv"}
+_PASSTHROUGH_INDEXES = {"ix_candidates_search_tsv"}
+
+
+def include_object(object_, name, type_, reflected, compare_to) -> bool:
+    if type_ == "column":
+        return name not in _PASSTHROUGH_COLUMNS
+    if type_ == "index":
+        return name not in _PASSTHROUGH_INDEXES
+    return True
 
 
 def _url() -> str:
@@ -28,6 +46,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
         # SQLite cannot ALTER most things; batch mode rewrites the table instead.
         render_as_batch=_url().startswith("sqlite"),
     )
@@ -43,6 +62,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
             render_as_batch=connection.dialect.name == "sqlite",
             poolclass=pool.NullPool,
         )

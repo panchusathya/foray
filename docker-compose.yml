@@ -2,7 +2,8 @@ name: juicebox
 
 services:
   db:
-    image: postgres:16-alpine
+    # Recreate the pgdata volume if you previously ran vanilla postgres:16.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: juicebox
       POSTGRES_PASSWORD: juicebox
@@ -38,8 +39,8 @@ services:
       sh -c "python -m juicebox.cli migrate &&
              uvicorn juicebox.main:app --host 0.0.0.0 --port 8000"
 
-  # Sends due outreach steps and runs due sourcing agents on a loop.
-  # Swap for a real scheduler (cron, Cloud Scheduler, Temporal) in production.
+  # Claims due jobs (outreach ticks/sends, sourcing-agent ticks) from the
+  # durable queue. Tick interval is WORKER_TICK_SECONDS (default 60).
   worker:
     build:
       context: .
@@ -50,15 +51,11 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      OUTREACH_POSTAL_ADDRESS: ${OUTREACH_POSTAL_ADDRESS:-}
     depends_on:
       api:
         condition: service_started
-    command: >
-      sh -c "while true; do
-               python -m juicebox.cli run-outreach || true;
-               python -m juicebox.cli run-agents   || true;
-               sleep 300;
-             done"
+    command: python -m juicebox.cli work
 
   ingest:
     build:

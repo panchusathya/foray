@@ -19,14 +19,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..llm.embeddings import cosine_similarity, get_embedder, tokenize
 from ..models import Search, SearchResult, new_id
-from . import fusion
-from .filters import apply_filters
 from .index import CandidateDoc, get_index
 from .parser import ParsedQuery, parse_query
 from .rerank import RerankResult, rerank
@@ -119,9 +115,8 @@ class SearchEngine:
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
 
-        outcome = apply_filters(index.docs, parsed)
-        mask = outcome.mask
-        if not mask.any():
+        pool = index.search_pool(parsed, pool_size=max(settings.retrieval_candidate_pool, limit))
+        if pool.total_matched == 0:
             return SearchOutcome(
                 query=query,
                 parsed=parsed,
@@ -130,39 +125,18 @@ class SearchEngine:
                 results=[],
                 total_matched=0,
                 latency_ms=int((time.perf_counter() - started) * 1000),
-                excluded=outcome.excluded,
+                excluded=pool.excluded,
             )
 
-        lexical, vector = self._retrieve(index, parsed)
-
-        fused = fusion.reciprocal_rank_fusion(
-            [
-                fusion.rank_positions(lexical, mask),
-                fusion.rank_positions(vector, mask),
-            ],
-            weights=[1.0, 1.0],
-            k=settings.rrf_k,
-        )
-        # Anything that survived filtering deserves a floor score; a structured
-        # query with no keyword overlap must still return its filtered matches.
-        for position in np.flatnonzero(mask):
-            fused.setdefault(int(position), 0.0)
-
-        normalized_fusion = fusion.normalize_scores(fused)
-        pool = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[
-            : max(settings.retrieval_candidate_pool, limit)
-        ]
-
         scored: list[ScoredCandidate] = []
-        for position, _fused_score in pool:
-            doc = index.docs[position]
+        for position, doc in enumerate(pool.docs):
             assessment: FitAssessment = assess(doc, parsed)
             scored.append(
                 ScoredCandidate(
                     doc=doc,
-                    lexical_score=float(lexical[position]),
-                    vector_score=float(vector[position]),
-                    fusion_score=float(normalized_fusion.get(position, 0.0)),
+                    lexical_score=float(pool.lexical[position]),
+                    vector_score=float(pool.vector[position]),
+                    fusion_score=float(pool.fusion[position]),
                     heuristic_score=assessment.score,
                     criteria=list(assessment.criteria),
                 )
@@ -196,9 +170,9 @@ class SearchEngine:
             parser=parser_name,
             reranked=did_rerank,
             results=results,
-            total_matched=int(mask.sum()),
+            total_matched=pool.total_matched,
             latency_ms=latency_ms,
-            excluded=outcome.excluded,
+            excluded=pool.excluded,
         )
 
         if persist:
@@ -211,20 +185,6 @@ class SearchEngine:
                 result=search_outcome,
             )
         return search_outcome
-
-    # -- stages ----------------------------------------------------------
-
-    def _retrieve(self, index, parsed: ParsedQuery) -> tuple[np.ndarray, np.ndarray]:
-        retrieval_text = parsed.retrieval_text()
-        query_tokens = tokenize(retrieval_text)
-        lexical = index.bm25.score(query_tokens)
-
-        if retrieval_text:
-            query_vector = get_embedder().embed([retrieval_text])[0]
-            vector = cosine_similarity(index.embeddings, query_vector)
-        else:
-            vector = np.zeros(len(index.docs), dtype=np.float32)
-        return lexical, vector
 
     def _blend(self, candidate: ScoredCandidate) -> float:
         settings = self.settings

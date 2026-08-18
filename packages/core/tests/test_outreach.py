@@ -2,8 +2,9 @@ from datetime import timedelta
 
 import pytest
 
-from juicebox.models import Candidate, Enrollment, Message, Project, Sequence, SequenceStep, utcnow
+from juicebox.models import Candidate, Enrollment, Message, utcnow
 from juicebox.outreach import templates
+from juicebox.outreach.compliance import is_suppressed, suppress
 from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
 from juicebox.outreach.sequencer import (
@@ -12,6 +13,7 @@ from juicebox.outreach.sequencer import (
     preview_step,
     record_reply,
     run_due,
+    send_step,
 )
 from juicebox.repository import upsert_candidates
 from juicebox.security import signed_tracking_token
@@ -90,51 +92,6 @@ class TestReplyClassification:
 # --------------------------------------------------------------------------
 
 
-@pytest.fixture
-def outreach_fixture(session, account, sample_candidates):
-    upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
-    project = Project(
-        org_id=account["org_id"],
-        name="Founding ML Engineer",
-        role_title="Senior Machine Learning Engineer",
-        location="San Francisco",
-    )
-    session.add(project)
-    session.flush()
-
-    sequence = Sequence(
-        org_id=account["org_id"],
-        project_id=project.id,
-        name="Three touch",
-        from_email="talent@acme-talent.com",
-        from_name="Acme Talent",
-        personalize=False,
-    )
-    session.add(sequence)
-    session.flush()
-    session.add_all(
-        [
-            SequenceStep(
-                sequence_id=sequence.id,
-                step_order=0,
-                delay_days=0,
-                subject_template="{{ role_title }} at {{ project_name }}",
-                body_template="Hi {{ first_name }},\n\n{{ opening_line }}\n\nBest,\nAcme",
-            ),
-            SequenceStep(
-                sequence_id=sequence.id,
-                step_order=1,
-                delay_days=3,
-                subject_template="Re: {{ role_title }}",
-                body_template="Following up, {{ first_name }}.",
-            ),
-        ]
-    )
-    session.commit()
-    candidates = session.query(Candidate).order_by(Candidate.full_name).all()
-    return {"sequence": sequence, "project": project, "candidates": candidates}
-
-
 class TestPersonalization:
     def test_heuristic_context_is_grounded_in_the_profile(self, session, outreach_fixture):
         ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
@@ -172,6 +129,8 @@ class TestSequenceRun:
         assert len(mailbox.outbox) == 1
         assert mailbox.outbox[0].to == "ada@example.com"
         assert "Hi Ada," in mailbox.outbox[0].text_body
+        assert "List-Unsubscribe" in mailbox.outbox[0].headers
+        assert "/t/u/" in mailbox.outbox[0].text_body
 
         enrollment = session.query(Enrollment).one()
         assert enrollment.current_step == 1
@@ -273,6 +232,114 @@ class TestSequenceRun:
 
         assert summary.sent == 1
         assert summary.skipped >= 1
+
+
+class TestSendIdempotency:
+    def test_the_same_step_is_not_sent_twice(self, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        now = utcnow()
+        run_due(session, org_id=sequence.org_id, now=now)
+        session.commit()
+        enrollment = session.query(Enrollment).one()
+        enrollment.current_step = 0
+        enrollment.status = "active"
+        enrollment.next_send_at = now
+        session.commit()
+        run_due(session, org_id=sequence.org_id, now=now)
+        session.commit()
+        assert len(mailbox.outbox) == 1
+        assert session.query(Message).filter_by(direction="outbound").count() == 1
+
+    def test_send_step_returns_the_existing_row(self, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        [enrollment] = enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        now = utcnow()
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+        first = send_step(
+            session,
+            enrollment=enrollment,
+            sequence=sequence,
+            step=step,
+            candidate=ada,
+            now=now,
+        )
+        second = send_step(
+            session,
+            enrollment=enrollment,
+            sequence=sequence,
+            step=step,
+            candidate=ada,
+            now=now,
+        )
+        session.commit()
+        assert first.id == second.id
+        assert first.status == "sent"
+        assert len(mailbox.outbox) == 1
+
+
+class TestCompliance:
+    def test_suppressed_address_is_not_contacted(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        suppress(session, org_id=sequence.org_id, email="ada@example.com", reason="manual")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        summary = run_due(session, org_id=sequence.org_id)
+        session.commit()
+        assert summary.failed == 1 and not mailbox.outbox
+        enrollment = session.query(Enrollment).one()
+        assert enrollment.status == "stopped"
+        assert enrollment.stopped_reason == "suppressed"
+
+    def test_unsubscribe_reply_adds_to_the_suppression_list(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        message = session.query(Message).filter_by(direction="outbound").one()
+        record_reply(
+            session,
+            message=message,
+            subject="Re",
+            body="Please unsubscribe me from this list.",
+        )
+        session.commit()
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+        assert session.query(Enrollment).one().status == "replied"
+
+    def test_unsubscribe_link_stops_mail(self, client, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        message = session.query(Message).filter_by(direction="outbound").one()
+        token = signed_tracking_token(message.id)
+
+        response = client.get(f"/t/u/{message.id}?k={token}")
+        assert response.status_code == 200
+        session.expire_all()
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+        assert session.get(Enrollment, message.enrollment_id).status == "replied"
+
+        # A later enrolment of the same person must not send.
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        mailbox.clear()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        assert not mailbox.outbox
 
 
 class TestReplies:

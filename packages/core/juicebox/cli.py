@@ -7,6 +7,7 @@
     juicebox search "senior ML engineers in SF" --org <org_id>
     juicebox run-outreach --org <org_id> [--dry-run]
     juicebox run-agents --org <org_id>
+    juicebox work [--once]
     juicebox reembed --org <org_id>
     juicebox export-seed <file.jsonl> [--count 120]
     juicebox serve [--port 8000]
@@ -160,6 +161,18 @@ def cmd_run_agents(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_work(args: argparse.Namespace) -> int:
+    from .worker import drain, run_loop
+
+    if args.once:
+        with session_scope() as db:
+            processed = drain(db)
+        print(f"processed={processed}")
+        return 0
+    run_loop()
+    return 0
+
+
 def cmd_reembed(args: argparse.Namespace) -> int:
     with session_scope() as db:
         org_id = _resolve_org(db, args.org)
@@ -238,6 +251,14 @@ def build_parser() -> argparse.ArgumentParser:
     agents = sub.add_parser("run-agents", help="run every due sourcing agent")
     agents.add_argument("--org", default=None)
     agents.set_defaults(func=cmd_run_agents)
+
+    work = sub.add_parser("work", help="claim and run jobs from the durable queue")
+    work.add_argument(
+        "--once",
+        action="store_true",
+        help="drain due work and exit (used by make worker)",
+    )
+    work.set_defaults(func=cmd_work)
 
     reembed = sub.add_parser("reembed", help="recompute candidate embeddings")
     reembed.add_argument("--org", default=None)

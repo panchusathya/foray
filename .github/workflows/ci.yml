@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: juicebox
           POSTGRES_PASSWORD: juicebox
@@ -82,6 +82,10 @@ jobs:
 
       - name: Test against postgres
         run: pytest -q
+        working-directory: packages/core
+
+      - name: Search quality on postgres retrieval
+        run: python ../../eval/run_eval.py --corpus-size 400 --min-ndcg 0.8 --database-url "$DATABASE_URL"
         working-directory: packages/core
 
   eval:

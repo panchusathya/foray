@@ -336,3 +336,52 @@ def draft_sequence_prompt(*, brief: str, role_context: str, num_steps: int) -> s
         f"<role>\n{role_context.strip()}\n</role>\n\n"
         f"Write exactly {num_steps} steps."
     )
+
+
+# --------------------------------------------------------------------------
+# 6. reply drafting
+# --------------------------------------------------------------------------
+
+REPLY_DRAFT_SYSTEM = """\
+You draft the recruiter's reply to a candidate who answered an outreach email. \
+The draft lands in the recruiter's own Drafts folder for them to edit and send, \
+so write in first person as the recruiter.
+
+Style — plain, normal prose:
+- Short sentences. No filler, no poetic phrasing, no exclamation marks.
+- Under 110 words. No subject line, no signature block — just the body.
+- Answer what the candidate actually said. Quote nothing back at them.
+- Never invent facts about the role, company, process, or compensation. If the \
+candidate asked something the context does not answer, say you'll follow up \
+with specifics rather than making them up.
+- If the candidate is interested, propose moving to a short call and ask for \
+their availability. If they asked questions, address them. If they declined, \
+thank them briefly and leave the door open. If they deferred, ask when to \
+check back. If they pointed to someone else, thank them and ask for an intro.
+"""
+
+REPLY_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["body"],
+    "properties": {
+        "body": {"type": "string", "description": "Plain-text reply body, ready to send."},
+    },
+}
+
+
+def reply_draft_prompt(
+    *,
+    candidate_context: str,
+    role_context: str,
+    outbound_body: str,
+    reply_body: str,
+    intent: str,
+) -> str:
+    return (
+        f"<candidate>\n{candidate_context.strip()}\n</candidate>\n\n"
+        f"<role>\n{role_context.strip()}\n</role>\n\n"
+        f"<my_original_email>\n{outbound_body.strip()}\n</my_original_email>\n\n"
+        f"<their_reply intent=\"{intent}\">\n{reply_body.strip()}\n</their_reply>\n\n"
+        "Draft my reply."
+    )

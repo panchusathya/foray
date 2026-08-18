@@ -179,6 +179,20 @@ class GraphClient:
     def send_draft(self, message_id: str) -> None:
         self._request("POST", f"/me/messages/{message_id}/send")
 
+    def create_reply_draft(self, message_id: str, comment_html: str) -> dict:
+        """Draft a reply on the actual thread; it lands in the user's Drafts.
+
+        ``comment`` sits above the quoted original, exactly like hitting Reply
+        in Outlook and typing.
+        """
+        response = self._request(
+            "POST",
+            f"/me/messages/{message_id}/createReply",
+            json={"comment": comment_html},
+            headers={"Prefer": 'IdType="ImmutableId"'},
+        )
+        return response.json()
+
     # Fields the inbox sync needs; body arrives as text via the Prefer header.
     _DELTA_SELECT = (
         "$select=id,conversationId,internetMessageId,from,subject,bodyPreview,body,"

@@ -13,6 +13,7 @@ from ..models import (
     MailboxConnection,
     Message,
     Project,
+    ReplyDraft,
     Sequence,
     SequenceStep,
 )
@@ -33,6 +34,7 @@ from ..schemas import (
     MessageOut,
     PreviewRequest,
     PreviewResponse,
+    ReplyDraftOut,
     RunSequenceResponse,
     SequenceIn,
     SequenceOut,
@@ -372,6 +374,23 @@ def list_messages(
         stmt = stmt.where(Message.direction == direction)
     rows = db.scalars(stmt.order_by(Message.created_at.desc()).limit(limit)).all()
     return [MessageOut.model_validate(row) for row in rows]
+
+
+reply_drafts_router = APIRouter(prefix="/v1/reply-drafts", tags=["outreach"])
+
+
+@reply_drafts_router.get("", response_model=list[ReplyDraftOut])
+def list_reply_drafts(
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ReplyDraftOut]:
+    stmt = select(ReplyDraft).where(ReplyDraft.org_id == principal.org_id)
+    if status_filter:
+        stmt = stmt.where(ReplyDraft.status == status_filter)
+    rows = db.scalars(stmt.order_by(ReplyDraft.created_at.desc()).limit(limit)).all()
+    return [ReplyDraftOut.model_validate(row) for row in rows]
 
 
 webhooks_router = APIRouter(prefix="/v1/webhooks", tags=["outreach"])

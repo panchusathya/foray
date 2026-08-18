@@ -28,6 +28,7 @@ KIND_OUTREACH_TICK = "outreach.tick"
 KIND_OUTREACH_SEND = "outreach.send"
 KIND_AGENT_TICK = "agent.tick"
 KIND_MAILBOX_SYNC = "mailbox.sync"
+KIND_REPLY_DRAFT = "reply.draft"
 
 OPEN_STATUSES = ("queued", "running")
 

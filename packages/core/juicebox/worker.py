@@ -22,6 +22,7 @@ from .jobs import (
     KIND_MAILBOX_SYNC,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
+    KIND_REPLY_DRAFT,
     claim,
     enqueue,
     has_open_job,
@@ -181,6 +182,22 @@ def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
     }
 
 
+def _handle_reply_draft(db: Session, job: Job, now) -> dict[str, Any]:
+    from .integrations.reply_drafting import create_reply_draft
+    from .models import Message
+
+    inbound = db.get(Message, job.payload.get("inbound_message_id"))
+    connection = db.get(MailboxConnection, job.payload.get("mailbox_id"))
+    if inbound is None or connection is None:
+        return {"skipped": "missing_message_or_mailbox"}
+    if connection.status != "active":
+        return {"skipped": f"mailbox_{connection.status}"}
+    draft = create_reply_draft(db, inbound=inbound, connection=connection, now=now)
+    if draft is None:
+        return {"skipped": "no_draft_for_intent"}
+    return {"draft_id": draft.id, "generated_by": draft.generated_by}
+
+
 def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
     from .agents.sourcing import run_due_agents
 
@@ -199,6 +216,7 @@ HANDLERS = {
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_AGENT_TICK: _handle_agent_tick,
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
+    KIND_REPLY_DRAFT: _handle_reply_draft,
 }
 
 

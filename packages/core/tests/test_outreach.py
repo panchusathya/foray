@@ -4,7 +4,6 @@ import pytest
 
 from juicebox.models import Candidate, Enrollment, Message, utcnow
 from juicebox.outreach import templates
-from juicebox.outreach.suppressions import is_suppressed, suppress
 from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
 from juicebox.outreach.sequencer import (
@@ -15,6 +14,7 @@ from juicebox.outreach.sequencer import (
     run_due,
     send_step,
 )
+from juicebox.outreach.suppressions import is_suppressed, suppress
 from juicebox.repository import upsert_candidates
 from juicebox.security import signed_tracking_token
 

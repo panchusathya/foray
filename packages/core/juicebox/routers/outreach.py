@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..deps import Principal, get_db, get_principal, require_write
-from ..models import Candidate, Enrollment, Message, Sequence, SequenceStep
+from ..models import Candidate, Enrollment, MailboxConnection, Message, Sequence, SequenceStep
 from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
@@ -47,6 +47,12 @@ def create_sequence(
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> SequenceOut:
+    if payload.mailbox_id:
+        mailbox = db.get(MailboxConnection, payload.mailbox_id)
+        if mailbox is None or mailbox.org_id != principal.org_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox connection not found"
+            )
     sequence = Sequence(
         org_id=principal.org_id,
         project_id=payload.project_id,
@@ -55,6 +61,7 @@ def create_sequence(
         stop_on_reply=payload.stop_on_reply,
         from_email=payload.from_email,
         from_name=payload.from_name,
+        mailbox_id=payload.mailbox_id,
     )
     db.add(sequence)
     db.flush()

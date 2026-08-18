@@ -18,6 +18,8 @@ dependencies = [
     "anthropic>=0.78",
     "alembic>=1.13",
     "PyYAML>=6.0",
+    # Encrypts mailbox OAuth tokens at rest (integrations/crypto.py).
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

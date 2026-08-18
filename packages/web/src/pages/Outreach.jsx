@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -27,6 +28,7 @@ export function OutreachPage() {
   const sequences = useAsync(() => api.listSequences(), []);
   const projects = useAsync(() => api.listProjects(), []);
   const candidates = useAsync(() => api.listCandidates(''), []);
+  const microsoft = useAsync(() => api.microsoftStatus(), []);
 
   const [error, setError] = useState(null);
   const [status, setStatus] = useState('');
@@ -34,8 +36,13 @@ export function OutreachPage() {
   const [form, setForm] = useState({
     name: 'Role outreach — 2 touch',
     project_id: '',
+    mailbox_id: '',
     steps: STARTER_STEPS,
   });
+
+  const mailboxes = (microsoft.data?.connections ?? []).filter(
+    (connection) => connection.status === 'active',
+  );
 
   function updateStep(index, patch) {
     setForm((previous) => ({
@@ -51,6 +58,7 @@ export function OutreachPage() {
       await api.createSequence({
         name: form.name,
         project_id: form.project_id || null,
+        mailbox_id: form.mailbox_id || null,
         steps: form.steps,
       });
       setStatus('Sequence created');
@@ -115,6 +123,27 @@ export function OutreachPage() {
             ))}
           </select>
         </div>
+
+        <label className="small muted">
+          Send from{' '}
+          <select
+            value={form.mailbox_id}
+            onChange={(event) => setForm({ ...form, mailbox_id: event.target.value })}
+            style={{ display: 'inline-block', width: 'auto' }}
+          >
+            <option value="">Server default</option>
+            {mailboxes.map((mailbox) => (
+              <option key={mailbox.id} value={mailbox.id}>
+                {mailbox.address} (Outlook)
+              </option>
+            ))}
+          </select>{' '}
+          {!mailboxes.length ? (
+            <>
+              — <Link to="/settings">connect Outlook</Link> to send as yourself
+            </>
+          ) : null}
+        </label>
 
         {form.steps.map((step, index) => (
           <div className="card stack" key={index}>

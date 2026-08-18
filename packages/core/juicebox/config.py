@@ -144,6 +144,16 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
+
+    # --- integrations: Microsoft Graph (Outlook) ---------------------------
+    # Azure app registration (single-tenant). Empty client id = not configured;
+    # the app runs fine without it and the UI says so.
+    ms_client_id: str = field(default_factory=lambda: _env("MS_CLIENT_ID", ""))
+    ms_client_secret: str = field(default_factory=lambda: _env("MS_CLIENT_SECRET", ""))
+    ms_tenant_id: str = field(default_factory=lambda: _env("MS_TENANT_ID", "organizations"))
+    # Defaults to {BASE_URL}/v1/integrations/microsoft/callback; must match the
+    # redirect URI registered on the Azure app.
+    ms_redirect_uri: str = field(default_factory=lambda: _env("MS_REDIRECT_URI", ""))
     # How often the worker enqueues the next per-org tick after one completes.
     worker_tick_seconds: int = field(default_factory=lambda: _env_int("WORKER_TICK_SECONDS", 60))
     worker_poll_seconds: float = field(

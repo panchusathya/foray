@@ -1,0 +1,115 @@
+import { useEffect, useState } from 'react';
+
+import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { api } from '../lib/api.js';
+import { useAsync } from '../lib/useAsync.js';
+
+export function SettingsPage() {
+  const status = useAsync(() => api.microsoftStatus(), []);
+  const [error, setError] = useState(null);
+
+  // The OAuth consent happens in another tab; refresh when the user comes back.
+  useEffect(() => {
+    const onFocus = () => status.reload();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
+  async function connect() {
+    setError(null);
+    try {
+      const { auth_url: authUrl } = await api.microsoftConnect();
+      window.open(authUrl, '_blank', 'noopener');
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  async function disconnect(connectionId) {
+    setError(null);
+    try {
+      await api.microsoftDisconnect(connectionId);
+      status.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  const data = status.data;
+
+  return (
+    <div className="stack">
+      <PageHeader
+        title="Settings"
+        subtitle="Connected accounts. Outreach sends as you, from your own mailbox."
+      />
+      <ErrorBox error={error} />
+      {status.loading ? <Loading /> : null}
+
+      {data ? (
+        <div className="card stack">
+          <div className="spread">
+            <div>
+              <strong>Outlook</strong>
+              <div className="small muted">
+                Send sequences from your own Microsoft 365 mailbox, so outreach
+                looks like the personal email it is.
+              </div>
+            </div>
+            {data.configured ? (
+              <button type="button" className="primary" onClick={connect}>
+                Connect Outlook
+              </button>
+            ) : (
+              <Badge>not configured</Badge>
+            )}
+          </div>
+
+          {!data.configured ? (
+            <div className="small muted">
+              Set <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code> on the
+              server (Azure app registration) to enable this. Redirect URI:{' '}
+              <code>{data.redirect_uri}</code>
+            </div>
+          ) : null}
+
+          {data.connections.length ? (
+            <div className="stack">
+              {data.connections.map((connection) => (
+                <div className="spread" key={connection.id}>
+                  <div>
+                    <strong className="small">{connection.address}</strong>
+                    <div className="small muted">
+                      {connection.display_name || 'Outlook mailbox'}
+                      {connection.error ? ` — ${connection.error}` : ''}
+                    </div>
+                  </div>
+                  <div className="row">
+                    <Badge tone={connection.status === 'active' ? 'strong' : ''}>
+                      {connection.status}
+                    </Badge>
+                    {connection.status !== 'revoked' ? (
+                      <button
+                        type="button"
+                        className="tiny ghost"
+                        onClick={() => disconnect(connection.id)}
+                      >
+                        Disconnect
+                      </button>
+                    ) : (
+                      <button type="button" className="tiny" onClick={connect}>
+                        Reconnect
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : data.configured ? (
+            <div className="small muted">No mailbox connected yet.</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}

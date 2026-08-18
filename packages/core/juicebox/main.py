@@ -14,7 +14,18 @@ from .db import create_all
 from .llm.client import get_llm
 from .llm.embeddings import get_embedder
 from .migrate import is_up_to_date
-from .routers import agents, analytics, auth, candidates, org, outreach, projects, search, track
+from .routers import (
+    agents,
+    analytics,
+    auth,
+    candidates,
+    integrations,
+    org,
+    outreach,
+    projects,
+    search,
+    track,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s"
@@ -76,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(outreach.webhooks_router)
     app.include_router(agents.router)
     app.include_router(analytics.router)
+    app.include_router(integrations.router)
     app.include_router(track.router)
 
     @app.get("/health", tags=["meta"])

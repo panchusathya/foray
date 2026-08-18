@@ -61,6 +61,29 @@ class OrgPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class MailboxConnectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    provider: str
+    address: str
+    display_name: str
+    status: str
+    error: str
+    user_id: str | None
+    created_at: datetime
+
+
+class MicrosoftIntegrationOut(BaseModel):
+    configured: bool
+    redirect_uri: str
+    connections: list[MailboxConnectionOut]
+
+
+class MicrosoftConnectOut(BaseModel):
+    auth_url: str
+
+
 class SuppressionIn(BaseModel):
     email: EmailStr
     reason: Literal["unsubscribe", "bounce", "manual"] = "manual"
@@ -373,6 +396,7 @@ class SequenceIn(BaseModel):
     stop_on_reply: bool = True
     from_email: str = ""
     from_name: str = ""
+    mailbox_id: str | None = None
 
 
 class SequenceStepOut(BaseModel):
@@ -397,6 +421,7 @@ class SequenceOut(BaseModel):
     stop_on_reply: bool
     from_email: str
     from_name: str
+    mailbox_id: str | None
     steps: list[SequenceStepOut]
 
 

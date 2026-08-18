@@ -144,9 +144,6 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
-    outreach_postal_address: str = field(
-        default_factory=lambda: _env("OUTREACH_POSTAL_ADDRESS", "")
-    )
     # How often the worker enqueues the next per-org tick after one completes.
     worker_tick_seconds: int = field(default_factory=lambda: _env_int("WORKER_TICK_SECONDS", 60))
     worker_poll_seconds: float = field(

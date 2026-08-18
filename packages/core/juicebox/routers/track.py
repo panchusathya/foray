@@ -84,23 +84,3 @@ def track_click(
                 payload={"url": safe_target, "candidate_id": message.candidate_id},
             )
     return RedirectResponse(url=safe_target, status_code=302)
-
-
-@router.api_route("/u/{message_id}", methods=["GET", "POST"])
-def track_unsubscribe(
-    message_id: str,
-    k: str = Query(default=""),
-    db: Session = Depends(get_db),
-) -> Response:
-    """Human click (GET) and RFC 8058 one-click (POST). Invalid tokens are a no-op."""
-    if verify_tracking_token(message_id, k):
-        message = db.get(Message, message_id)
-        if message is not None:
-            from ..outreach.sequencer import apply_unsubscribe
-
-            apply_unsubscribe(db, message, source="tracking")
-    return Response(
-        content="You've been unsubscribed. You won't get more email from this workspace.",
-        media_type="text/plain; charset=utf-8",
-        headers={"Cache-Control": "no-store"},
-    )

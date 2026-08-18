@@ -23,7 +23,7 @@ function Shell({ children }) {
     <div className="shell">
       <nav className="sidebar">
         <div className="brand">
-          Juice<span>box</span>
+          <span className="brand-glyph">▞</span> Foray
         </div>
         {NAV.map((item) => (
           <NavLink

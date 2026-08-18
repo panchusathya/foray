@@ -175,3 +175,6 @@ jobs:
 
       - name: ingest
         run: docker build packages/ingest
+
+      - name: foray
+        run: docker build packages/foray

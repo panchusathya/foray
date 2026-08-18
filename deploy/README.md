@@ -115,6 +115,42 @@ docker compose -f docker-compose.prod.yml up -d --build
 Migrations run inside the api container before uvicorn starts; the worker
 waits for the api healthcheck. Expect a few seconds of downtime.
 
+## Foray sourcing engine
+
+The Sourcing page is served by a separate service (`packages/foray`) with its
+own `foray` database inside the shared Postgres container. On a **fresh**
+volume the initdb script (`packages/foray/docker/initdb/00-foray.sql`) creates
+the role and database automatically; on an **existing** volume create them once
+by hand (substitute the `FORAY_DB_PASSWORD` from `.env`):
+
+```bash
+cd /opt/juicebox
+docker compose -f docker-compose.prod.yml exec -T db psql -U juicebox -c \
+  "create role foray with login password '<FORAY_DB_PASSWORD>'; create database foray owner foray;"
+docker compose -f docker-compose.prod.yml exec -T db psql -U juicebox -d foray -c \
+  "create extension if not exists vector; grant all on schema public to foray;"
+```
+
+The service runs its SQL migrations on container start. The database starts
+empty — populate it with the offline pipeline (needs `GITHUB_TOKEN` and
+`ANTHROPIC_API_KEY` in `.env`), run inside the container:
+
+```bash
+alias foray-run='docker compose -f docker-compose.prod.yml exec -T foray python -m'
+foray-run foray.harvest.shards
+foray-run foray.harvest.search --limit 50   # shards per run; rerun to continue
+foray-run foray.enrich.profiles
+foray-run foray.enrich.derive
+foray-run foray.embed.run
+foray-run foray.score.run --dry-run          # prints request count + cost
+foray-run foray.score.run --yes              # all archetypes by default
+```
+
+Scoring uses the Haiku Batch API and confirms before spending more than
+`FORAY_SPEND_CONFIRM_THRESHOLD_USD` (default $25). The query path never calls
+an external API; the 4 GB VM benefits from a swap file during embedding runs
+(`fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`).
+
 ## Things to know
 
 - **The login page is public.** Use strong passwords for every org user.

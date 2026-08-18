@@ -82,6 +82,26 @@ services:
     depends_on:
       - api
 
+  # Sourcing engine (packages/foray): separate FastAPI service with its own
+  # `foray` database in the shared Postgres. The web nginx proxies /foray/ to
+  # it, so any compose stack that runs `web` must also run this service.
+  foray:
+    build:
+      context: packages/foray
+      dockerfile: Dockerfile
+    environment:
+      FORAY_DATABASE_URL: postgresql://foray:foray@db:5432/foray
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8100:8100"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "./scripts/migrate.sh &&
+             uvicorn foray.api.app:app --host 0.0.0.0 --port 8100"
+
   web:
     build:
       context: packages/web
@@ -90,6 +110,7 @@ services:
       - "5173:80"
     depends_on:
       - api
+      - foray
 
 volumes:
   pgdata:

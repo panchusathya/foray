@@ -27,6 +27,19 @@ def ms_configured(monkeypatch):
     reset_settings_cache()
 
 
+class _BaselineOnlyClient:
+    """Just the delta-baseline surface the connect callback touches."""
+
+    def __init__(self, db, connection):
+        pass
+
+    def inbox_delta_baseline(self):
+        return "https://graph.test/delta?token=connect"
+
+    def sent_delta_baseline(self):
+        return "https://graph.test/sent-delta?token=connect"
+
+
 def _fake_exchange(monkeypatch, *, address="tushar@goforay.io", name="Tushar Gupta"):
     monkeypatch.setattr(
         microsoft,
@@ -46,6 +59,7 @@ def _fake_exchange(monkeypatch, *, address="tushar@goforay.io", name="Tushar Gup
             "ms_user_id": "ms-user-1",
         },
     )
+    monkeypatch.setattr(microsoft, "GraphClient", _BaselineOnlyClient)
 
 
 def _connect(client, headers, monkeypatch, **profile) -> dict:
@@ -100,6 +114,10 @@ class TestConnectFlow:
         row = session.get(MailboxConnection, connection["id"])
         assert "at-abc" not in row.token_blob
         assert decrypt_json(row.token_blob)["access_token"] == "at-abc"
+        # Cursors baseline at connect: a reply landing before the first worker
+        # sync must not fall on the wrong side of the delta.
+        assert row.inbox_delta_link == "https://graph.test/delta?token=connect"
+        assert row.sent_delta_link == "https://graph.test/sent-delta?token=connect"
 
     def test_reconnect_updates_instead_of_duplicating(
         self, client, account, ms_configured, monkeypatch

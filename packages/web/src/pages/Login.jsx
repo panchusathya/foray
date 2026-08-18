@@ -42,9 +42,9 @@ export function LoginPage() {
       <form className="card auth-card stack" onSubmit={submit}>
         <div>
           <h1>
-            Juice<span style={{ color: 'var(--accent)' }}>box</span>
+            <span className="brand-glyph">▞</span> Foray
           </h1>
-          <p className="muted small">AI recruiting search and outreach.</p>
+          <p className="muted small">Foray into your next hire.</p>
         </div>
 
         <div className="tabs">

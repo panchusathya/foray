@@ -23,6 +23,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from .types import EmbeddingVector
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
@@ -134,7 +136,7 @@ class Candidate(Base, TimestampMixin):
     years_experience: Mapped[float] = mapped_column(Float, default=0.0)
 
     doc_text: Mapped[str] = mapped_column(Text, default="")
-    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    embedding: Mapped[list | None] = mapped_column(EmbeddingVector, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(80), default="")
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -34,6 +34,19 @@ def _build_engine(url: str) -> Engine:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
+
+    else:
+
+        @event.listens_for(engine, "connect")
+        def _register_pgvector(dbapi_connection, _record):  # pragma: no cover - driver glue
+            try:
+                from pgvector.psycopg import register_vector
+            except ImportError:
+                return
+            # The vector extension is created in create_all / migrate; the
+            # first connect of a brand-new database happens before that.
+            with suppress(Exception):
+                register_vector(dbapi_connection)
 
     return engine
 
@@ -77,11 +90,32 @@ def session_scope() -> Iterator[Session]:
 def create_all() -> None:
     from . import models  # noqa: F401  (registers mappers)
     from .models import Base
+    from .search.schema import prepare_postgres
 
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    if not get_settings().is_sqlite:
+        # pgvector's type must exist before CREATE TABLE ... embedding vector.
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            ).scalar()
+            if not exists:
+                conn.execute(text("CREATE EXTENSION vector"))
+            conn.commit()
+            with suppress(Exception):
+                from pgvector.psycopg import register_vector
+
+                register_vector(conn.connection.dbapi_connection)
+    Base.metadata.create_all(bind=engine)
+    prepare_postgres(engine)
 
 
 def drop_all() -> None:
     from .models import Base
+    from .search.schema import drop_postgres_search
 
-    Base.metadata.drop_all(bind=get_engine())
+    engine = get_engine()
+    drop_postgres_search(engine)
+    Base.metadata.drop_all(bind=engine)

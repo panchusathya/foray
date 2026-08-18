@@ -119,6 +119,10 @@ class Settings:
     retrieval_candidate_pool: int = field(
         default_factory=lambda: _env_int("RETRIEVAL_CANDIDATE_POOL", 200)
     )
+    # auto = postgres when DATABASE_URL is postgres, else the in-process index.
+    retrieval_backend: str = field(
+        default_factory=lambda: _env("RETRIEVAL_BACKEND", "auto").lower()
+    )
     rerank_top_k: int = field(default_factory=lambda: _env_int("RERANK_TOP_K", 20))
     rrf_k: int = field(default_factory=lambda: _env_int("RRF_K", 60))
     heuristic_weight: float = field(default_factory=lambda: _env_float("HEURISTIC_WEIGHT", 0.55))
@@ -144,6 +148,14 @@ class Settings:
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def uses_postgres_retrieval(self) -> bool:
+        if self.retrieval_backend == "memory":
+            return False
+        if self.retrieval_backend == "postgres":
+            return True
+        return not self.is_sqlite
 
     @property
     def is_production(self) -> bool:

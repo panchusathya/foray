@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 import tempfile
@@ -33,24 +34,33 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "packages" / "core"))
 
 
-def bootstrap(corpus_size: int):
-    """Fresh throwaway database so an eval run never touches real data."""
-    import os
-
-    tmp = Path(tempfile.mkdtemp(prefix="juicebox-eval-"))
-    os.environ["DATABASE_URL"] = f"sqlite:///{(tmp / 'eval.db').as_posix()}"
-    os.environ.setdefault("EMBEDDING_PROVIDER", "hashing")
+def bootstrap(corpus_size: int, database_url: str | None = None):
+    """Fresh throwaway org so an eval run never touches real data."""
+    import uuid
 
     from juicebox.config import reset_settings_cache
-    from juicebox.db import create_all, session_scope
+    from juicebox.db import create_all, reset_engine, session_scope
     from juicebox.models import Org
     from juicebox.repository import upsert_candidates
     from juicebox.seed import generate_candidates
 
-    reset_settings_cache()
-    create_all()
+    os.environ.setdefault("EMBEDDING_PROVIDER", "hashing")
+    if database_url:
+        os.environ["DATABASE_URL"] = database_url
+        reset_settings_cache()
+        reset_engine()
+        from juicebox.migrate import ensure_schema
+
+        ensure_schema()
+    else:
+        tmp = Path(tempfile.mkdtemp(prefix="juicebox-eval-"))
+        os.environ["DATABASE_URL"] = f"sqlite:///{(tmp / 'eval.db').as_posix()}"
+        reset_settings_cache()
+        reset_engine()
+        create_all()
+
     with session_scope() as db:
-        org = Org(name="Eval", slug="eval")
+        org = Org(name="Eval", slug=f"eval-{uuid.uuid4().hex[:8]}")
         db.add(org)
         db.flush()
         upsert_candidates(db, org_id=org.id, payloads=generate_candidates(corpus_size))
@@ -161,8 +171,8 @@ def ndcg_at_k(labels: list[bool], total_relevant: int, k: int) -> float:
 # --------------------------------------------------------------------------
 
 
-def run(corpus_size: int, use_rerank: bool, limit: int) -> dict:
-    org_id = bootstrap(corpus_size)
+def run(corpus_size: int, use_rerank: bool, limit: int, database_url: str | None = None) -> dict:
+    org_id = bootstrap(corpus_size, database_url=database_url)
 
     from juicebox.db import session_scope
     from juicebox.search.engine import get_engine
@@ -282,9 +292,22 @@ def main() -> int:
         default=None,
         help="exit non-zero if mean nDCG@10 falls below this (for CI)",
     )
+    parser.add_argument(
+        "--database-url",
+        default=None,
+        help="evaluate against this database (postgres hybrid retrieval). "
+        "Default: a throwaway SQLite file. Not inferred from DATABASE_URL, so "
+        "`make eval` never writes into a running app database.",
+    )
     args = parser.parse_args()
 
-    report = run(args.corpus_size, args.rerank, args.limit)
+    # An explicit sqlite URL still uses the in-process index; only postgres
+    # URLs exercise FTS + pgvector.
+    database_url = args.database_url
+    if database_url and database_url.startswith("sqlite"):
+        database_url = None
+
+    report = run(args.corpus_size, args.rerank, args.limit, database_url=database_url)
     print_report(report)
 
     if args.json_path:

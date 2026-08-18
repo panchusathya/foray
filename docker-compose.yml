@@ -2,7 +2,8 @@ name: juicebox
 
 services:
   db:
-    image: postgres:16-alpine
+    # Recreate the pgdata volume if you previously ran vanilla postgres:16.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: juicebox
       POSTGRES_PASSWORD: juicebox

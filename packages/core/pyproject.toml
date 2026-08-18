@@ -1,0 +1,52 @@
+[project]
+name = "juicebox-core"
+version = "0.1.0"
+description = "AI recruiting search + outreach engine (PeopleGPT-style)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "email-validator>=2.1",
+    "python-multipart>=0.0.9",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "anthropic>=0.40",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2.5"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5"]
+
+[project.scripts]
+juicebox = "juicebox.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["juicebox*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "BLE"]
+ignore = [
+    # `Depends(...)` / `Query(...)` in parameter defaults is the FastAPI idiom.
+    "B008",
+    # Line length is the formatter's job, not the linter's.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests read better with long literal fixtures and local imports.
+"tests/*" = ["E402"]

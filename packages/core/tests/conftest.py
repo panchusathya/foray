@@ -1,0 +1,187 @@
+"""Test fixtures: an isolated SQLite database and an authenticated API client."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def isolated_environment(tmp_path, monkeypatch):
+    """Every test gets its own database, no model calls and a memory mailbox."""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("JUICEBOX_LLM_ENABLED", "false")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("EMAIL_PROVIDER", "memory")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
+    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("BASE_URL", "http://testserver")
+
+    from juicebox import db as db_module
+    from juicebox.config import reset_settings_cache
+    from juicebox.llm.client import reset_llm
+    from juicebox.llm.embeddings import reset_embedder
+    from juicebox.outreach.sender import set_sender
+    from juicebox.search.engine import reset_engine
+    from juicebox.search.index import invalidate
+
+    reset_settings_cache()
+    db_module.reset_engine()
+    reset_llm()
+    reset_embedder()
+    reset_engine()
+    invalidate()
+    set_sender(None)
+
+    db_module.create_all()
+    yield
+
+    db_module.reset_engine()
+    reset_settings_cache()
+    reset_llm()
+    reset_embedder()
+    reset_engine()
+    invalidate()
+    set_sender(None)
+
+
+@pytest.fixture
+def session():
+    from juicebox.db import get_session_factory
+
+    db = get_session_factory()()
+    try:
+        yield db
+        db.commit()
+    finally:
+        db.close()
+
+
+@pytest.fixture
+def mailbox():
+    from juicebox.outreach.sender import MemorySender, set_sender
+
+    sender = MemorySender()
+    set_sender(sender)
+    return sender
+
+
+@pytest.fixture
+def client():
+    from juicebox.main import create_app
+
+    with TestClient(create_app()) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def account(client):
+    """A signed-up org with an auth header ready to use."""
+    response = client.post(
+        "/v1/auth/signup",
+        json={
+            "org_name": "Acme Talent",
+            "email": "recruiter@acme-talent.com",
+            "password": "supersecret1",
+            "name": "Ada",
+        },
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    return {
+        "token": payload["access_token"],
+        "headers": {"Authorization": f"Bearer {payload['access_token']}"},
+        "org_id": payload["user"]["org_id"],
+        "user_id": payload["user"]["id"],
+    }
+
+
+@pytest.fixture
+def sample_candidates() -> list[dict]:
+    return [
+        {
+            "source": "test",
+            "source_id": "ml-1",
+            "full_name": "Ada Okonkwo",
+            "location_city": "San Francisco",
+            "location_region": "CA",
+            "location_country": "United States",
+            "emails": ["ada@example.com"],
+            "skills": ["Python", "PyTorch", "LLM", "Kubernetes"],
+            "experiences": [
+                {
+                    "company": "Modal",
+                    "company_industry": "ai",
+                    "company_stage": "series a",
+                    "company_size": "11-50",
+                    "title": "Senior Machine Learning Engineer",
+                    "start_date": "2019-01",
+                    "is_current": True,
+                    "description": "Owned the production LLM inference platform.",
+                },
+                {
+                    "company": "Stripe",
+                    "company_industry": "fintech",
+                    "title": "Machine Learning Engineer",
+                    "start_date": "2016-01",
+                    "end_date": "2018-12",
+                },
+            ],
+            "educations": [
+                {"school": "Stanford University", "degree": "MS", "field_of_study": "Computer Science"}
+            ],
+        },
+        {
+            "source": "test",
+            "source_id": "fe-1",
+            "full_name": "Bo Lindqvist",
+            "location_city": "Berlin",
+            "location_country": "Germany",
+            "emails": ["bo@example.com"],
+            "open_to_remote": True,
+            "skills": ["TypeScript", "React", "Design Systems"],
+            "experiences": [
+                {
+                    "company": "Linear",
+                    "company_industry": "saas",
+                    "company_stage": "series b",
+                    "title": "Senior Frontend Engineer",
+                    "start_date": "2020-06",
+                    "is_current": True,
+                    "description": "Owned the component library.",
+                }
+            ],
+        },
+        {
+            "source": "test",
+            "source_id": "be-1",
+            "full_name": "Cleo Rahman",
+            "location_city": "London",
+            "location_country": "United Kingdom",
+            "emails": ["cleo@example.com"],
+            "skills": ["Go", "PostgreSQL", "Kafka", "Distributed Systems"],
+            "experiences": [
+                {
+                    "company": "Ramp",
+                    "company_industry": "fintech",
+                    "company_stage": "series d",
+                    "title": "Staff Backend Engineer",
+                    "start_date": "2014-03",
+                    "is_current": True,
+                    "description": "Rebuilt the ledger service.",
+                }
+            ],
+        },
+    ]
+
+
+@pytest.fixture
+def loaded_org(client, account, sample_candidates):
+    response = client.post(
+        "/v1/candidates/bulk",
+        json={"candidates": sample_candidates},
+        headers=account["headers"],
+    )
+    assert response.status_code == 200, response.text
+    return account

@@ -1,0 +1,19 @@
+{
+  "name": "@juicebox/ingest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Candidate ingestion workers: file imports, public sources and inbound webhooks.",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "juicebox-ingest": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "serve": "node src/index.js serve",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {}
+}

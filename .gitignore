@@ -1,0 +1,28 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# node
+node_modules/
+packages/web/dist/
+npm-debug.log*
+
+# data + secrets
+.env
+.env.local
+data/*.db
+data/*.db-wal
+data/*.db-shm
+eval/report*.json
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/

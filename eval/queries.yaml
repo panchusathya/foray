@@ -1,0 +1,108 @@
+# Evaluation set for the search engine.
+#
+# Ground truth is expressed as a *rule* over candidate attributes rather than a
+# hand-labelled id list. The corpus is generated deterministically, so a rule
+# labels every profile consistently and the set stays valid when the corpus
+# grows — which a frozen id list would not.
+#
+# Rule keys (all optional, all ANDed):
+#   title_family     canonical normalised title the candidate must hold now or recently
+#   seniority        list of acceptable seniority bands
+#   location         metro/city/country the candidate must match
+#   skills_all       every skill must be present (normalised)
+#   skills_any       at least one skill must be present
+#   industry_any     at least one industry must match
+#   company_stage_any    at least one employer at one of these stages
+#   min_years / max_years
+#
+# expect_parsed asserts what the query parser must extract. A parser regression
+# is usually the real cause when ranking quality drops, so it is checked first.
+
+queries:
+  - id: ml-senior-sf
+    query: senior machine learning engineers in San Francisco with pytorch and production LLM experience, 5+ years
+    relevant:
+      title_family: machine learning engineer
+      seniority: [senior, staff, principal]
+      location: san francisco
+      skills_all: [pytorch]
+      min_years: 5
+    expect_parsed:
+      job_titles: [machine learning engineer]
+      seniority: [senior]
+      locations: [san francisco]
+      must_have_skills_include: [pytorch]
+      min_years_experience: 5
+
+  - id: backend-go-kafka
+    query: staff backend engineers who know Go and Kafka
+    relevant:
+      title_family: backend engineer
+      seniority: [staff, principal]
+      skills_all: [go, kafka]
+    expect_parsed:
+      job_titles: [backend engineer]
+      seniority: [staff]
+      must_have_skills_include: [go, kafka]
+
+  - id: data-eng-warehouse
+    query: data engineers with dbt and snowflake experience
+    relevant:
+      title_family: data engineer
+      skills_any: [dbt, snowflake]
+    expect_parsed:
+      job_titles: [data engineer]
+      must_have_skills_include: [dbt, snowflake]
+
+  - id: designer-series-b
+    query: product designers with design systems experience at series b startups
+    relevant:
+      title_family: product designer
+      skills_all: [design systems]
+      company_stage_any: [series b]
+    expect_parsed:
+      job_titles: [product designer]
+      must_have_skills_include: [design systems]
+      company_stages: [series b]
+
+  - id: sre-kubernetes-remote
+    query: site reliability engineers who know kubernetes and terraform, open to remote
+    relevant:
+      title_family: site reliability engineer
+      skills_all: [kubernetes, terraform]
+    expect_parsed:
+      job_titles: [site reliability engineer]
+      must_have_skills_include: [kubernetes, terraform]
+      remote_ok: true
+
+  - id: security-fintech
+    query: security engineers at fintech companies
+    relevant:
+      title_family: security engineer
+      industry_any: [fintech]
+    expect_parsed:
+      job_titles: [security engineer]
+      industries: [fintech]
+
+  - id: pm-saas-london
+    query: senior product managers in London working on saas products
+    relevant:
+      title_family: product manager
+      seniority: [senior, staff, principal, director]
+      location: london
+      industry_any: [saas]
+    expect_parsed:
+      job_titles: [product manager]
+      seniority: [senior]
+      locations: [london]
+
+  - id: frontend-react-berlin
+    query: frontend engineers in Berlin with react and typescript
+    relevant:
+      title_family: frontend engineer
+      location: berlin
+      skills_all: [react, typescript]
+    expect_parsed:
+      job_titles: [frontend engineer]
+      locations: [berlin]
+      must_have_skills_include: [react, typescript]

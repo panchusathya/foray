@@ -1,0 +1,87 @@
+name: juicebox
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: juicebox
+      POSTGRES_PASSWORD: juicebox
+      POSTGRES_DB: juicebox
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U juicebox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://juicebox:juicebox@db:5432/juicebox
+      BASE_URL: http://localhost:8000
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      CORS_ORIGINS: http://localhost:5173,http://localhost:4173
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python -m juicebox.cli init-db &&
+             uvicorn juicebox.main:app --host 0.0.0.0 --port 8000"
+
+  # Sends due outreach steps and runs due sourcing agents on a loop.
+  # Swap for a real scheduler (cron, Cloud Scheduler, Temporal) in production.
+  worker:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://juicebox:juicebox@db:5432/juicebox
+      BASE_URL: http://api:8000
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+    depends_on:
+      api:
+        condition: service_started
+    command: >
+      sh -c "while true; do
+               python -m juicebox.cli run-outreach || true;
+               python -m juicebox.cli run-agents   || true;
+               sleep 300;
+             done"
+
+  ingest:
+    build:
+      context: packages/ingest
+      dockerfile: Dockerfile
+    environment:
+      JUICEBOX_API_URL: http://api:8000
+      JUICEBOX_API_KEY: ${JUICEBOX_API_KEY:-}
+      INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      - "8787:8787"
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: packages/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

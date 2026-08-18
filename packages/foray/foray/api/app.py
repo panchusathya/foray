@@ -68,6 +68,64 @@ async def search_stream(q: str, limit: int = 0) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.get("/candidate/{login}/enrich")
+async def enrich_on_click(login: str) -> dict:
+    """Fired when a human opens a candidate: lazy LinkedIn (no Apollo) + freshness."""
+    from ..enrich.freshness import freshness_check
+    from ..enrich.linkedin import resolve_and_store
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        linkedin = await resolve_and_store(conn, login, allow_apollo=False)
+        freshness = None
+        if settings.github_token:
+            try:
+                freshness = await freshness_check(conn, login)
+            except Exception as exc:  # noqa: BLE001 - freshness is best-effort
+                freshness = {"error": str(exc)}
+    return {"login": login, "linkedin": linkedin, "freshness": freshness}
+
+
+class ApolloBody(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
+@app.post("/candidate/{login}/apollo")
+async def apollo_resolve(login: str, body: ApolloBody) -> dict:
+    """Explicit shortlist action: allow the Apollo step (a credit). Requires a reason."""
+    from ..enrich.linkedin import resolve_and_store
+
+    settings.require("apollo_api_key")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "insert into shortlist_events (candidate_id, reason) "
+            "select id, $2 from candidates where login = $1",
+            login,
+            body.reason,
+        )
+        result = await resolve_and_store(
+            conn, login, allow_apollo=True, apollo_reason=body.reason, apollo=_apollo_people_match
+        )
+    return result
+
+
+async def _apollo_people_match(node: dict) -> str | None:
+    """Apollo people-match by name + employer domain (only reached in shortlist context)."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            "https://api.apollo.io/v1/people/match",
+            headers={"X-Api-Key": settings.apollo_api_key, "Content-Type": "application/json"},
+            json={"name": node.get("name"), "organization_name": node.get("company")},
+        )
+        if resp.status_code != 200:
+            return None
+        person = (resp.json() or {}).get("person") or {}
+        return person.get("linkedin_url")
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")

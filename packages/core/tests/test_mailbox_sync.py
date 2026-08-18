@@ -1,0 +1,262 @@
+"""Inbox delta sync: reply detection, matching, idempotency, worker wiring."""
+
+import pytest
+
+from juicebox.integrations import microsoft
+from juicebox.integrations.crypto import encrypt_json
+from juicebox.integrations.sync import sync_mailbox, sync_org_mailboxes
+from juicebox.models import Enrollment, MailboxConnection, Message
+from juicebox.outreach.sender import SendResult, set_graph_sender_factory
+from juicebox.outreach.sequencer import enroll_candidates, run_due
+from juicebox.outreach.suppressions import is_suppressed
+
+
+class FakeDeltaClient:
+    """Stands in for GraphClient: hands out queued delta pages."""
+
+    def __init__(self):
+        self.batches: list[list[dict]] = []
+        self.baseline_calls = 0
+        self.delta_calls = 0
+
+    def queue(self, *messages: dict) -> None:
+        self.batches.append(list(messages))
+
+    def inbox_delta_baseline(self) -> str:
+        self.baseline_calls += 1
+        return "https://graph.test/delta?token=0"
+
+    def inbox_delta(self, delta_link: str) -> tuple[list[dict], str]:
+        self.delta_calls += 1
+        batch = self.batches.pop(0) if self.batches else []
+        return batch, f"https://graph.test/delta?token={self.delta_calls}"
+
+
+def _inbound(
+    *,
+    sender="ada@example.com",
+    subject="Re: role",
+    body="Happy to chat next week!",
+    conversation_id="conv-1",
+    graph_id="in-1",
+):
+    return {
+        "id": graph_id,
+        "conversationId": conversation_id,
+        "internetMessageId": f"<{graph_id}@example.com>",
+        "from": {"emailAddress": {"address": sender}},
+        "subject": subject,
+        "body": {"contentType": "text", "content": body},
+        "bodyPreview": body[:120],
+        "isDraft": False,
+        "receivedDateTime": "2026-08-18T10:00:00Z",
+    }
+
+
+@pytest.fixture
+def synced_org(session, account, outreach_fixture):
+    """A connected mailbox that has sent step 0 to Ada via Graph."""
+    connection = MailboxConnection(
+        org_id=account["org_id"],
+        address="recruiter@goforay.io",
+        token_blob=encrypt_json({"access_token": "at", "refresh_token": "rt", "expires_at": 2**40}),
+        inbox_delta_link="https://graph.test/delta?token=init",
+    )
+    session.add(connection)
+    session.flush()
+    sequence = outreach_fixture["sequence"]
+    sequence.mailbox_id = connection.id
+
+    set_graph_sender_factory(
+        lambda db, conn: type(
+            "S",
+            (),
+            {
+                "name": "graph",
+                "send": lambda self, email: SendResult(
+                    ok=True,
+                    provider_message_id="<out-1@outlook.com>",
+                    graph_message_id="out-1",
+                    internet_message_id="<out-1@outlook.com>",
+                    conversation_id="conv-1",
+                ),
+            },
+        )()
+    )
+    ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+    enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id], project_id=sequence.project_id)
+    session.commit()
+    run_due(session, org_id=sequence.org_id)
+    session.commit()
+    return {"connection": connection, "sequence": sequence, "ada": ada}
+
+
+class TestSyncMailbox:
+    def test_first_sync_initialises_without_reading_history(self, session, account):
+        connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")
+        session.add(connection)
+        session.flush()
+        fake = FakeDeltaClient()
+        summary = sync_mailbox(session, connection, client=fake)
+        assert summary.initialized and fake.baseline_calls == 1 and fake.delta_calls == 0
+        assert connection.inbox_delta_link == "https://graph.test/delta?token=0"
+        assert connection.last_synced_at is not None
+
+    def test_reply_is_matched_by_conversation_and_recorded(self, session, synced_org):
+        fake = FakeDeltaClient()
+        fake.queue(_inbound())
+        summary = sync_mailbox(session, synced_org["connection"], client=fake)
+        session.commit()
+
+        assert summary.matched == 1 and summary.intents == ["interested"]
+        outbound = session.query(Message).filter_by(direction="outbound").one()
+        assert outbound.reply_intent == "interested"
+        inbound = session.query(Message).filter_by(direction="inbound").one()
+        assert inbound.graph_message_id == "in-1"
+        assert inbound.mailbox_id == synced_org["connection"].id
+        assert session.query(Enrollment).one().status == "replied"
+        # Delta cursor advanced.
+        assert synced_org["connection"].inbox_delta_link.endswith("token=1")
+
+    def test_same_email_is_never_recorded_twice(self, session, synced_org):
+        fake = FakeDeltaClient()
+        fake.queue(_inbound())
+        fake.queue(_inbound())  # Graph re-delivers the same message next delta
+        sync_mailbox(session, synced_org["connection"], client=fake)
+        summary = sync_mailbox(session, synced_org["connection"], client=fake)
+        session.commit()
+        assert summary.matched == 0 and summary.skipped == 1
+        assert session.query(Message).filter_by(direction="inbound").count() == 1
+
+    def test_falls_back_to_address_match_without_a_conversation(self, session, synced_org):
+        fake = FakeDeltaClient()
+        fake.queue(_inbound(conversation_id="conv-other", graph_id="in-2"))
+        summary = sync_mailbox(session, synced_org["connection"], client=fake)
+        assert summary.matched == 1
+
+    def test_own_and_unmatched_mail_is_skipped(self, session, synced_org):
+        fake = FakeDeltaClient()
+        fake.queue(
+            _inbound(sender="recruiter@goforay.io", graph_id="own-1"),
+            _inbound(sender="totally.unrelated@example.net", conversation_id="", graph_id="in-3"),
+            {"id": "gone-1", "@removed": {"reason": "deleted"}},
+        )
+        summary = sync_mailbox(session, synced_org["connection"], client=fake)
+        assert summary.matched == 0 and summary.skipped == 3
+
+    def test_opt_out_reply_suppresses_via_sync(self, session, synced_org):
+        fake = FakeDeltaClient()
+        fake.queue(_inbound(body="Please stop contacting me.", graph_id="in-4"))
+        summary = sync_mailbox(session, synced_org["connection"], client=fake)
+        session.commit()
+        assert summary.intents == ["unsubscribe"]
+        assert is_suppressed(
+            session, org_id=synced_org["connection"].org_id, email="ada@example.com"
+        )
+
+    def test_org_sweep_survives_one_broken_mailbox(self, session, account, monkeypatch):
+        good = MailboxConnection(
+            org_id=account["org_id"], address="good@goforay.io",
+            inbox_delta_link="https://graph.test/delta?token=g",
+        )
+        bad = MailboxConnection(org_id=account["org_id"], address="bad@goforay.io")
+        session.add_all([good, bad])
+        session.flush()
+
+        def fake_client(db, connection):
+            if connection.address == "bad@goforay.io":
+                raise_client = FakeDeltaClient()
+                raise_client.inbox_delta_baseline = lambda: (_ for _ in ()).throw(
+                    microsoft.MicrosoftError("token revoked", status_code=401)
+                )
+                return raise_client
+            return FakeDeltaClient()
+
+        monkeypatch.setattr("juicebox.integrations.sync.GraphClient", fake_client)
+        results = sync_org_mailboxes(session, org_id=account["org_id"])
+        assert "good@goforay.io" in results
+        assert "bad@goforay.io" not in results
+        assert "token revoked" in bad.error
+
+
+class TestWorkerWiring:
+    def test_tick_is_scheduled_only_with_an_active_mailbox(self, session, account):
+        from juicebox.jobs import KIND_MAILBOX_SYNC
+        from juicebox.models import Job
+        from juicebox.worker import ensure_ticks
+
+        ensure_ticks(session)
+        kinds = {job.kind for job in session.query(Job).all()}
+        assert KIND_MAILBOX_SYNC not in kinds
+
+        session.add(MailboxConnection(org_id=account["org_id"], address="r@goforay.io"))
+        session.flush()
+        ensure_ticks(session)
+        kinds = {job.kind for job in session.query(Job).all()}
+        assert KIND_MAILBOX_SYNC in kinds
+
+    def test_sync_job_runs_and_reschedules(self, session, synced_org, monkeypatch):
+        from juicebox.jobs import KIND_MAILBOX_SYNC, enqueue
+        from juicebox.models import Job
+        from juicebox.worker import process_job
+
+        fake = FakeDeltaClient()
+        fake.queue(_inbound(graph_id="in-5"))
+        monkeypatch.setattr(
+            "juicebox.integrations.sync.GraphClient", lambda db, conn: fake
+        )
+        job = enqueue(
+            session,
+            org_id=synced_org["connection"].org_id,
+            kind=KIND_MAILBOX_SYNC,
+            idempotency_key="sync-test",
+            payload={"org_id": synced_org["connection"].org_id},
+        )
+        process_job(session, job)
+        session.commit()
+        assert job.status == "succeeded"
+        assert session.query(Message).filter_by(direction="inbound").count() == 1
+        open_syncs = (
+            session.query(Job)
+            .filter_by(kind=KIND_MAILBOX_SYNC, status="queued")
+            .count()
+        )
+        assert open_syncs == 1  # rescheduled itself
+
+
+class TestSyncApi:
+    def test_sync_now_endpoint(self, client, session, account, monkeypatch):
+        connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")
+        session.add(connection)
+        session.commit()
+        fake = FakeDeltaClient()
+        monkeypatch.setattr(
+            "juicebox.integrations.sync.GraphClient", lambda db, conn: fake
+        )
+        response = client.post(
+            f"/v1/integrations/microsoft/{connection.id}/sync", headers=account["headers"]
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["initialized"] is True
+
+        listed = client.get("/v1/integrations/microsoft", headers=account["headers"]).json()
+        assert listed["connections"][0]["last_synced_at"] is not None
+
+    def test_sync_now_rejects_revoked_and_foreign(self, client, session, account):
+        connection = MailboxConnection(
+            org_id=account["org_id"], address="r@goforay.io", status="revoked"
+        )
+        session.add(connection)
+        session.commit()
+        assert (
+            client.post(
+                f"/v1/integrations/microsoft/{connection.id}/sync", headers=account["headers"]
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/v1/integrations/microsoft/mbx_nope/sync", headers=account["headers"]
+            ).status_code
+            == 404
+        )

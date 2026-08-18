@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 KIND_OUTREACH_TICK = "outreach.tick"
 KIND_OUTREACH_SEND = "outreach.send"
 KIND_AGENT_TICK = "agent.tick"
+KIND_MAILBOX_SYNC = "mailbox.sync"
 
 OPEN_STATUSES = ("queued", "running")
 

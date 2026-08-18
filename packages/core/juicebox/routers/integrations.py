@@ -148,6 +148,37 @@ def oauth_callback(
     )
 
 
+@router.post("/{connection_id}/sync")
+def sync_now(
+    connection_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Run one inbox delta pass immediately (the worker also does this on a timer)."""
+    connection = db.get(MailboxConnection, connection_id)
+    if connection is None or connection.org_id != principal.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    if connection.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Mailbox is {connection.status}; reconnect it first",
+        )
+    from ..integrations.sync import sync_mailbox
+
+    try:
+        summary = sync_mailbox(db, connection)
+    except microsoft.MicrosoftError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {
+        "initialized": summary.initialized,
+        "seen": summary.seen,
+        "matched": summary.matched,
+        "skipped": summary.skipped,
+        "intents": summary.intents,
+        "last_synced_at": connection.last_synced_at,
+    }
+
+
 @router.delete("/{connection_id}")
 def disconnect(
     connection_id: str,

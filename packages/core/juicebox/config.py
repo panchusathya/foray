@@ -154,6 +154,10 @@ class Settings:
     # Defaults to {BASE_URL}/v1/integrations/microsoft/callback; must match the
     # redirect URI registered on the Azure app.
     ms_redirect_uri: str = field(default_factory=lambda: _env("MS_REDIRECT_URI", ""))
+    # How often the worker delta-polls each connected inbox for replies.
+    mailbox_sync_seconds: int = field(
+        default_factory=lambda: _env_int("MAILBOX_SYNC_SECONDS", 120)
+    )
     # How often the worker enqueues the next per-org tick after one completes.
     worker_tick_seconds: int = field(default_factory=lambda: _env_int("WORKER_TICK_SECONDS", 60))
     worker_poll_seconds: float = field(

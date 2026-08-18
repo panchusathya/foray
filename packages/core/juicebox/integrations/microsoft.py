@@ -157,10 +157,9 @@ class GraphClient:
         request_headers = {"Authorization": f"Bearer {self._access_token()}"}
         if headers:
             request_headers.update(headers)
+        url = path if path.startswith("https://") else f"{GRAPH_BASE}{path}"
         with httpx.Client(timeout=_HTTP_TIMEOUT) as http:
-            response = http.request(
-                method, f"{GRAPH_BASE}{path}", json=json, headers=request_headers
-            )
+            response = http.request(method, url, json=json, headers=request_headers)
         if response.status_code >= 400:
             raise MicrosoftError(
                 f"graph {method} {path} failed ({response.status_code}): {response.text[:500]}",
@@ -179,6 +178,39 @@ class GraphClient:
 
     def send_draft(self, message_id: str) -> None:
         self._request("POST", f"/me/messages/{message_id}/send")
+
+    # Fields the inbox sync needs; body arrives as text via the Prefer header.
+    _DELTA_SELECT = (
+        "$select=id,conversationId,internetMessageId,from,subject,bodyPreview,body,"
+        "isDraft,receivedDateTime"
+    )
+
+    def inbox_delta_baseline(self) -> str:
+        """Start delta tracking at 'now' — history is not outreach replies."""
+        url = f"/me/mailFolders/inbox/messages/delta?$deltatoken=latest&{self._DELTA_SELECT}"
+        page = self._request("GET", url, headers={"Prefer": 'IdType="ImmutableId"'}).json()
+        return page.get("@odata.deltaLink", "")
+
+    def inbox_delta(self, delta_link: str) -> tuple[list[dict], str]:
+        """Walk every page since the stored delta link.
+
+        Returns (messages, new_delta_link). The Prefer headers keep ids
+        immutable across mailbox moves and bodies in plain text.
+        """
+        headers = {
+            "Prefer": 'IdType="ImmutableId", outlook.body-content-type="text"',
+        }
+        messages: list[dict] = []
+        url = delta_link
+        while url:
+            page = self._request("GET", url, headers=headers).json()
+            messages.extend(page.get("value", []))
+            next_link = page.get("@odata.nextLink")
+            if next_link:
+                url = next_link
+                continue
+            return messages, page.get("@odata.deltaLink", delta_link)
+        return messages, delta_link
 
 
 class GraphSender:

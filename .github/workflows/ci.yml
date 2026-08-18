@@ -105,14 +105,20 @@ jobs:
         run: python eval/run_eval.py --corpus-size 400 --min-ndcg 0.8
 
   node:
-    name: ingest
+    name: ingest (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The package declares `node >=20`, so test the floor as well as current:
+        # the test runner's file discovery differs between them.
+        node: ["20", "22"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node }}
 
       - name: Test
         run: npm test

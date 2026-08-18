@@ -197,6 +197,13 @@ except an out-of-office stops the sequence, bounces mark the enrollment, and a
 referral outranks a decline because "not for me, but talk to Sam" is a lead,
 not a rejection.
 
+When a human reply lands, a response draft is written onto the actual Outlook
+thread (Graph `createReply`) and waits in the user's Drafts folder — the model
+writes it when configured, a plain per-intent template otherwise — and the
+user gets a "your draft is ready" email from their own mailbox. Opt-outs,
+bounces and out-of-office replies never get a draft. Editing and sending stays
+in Outlook; the app never sends the reply itself.
+
 A daily send cap is enforced per org.
 
 Background work lives in a `jobs` table. `juicebox work` claims due rows
@@ -260,6 +267,7 @@ signature so third-party systems never hold a Juicebox API key.
 | `GET`/`POST`/`DELETE` | `/v1/suppressions` | Do-not-contact list |
 | `GET`/`POST`/`DELETE` | `/v1/integrations/microsoft` | Connect an Outlook mailbox (OAuth) |
 | `POST` | `/v1/integrations/microsoft/{id}/sync` | Check the inbox for replies now |
+| `GET`  | `/v1/reply-drafts` | AI reply drafts waiting in Outlook |
 | `POST` | `/v1/webhooks/inbound-email` | Reply intake and classification |
 | `POST` | `/v1/agents/{id}/run` | Run a sourcing agent |
 | `GET`  | `/v1/analytics/funnel` | Pipeline + outreach metrics |

@@ -472,6 +472,42 @@ class MailboxConnection(Base, TimestampMixin):
     )
 
 
+class ReplyDraft(Base, TimestampMixin):
+    """An AI-written reply placed in the recruiter's Outlook Drafts.
+
+    One per inbound reply. ``body`` is what we generated; Phase 4.5 fills
+    ``final_sent_text`` when the sent version shows up in Sent Items, which is
+    the training signal for matching the recruiter's voice.
+    """
+
+    __tablename__ = "reply_drafts"
+    __table_args__ = (
+        UniqueConstraint("inbound_message_id", name="uq_reply_draft_inbound"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("rdr"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    mailbox_id: Mapped[str] = mapped_column(
+        ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True
+    )
+    inbound_message_id: Mapped[str] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE")
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    graph_draft_id: Mapped[str] = mapped_column(String(300), default="")
+    web_link: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    generated_by: Mapped[str] = mapped_column(String(20), default="template")
+    # llm | template
+    intent: Mapped[str] = mapped_column(String(40), default="")
+    status: Mapped[str] = mapped_column(String(32), default="created")
+    # created | sent | discarded
+    final_sent_text: Mapped[str] = mapped_column(Text, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Suppression(Base, TimestampMixin):
     """Org-level do-not-contact list. Emails are stored lowercased."""
 

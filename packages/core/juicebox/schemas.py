@@ -85,6 +85,21 @@ class MicrosoftConnectOut(BaseModel):
     auth_url: str
 
 
+class ReplyDraftOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    mailbox_id: str
+    inbound_message_id: str
+    candidate_id: str | None
+    web_link: str
+    body: str
+    generated_by: str
+    intent: str
+    status: str
+    created_at: datetime
+
+
 class SuppressionIn(BaseModel):
     email: EmailStr
     reason: Literal["unsubscribe", "bounce", "manual"] = "manual"

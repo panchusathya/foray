@@ -144,11 +144,41 @@ def sync_mailbox(
         )
         summary.matched += 1
         summary.intents.append(verdict.intent)
+        _enqueue_reply_draft(db, connection=connection, graph_message_id=payload.get("id", ""))
 
     connection.inbox_delta_link = delta_link
     connection.last_synced_at = now
     db.flush()
     return summary
+
+
+def _enqueue_reply_draft(
+    db: Session, *, connection: MailboxConnection, graph_message_id: str
+) -> None:
+    """Queue drafting for one recorded reply. Opt-outs and automation get none."""
+    from ..jobs import KIND_REPLY_DRAFT, enqueue
+    from .reply_drafting import NO_DRAFT_INTENTS
+
+    inbound = db.scalar(
+        select(Message).where(
+            Message.org_id == connection.org_id,
+            Message.direction == "inbound",
+            Message.graph_message_id == graph_message_id,
+        )
+    )
+    if inbound is None or inbound.reply_intent in NO_DRAFT_INTENTS:
+        return
+    enqueue(
+        db,
+        org_id=connection.org_id,
+        kind=KIND_REPLY_DRAFT,
+        idempotency_key=f"{KIND_REPLY_DRAFT}:{inbound.id}",
+        payload={
+            "org_id": connection.org_id,
+            "inbound_message_id": inbound.id,
+            "mailbox_id": connection.id,
+        },
+    )
 
 
 def sync_org_mailboxes(

@@ -204,6 +204,11 @@ user gets a "your draft is ready" email from their own mailbox. Opt-outs,
 bounces and out-of-office replies never get a draft. Editing and sending stays
 in Outlook; the app never sends the reply itself.
 
+Drafts improve with use: the same sync also watches Sent Items, so when the
+user sends (an edit of) a draft — or discards it and writes their own — the
+final text lands on the `reply_drafts` row, and the most recent drafted→sent
+pairs are fed back into the next draft's prompt as voice examples.
+
 A daily send cap is enforced per org.
 
 Background work lives in a `jobs` table. `juicebox work` claims due rows

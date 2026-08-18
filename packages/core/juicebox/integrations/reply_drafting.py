@@ -112,8 +112,36 @@ def _template_body(intent: str, candidate: Candidate | None) -> str:
     return template.format(first_name=_first_name(candidate))
 
 
+def recent_style_examples(db, *, mailbox_id: str, limit: int = 3) -> str:
+    """The user's latest sent/rewritten drafts, formatted for the prompt.
+
+    Sent means they kept (an edit of) our draft; discarded means they wrote
+    their own — the strongest correction. Newest first, small on purpose: a
+    few real examples steer voice better than a pile.
+    """
+    rows = db.scalars(
+        select(ReplyDraft)
+        .where(
+            ReplyDraft.mailbox_id == mailbox_id,
+            ReplyDraft.status.in_(("sent", "discarded")),
+            ReplyDraft.final_sent_text != "",
+        )
+        .order_by(ReplyDraft.sent_at.desc())
+        .limit(limit)
+    ).all()
+    blocks = []
+    for row in rows:
+        blocks.append(
+            f'<example outcome="{row.status}">\n'
+            f"<drafted_for_them>\n{row.body.strip()}\n</drafted_for_them>\n"
+            f"<what_they_sent>\n{row.final_sent_text.strip()}\n</what_they_sent>\n"
+            "</example>"
+        )
+    return "\n".join(blocks)
+
+
 def generate_reply_body(
-    db, *, inbound: Message, candidate: Candidate | None
+    db, *, inbound: Message, candidate: Candidate | None, mailbox_id: str = ""
 ) -> tuple[str, str]:
     """Return (plain-text body, generated_by)."""
     llm = get_llm()
@@ -133,6 +161,9 @@ def generate_reply_body(
                     outbound_body=(outbound.body if outbound else ""),
                     reply_body=inbound.body,
                     intent=inbound.reply_intent,
+                    style_examples=(
+                        recent_style_examples(db, mailbox_id=mailbox_id) if mailbox_id else ""
+                    ),
                 ),
                 schema=REPLY_DRAFT_SCHEMA,
                 effort="medium",
@@ -212,7 +243,9 @@ def create_reply_draft(
 
     client = client or GraphClient(db, connection)
     candidate = db.get(Candidate, inbound.candidate_id) if inbound.candidate_id else None
-    body, generated_by = generate_reply_body(db, inbound=inbound, candidate=candidate)
+    body, generated_by = generate_reply_body(
+        db, inbound=inbound, candidate=candidate, mailbox_id=connection.id
+    )
     graph_draft = client.create_reply_draft(inbound.graph_message_id, to_html(body))
 
     draft = ReplyDraft(

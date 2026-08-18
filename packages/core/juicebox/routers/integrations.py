@@ -175,6 +175,8 @@ def sync_now(
         "matched": summary.matched,
         "skipped": summary.skipped,
         "intents": summary.intents,
+        "drafts_sent": summary.drafts_sent,
+        "drafts_discarded": summary.drafts_discarded,
         "last_synced_at": connection.last_synced_at,
     }
 

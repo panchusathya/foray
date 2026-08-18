@@ -118,9 +118,19 @@ class GitHubGraphQL:
     async def fetch_batch(self, logins: list[str]) -> dict[str, dict | None]:
         query = build_query(len(logins))
         variables = {f"l{i}": login for i, login in enumerate(logins)}
+        bad_json = 0
         while True:
             resp = await self._post_with_retry({"query": query, "variables": variables})
-            payload = resp.json()
+            try:
+                payload = resp.json()
+            except ValueError:
+                # 200 with a garbage body happens when GitHub is under stress.
+                bad_json += 1
+                if bad_json > 4:
+                    raise RuntimeError("GraphQL kept returning unparseable bodies") from None
+                log.info("graphql.bad_json", attempt=bad_json, body=resp.text[:120])
+                await asyncio.sleep(5 * bad_json)
+                continue
             errors = payload.get("errors") or []
             data = payload.get("data")
 
@@ -164,16 +174,18 @@ async def _fetch_with_singles_fallback(
     multi-hour run: the batch degrades to singles, and a single that still
     fails is returned as None so the caller records it and moves on.
     """
+    # Broad catches are deliberate: ANY per-chunk failure mode (HTTP status,
+    # unparseable body, no-data payload, timeout) degrades rather than kills.
     try:
         nodes = await gh.fetch_batch(chunk)
-    except httpx.HTTPStatusError as exc:
+    except Exception as exc:  # noqa: BLE001
         log.info("enrich.batch_failed", size=len(chunk), error=str(exc)[:120])
         nodes = {login: None for login in chunk}
     for login in [l for l, n in nodes.items() if not _complete(n)]:
         try:
             single = await gh.fetch_batch([login])
             nodes[login] = single.get(login)
-        except httpx.HTTPStatusError as exc:
+        except Exception as exc:  # noqa: BLE001
             log.info("enrich.single_failed", login=login, error=str(exc)[:120])
             nodes[login] = None
     return nodes

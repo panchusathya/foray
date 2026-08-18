@@ -59,8 +59,16 @@ export const api = {
   me: () => request('/v1/auth/me'),
 
   candidateCount: () => request('/v1/candidates/count'),
-  listCandidates: (query = '') =>
-    request(`/v1/candidates${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  listCandidates: (params = {}) => {
+    // Backwards-compatible: accepts a bare query string or {q, limit, offset}.
+    const { q = '', limit, offset } = typeof params === 'string' ? { q: params } : params;
+    const search = new URLSearchParams();
+    if (q) search.set('q', q);
+    if (limit != null) search.set('limit', String(limit));
+    if (offset != null) search.set('offset', String(offset));
+    const suffix = search.toString();
+    return request(`/v1/candidates${suffix ? `?${suffix}` : ''}`);
+  },
   getCandidate: (id) => request(`/v1/candidates/${id}`),
 
   search: (payload) => request('/v1/search', { method: 'POST', body: payload }),

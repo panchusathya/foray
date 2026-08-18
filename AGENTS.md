@@ -71,9 +71,14 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
   `scripts/seed_synthetic.py` (fake GitHub-shaped profiles) + `score.run --offline`
   (explicit spend-free heuristic) to exercise derive -> embed -> score -> search
   end to end.
-- **Search API:** `uv run uvicorn foray.api.app:app --port 8100` (UI at `/`,
-  `POST /search`, SSE `GET /search/stream`). The archetype **score is in the JSON
-  payload but must never be rendered** (see the static UI); results are shown by
-  rank + evidence only, and lists are never padded below the display floor.
+- **Search API:** `uv run uvicorn foray.api.app:app --port 8100` (standalone UI at
+  `/`, `POST /search`, SSE `GET /search/stream`). The archetype **score is in the
+  JSON payload but must never be rendered**; results are shown by rank + evidence
+  only, and lists are never padded below the display floor.
+- **Web integration:** the Juicebox React app (`packages/web`) has a **Sourcing**
+  page (`src/pages/Sourcing.jsx`) that calls the Foray API via a Vite dev proxy
+  (`/foray/*` -> `http://localhost:8100`, `FORAY_API_URL` to override). To use it,
+  run the Juicebox API (:8000, for login), the web dev server (:5173), and the
+  Foray API (:8100) together. The page must never render the score.
 - **Tests:** `cd packages/foray && uv run pytest -q`. DB-backed tests auto-skip if
   Postgres/`archetype_scores` are unavailable, so offline unit tests always run.

@@ -97,12 +97,13 @@ because self-reported tenure is noisy). Everything else is scored, not filtered
 — a silently dropped good profile costs a recruiter far more than a mediocre one
 at rank 12.
 
-**3 · Retrieve** — `search/bm25.py`, `llm/embeddings.py`, `search/fusion.py`
+**3 · Retrieve** — `search/index.py`, `search/postgres.py`, `search/fusion.py`
 
-BM25-Okapi over an in-process inverted index, plus cosine similarity over
-embeddings. The two lists are combined with Reciprocal Rank Fusion, because
-BM25 scores and cosine similarities live on incomparable scales and rank is the
-only thing they share.
+On Postgres, hybrid search is `tsvector` (GIN) plus pgvector cosine, fused with
+Reciprocal Rank Fusion. SQLite (and `RETRIEVAL_BACKEND=memory`) keep BM25-Okapi
+plus numpy cosine in process so `make test` needs no infrastructure. RRF is used
+because lexical scores and cosine similarities live on incomparable scales;
+rank is the only thing they share.
 
 **4 · Score** — `search/scoring.py`
 
@@ -251,6 +252,7 @@ most:
 | `DATABASE_URL` | SQLite in `data/` | Postgres: `postgresql+psycopg://…` |
 | `ANTHROPIC_API_KEY` | *(empty)* | Enables LLM parsing, reranking, personalisation, reply classification |
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing` is offline and deterministic; `voyage` is hosted |
+| `RETRIEVAL_BACKEND` | `auto` | `postgres` uses FTS+pgvector; `memory` keeps the RAM index |
 | `RERANK_TOP_K` | `20` | How many candidates get a model call per search; `0` disables |
 | `EMAIL_PROVIDER` | `console` | `smtp` to actually send |
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
@@ -308,11 +310,13 @@ the database is behind. `docker compose up` runs `juicebox migrate` first.
 
 Honest boundaries of what's here:
 
-- **Retrieval is in-process.** The BM25 index and embedding matrix are built
-  from the org's rows and cached until they change. That is fast and exact into
-  the low hundreds of thousands of profiles on one node. Past that, move
-  `search/index.py` behind pgvector or OpenSearch — the `CorpusIndex` interface
-  is the seam, and nothing above it touches the internals.
+- **Retrieval is in Postgres when you use Postgres.** Hybrid search is `tsvector`
+  (GIN) plus pgvector cosine, fused with RRF. The embedding column is unbounded
+  so hashing (512) and Voyage (typically 1024) can share a schema; cosine is an
+  exact scan until a later migration pins a dimension and adds HNSW. SQLite and
+  `make test` keep the in-process BM25+numpy snapshot. Force either with
+  `RETRIEVAL_BACKEND=memory|postgres`. Recreate the compose `pgdata` volume if
+  you previously ran vanilla `postgres:16` — that image has no pgvector.
 - **The worker loop is a `sleep` loop.** Fine for a demo; use cron, Cloud
   Scheduler or Temporal for real send scheduling.
 - **Email deliverability is not solved here.** SPF/DKIM/DMARC, warmup, domain

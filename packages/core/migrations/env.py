@@ -16,6 +16,19 @@ from juicebox.models import Base
 config = context.config
 target_metadata = Base.metadata
 
+# Postgres-only search artifacts live in juicebox.search.schema, not the ORM,
+# so autogenerate / `alembic check` must not try to drop them.
+_PASSTHROUGH_COLUMNS = {"search_tsv"}
+_PASSTHROUGH_INDEXES = {"ix_candidates_search_tsv"}
+
+
+def include_object(object_, name, type_, reflected, compare_to) -> bool:
+    if type_ == "column":
+        return name not in _PASSTHROUGH_COLUMNS
+    if type_ == "index":
+        return name not in _PASSTHROUGH_INDEXES
+    return True
+
 
 def _url() -> str:
     return get_settings().database_url
@@ -28,6 +41,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
         # SQLite cannot ALTER most things; batch mode rewrites the table instead.
         render_as_batch=_url().startswith("sqlite"),
     )
@@ -43,6 +57,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_object=include_object,
             render_as_batch=connection.dialect.name == "sqlite",
             poolclass=pool.NullPool,
         )

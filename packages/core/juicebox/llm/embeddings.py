@@ -50,7 +50,7 @@ class Embedder(Protocol):
     dim: int
     name: str
 
-    def embed(self, texts: list[str]) -> np.ndarray:  # pragma: no cover - protocol
+    def embed(self, texts: list[str], *, input_type: str = "document") -> np.ndarray:  # pragma: no cover - protocol
         ...
 
 
@@ -92,7 +92,8 @@ class HashingEmbedder:
             vector /= norm
         return vector
 
-    def embed(self, texts: list[str]) -> np.ndarray:
+    def embed(self, texts: list[str], *, input_type: str = "document") -> np.ndarray:
+        del input_type  # hashing is lexical; query vs document is a no-op
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
         return np.vstack([self.embed_one(text) for text in texts])
@@ -108,16 +109,17 @@ class VoyageEmbedder:
         self.name = f"voyage-{model}"
         self._fallback = HashingEmbedder(dim)
 
-    def embed(self, texts: list[str]) -> np.ndarray:
+    def embed(self, texts: list[str], *, input_type: str = "document") -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
+        kind = input_type if input_type in {"document", "query"} else "document"
         try:
             import httpx
 
             response = httpx.post(
                 "https://api.voyageai.com/v1/embeddings",
                 headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "input": texts, "input_type": "document"},
+                json={"model": self.model, "input": texts, "input_type": kind},
                 timeout=60.0,
             )
             response.raise_for_status()

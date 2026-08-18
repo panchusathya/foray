@@ -67,3 +67,27 @@ class TestDevelopmentStaysEasy:
         """docker compose up must keep working out of the box."""
         settings = settings_for(JUICEBOX_ENV=None, SECRET_KEY=DEV_SECRET_KEY)
         settings.validate()  # no raise
+
+
+class TestRetrievalBackend:
+    def test_auto_follows_the_database_dialect(self, settings_for):
+        sqlite = settings_for(RETRIEVAL_BACKEND="auto", DATABASE_URL="sqlite:///tmp/x.db")
+        assert sqlite.uses_postgres_retrieval is False
+        postgres = settings_for(
+            RETRIEVAL_BACKEND="auto",
+            DATABASE_URL="postgresql+psycopg://juicebox:juicebox@localhost/juicebox",
+        )
+        assert postgres.uses_postgres_retrieval is True
+
+    def test_memory_overrides_postgres(self, settings_for):
+        settings = settings_for(
+            RETRIEVAL_BACKEND="memory",
+            DATABASE_URL="postgresql+psycopg://juicebox:juicebox@localhost/juicebox",
+        )
+        assert settings.uses_postgres_retrieval is False
+
+    def test_postgres_can_be_forced(self, settings_for):
+        settings = settings_for(
+            RETRIEVAL_BACKEND="postgres", DATABASE_URL="sqlite:///tmp/x.db"
+        )
+        assert settings.uses_postgres_retrieval is True

@@ -158,3 +158,20 @@ jobs:
       - name: Verify lockfile
         run: uv lock --check
         working-directory: packages/core
+
+  docker:
+    # The production VM runs these images; a Dockerfile that no longer builds
+    # is a deploy outage, so CI builds all three (no registry push).
+    name: docker images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: core (api/worker)
+        run: docker build -f packages/core/Dockerfile .
+
+      - name: web
+        run: docker build packages/web
+
+      - name: ingest
+        run: docker build packages/ingest

@@ -1,0 +1,133 @@
+# Production stack for a single VM. Run with:
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Reads secrets from a `.env` file next to this file (see
+# .env.production.example). This is deliberately a standalone file, not an
+# override of docker-compose.yml: overrides merge `ports` additively, so a
+# forgotten -f flag or a merge surprise could publish Postgres to the internet.
+#
+# Topology: caddy is the only service with public ports (80/443) and serves
+# ${APP_DOMAIN} with automatic Let's Encrypt TLS. It proxies to web's nginx,
+# which serves the SPA and same-origin-proxies /v1/, /health, and /t/ to the
+# api. db/api/web publish no host ports; ingest binds to localhost only.
+name: juicebox
+
+x-app-env: &app_env
+  JUICEBOX_ENV: production
+  DATABASE_URL: postgresql+psycopg://juicebox:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/juicebox
+  # Baked into tracking links in outbound email — must be the public origin.
+  BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. app.goforay.io}
+  SECRET_KEY: ${SECRET_KEY:?generate with secrets.token_urlsafe(48) - see .env.production.example}
+  CORS_ORIGINS: https://${APP_DOMAIN}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  JUICEBOX_LLM_ENABLED: ${JUICEBOX_LLM_ENABLED:-true}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
+  VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+  OUTREACH_FROM_EMAIL: ${OUTREACH_FROM_EMAIL:?set OUTREACH_FROM_EMAIL in .env}
+  OUTREACH_FROM_NAME: ${OUTREACH_FROM_NAME:-}
+  OUTREACH_DAILY_CAP: ${OUTREACH_DAILY_CAP:-200}
+  MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+  MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+  MS_TENANT_ID: ${MS_TENANT_ID:-organizations}
+  MS_REDIRECT_URI: ${MS_REDIRECT_URI:-}
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: juicebox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: juicebox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U juicebox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+    restart: unless-stopped
+    environment: *app_env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python -m juicebox.cli migrate &&
+             uvicorn juicebox.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+    restart: unless-stopped
+    environment: *app_env
+    depends_on:
+      # service_healthy, not service_started: the api healthcheck only passes
+      # once uvicorn is serving, which is only after migrations finished.
+      api:
+        condition: service_healthy
+    command: python -m juicebox.cli work
+
+  ingest:
+    build:
+      context: packages/ingest
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      JUICEBOX_API_URL: http://api:8000
+      JUICEBOX_API_KEY: ${JUICEBOX_API_KEY:-}
+      INGEST_WEBHOOK_SECRET: ${INGEST_WEBHOOK_SECRET:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      # Host-local only; reach it through an SSH tunnel (ssh -L 8787:127.0.0.1:8787).
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: packages/web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    healthcheck:
+      # /health is proxied to the api, so this exercises the whole chain.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

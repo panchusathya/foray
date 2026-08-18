@@ -1,0 +1,12 @@
+# Public front door. Caddy terminates TLS (automatic Let's Encrypt issuance
+# and renewal, plus the HTTP->HTTPS redirect) and hands everything to the web
+# container's nginx, which serves the SPA and same-origin-proxies /v1/,
+# /health, and /t/ to the api. APP_DOMAIN and ACME_EMAIL come from the compose
+# environment.
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	reverse_proxy web:80
+}

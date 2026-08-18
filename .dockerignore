@@ -1,0 +1,16 @@
+# Build context for packages/core/Dockerfile is the repo root; the image only
+# COPYs packages/core and eval, so keep everything else out of the context.
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/*.egg-info
+data/
+.env
+.env.*
+packages/web/
+packages/ingest/
+node_modules

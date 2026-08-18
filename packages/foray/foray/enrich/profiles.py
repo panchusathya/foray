@@ -24,7 +24,10 @@ from ..log import Heartbeat, get_logger
 log = get_logger("enrich.profiles")
 
 GITHUB_GRAPHQL = "https://api.github.com/graphql"
-BATCH_SIZE = 40
+# 40 aliased users x 30 repos x topics x languages regularly makes GitHub time
+# out server-side and silently null the heavy fields (repositories.nodes) while
+# still returning 200 with partial data. 12 stays reliably under that.
+BATCH_SIZE = 12
 STALE_AFTER = "90 days"
 
 # GitHub answers batched GraphQL with occasional 502s, and its secondary rate
@@ -126,6 +129,10 @@ class GitHubGraphQL:
                 continue
             if not data:
                 raise RuntimeError(f"GraphQL returned no data: {errors}")
+            if errors:
+                # Partial result: some aliases nulled (server-side timeout, etc).
+                # Callers detect incomplete nodes and re-fetch them singly.
+                log.info("graphql.partial", errors=len(errors), first=str(errors[0])[:200])
 
             result: dict[str, dict | None] = {}
             for i, login in enumerate(logins):
@@ -136,6 +143,27 @@ class GitHubGraphQL:
             if isinstance(remaining, int) and remaining < 50:
                 await self._sleep_until(rate.get("resetAt"))
             return result
+
+
+def _complete(node: dict | None) -> bool:
+    """A usable profile node: present AND with the heavy fields intact.
+
+    GitHub returns 200 with ``repositories.nodes: null`` when the query times
+    out server-side — storing that would derive zero stars/markers for a real
+    user, which is worse than no row at all.
+    """
+    return node is not None and (node.get("repositories") or {}).get("nodes") is not None
+
+
+async def _fetch_with_singles_fallback(
+    gh: GitHubGraphQL, chunk: list[str]
+) -> dict[str, dict | None]:
+    """Batch fetch, then re-fetch any incomplete node on its own once."""
+    nodes = await gh.fetch_batch(chunk)
+    for login in [l for l, n in nodes.items() if not _complete(n)]:
+        single = await gh.fetch_batch([login])
+        nodes[login] = single.get(login)
+    return nodes
 
 
 async def _candidates_to_enrich(conn, limit: int, force: bool) -> list[tuple[int, str]]:
@@ -171,16 +199,19 @@ async def amain(args: argparse.Namespace) -> int:
             with Heartbeat(log, lambda: {"stored": stored, "requests": gh.request_count}):
                 for start in range(0, len(logins), args.batch_size):
                     chunk = logins[start : start + args.batch_size]
-                    nodes = await gh.fetch_batch(chunk)
+                    nodes = await _fetch_with_singles_fallback(gh, chunk)
                     for login, node in nodes.items():
                         cid = id_by_login[login]
-                        if node is None:
+                        if not _complete(node):
                             missing += 1
                             await conn.execute(
                                 "insert into enrich_errors (candidate_id, login, stage, error) "
-                                "values ($1, $2, 'fetch', 'user not found or suspended')",
+                                "values ($1, $2, 'fetch', $3)",
                                 cid,
                                 login,
+                                "user not found or suspended"
+                                if node is None
+                                else "incomplete node after single retry",
                             )
                             continue
                         await conn.execute(

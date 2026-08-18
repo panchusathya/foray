@@ -8,9 +8,10 @@ import { AnalyticsPage } from './pages/Analytics.jsx';
 import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
 import { LoginPage } from './pages/Login.jsx';
-import { OutreachPage } from './pages/Outreach.jsx';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
+import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
+import { SequencesPage } from './pages/Sequences.jsx';
 
 const NAV = [
   { to: '/', label: 'Home', end: true },
@@ -111,7 +112,8 @@ export function App() {
           <Route path="/search" element={<SearchPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
-          <Route path="/sequences" element={<OutreachPage />} />
+          <Route path="/sequences" element={<SequencesPage />} />
+          <Route path="/sequences/:sequenceId" element={<SequenceEditorPage />} />
           <Route path="/outreach" element={<Navigate to="/sequences" replace />} />
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/agents" element={<AgentsPage />} />

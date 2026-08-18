@@ -158,11 +158,24 @@ def _complete(node: dict | None) -> bool:
 async def _fetch_with_singles_fallback(
     gh: GitHubGraphQL, chunk: list[str]
 ) -> dict[str, dict | None]:
-    """Batch fetch, then re-fetch any incomplete node on its own once."""
-    nodes = await gh.fetch_batch(chunk)
+    """Batch fetch, then re-fetch any incomplete node on its own once.
+
+    A chunk (or login) that exhausts the transient retries must not kill a
+    multi-hour run: the batch degrades to singles, and a single that still
+    fails is returned as None so the caller records it and moves on.
+    """
+    try:
+        nodes = await gh.fetch_batch(chunk)
+    except httpx.HTTPStatusError as exc:
+        log.info("enrich.batch_failed", size=len(chunk), error=str(exc)[:120])
+        nodes = {login: None for login in chunk}
     for login in [l for l, n in nodes.items() if not _complete(n)]:
-        single = await gh.fetch_batch([login])
-        nodes[login] = single.get(login)
+        try:
+            single = await gh.fetch_batch([login])
+            nodes[login] = single.get(login)
+        except httpx.HTTPStatusError as exc:
+            log.info("enrich.single_failed", login=login, error=str(exc)[:120])
+            nodes[login] = None
     return nodes
 
 

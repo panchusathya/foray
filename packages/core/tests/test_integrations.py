@@ -327,6 +327,40 @@ class TestSequenceApiMailbox:
         assert body.status_code == 201, body.text
         assert body.json()["mailbox_id"] == mailbox_id
 
+    def test_patch_sets_and_clears_the_mailbox(
+        self, client, account, ms_configured, monkeypatch
+    ):
+        status = _connect(client, account["headers"], monkeypatch)
+        mailbox_id = status["connections"][0]["id"]
+        sequence = client.post(
+            "/v1/sequences",
+            json={"name": "Founding eng", "steps": [{"body_template": "Hi"}]},
+            headers=account["headers"],
+        ).json()
+
+        patched = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_id": mailbox_id},
+            headers=account["headers"],
+        )
+        assert patched.status_code == 200 and patched.json()["mailbox_id"] == mailbox_id
+
+        cleared = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_id": None},
+            headers=account["headers"],
+        )
+        assert cleared.status_code == 200 and cleared.json()["mailbox_id"] is None
+
+        assert (
+            client.patch(
+                f"/v1/sequences/{sequence['id']}",
+                json={"mailbox_id": "mbx_nope"},
+                headers=account["headers"],
+            ).status_code
+            == 404
+        )
+
     def test_foreign_mailbox_id_is_rejected(self, client, account):
         response = client.post(
             "/v1/sequences",

@@ -7,7 +7,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..deps import Principal, get_db, get_principal, require_write
-from ..models import Candidate, Enrollment, MailboxConnection, Message, Sequence, SequenceStep
+from ..models import (
+    Candidate,
+    Enrollment,
+    MailboxConnection,
+    Message,
+    Project,
+    Sequence,
+    SequenceStep,
+)
+from ..outreach.drafts import draft_sequence
 from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
@@ -18,6 +27,8 @@ from ..outreach.sequencer import (
 from ..schemas import (
     EnrollmentOut,
     EnrollRequest,
+    GenerateSequenceRequest,
+    GenerateSequenceResponse,
     InboundEmail,
     MessageOut,
     PreviewRequest,
@@ -25,6 +36,8 @@ from ..schemas import (
     RunSequenceResponse,
     SequenceIn,
     SequenceOut,
+    SequenceStepIn,
+    SequenceUpdate,
 )
 
 router = APIRouter(prefix="/v1/sequences", tags=["outreach"])
@@ -39,6 +52,31 @@ def _load_sequence(db: Session, sequence_id: str, org_id: str) -> Sequence:
     if sequence is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sequence not found")
     return sequence
+
+
+def _step_from_payload(sequence_id: str, order: int, step: SequenceStepIn) -> SequenceStep:
+    return SequenceStep(
+        sequence_id=sequence_id,
+        step_order=order,
+        channel=step.channel,
+        delay_days=step.delay_days,
+        delay_unit=step.delay_unit,
+        send_at_time=step.send_at_time,
+        send_timezone=step.send_timezone,
+        subject_template=step.subject_template,
+        body_template=step.body_template,
+    )
+
+
+def _has_active_enrollments(db: Session, sequence_id: str) -> bool:
+    return (
+        db.scalar(
+            select(Enrollment.id)
+            .where(Enrollment.sequence_id == sequence_id, Enrollment.status == "active")
+            .limit(1)
+        )
+        is not None
+    )
 
 
 @router.post("", response_model=SequenceOut, status_code=status.HTTP_201_CREATED)
@@ -66,19 +104,35 @@ def create_sequence(
     db.add(sequence)
     db.flush()
     for order, step in enumerate(payload.steps):
-        db.add(
-            SequenceStep(
-                sequence_id=sequence.id,
-                step_order=order,
-                channel=step.channel,
-                delay_days=step.delay_days,
-                subject_template=step.subject_template,
-                body_template=step.body_template,
-            )
-        )
+        db.add(_step_from_payload(sequence.id, order, step))
     db.flush()
     db.refresh(sequence)
     return SequenceOut.model_validate(sequence)
+
+
+@router.post("/generate", response_model=GenerateSequenceResponse)
+def generate_sequence(
+    payload: GenerateSequenceRequest,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> GenerateSequenceResponse:
+    """Draft a sequence from a brief. Returns an editable draft; persists nothing."""
+    project = None
+    if payload.project_id:
+        project = db.scalar(
+            select(Project).where(
+                Project.id == payload.project_id, Project.org_id == principal.org_id
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    draft, generated_by = draft_sequence(
+        brief=payload.prompt, project=project, num_steps=payload.num_steps
+    )
+    draft["project_id"] = payload.project_id
+    return GenerateSequenceResponse(
+        draft=SequenceIn.model_validate(draft), generated_by=generated_by
+    )
 
 
 @router.get("", response_model=list[SequenceOut])
@@ -101,6 +155,106 @@ def get_sequence(
     db: Session = Depends(get_db),
 ) -> SequenceOut:
     return SequenceOut.model_validate(_load_sequence(db, sequence_id, principal.org_id))
+
+
+@router.patch("/{sequence_id}", response_model=SequenceOut)
+def update_sequence(
+    sequence_id: str,
+    payload: SequenceUpdate,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> SequenceOut:
+    sequence = _load_sequence(db, sequence_id, principal.org_id)
+    updates = payload.model_dump(exclude_unset=True)
+    if "project_id" in updates and updates["project_id"] is not None:
+        project = db.scalar(
+            select(Project).where(
+                Project.id == updates["project_id"], Project.org_id == principal.org_id
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if updates.get("mailbox_id") is not None:
+        mailbox = db.get(MailboxConnection, updates["mailbox_id"])
+        if mailbox is None or mailbox.org_id != principal.org_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox connection not found"
+            )
+    for attr, value in updates.items():
+        setattr(sequence, attr, value)
+    db.flush()
+    return SequenceOut.model_validate(sequence)
+
+
+@router.put("/{sequence_id}/steps", response_model=SequenceOut)
+def replace_steps(
+    sequence_id: str,
+    payload: list[SequenceStepIn],
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> SequenceOut:
+    """Replace the full step list. Steps index into live enrolments via
+    ``current_step``, so editing is only allowed while nothing is mid-flight."""
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A sequence needs at least one step",
+        )
+    sequence = _load_sequence(db, sequence_id, principal.org_id)
+    if sequence.status == "active" and _has_active_enrollments(db, sequence.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pause the sequence before editing steps — enrolments are mid-flight",
+        )
+    for step in list(sequence.steps):
+        db.delete(step)
+    db.flush()
+    for order, step in enumerate(payload):
+        db.add(_step_from_payload(sequence.id, order, step))
+    db.flush()
+    db.refresh(sequence)
+    return SequenceOut.model_validate(sequence)
+
+
+@router.post("/{sequence_id}/clone", response_model=SequenceOut, status_code=status.HTTP_201_CREATED)
+def clone_sequence(
+    sequence_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> SequenceOut:
+    """Copy a sequence and its steps. The copy starts paused."""
+    source = _load_sequence(db, sequence_id, principal.org_id)
+    copy = Sequence(
+        org_id=source.org_id,
+        project_id=source.project_id,
+        name=f"{source.name} (copy)"[:200],
+        status="paused",
+        personalize=source.personalize,
+        stop_on_reply=source.stop_on_reply,
+        from_email=source.from_email,
+        from_name=source.from_name,
+    )
+    db.add(copy)
+    db.flush()
+    for step in sorted(source.steps, key=lambda s: s.step_order):
+        db.add(
+            _step_from_payload(
+                copy.id,
+                step.step_order,
+                SequenceStepIn(
+                    channel=step.channel,
+                    delay_days=step.delay_days,
+                    delay_unit=step.delay_unit,
+                    send_at_time=step.send_at_time,
+                    send_timezone=step.send_timezone,
+                    subject_template=step.subject_template,
+                    body_template=step.body_template,
+                ),
+            )
+        )
+    db.flush()
+    db.refresh(copy)
+    return SequenceOut.model_validate(copy)
 
 
 @router.patch("/{sequence_id}/status", response_model=SequenceOut)

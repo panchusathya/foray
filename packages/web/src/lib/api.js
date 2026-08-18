@@ -85,6 +85,13 @@ export const api = {
 
   listSequences: () => request('/v1/sequences'),
   createSequence: (payload) => request('/v1/sequences', { method: 'POST', body: payload }),
+  getSequence: (id) => request(`/v1/sequences/${id}`),
+  updateSequence: (id, payload) => request(`/v1/sequences/${id}`, { method: 'PATCH', body: payload }),
+  replaceSteps: (id, steps) => request(`/v1/sequences/${id}/steps`, { method: 'PUT', body: steps }),
+  cloneSequence: (id) => request(`/v1/sequences/${id}/clone`, { method: 'POST' }),
+  generateSequence: (payload) => request('/v1/sequences/generate', { method: 'POST', body: payload }),
+  setSequenceStatus: (id, value) =>
+    request(`/v1/sequences/${id}/status?value=${encodeURIComponent(value)}`, { method: 'PATCH' }),
   previewSequence: (sequenceId, payload) =>
     request(`/v1/sequences/${sequenceId}/preview`, { method: 'POST', body: payload }),
   enroll: (sequenceId, payload) =>

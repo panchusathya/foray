@@ -1,0 +1,44 @@
+# US metro location strings for GitHub Search sharding.
+# GitHub location is freetext, so variants of the same metro are separate shards
+# on purpose (people write "SF Bay Area", "San Francisco", "Oakland" etc.).
+# 40 lines -> 40 x 12 langs x 6 follower buckets x 11 years = 31,680 shards.
+San Francisco
+SF Bay Area
+San Francisco Bay Area
+Oakland
+Berkeley
+Palo Alto
+Mountain View
+San Jose
+Sunnyvale
+Seattle
+Portland
+Los Angeles
+San Diego
+New York
+NYC
+Brooklyn
+Boston
+Cambridge
+Austin
+Dallas
+Houston
+Denver
+Boulder
+Chicago
+Atlanta
+Miami
+Washington
+Washington DC
+Arlington
+Philadelphia
+Pittsburgh
+Minneapolis
+Salt Lake City
+Phoenix
+Raleigh
+Durham
+Nashville
+Detroit
+Ann Arbor
+Madison

@@ -8,5 +8,12 @@
 }
 
 {$APP_DOMAIN} {
-	reverse_proxy web:80
+	# Internal tool: accounts are provisioned by an admin, not open signup.
+	# Blocked at the edge so a public visitor can't create an org.
+	handle /v1/auth/signup {
+		respond 403
+	}
+	handle {
+		reverse_proxy web:80
+	}
 }

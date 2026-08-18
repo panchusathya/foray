@@ -96,7 +96,7 @@
         ? `${c.employer}<span class="tag">inferred</span>`
         : 'employer unknown';
       const exp = (c.est_experience_years != null)
-        ? `~${c.est_experience_years}y (est., ${c.experience_confidence})`
+        ? `~${Number(c.est_experience_years).toFixed(1)}y experience (est., ${c.experience_confidence})`
         : '';
 
       const hl = (c.highlights || []).map((h) => `<li>${escapeHtml(h)}</li>`).join('');

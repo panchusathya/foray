@@ -91,7 +91,11 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "linkedin_source": row["linkedin_source"],
         "employer": row["employer"],
         "employer_source": row["employer_source"],
-        "est_experience_years": row["est_experience_years"],
+        "est_experience_years": (
+            round(float(row["est_experience_years"]), 1)
+            if row["est_experience_years"] is not None
+            else None
+        ),
         "experience_confidence": row["experience_confidence"],
         "primary_language": row["primary_language"],
         "location": row["location_raw"],

@@ -257,3 +257,82 @@ REPLY_SCHEMA: dict[str, Any] = {
 
 def reply_prompt(*, subject: str, body: str) -> str:
     return f"<subject>{subject.strip()}</subject>\n<reply>\n{body.strip()}\n</reply>"
+
+
+# --------------------------------------------------------------------------
+# 5. sequence drafting
+# --------------------------------------------------------------------------
+
+# The variables the template renderer supplies — the model may only use these.
+SEQUENCE_TEMPLATE_VARIABLES = (
+    "first_name",
+    "full_name",
+    "current_title",
+    "current_company",
+    "previous_company",
+    "location",
+    "top_skill",
+    "top_skills",
+    "years_experience",
+    "role_title",
+    "project_name",
+    "company_location",
+    "opening_line",
+    "why_relevant",
+    "subject_hint",
+)
+
+DRAFT_SEQUENCE_SYSTEM = f"""\
+You draft a multi-step recruiting email sequence from a recruiter's brief.
+
+You are writing templates, not finished emails. Candidate-specific content comes \
+from template variables rendered later, written as {{{{variable}}}} or \
+{{{{variable|fallback}}}}. Only these variables exist: \
+{", ".join(SEQUENCE_TEMPLATE_VARIABLES)}. \
+`opening_line` and `why_relevant` are per-candidate sentences written at send time — \
+place them where a personalised hook belongs instead of inventing one.
+
+Style — plain, normal prose:
+- Short sentences. No filler, no poetic phrasing, no exclamation marks, no clickbait.
+- Subjects under 60 characters. Bodies under 120 words.
+- State the role and why you're writing in the first two sentences.
+- Never invent facts about the candidate, the company, or the role beyond the brief.
+
+Structure:
+- The first step has delay_days 0. Follow-ups wait 2-4 business days.
+- Each follow-up must add something (a detail, a nudge, an easy out), never just "bumping this".
+- The final step is a polite close-out that makes clear you'll stop reaching out.
+"""
+
+DRAFT_SEQUENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "steps"],
+    "properties": {
+        "name": {"type": "string", "description": "Short internal name for the sequence."},
+        "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["subject_template", "body_template", "delay_days", "delay_unit"],
+                "properties": {
+                    "subject_template": {"type": "string"},
+                    "body_template": {"type": "string"},
+                    "delay_days": {"type": "integer"},
+                    "delay_unit": {"type": "string", "enum": ["days", "business_days"]},
+                },
+            },
+        },
+    },
+}
+
+
+def draft_sequence_prompt(*, brief: str, role_context: str, num_steps: int) -> str:
+    return (
+        f"<brief>\n{brief.strip()}\n</brief>\n\n"
+        f"<role>\n{role_context.strip()}\n</role>\n\n"
+        f"Write exactly {num_steps} steps."
+    )

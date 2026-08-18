@@ -362,7 +362,11 @@ class PipelineEntryOut(BaseModel):
 
 class SequenceStepIn(BaseModel):
     channel: str = "email"
-    delay_days: int = 0
+    delay_days: int = Field(default=0, ge=0, le=90)
+    delay_unit: Literal["days", "business_days"] = "days"
+    # "HH:MM" 24h clock; empty means "send whenever the step is due".
+    send_at_time: str = Field(default="", pattern=r"^$|^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    send_timezone: str = Field(default="", max_length=64)
     subject_template: str = ""
     body_template: str
 
@@ -384,6 +388,9 @@ class SequenceStepOut(BaseModel):
     step_order: int
     channel: str
     delay_days: int
+    delay_unit: str
+    send_at_time: str
+    send_timezone: str
     subject_template: str
     body_template: str
 
@@ -400,6 +407,30 @@ class SequenceOut(BaseModel):
     from_email: str
     from_name: str
     steps: list[SequenceStepOut]
+
+
+class SequenceUpdate(BaseModel):
+    """Partial metadata edit — unset fields are left alone."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    project_id: str | None = None
+    personalize: bool | None = None
+    stop_on_reply: bool | None = None
+    from_email: str | None = None
+    from_name: str | None = None
+
+
+class GenerateSequenceRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    project_id: str | None = None
+    num_steps: int = Field(default=3, ge=1, le=4)
+
+
+class GenerateSequenceResponse(BaseModel):
+    """A draft only — nothing is persisted until the client POSTs it."""
+
+    draft: SequenceIn
+    generated_by: Literal["llm", "template"]
 
 
 class EnrollRequest(BaseModel):

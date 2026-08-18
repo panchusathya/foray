@@ -485,8 +485,16 @@ def record_reply(
     subject: str,
     body: str,
     now: datetime | None = None,
+    mailbox_id: str = "",
+    graph_message_id: str = "",
+    internet_message_id: str = "",
+    conversation_id: str = "",
 ) -> ReplyVerdict:
-    """Attach an inbound reply to the outbound message and act on its intent."""
+    """Attach an inbound reply to the outbound message and act on its intent.
+
+    The graph ids are set when the reply arrived via mailbox sync, so the same
+    inbound email is never recorded twice.
+    """
     now = now or utcnow()
     verdict = classify_reply(subject, body)
 
@@ -507,6 +515,10 @@ def record_reply(
         status="received",
         reply_intent=verdict.intent,
         reply_text=body,
+        mailbox_id=mailbox_id,
+        graph_message_id=graph_message_id,
+        internet_message_id=internet_message_id,
+        conversation_id=conversation_id,
     )
     db.add(inbound)
 

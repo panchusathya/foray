@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .jobs import (
     KIND_AGENT_TICK,
+    KIND_MAILBOX_SYNC,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
     claim,
@@ -28,7 +29,7 @@ from .jobs import (
     mark_succeeded,
     recover_stale_locks,
 )
-from .models import Enrollment, Job, Org, Sequence, utcnow
+from .models import Enrollment, Job, MailboxConnection, Org, Sequence, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,31 @@ def ensure_ticks(db: Session, *, now=None) -> int:
                 run_at=now,
             )
             created += 1
+        if _org_has_active_mailbox(db, org.id) and not has_open_job(
+            db, org_id=org.id, kind=KIND_MAILBOX_SYNC
+        ):
+            enqueue(
+                db,
+                org_id=org.id,
+                kind=KIND_MAILBOX_SYNC,
+                idempotency_key=f"{KIND_MAILBOX_SYNC}:{org.id}:{int(now.timestamp())}",
+                payload={"org_id": org.id},
+                run_at=now,
+            )
+            created += 1
     return created
+
+
+def _org_has_active_mailbox(db: Session, org_id: str) -> bool:
+    return (
+        db.scalar(
+            select(MailboxConnection.id).where(
+                MailboxConnection.org_id == org_id,
+                MailboxConnection.status == "active",
+            )
+        )
+        is not None
+    )
 
 
 def _schedule_next_tick(db: Session, *, org_id: str, kind: str, now) -> None:
@@ -131,6 +156,31 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     return {"status": status}
 
 
+def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
+    from .integrations.sync import sync_org_mailboxes
+
+    org_id = job.payload.get("org_id") or job.org_id
+    results = sync_org_mailboxes(db, org_id=org_id, now=now)
+    # Reschedule only while a mailbox is connected; ensure_ticks restarts the
+    # loop when one is connected later.
+    if _org_has_active_mailbox(db, org_id):
+        settings = get_settings()
+        run_at = now + timedelta(seconds=max(settings.mailbox_sync_seconds, 30))
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_MAILBOX_SYNC,
+            idempotency_key=f"{KIND_MAILBOX_SYNC}:{org_id}:{int(run_at.timestamp())}",
+            payload={"org_id": org_id},
+            run_at=run_at,
+        )
+    return {
+        "mailboxes": len(results),
+        "matched": sum(s.matched for s in results.values()),
+        "seen": sum(s.seen for s in results.values()),
+    }
+
+
 def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
     from .agents.sourcing import run_due_agents
 
@@ -148,6 +198,7 @@ HANDLERS = {
     KIND_OUTREACH_TICK: _handle_outreach_tick,
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_AGENT_TICK: _handle_agent_tick,
+    KIND_MAILBOX_SYNC: _handle_mailbox_sync,
 }
 
 

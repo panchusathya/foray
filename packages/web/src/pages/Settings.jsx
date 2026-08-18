@@ -7,6 +7,7 @@ import { useAsync } from '../lib/useAsync.js';
 export function SettingsPage() {
   const status = useAsync(() => api.microsoftStatus(), []);
   const [error, setError] = useState(null);
+  const [syncNote, setSyncNote] = useState('');
 
   // The OAuth consent happens in another tab; refresh when the user comes back.
   useEffect(() => {
@@ -35,6 +36,21 @@ export function SettingsPage() {
     }
   }
 
+  async function syncNow(connectionId) {
+    setError(null);
+    try {
+      const result = await api.microsoftSync(connectionId);
+      setSyncNote(
+        result.initialized
+          ? 'Sync initialised — watching for new replies from now on.'
+          : `Synced: ${result.matched} repl${result.matched === 1 ? 'y' : 'ies'} matched (${result.seen} new emails).`,
+      );
+      status.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   const data = status.data;
 
   return (
@@ -44,6 +60,7 @@ export function SettingsPage() {
         subtitle="Connected accounts. Outreach sends as you, from your own mailbox."
       />
       <ErrorBox error={error} />
+      {syncNote ? <div className="card small">{syncNote}</div> : null}
       {status.loading ? <Loading /> : null}
 
       {data ? (
@@ -81,6 +98,9 @@ export function SettingsPage() {
                     <strong className="small">{connection.address}</strong>
                     <div className="small muted">
                       {connection.display_name || 'Outlook mailbox'}
+                      {connection.last_synced_at
+                        ? ` · replies checked ${new Date(connection.last_synced_at).toLocaleString()}`
+                        : ' · replies not checked yet'}
                       {connection.error ? ` — ${connection.error}` : ''}
                     </div>
                   </div>
@@ -88,6 +108,15 @@ export function SettingsPage() {
                     <Badge tone={connection.status === 'active' ? 'strong' : ''}>
                       {connection.status}
                     </Badge>
+                    {connection.status === 'active' ? (
+                      <button
+                        type="button"
+                        className="tiny"
+                        onClick={() => syncNow(connection.id)}
+                      >
+                        Sync now
+                      </button>
+                    ) : null}
                     {connection.status !== 'revoked' ? (
                       <button
                         type="button"

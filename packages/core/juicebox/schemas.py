@@ -71,6 +71,7 @@ class MailboxConnectionOut(BaseModel):
     status: str
     error: str
     user_id: str | None
+    last_synced_at: datetime | None
     created_at: datetime
 
 

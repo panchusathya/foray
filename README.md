@@ -188,9 +188,14 @@ email from the sender's own account, so messages carry no unsubscribe footer
 or bulk-mail headers. Bounces and reply opt-outs ("please stop contacting me")
 land on a per-org internal do-not-contact list and stop further mail.
 
-Replies are classified into eight intents; anything except an out-of-office
-stops the sequence, bounces mark the enrollment, and a referral outranks a
-decline because "not for me, but talk to Sam" is a lead, not a rejection.
+Replies are detected automatically: the worker delta-polls each connected
+inbox (every `MAILBOX_SYNC_SECONDS`), matches new email back to the outreach
+that provoked it by Graph conversation id (sender address as fallback), and
+skips everything else. The first sync stores a baseline cursor so mailbox
+history is never read. Replies are classified into eight intents; anything
+except an out-of-office stops the sequence, bounces mark the enrollment, and a
+referral outranks a decline because "not for me, but talk to Sam" is a lead,
+not a rejection.
 
 A daily send cap is enforced per org.
 
@@ -254,6 +259,7 @@ signature so third-party systems never hold a Juicebox API key.
 | `GET`/`PATCH` | `/v1/org` | Workspace settings |
 | `GET`/`POST`/`DELETE` | `/v1/suppressions` | Do-not-contact list |
 | `GET`/`POST`/`DELETE` | `/v1/integrations/microsoft` | Connect an Outlook mailbox (OAuth) |
+| `POST` | `/v1/integrations/microsoft/{id}/sync` | Check the inbox for replies now |
 | `POST` | `/v1/webhooks/inbound-email` | Reply intake and classification |
 | `POST` | `/v1/agents/{id}/run` | Run a sourcing agent |
 | `GET`  | `/v1/analytics/funnel` | Pipeline + outreach metrics |
@@ -281,6 +287,7 @@ most:
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
 | `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | *(empty)* | Azure app registration; enables Connect Outlook |
 | `MS_TENANT_ID` | `organizations` | Entra tenant for the OAuth flow |
+| `MAILBOX_SYNC_SECONDS` | `120` | How often the worker checks inboxes for replies |
 
 ---
 

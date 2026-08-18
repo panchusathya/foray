@@ -111,6 +111,8 @@ export const api = {
   microsoftConnect: () => request('/v1/integrations/microsoft/connect', { method: 'POST' }),
   microsoftDisconnect: (connectionId) =>
     request(`/v1/integrations/microsoft/${connectionId}`, { method: 'DELETE' }),
+  microsoftSync: (connectionId) =>
+    request(`/v1/integrations/microsoft/${connectionId}/sync`, { method: 'POST' }),
 };
 
 export const PIPELINE_STAGES = [

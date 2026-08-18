@@ -84,6 +84,10 @@ export const api = {
   runSequence: (sequenceId) => request(`/v1/sequences/${sequenceId}/run`, { method: 'POST' }),
   listEnrollments: (sequenceId) => request(`/v1/sequences/${sequenceId}/enrollments`),
 
+  listMailboxes: () => request('/v1/mailboxes'),
+  microsoftAuthorize: () => request('/v1/mailboxes/microsoft/authorize'),
+  disconnectMailbox: (id) => request(`/v1/mailboxes/${id}`, { method: 'DELETE' }),
+
   listAgents: () => request('/v1/agents'),
   createAgent: (payload) => request('/v1/agents', { method: 'POST', body: payload }),
   runAgent: (agentId) => request(`/v1/agents/${agentId}/run`, { method: 'POST' }),

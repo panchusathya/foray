@@ -1,7 +1,8 @@
 """Email delivery providers.
 
 ``console`` is the default so nothing leaves the machine during development;
-``memory`` is what tests assert against; ``smtp`` is real delivery.
+``memory`` is what tests assert against; ``smtp`` is real delivery via a
+mail server; ``graph`` (alias ``outlook``) sends through Microsoft Graph.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ class OutboundEmail:
     from_email: str
     from_name: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    org_id: str = ""
 
     @property
     def from_header(self) -> str:
@@ -134,6 +136,10 @@ def get_sender() -> EmailSender:
                 settings.smtp_password,
                 starttls=settings.smtp_starttls,
             )
+        elif settings.uses_graph_sender:
+            from .graph import GraphSender
+
+            _sender = GraphSender()
         elif provider == "memory":
             _sender = MemorySender()
         else:

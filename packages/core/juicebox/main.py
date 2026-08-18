@@ -14,11 +14,20 @@ from .db import create_all
 from .llm.client import get_llm
 from .llm.embeddings import get_embedder
 from .migrate import is_up_to_date
-from .routers import agents, analytics, auth, candidates, org, outreach, projects, search, track
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+from .routers import (
+    agents,
+    analytics,
+    auth,
+    candidates,
+    mailboxes,
+    org,
+    outreach,
+    projects,
+    search,
+    track,
 )
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
 logger = logging.getLogger("juicebox")
 
 
@@ -31,9 +40,7 @@ async def lifespan(_app: FastAPI):
     elif not is_up_to_date():
         # Never mutate a real database implicitly — several workers boot at once
         # and `alembic upgrade head` is a deploy step, not a side effect.
-        logger.warning(
-            "database schema is not at the latest migration; run `juicebox migrate`"
-        )
+        logger.warning("database schema is not at the latest migration; run `juicebox migrate`")
     llm = get_llm()
     logger.info(
         "juicebox %s up | db=%s | llm=%s | embeddings=%s",
@@ -68,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(org.router)
     app.include_router(org.suppressions_router)
+    app.include_router(mailboxes.router)
     app.include_router(candidates.router)
     app.include_router(search.router)
     app.include_router(projects.router)

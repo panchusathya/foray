@@ -90,6 +90,36 @@ class ApiKey(Base, TimestampMixin):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class MailboxConnection(Base, TimestampMixin):
+    """OAuth mailbox used when ``EMAIL_PROVIDER=graph``.
+
+    One Microsoft connection per org in this revision: sequences send as that
+    Outlook identity. Tokens are stored encrypted; the API never returns them.
+    """
+
+    __tablename__ = "mailbox_connections"
+    __table_args__ = (UniqueConstraint("org_id", "provider", name="uq_mailbox_org_provider"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("mbx"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String(40), default="microsoft")
+    mailbox_email: Mapped[str] = mapped_column(String(255), default="")
+    mailbox_name: Mapped[str] = mapped_column(String(200), default="")
+    tenant_id: Mapped[str] = mapped_column(String(80), default="")
+    access_token_enc: Mapped[str] = mapped_column(Text, default="")
+    refresh_token_enc: Mapped[str] = mapped_column(Text, default="")
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scopes: Mapped[str] = mapped_column(String(400), default="")
+    status: Mapped[str] = mapped_column(String(32), default="connected")
+    # connected | expired | revoked
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+
 # --------------------------------------------------------------------------
 # people
 # --------------------------------------------------------------------------
@@ -238,9 +268,7 @@ class Project(Base, TimestampMixin):
 
 class ProjectCandidate(Base, TimestampMixin):
     __tablename__ = "project_candidates"
-    __table_args__ = (
-        UniqueConstraint("project_id", "candidate_id", name="uq_project_candidate"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "candidate_id", name="uq_project_candidate"),)
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("pc"))
     project_id: Mapped[str] = mapped_column(

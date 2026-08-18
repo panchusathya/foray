@@ -96,7 +96,9 @@ class Settings:
     )
     llm_enabled: bool = field(default_factory=lambda: _env_bool("JUICEBOX_LLM_ENABLED", True))
     llm_max_concurrency: int = field(default_factory=lambda: _env_int("LLM_MAX_CONCURRENCY", 8))
-    llm_timeout_seconds: float = field(default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 120.0))
+    llm_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 120.0)
+    )
     # Retries cover 429s and 5xx only; a refusal or bad JSON is not retried.
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
     llm_retry_initial_delay: float = field(
@@ -130,13 +132,21 @@ class Settings:
     rerank_weight: float = field(default_factory=lambda: _env_float("RERANK_WEIGHT", 0.25))
 
     # --- outreach --------------------------------------------------------
-    # console | smtp | memory
+    # console | smtp | memory | graph (alias: outlook)
     email_provider: str = field(default_factory=lambda: _env("EMAIL_PROVIDER", "console").lower())
     smtp_host: str = field(default_factory=lambda: _env("SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: _env_int("SMTP_PORT", 587))
     smtp_user: str = field(default_factory=lambda: _env("SMTP_USER", ""))
     smtp_password: str = field(default_factory=lambda: _env("SMTP_PASSWORD", ""))
     smtp_starttls: bool = field(default_factory=lambda: _env_bool("SMTP_STARTTLS", True))
+    graph_client_id: str = field(default_factory=lambda: _env("GRAPH_CLIENT_ID", ""))
+    graph_client_secret: str = field(default_factory=lambda: _env("GRAPH_CLIENT_SECRET", ""))
+    # `common` is correct for multi-tenant delegated login. Client-credentials
+    # send (GRAPH_MAILBOX) needs a real tenant id, not `common`.
+    graph_tenant_id: str = field(default_factory=lambda: _env("GRAPH_TENANT_ID", "common"))
+    graph_redirect_uri: str = field(default_factory=lambda: _env("GRAPH_REDIRECT_URI", ""))
+    # Optional shared mailbox UPN for app-only send (Mail.Send application permission).
+    graph_mailbox: str = field(default_factory=lambda: _env("GRAPH_MAILBOX", ""))
     outreach_from_email: str = field(
         default_factory=lambda: _env("OUTREACH_FROM_EMAIL", "recruiting@example.com")
     )
@@ -161,6 +171,19 @@ class Settings:
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def graph_configured(self) -> bool:
+        return bool(self.graph_client_id and self.graph_client_secret)
+
+    @property
+    def uses_graph_sender(self) -> bool:
+        return self.email_provider in {"graph", "outlook"}
+
+    def resolved_graph_redirect_uri(self) -> str:
+        if self.graph_redirect_uri:
+            return self.graph_redirect_uri
+        return f"{self.base_url.rstrip('/')}/v1/mailboxes/microsoft/callback"
 
     @property
     def uses_postgres_retrieval(self) -> bool:
@@ -198,8 +221,7 @@ class Settings:
 
         if problems:
             raise ConfigError(
-                "refusing to start with JUICEBOX_ENV=production:\n  - "
-                + "\n  - ".join(problems)
+                "refusing to start with JUICEBOX_ENV=production:\n  - " + "\n  - ".join(problems)
             )
 
 

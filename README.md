@@ -176,11 +176,14 @@ The template language has no loops, conditionals or expressions — recruiters
 paste into a form, so the renderer must not be able to execute anything.
 
 Sending goes through a provider interface (`console` by default, `smtp` for
-real delivery, `memory` for tests). Each `(enrollment, step)` pair can produce
+a mail server, `graph` / `outlook` for Microsoft Graph, `memory` for tests).
+Graph sends as the workspace's connected Outlook mailbox (delegated OAuth) or,
+if `GRAPH_MAILBOX` is set, as that shared mailbox via app-only credentials.
+Each `(enrollment, step)` pair can produce
 at most one outbound `Message` row — a second worker cannot insert a duplicate.
 Opens, clicks and unsubscribes are tracked with HMAC-signed URLs so the
 endpoints can't be walked. Every send carries a `List-Unsubscribe` header and a
-footer with the opt-out link; SMTP additionally requires a physical postal
+footer with the opt-out link; SMTP and Graph additionally require a physical postal
 address (`OUTREACH_POSTAL_ADDRESS` or `PATCH /v1/org`). Opt-outs and bounces
 land on a per-org suppression list and stop further mail.
 
@@ -249,6 +252,8 @@ signature so third-party systems never hold a Juicebox API key.
 | `POST` | `/v1/sequences` · `/{id}/enroll` · `/{id}/run` | Outreach |
 | `GET`/`PATCH` | `/v1/org` | Workspace name and postal address |
 | `GET`/`POST`/`DELETE` | `/v1/suppressions` | Do-not-contact list |
+| `GET`/`DELETE` | `/v1/mailboxes` | Connected Outlook mailbox |
+| `GET` | `/v1/mailboxes/microsoft/authorize` · `/callback` | Connect Outlook via OAuth |
 | `POST` | `/v1/webhooks/inbound-email` | Reply intake and classification |
 | `POST` | `/v1/agents/{id}/run` | Run a sourcing agent |
 | `GET`  | `/v1/analytics/funnel` | Pipeline + outreach metrics |
@@ -272,8 +277,10 @@ most:
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing` is offline and deterministic; `voyage` is hosted |
 | `RETRIEVAL_BACKEND` | `auto` | `postgres` uses FTS+pgvector; `memory` keeps the RAM index |
 | `RERANK_TOP_K` | `20` | How many candidates get a model call per search; `0` disables |
-| `EMAIL_PROVIDER` | `console` | `smtp` to actually send |
-| `OUTREACH_POSTAL_ADDRESS` | *(empty)* | CAN-SPAM footer; required for SMTP |
+| `EMAIL_PROVIDER` | `console` | `smtp` or `graph` (`outlook`) to actually send |
+| `GRAPH_CLIENT_ID` | *(empty)* | Azure app id for Outlook send; unused unless `EMAIL_PROVIDER=graph` |
+| `GRAPH_MAILBOX` | *(empty)* | Optional shared mailbox UPN for app-only Graph send |
+| `OUTREACH_POSTAL_ADDRESS` | *(empty)* | CAN-SPAM footer; required for SMTP and Graph |
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
 
 ---
@@ -289,8 +296,9 @@ make test-live   # contract tests against the real APIs; needs keys
 
 Python tests run against an isolated SQLite file per test, with the model
 disabled and a memory mailbox, so the suite is deterministic and needs no
-network. Model-backed code is covered through `FakeTransport`, which scripts
-responses, failures and retries without a key.
+network. Model-backed code is covered through `FakeTransport`; Graph send and
+OAuth through `FakeGraphTransport`. Both script responses, failures and retries
+without a key.
 
 The same suite runs against PostgreSQL — worth doing before a deploy, since
 SQLite will not catch a Postgres-only problem:

@@ -72,7 +72,7 @@ test-ingest: ## Node tests
 # Hits real provider APIs and costs money, so it is never part of `make test`.
 # Each test skips itself unless its key is present.
 .PHONY: test-live
-test-live: ## Contract tests against the real Anthropic / Voyage APIs
+test-live: ## Contract tests against the real Anthropic / Voyage / Graph APIs
 	cd packages/core && ../../$(BIN)/python -m pytest -m live -v
 
 .PHONY: eval

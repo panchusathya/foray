@@ -51,6 +51,9 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
+    monkeypatch.setenv("GRAPH_CLIENT_ID", "")
+    monkeypatch.setenv("GRAPH_CLIENT_SECRET", "")
+    monkeypatch.setenv("GRAPH_MAILBOX", "")
     # Retry logic is asserted by call counts, so don't actually sleep for it.
     monkeypatch.setenv("LLM_RETRY_INITIAL_DELAY", "0")
 
@@ -58,6 +61,7 @@ def isolated_environment(tmp_path, monkeypatch):
     from juicebox.config import reset_settings_cache
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
+    from juicebox.outreach.graph import reset_app_token_cache, set_graph_transport
     from juicebox.outreach.sender import set_sender
     from juicebox.search.engine import reset_engine
     from juicebox.search.index import invalidate
@@ -69,6 +73,8 @@ def isolated_environment(tmp_path, monkeypatch):
     reset_engine()
     invalidate()
     set_sender(None)
+    set_graph_transport(None)
+    reset_app_token_cache()
 
     if TEST_DATABASE_URL:
         # One shared database, so wipe it between tests instead of relying on a
@@ -86,6 +92,8 @@ def isolated_environment(tmp_path, monkeypatch):
     reset_engine()
     invalidate()
     set_sender(None)
+    set_graph_transport(None)
+    reset_app_token_cache()
 
 
 @pytest.fixture
@@ -171,7 +179,11 @@ def sample_candidates() -> list[dict]:
                 },
             ],
             "educations": [
-                {"school": "Stanford University", "degree": "MS", "field_of_study": "Computer Science"}
+                {
+                    "school": "Stanford University",
+                    "degree": "MS",
+                    "field_of_study": "Computer Science",
+                }
             ],
         },
         {

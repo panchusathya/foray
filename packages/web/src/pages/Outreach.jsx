@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -27,6 +28,8 @@ export function OutreachPage() {
   const sequences = useAsync(() => api.listSequences(), []);
   const projects = useAsync(() => api.listProjects(), []);
   const candidates = useAsync(() => api.listCandidates(''), []);
+  const mailboxes = useAsync(() => api.listMailboxes(), []);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [error, setError] = useState(null);
   const [status, setStatus] = useState('');
@@ -36,6 +39,40 @@ export function OutreachPage() {
     project_id: '',
     steps: STARTER_STEPS,
   });
+
+  const mailboxNotice = searchParams.get('mailbox');
+  useEffect(() => {
+    if (!mailboxNotice) return;
+    if (mailboxNotice === 'connected') {
+      setStatus('Outlook mailbox connected.');
+      mailboxes.reload();
+    } else {
+      setError(new Error(searchParams.get('reason') || 'Could not connect Outlook'));
+    }
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mailboxNotice]);
+
+  async function connectOutlook() {
+    setError(null);
+    try {
+      const { url } = await api.microsoftAuthorize();
+      window.location.href = url;
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  async function disconnectOutlook(id) {
+    setError(null);
+    try {
+      await api.disconnectMailbox(id);
+      mailboxes.reload();
+      setStatus('Outlook mailbox disconnected.');
+    } catch (caught) {
+      setError(caught);
+    }
+  }
 
   function updateStep(index, patch) {
     setForm((previous) => ({
@@ -93,6 +130,36 @@ export function OutreachPage() {
       />
       <ErrorBox error={error} />
       {status ? <div className="card small">{status}</div> : null}
+
+      <div className="card spread">
+        <div>
+          <strong className="small">Sending mailbox</strong>
+          <div className="small muted">
+            {(mailboxes.data?.connections ?? [])[0]
+              ? `${mailboxes.data.connections[0].mailbox_email} · ${mailboxes.data.connections[0].status}`
+              : mailboxes.data?.env_mailbox
+                ? `App-only mailbox ${mailboxes.data.env_mailbox}`
+                : mailboxes.data?.configured
+                  ? 'No Outlook mailbox connected. Sequences still send via console/SMTP until you connect one and set EMAIL_PROVIDER=graph.'
+                  : 'Outlook is not configured. Set GRAPH_CLIENT_ID to connect a mailbox, or keep using console/SMTP.'}
+          </div>
+        </div>
+        <div className="row">
+          {(mailboxes.data?.connections ?? [])[0] ? (
+            <button
+              type="button"
+              className="tiny ghost"
+              onClick={() => disconnectOutlook(mailboxes.data.connections[0].id)}
+            >
+              Disconnect
+            </button>
+          ) : (
+            <button type="button" className="tiny" onClick={connectOutlook} disabled={!mailboxes.data?.configured}>
+              Connect Outlook
+            </button>
+          )}
+        </div>
+      </div>
 
       <form className="card stack" onSubmit={createSequence}>
         <strong className="small">New sequence</strong>

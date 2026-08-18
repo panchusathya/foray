@@ -131,3 +131,84 @@ def signed_tracking_token(message_id: str) -> str:
 
 def verify_tracking_token(message_id: str, token: str) -> bool:
     return hmac.compare_digest(signed_tracking_token(message_id), token)
+
+
+def create_signed_state(payload: dict, *, ttl_seconds: int = 600) -> str:
+    """Compact HS256 blob for OAuth `state` and similar one-shot round trips."""
+    settings = get_settings()
+    now = int(time.time())
+    body = {**payload, "iat": now, "exp": now + ttl_seconds}
+    header = _b64e(json.dumps({"alg": "HS256", "typ": "state"}, separators=(",", ":")).encode())
+    encoded = _b64e(json.dumps(body, separators=(",", ":")).encode())
+    signing_input = f"{header}.{encoded}".encode("ascii")
+    signature = _b64e(_sign(signing_input, settings.secret_key))
+    return f"{header}.{encoded}.{signature}"
+
+
+def decode_signed_state(token: str) -> dict:
+    """Same checks as access tokens; `typ` is `state` so the two cannot be mixed."""
+    settings = get_settings()
+    try:
+        header_b64, body_b64, signature_b64 = token.split(".")
+    except ValueError as exc:
+        raise TokenError("malformed state") from exc
+
+    signing_input = f"{header_b64}.{body_b64}".encode("ascii")
+    expected = _sign(signing_input, settings.secret_key)
+    try:
+        provided = _b64d(signature_b64)
+        header = json.loads(_b64d(header_b64))
+        payload = json.loads(_b64d(body_b64))
+    except Exception as exc:
+        raise TokenError("malformed state") from exc
+    if not hmac.compare_digest(expected, provided):
+        raise TokenError("bad signature")
+    if header.get("typ") != "state":
+        raise TokenError("wrong token type")
+    if int(payload.get("exp", 0)) < int(time.time()):
+        raise TokenError("state expired")
+    return payload
+
+
+def encrypt_secret(plaintext: str) -> str:
+    """Authenticated encryption for tokens at rest. Stdlib only (HMAC-SHA256 stream)."""
+    if not plaintext:
+        return ""
+    secret = get_settings().secret_key.encode("utf-8")
+    nonce = secrets.token_bytes(16)
+    data = plaintext.encode("utf-8")
+    enc_key = hmac.new(secret, b"enc" + nonce, hashlib.sha256).digest()
+    mac_key = hmac.new(secret, b"mac" + nonce, hashlib.sha256).digest()
+    stream = _keystream(enc_key, nonce, len(data))
+    ciphertext = bytes(a ^ b for a, b in zip(data, stream, strict=True))
+    tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()[:16]
+    return _b64e(nonce + tag + ciphertext)
+
+
+def decrypt_secret(blob: str) -> str:
+    if not blob:
+        return ""
+    secret = get_settings().secret_key.encode("utf-8")
+    try:
+        raw = _b64d(blob)
+    except Exception as exc:
+        raise TokenError("malformed secret") from exc
+    if len(raw) < 32:
+        raise TokenError("malformed secret")
+    nonce, tag, ciphertext = raw[:16], raw[16:32], raw[32:]
+    enc_key = hmac.new(secret, b"enc" + nonce, hashlib.sha256).digest()
+    mac_key = hmac.new(secret, b"mac" + nonce, hashlib.sha256).digest()
+    expected = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()[:16]
+    if not hmac.compare_digest(tag, expected):
+        raise TokenError("bad ciphertext")
+    stream = _keystream(enc_key, nonce, len(ciphertext))
+    return bytes(a ^ b for a, b in zip(ciphertext, stream, strict=True)).decode("utf-8")
+
+
+def _keystream(key: bytes, nonce: bytes, length: int) -> bytes:
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out.extend(hmac.new(key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return bytes(out[:length])

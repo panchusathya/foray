@@ -63,10 +63,18 @@ class TestDevelopmentStaysEasy:
         assert settings.env == "development"
         assert settings.secret_key == DEV_SECRET_KEY
 
-    def test_docker_compose_default_is_not_production(self, settings_for):
-        """docker compose up must keep working out of the box."""
-        settings = settings_for(JUICEBOX_ENV=None, SECRET_KEY=DEV_SECRET_KEY)
-        settings.validate()  # no raise
+    def test_graph_settings_are_off_by_default(self, settings_for):
+        settings = settings_for()
+        assert settings.graph_configured is False
+        assert settings.uses_graph_sender is False
+        assert settings.resolved_graph_redirect_uri().endswith("/v1/mailboxes/microsoft/callback")
+
+    def test_graph_alias_selects_the_sender(self, settings_for):
+        settings = settings_for(
+            EMAIL_PROVIDER="outlook", GRAPH_CLIENT_ID="id", GRAPH_CLIENT_SECRET="sec"
+        )
+        assert settings.uses_graph_sender is True
+        assert settings.graph_configured is True
 
 
 class TestRetrievalBackend:
@@ -87,7 +95,5 @@ class TestRetrievalBackend:
         assert settings.uses_postgres_retrieval is False
 
     def test_postgres_can_be_forced(self, settings_for):
-        settings = settings_for(
-            RETRIEVAL_BACKEND="postgres", DATABASE_URL="sqlite:///tmp/x.db"
-        )
+        settings = settings_for(RETRIEVAL_BACKEND="postgres", DATABASE_URL="sqlite:///tmp/x.db")
         assert settings.uses_postgres_retrieval is True

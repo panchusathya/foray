@@ -78,6 +78,30 @@ class SuppressionOut(BaseModel):
     created_at: datetime
 
 
+class MailboxOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    provider: str
+    mailbox_email: str
+    mailbox_name: str
+    status: str
+    user_id: str | None = None
+    created_at: datetime
+
+
+class MailboxListOut(BaseModel):
+    configured: bool
+    provider: str = "microsoft"
+    env_mailbox: str = ""
+    connections: list[MailboxOut]
+
+
+class MicrosoftAuthorizeOut(BaseModel):
+    url: str
+    state: str
+
+
 # --------------------------------------------------------------------------
 # candidates
 # --------------------------------------------------------------------------

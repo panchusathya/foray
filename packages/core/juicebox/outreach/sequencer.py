@@ -136,7 +136,9 @@ def build_message_content(
     subject = templates.render(step.subject_template, context).strip()
     body = templates.render(step.body_template, context).strip()
     if not subject:
-        subject = context.get("subject_hint") or f"Quick note for {context.get('first_name', '')}".strip()
+        subject = (
+            context.get("subject_hint") or f"Quick note for {context.get('first_name', '')}".strip()
+        )
     return subject, body, context
 
 
@@ -200,10 +202,15 @@ def send_step(
     existing = _existing_outbound(db, enrollment.id, step.id)
     if existing is not None and existing.status == "sent":
         return existing
-    if existing is not None and existing.status == "failed" and existing.error in {
-        "suppressed",
-        "no email address on file",
-    }:
+    if (
+        existing is not None
+        and existing.status == "failed"
+        and existing.error
+        in {
+            "suppressed",
+            "no email address on file",
+        }
+    ):
         return existing
 
     to_address = normalize_email(candidate.primary_email or "")
@@ -273,7 +280,7 @@ def send_step(
     org = db.get(Org, sequence.org_id)
     address = postal_address_for(org)
     sender = get_sender()
-    if sender.name == "smtp" and not address:
+    if sender.name in {"smtp", "graph"} and not address:
         message.status = "failed"
         message.error = "postal address required for commercial email"
         return message
@@ -285,12 +292,8 @@ def send_step(
         message_id=message.id,
         token=token,
     )
-    unsub = unsubscribe_url(
-        base_url=settings.base_url, message_id=message.id, token=token
-    )
-    text_body, html_body = append_footer(
-        body, html_body, unsub_url=unsub, postal_address=address
-    )
+    unsub = unsubscribe_url(base_url=settings.base_url, message_id=message.id, token=token)
+    text_body, html_body = append_footer(body, html_body, unsub_url=unsub, postal_address=address)
 
     email = OutboundEmail(
         to=to_address,
@@ -303,6 +306,7 @@ def send_step(
             "X-Juicebox-Message-Id": message.id,
             **compliance_headers(unsub),
         },
+        org_id=sequence.org_id,
     )
 
     if dry_run:
@@ -310,7 +314,13 @@ def send_step(
         message.provider_message_id = "dry-run"
         return message
 
-    result = sender.send(email)
+    if sender.name == "graph":
+        from .graph import bind_mailbox_session
+
+        with bind_mailbox_session(db):
+            result = sender.send(email)
+    else:
+        result = sender.send(email)
     if result.ok:
         message.status = "sent"
         message.sent_at = now

@@ -35,6 +35,11 @@ def _payload(system: str, user: str, *, model: str, max_tokens: int) -> dict:
     return {
         "model": model,
         "max_tokens": max_tokens,
+        # Open-weight reasoning models (gpt-oss class) spend the completion
+        # budget on their scratchpad by default, truncating the JSON answer.
+        # Keep the thinking short; OpenRouter drops this for models without
+        # reasoning support.
+        "reasoning": {"effort": "low"},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -61,7 +66,7 @@ def _auth_headers() -> dict:
     wait=wait_exponential(multiplier=1, max=30),
     reraise=True,
 )
-def chat(system: str, user: str, *, model: str, max_tokens: int = 400, timeout: float = 90.0) -> str:
+def chat(system: str, user: str, *, model: str, max_tokens: int = 1600, timeout: float = 90.0) -> str:
     """Synchronous single completion. Raises on non-retryable failure."""
     with httpx.Client(base_url=settings.openrouter_base_url, timeout=timeout) as client:
         resp = client.post(
@@ -80,7 +85,7 @@ def chat(system: str, user: str, *, model: str, max_tokens: int = 400, timeout: 
     reraise=True,
 )
 async def achat(
-    client: httpx.AsyncClient, system: str, user: str, *, model: str, max_tokens: int = 400
+    client: httpx.AsyncClient, system: str, user: str, *, model: str, max_tokens: int = 1600
 ) -> str:
     """Async single completion on a shared client (bulk scoring fan-out)."""
     resp = await client.post(

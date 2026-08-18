@@ -102,7 +102,14 @@ def parse_scoring_json(text: str) -> dict[str, Any]:
     if body.startswith("```"):
         body = body.split("\n", 1)[1] if "\n" in body else body
         body = body.rsplit("```", 1)[0]
-    obj = json.loads(body)
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError:
+        # Models sometimes wrap the object in prose; take the outermost braces.
+        start, end = body.find("{"), body.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        obj = json.loads(body[start : end + 1])
     score = int(obj["score"])
     score = max(0, min(100, score))
     highlights = [str(h) for h in (obj.get("highlights") or [])]

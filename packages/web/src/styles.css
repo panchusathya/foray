@@ -84,6 +84,36 @@ button, input, textarea, select {
 .nav-link:hover { background: var(--surface-2); color: var(--text); }
 .nav-link.active { background: var(--accent-soft); color: var(--accent-light); }
 
+.sidebar-section {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0 10px 6px;
+  font-weight: 600;
+}
+.project-switcher {
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.nav-link.sub {
+  padding-left: 20px;
+  font-size: 13.5px;
+}
+
 .sidebar-footer {
   margin-top: auto;
   border-top: 1px solid var(--border);

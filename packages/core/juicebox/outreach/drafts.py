@@ -31,8 +31,7 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
         "body_template": (
             "Hi {{first_name|there}},\n\n"
             "{{opening_line}}\n\n"
-            "We're hiring for {{role_title|a role on our team}}. {{why_relevant}} "
-            "If you're open to it, I'd like to share more.\n\n"
+            "{{why_relevant}} If you're open to it, I'd like to share more.\n\n"
             "Worth a short call this week?"
         ),
         "delay_days": 0,

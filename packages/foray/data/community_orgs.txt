@@ -1,0 +1,32 @@
+# Org logins that are communities / programs, not employers. Membership in one
+# of these is not evidence of employment.
+freecodecamp
+the-algorithms
+opensource
+open-source
+hacktoberfest
+hackclub
+google-summer-of-code
+gsoc
+readme
+github
+firstcontributions
+awesome
+awesomelists
+public-apis
+edx
+coursera
+udacity
+100daysofcode
+dev-community
+women-who-code
+womenwhocode
+outreachy
+mlh
+majorleaguehacking
+students
+codenewbie
+egoist
+apache
+cncf
+kubernetes

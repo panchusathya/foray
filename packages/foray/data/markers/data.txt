@@ -1,0 +1,12 @@
+spark
+dbt
+airflow
+dagster
+flink
+snowflake
+kafka
+beam
+databricks
+delta-lake
+iceberg
+trino

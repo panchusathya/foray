@@ -1,0 +1,10 @@
+cve
+fuzzing
+sast
+oauth
+sigstore
+yara
+semgrep
+owasp
+pentest
+cryptography

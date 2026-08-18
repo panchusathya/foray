@@ -1,0 +1,144 @@
+"""Seed synthetic, GitHub-shaped raw_profiles for offline development.
+
+This fabricates realistic (fake) candidates so the derive -> embed -> score ->
+search pipeline can be exercised end-to-end without a GITHUB_TOKEN or spend.
+It is NOT a real export (guardrail-safe): every login is ``synth_*`` and every
+field is generated deterministically from a fixed seed.
+
+    uv run python scripts/seed_synthetic.py --count 300 --reset
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import random
+from datetime import datetime, timedelta, timezone
+
+from foray.db import close_pool, get_pool
+
+# Repo "themes" drawn from the domain-marker vocabularies so markers + gates fire.
+THEMES = {
+    "ml": {"lang": "Python", "extra": "Cuda", "terms": ["pytorch", "transformers", "torch"]},
+    "gpu": {"lang": "Cuda", "extra": "C++", "terms": ["cuda", "triton", "vllm"]},
+    "infra": {"lang": "Go", "extra": "HCL", "terms": ["kubernetes", "terraform", "envoy"]},
+    "sre": {"lang": "Go", "extra": "Python", "terms": ["prometheus", "grafana", "opentelemetry"]},
+    "db": {"lang": "Rust", "extra": "C++", "terms": ["rocksdb", "clickhouse", "raft"]},
+    "data": {"lang": "Scala", "extra": "Python", "terms": ["spark", "airflow", "kafka"]},
+    "frontend": {"lang": "TypeScript", "extra": "CSS", "terms": ["react", "vite", "tailwind"]},
+    "security": {"lang": "Go", "extra": "Python", "terms": ["fuzzing", "sast", "semgrep"]},
+    "mobile": {"lang": "Swift", "extra": "Kotlin", "terms": ["swiftui", "xcode", "coredata"]},
+    "backend": {"lang": "Go", "extra": "Python", "terms": ["grpc", "microservices", "postgres"]},
+}
+
+COMPANIES = ["@stripe", "@google", "@databricks", "", "", "@openai", "@cloudflare", "", "acme-labs"]
+FIRST = ["Ada", "Lin", "Sam", "Noor", "Kai", "Ravi", "Mei", "Ivan", "Zoe", "Omar"]
+LAST = ["Kaur", "Rossi", "Novak", "Chen", "Silva", "Khan", "Park", "Diaz", "Ito", "Nguyen"]
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def make_node(rng: random.Random, i: int) -> dict:
+    theme_names = rng.sample(list(THEMES), k=rng.choice([1, 1, 2]))
+    created_year = rng.randint(2012, 2021)
+    created = datetime(created_year, rng.randint(1, 12), rng.randint(1, 28), tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    recent_push = now - timedelta(days=rng.randint(5, 500))
+
+    repos = []
+    lang_bytes: dict[str, int] = {}
+    for t_i, name in enumerate(theme_names):
+        theme = THEMES[name]
+        stars = rng.choice([2, 8, 30, 120, 800, 2500]) if t_i == 0 else rng.choice([1, 5, 40])
+        primary = theme["lang"]
+        edges = [
+            {"size": rng.randint(40000, 120000), "node": {"name": primary}},
+            {"size": rng.randint(5000, 30000), "node": {"name": theme["extra"]}},
+        ]
+        for edge in edges:
+            lang_bytes[edge["node"]["name"]] = lang_bytes.get(edge["node"]["name"], 0) + edge["size"]
+        repos.append(
+            {
+                "name": f"{name}-{rng.choice(['engine', 'kit', 'core', 'lab'])}",
+                "description": f"A {name} project using {', '.join(theme['terms'])}.",
+                "stargazerCount": stars,
+                "forkCount": stars // 10,
+                "pushedAt": _iso(recent_push),
+                "createdAt": _iso(created + timedelta(days=rng.randint(0, 400))),
+                "isArchived": rng.random() < 0.1,
+                "primaryLanguage": {"name": primary},
+                "repositoryTopics": {"nodes": [{"topic": {"name": term}} for term in theme["terms"]]},
+                "languages": {"edges": edges},
+            }
+        )
+
+    name = f"{rng.choice(FIRST)} {rng.choice(LAST)}"
+    return {
+        "name": name,
+        "login": f"synth_{i:05d}",
+        "email": rng.choice(["", f"user{i}@acmecorp.com", "user@gmail.com"]),
+        "company": rng.choice(COMPANIES),
+        "location": rng.choice(
+            ["San Francisco, CA", "Seattle, WA", "New York, NY", "Austin, TX", "Remote, US"]
+        ),
+        "bio": f"{theme_names[0]} engineer",
+        "websiteUrl": "",
+        "twitterUsername": "",
+        "createdAt": _iso(created),
+        "followers": {"totalCount": rng.choice([12, 40, 120, 900, 3000])},
+        "following": {"totalCount": rng.randint(0, 200)},
+        "repositories": {"nodes": repos},
+        "organizations": {"nodes": []},
+        "contributionsCollection": {
+            "totalCommitContributions": rng.randint(50, 2000),
+            "totalPullRequestContributions": rng.randint(5, 400),
+            "restrictedContributionsCount": rng.randint(0, 200),
+        },
+    }
+
+
+async def amain(args: argparse.Namespace) -> int:
+    rng = random.Random(20240917)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if args.reset:
+            await conn.execute(
+                "truncate candidates, raw_profiles, candidate_signals, archetype_scores, "
+                "shortlist_events restart identity cascade"
+            )
+        for i in range(args.count):
+            node = make_node(rng, i)
+            cid = await conn.fetchval(
+                "insert into candidates (login, github_id, name, location_raw, discovery_shard) "
+                "values ($1, $2, $3, $4, 'synthetic') "
+                "on conflict (login) do update set name = excluded.name returning id",
+                node["login"],
+                1_000_000 + i,
+                node["name"],
+                node["location"],
+            )
+            await conn.execute(
+                "insert into raw_profiles (candidate_id, login, data, fetched_at) "
+                "values ($1, $2, $3::jsonb, now()) "
+                "on conflict (candidate_id) do update set data = excluded.data, fetched_at = now()",
+                cid,
+                node["login"],
+                json.dumps(node),
+            )
+    print(f"seeded {args.count} synthetic candidates + raw_profiles")
+    await close_pool()
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Seed synthetic raw_profiles for offline dev.")
+    ap.add_argument("--count", type=int, default=300)
+    ap.add_argument("--reset", action="store_true", help="truncate foray tables first")
+    return asyncio.run(amain(ap.parse_args()))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

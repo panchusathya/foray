@@ -1,0 +1,45 @@
+# Maps a raw (lowercased, @-stripped) GitHub company string to a canonical name.
+# Extend freely; unknown companies fall through unchanged (title-cased).
+google: Google
+googlers: Google
+alphabet: Google
+deepmind: Google DeepMind
+meta: Meta
+facebook: Meta
+fb: Meta
+instagram: Meta
+amazon: Amazon
+aws: Amazon
+amazon web services: Amazon
+microsoft: Microsoft
+msft: Microsoft
+apple: Apple
+netflix: Netflix
+nvidia: NVIDIA
+openai: OpenAI
+anthropic: Anthropic
+stripe: Stripe
+databricks: Databricks
+snowflake: Snowflake
+airbnb: Airbnb
+uber: Uber
+lyft: Lyft
+linkedin: LinkedIn
+salesforce: Salesforce
+oracle: Oracle
+ibm: IBM
+intel: Intel
+amd: AMD
+cloudflare: Cloudflare
+datadog: Datadog
+snap: Snap
+snapchat: Snap
+pinterest: Pinterest
+dropbox: Dropbox
+shopify: Shopify
+coinbase: Coinbase
+twitch: Twitch
+github: GitHub
+gitlab: GitLab
+hashicorp: HashiCorp
+confluent: Confluent

@@ -1,0 +1,12 @@
+# Frontend. Gated additionally on (javascript+typescript) fraction > 0.2.
+react
+vue
+svelte
+tailwind
+webgl
+vite
+nextjs
+next.js
+redux
+webpack
+angular

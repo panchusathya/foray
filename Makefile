@@ -22,6 +22,14 @@ install: ## Create the venv and install every package
 	$(BIN)/python -m pip install -e "packages/core[dev]"
 	cd packages/web && npm install
 
+.PHONY: migrate
+migrate: ## Bring the database schema up to the latest migration
+	$(BIN)/python -m juicebox.cli migrate
+
+.PHONY: migration
+migration: ## Autogenerate a migration from model changes (NAME="what changed")
+	cd packages/core && ../../$(BIN)/python -m alembic revision --autogenerate -m "$(NAME)"
+
 .PHONY: seed
 seed: ## Create the demo workspace (org, project, sequence, agent, 120 people)
 	$(BIN)/python -m juicebox.cli seed
@@ -61,6 +69,12 @@ test-core: ## Python tests
 .PHONY: test-ingest
 test-ingest: ## Node tests
 	cd packages/ingest && npm test
+
+# Hits real provider APIs and costs money, so it is never part of `make test`.
+# Each test skips itself unless its key is present.
+.PHONY: test-live
+test-live: ## Contract tests against the real Anthropic / Voyage APIs
+	cd packages/core && ../../$(BIN)/python -m pytest -m live -v
 
 .PHONY: eval
 eval: ## Score search quality against the labelled query set

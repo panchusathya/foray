@@ -1,4 +1,18 @@
-from .client import LLMClient, LLMResult, LLMUnavailable, get_llm, reset_llm
+from .client import (
+    MIN_ANTHROPIC_VERSION,
+    AnthropicTransport,
+    CostLedger,
+    FakeTransport,
+    LLMClient,
+    LLMResult,
+    LLMUnavailable,
+    Transport,
+    get_llm,
+    is_retryable,
+    reset_llm,
+    sdk_capability,
+    set_llm,
+)
 from .embeddings import (
     HashingEmbedder,
     cosine_similarity,
@@ -10,16 +24,24 @@ from .embeddings import (
 )
 
 __all__ = [
+    "MIN_ANTHROPIC_VERSION",
+    "AnthropicTransport",
+    "CostLedger",
+    "FakeTransport",
     "HashingEmbedder",
     "LLMClient",
     "LLMResult",
     "LLMUnavailable",
+    "Transport",
     "cosine_similarity",
     "embed_text",
     "embed_texts",
     "get_embedder",
     "get_llm",
+    "is_retryable",
     "reset_embedder",
     "reset_llm",
+    "sdk_capability",
+    "set_llm",
     "tokenize",
 ]

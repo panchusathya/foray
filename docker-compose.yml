@@ -35,7 +35,7 @@ services:
       db:
         condition: service_healthy
     command: >
-      sh -c "python -m juicebox.cli init-db &&
+      sh -c "python -m juicebox.cli migrate &&
              uvicorn juicebox.main:app --host 0.0.0.0 --port 8000"
 
   # Sends due outreach steps and runs due sourcing agents on a loop.

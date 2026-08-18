@@ -16,6 +16,10 @@ Everything runs offline. Without an `ANTHROPIC_API_KEY` the deterministic
 parser, scorer and templates still produce a working product — the model
 improves quality, it is not a dependency for the thing to function.
 
+The model client needs `anthropic>=0.78`: every request carries
+`output_config.effort`, which older SDKs cannot express. An SDK below that floor
+is reported as unavailable at startup rather than failing one call at a time.
+
 ---
 
 ## Quick start
@@ -243,6 +247,7 @@ most:
 
 | Variable | Default | Effect |
 |---|---|---|
+| `JUICEBOX_ENV` | `development` | `production` refuses to boot on a default/short `SECRET_KEY` |
 | `DATABASE_URL` | SQLite in `data/` | Postgres: `postgresql+psycopg://…` |
 | `ANTHROPIC_API_KEY` | *(empty)* | Enables LLM parsing, reranking, personalisation, reply classification |
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing` is offline and deterministic; `voyage` is hosted |
@@ -255,14 +260,47 @@ most:
 ## Testing
 
 ```bash
-make test        # 122 Python tests + 9 Node tests
+make test        # 158 Python tests + 9 Node tests
 make eval        # search quality metrics
 make lint
+make test-live   # contract tests against the real APIs; needs keys
 ```
 
 Python tests run against an isolated SQLite file per test, with the model
 disabled and a memory mailbox, so the suite is deterministic and needs no
-network.
+network. Model-backed code is covered through `FakeTransport`, which scripts
+responses, failures and retries without a key.
+
+The same suite runs against PostgreSQL — worth doing before a deploy, since
+SQLite will not catch a Postgres-only problem:
+
+```bash
+JUICEBOX_TEST_DATABASE_URL=postgresql+psycopg://juicebox:juicebox@localhost:5432/juicebox_test \
+  make test-core
+```
+
+`make test-live` makes one real call per integration point to check the wire
+contract — that the `output_config` request shape is accepted and decodes. Each
+test skips itself unless its key is present, so it is never part of `make test`.
+
+CI runs lint, the suite on both SQLite and Postgres (including `alembic check`
+for schema drift), the eval gate, the Node tests, the web build, and a lockfile
+freshness check.
+
+## Migrations
+
+The schema is managed by Alembic; `create_all` is only used for SQLite demos and
+tests.
+
+```bash
+make migrate                      # alembic upgrade head
+make migration NAME="add x to y"  # autogenerate after changing models
+juicebox migrate <rev> --down     # downgrade
+```
+
+Booting the API against Postgres does **not** migrate implicitly — it warns if
+the database is behind. `docker compose up` runs `juicebox migrate` first.
+`tests/test_migrations.py` fails if the models drift from the migrations.
 
 ---
 

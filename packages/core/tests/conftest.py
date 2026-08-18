@@ -1,26 +1,62 @@
-"""Test fixtures: an isolated SQLite database and an authenticated API client."""
+"""Test fixtures: an isolated database and an authenticated API client.
+
+SQLite by default, so the suite needs no infrastructure. Set
+``JUICEBOX_TEST_DATABASE_URL`` to run the identical suite against a real
+PostgreSQL — the production database deserves the same coverage:
+
+    JUICEBOX_TEST_DATABASE_URL=postgresql+psycopg://juicebox:juicebox@localhost/juicebox_test \\
+        pytest
+"""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
+
+TEST_DATABASE_URL = os.environ.get("JUICEBOX_TEST_DATABASE_URL", "")
+
+
+def pytest_configure(config):
+    """Fail clearly when the Postgres URL is set but its driver is missing.
+
+    Otherwise every test errors on connect and the real cause is buried.
+    """
+    if not TEST_DATABASE_URL:
+        return
+    from sqlalchemy.engine import make_url
+
+    try:
+        # get_dialect() alone does not import the driver; import_dbapi() does.
+        make_url(TEST_DATABASE_URL).get_dialect().import_dbapi()
+    except Exception as exc:  # reported verbatim below
+        raise pytest.UsageError(
+            f"JUICEBOX_TEST_DATABASE_URL={TEST_DATABASE_URL!r} is unusable: {exc}\n"
+            'Install the driver with: pip install -e "packages/core[postgres]"'
+        ) from exc
 
 
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path, monkeypatch):
     """Every test gets its own database, no model calls and a memory mailbox."""
-    db_path = tmp_path / "test.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+    if TEST_DATABASE_URL:
+        monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    else:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("JUICEBOX_LLM_ENABLED", "false")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
+    # Retry logic is asserted by call counts, so don't actually sleep for it.
+    monkeypatch.setenv("LLM_RETRY_INITIAL_DELAY", "0")
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
-    from juicebox.llm.client import reset_llm
+    from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
     from juicebox.outreach.sender import set_sender
     from juicebox.search.engine import reset_engine
@@ -34,11 +70,17 @@ def isolated_environment(tmp_path, monkeypatch):
     invalidate()
     set_sender(None)
 
+    if TEST_DATABASE_URL:
+        # One shared database, so wipe it between tests instead of relying on a
+        # fresh file per test the way the SQLite path does.
+        db_module.drop_all()
     db_module.create_all()
     yield
 
     db_module.reset_engine()
     reset_settings_cache()
+    # A test that injected a fake client must not leak it into the next one.
+    set_llm(None)
     reset_llm()
     reset_embedder()
     reset_engine()

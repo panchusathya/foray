@@ -38,6 +38,10 @@ class SendResult:
     ok: bool
     provider_message_id: str = ""
     error: str = ""
+    # Set by the Graph provider; reply detection matches on these.
+    graph_message_id: str = ""
+    internet_message_id: str = ""
+    conversation_id: str = ""
 
 
 class EmailSender(Protocol):
@@ -145,3 +149,48 @@ def set_sender(sender: EmailSender | None) -> None:
     """Tests and the dry-run path swap the provider in directly."""
     global _sender
     _sender = sender
+
+
+class FailingSender:
+    """Stands in when a sequence's mailbox can't send; every send fails loudly.
+
+    Falling back to the global provider here would silently send from the
+    wrong address — the user chose a specific mailbox.
+    """
+
+    name = "failing"
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def send(self, email: OutboundEmail) -> SendResult:
+        return SendResult(ok=False, error=self.reason)
+
+
+_graph_sender_factory = None
+
+
+def set_graph_sender_factory(factory) -> None:
+    """Tests inject a fake Graph sender; None restores the real one."""
+    global _graph_sender_factory
+    _graph_sender_factory = factory
+
+
+def resolve_sender(db, sequence) -> EmailSender:
+    """The provider for one sequence: its connected mailbox, else the global."""
+    if not sequence.mailbox_id:
+        return get_sender()
+
+    from ..models import MailboxConnection
+
+    connection = db.get(MailboxConnection, sequence.mailbox_id)
+    if connection is None or connection.org_id != sequence.org_id:
+        return FailingSender("mailbox connection not found")
+    if connection.status != "active":
+        return FailingSender(f"mailbox {connection.address} is {connection.status}; reconnect it")
+    if _graph_sender_factory is not None:
+        return _graph_sender_factory(db, connection)
+
+    from ..integrations.microsoft import GraphSender
+
+    return GraphSender(db, connection)

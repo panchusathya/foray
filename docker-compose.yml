@@ -29,6 +29,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT_ID: ${MS_TENANT_ID:-organizations}
+      MS_REDIRECT_URI: ${MS_REDIRECT_URI:-}
       CORS_ORIGINS: http://localhost:5173,http://localhost:4173
     ports:
       - "8000:8000"
@@ -51,6 +55,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT_ID: ${MS_TENANT_ID:-organizations}
+      MS_REDIRECT_URI: ${MS_REDIRECT_URI:-}
     depends_on:
       api:
         condition: service_started

@@ -26,7 +26,7 @@ from ..security import signed_tracking_token
 from . import templates
 from .personalize import personalize
 from .replies import ReplyVerdict, classify_reply
-from .sender import OutboundEmail, get_sender
+from .sender import OutboundEmail, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
 
 logger = logging.getLogger(__name__)
@@ -261,7 +261,7 @@ def send_step(
         _finish_enrollment(enrollment, "stopped", "missing_email")
         return message
 
-    sender = get_sender()
+    sender = resolve_sender(db, sequence)
     token = signed_tracking_token(message.id)
     html_body = templates.add_tracking(
         templates.to_html(body),
@@ -290,6 +290,10 @@ def send_step(
         message.status = "sent"
         message.sent_at = now
         message.provider_message_id = result.provider_message_id
+        message.mailbox_id = sequence.mailbox_id or ""
+        message.graph_message_id = result.graph_message_id
+        message.internet_message_id = result.internet_message_id
+        message.conversation_id = result.conversation_id
         message.error = ""
         record_event(
             db,

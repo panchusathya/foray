@@ -12,6 +12,7 @@ import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
 import { SequencesPage } from './pages/Sequences.jsx';
+import { SettingsPage } from './pages/Settings.jsx';
 
 const NAV = [
   { to: '/', label: 'Home', end: true },
@@ -20,6 +21,7 @@ const NAV = [
   { to: '/sequences', label: 'Sequences' },
   { to: '/contacts', label: 'Contacts' },
   { to: '/analytics', label: 'Analytics' },
+  { to: '/settings', label: 'Settings' },
 ];
 
 function CurrentProjectSection() {
@@ -118,6 +120,7 @@ export function App() {
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Shell>

@@ -106,6 +106,11 @@ export const api = {
   funnel: (projectId) =>
     request(`/v1/analytics/funnel${projectId ? `?project_id=${projectId}` : ''}`),
   activity: () => request('/v1/analytics/activity?limit=25'),
+
+  microsoftStatus: () => request('/v1/integrations/microsoft'),
+  microsoftConnect: () => request('/v1/integrations/microsoft/connect', { method: 'POST' }),
+  microsoftDisconnect: (connectionId) =>
+    request(`/v1/integrations/microsoft/${connectionId}`, { method: 'DELETE' }),
 };
 
 export const PIPELINE_STAGES = [

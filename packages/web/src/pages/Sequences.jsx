@@ -193,7 +193,7 @@ export function SequencesPage() {
     <div className="stack">
       <PageHeader
         title="Sequences"
-        subtitle="Multi-step outreach. Variables personalise every send; unsubscribe handling is automatic."
+        subtitle="Multi-step outreach. Variables personalise every send; replies and bounces stop the sequence automatically."
         actions={
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             New sequence

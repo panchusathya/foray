@@ -176,8 +176,11 @@ The template language has no loops, conditionals or expressions — recruiters
 paste into a form, so the renderer must not be able to execute anything.
 
 Sending goes through a provider interface (`console` by default, `smtp` for
-real delivery, `memory` for tests; a Microsoft Graph provider that sends from
-the recruiter's own Outlook mailbox is the planned real path). Each
+real delivery, `memory` for tests). Connect an Outlook mailbox (Settings →
+Connect Outlook, needs an Azure app registration) and a sequence can send
+through Microsoft Graph as that person — the "send from" picker on the
+sequence form. A sequence bound to a disconnected mailbox fails loudly rather
+than silently falling back to another provider. Each
 `(enrollment, step)` pair can produce at most one outbound `Message` row — a
 second worker cannot insert a duplicate. Opens and clicks are tracked with
 HMAC-signed URLs so the endpoints can't be walked. Outreach is 1:1 personal
@@ -250,6 +253,7 @@ signature so third-party systems never hold a Juicebox API key.
 | `POST` | `/v1/sequences` · `/{id}/enroll` · `/{id}/run` | Outreach |
 | `GET`/`PATCH` | `/v1/org` | Workspace settings |
 | `GET`/`POST`/`DELETE` | `/v1/suppressions` | Do-not-contact list |
+| `GET`/`POST`/`DELETE` | `/v1/integrations/microsoft` | Connect an Outlook mailbox (OAuth) |
 | `POST` | `/v1/webhooks/inbound-email` | Reply intake and classification |
 | `POST` | `/v1/agents/{id}/run` | Run a sourcing agent |
 | `GET`  | `/v1/analytics/funnel` | Pipeline + outreach metrics |
@@ -275,6 +279,8 @@ most:
 | `RERANK_TOP_K` | `20` | How many candidates get a model call per search; `0` disables |
 | `EMAIL_PROVIDER` | `console` | `smtp` to actually send |
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
+| `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | *(empty)* | Azure app registration; enables Connect Outlook |
+| `MS_TENANT_ID` | `organizations` | Entra tenant for the OAuth flow |
 
 ---
 

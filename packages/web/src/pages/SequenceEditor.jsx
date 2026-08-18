@@ -89,6 +89,7 @@ export function SequenceEditorPage() {
   const sequence = useAsync(() => api.getSequence(sequenceId), [sequenceId]);
   const enrollments = useAsync(() => api.listEnrollments(sequenceId), [sequenceId]);
   const candidates = useAsync(() => api.listCandidates({ limit: 25 }), []);
+  const microsoft = useAsync(() => api.microsoftStatus(), []);
 
   const [meta, setMeta] = useState(null);
   const [steps, setSteps] = useState([]);
@@ -111,6 +112,7 @@ export function SequenceEditorPage() {
       stop_on_reply: sequence.data.stop_on_reply,
       from_email: sequence.data.from_email,
       from_name: sequence.data.from_name,
+      mailbox_id: sequence.data.mailbox_id,
     });
     setSteps(normalizeSteps(sequence.data.steps));
     setSelected(0);
@@ -123,7 +125,7 @@ export function SequenceEditorPage() {
   const stepsDirty = JSON.stringify(steps) !== JSON.stringify(savedSteps);
   const metaDirty =
     meta && sequence.data
-      ? ['name', 'personalize', 'stop_on_reply', 'from_email', 'from_name'].some(
+      ? ['name', 'personalize', 'stop_on_reply', 'from_email', 'from_name', 'mailbox_id'].some(
           (key) => meta[key] !== sequence.data[key],
         )
       : false;
@@ -357,9 +359,29 @@ export function SequenceEditorPage() {
                   ))}
                 </select>
               </div>
-              <div className="muted small">
-                Unsubscribe link, one-click headers, and your postal address are appended
-                automatically at send time.
+              <div className="row wrap small muted" style={{ alignItems: 'center' }}>
+                <span>Send from</span>
+                <select
+                  style={{ width: 260 }}
+                  value={meta.mailbox_id ?? ''}
+                  onChange={(event) =>
+                    setMeta({ ...meta, mailbox_id: event.target.value || null })
+                  }
+                >
+                  <option value="">Server default</option>
+                  {(microsoft.data?.connections ?? [])
+                    .filter((connection) => connection.status === 'active')
+                    .map((connection) => (
+                      <option key={connection.id} value={connection.id}>
+                        {connection.address} (Outlook)
+                      </option>
+                    ))}
+                </select>
+                {!(microsoft.data?.connections ?? []).some((c) => c.status === 'active') ? (
+                  <span>
+                    <Link to="/settings">Connect Outlook</Link> to send as yourself
+                  </span>
+                ) : null}
               </div>
             </div>
           ) : null}

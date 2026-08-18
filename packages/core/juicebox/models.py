@@ -327,6 +327,10 @@ class Sequence(Base, TimestampMixin):
     stop_on_reply: Mapped[bool] = mapped_column(Boolean, default=True)
     from_email: Mapped[str] = mapped_column(String(255), default="")
     from_name: Mapped[str] = mapped_column(String(200), default="")
+    # Send from this connected mailbox; null = the globally configured provider.
+    mailbox_id: Mapped[str | None] = mapped_column(
+        ForeignKey("mailbox_connections.id", ondelete="SET NULL"), nullable=True
+    )
 
     steps: Mapped[list[SequenceStep]] = relationship(
         back_populates="sequence", cascade="all, delete-orphan", order_by="SequenceStep.step_order"
@@ -418,6 +422,11 @@ class Message(Base, TimestampMixin):
     # queued|sent|failed|bounced|received
     error: Mapped[str] = mapped_column(Text, default="")
     provider_message_id: Mapped[str] = mapped_column(String(200), default="")
+    # Graph sends: which mailbox sent it, plus the ids reply detection matches on.
+    mailbox_id: Mapped[str] = mapped_column(String(40), default="")
+    graph_message_id: Mapped[str] = mapped_column(String(300), default="")
+    internet_message_id: Mapped[str] = mapped_column(String(300), default="", index=True)
+    conversation_id: Mapped[str] = mapped_column(String(200), default="")
 
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -431,6 +440,36 @@ class Message(Base, TimestampMixin):
 
     enrollment: Mapped[Enrollment] = relationship()
     candidate: Mapped[Candidate] = relationship()
+
+
+class MailboxConnection(Base, TimestampMixin):
+    """A recruiter's own mailbox, connected via OAuth. Outreach sends as them.
+
+    Tokens live in ``token_blob`` encrypted (integrations/crypto.py). The delta
+    links and last_synced_at exist for the Phase-4.3 inbox sync job.
+    """
+
+    __tablename__ = "mailbox_connections"
+    __table_args__ = (UniqueConstraint("org_id", "address", name="uq_mailbox_org_address"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("mbx"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(String(40), default="microsoft")
+    address: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    ms_user_id: Mapped[str] = mapped_column(String(80), default="")
+    token_blob: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    # active | error | revoked
+    error: Mapped[str] = mapped_column(Text, default="")
+    inbox_delta_link: Mapped[str] = mapped_column(Text, default="")
+    sent_delta_link: Mapped[str] = mapped_column(Text, default="")
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Suppression(Base, TimestampMixin):

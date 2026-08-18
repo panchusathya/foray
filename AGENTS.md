@@ -48,3 +48,32 @@ not an environment issue — do not "fix" it via environment setup.
 Default storage is SQLite; nothing extra is needed. To use Postgres, install the
 extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
 `DATABASE_URL`, or use `docker compose up --build`.
+
+## Foray sourcing engine (`packages/foray`)
+
+Foray is a separate, self-contained package (its own `uv` project, `asyncpg`, raw
+SQL migrations — no SQLAlchemy). It is a GitHub-sourced candidate search engine
+with precomputed archetype scores; the query path calls no external API. Full
+command reference is in `packages/foray/README.md`. Non-obvious points:
+
+- **Own database, shared container.** Foray uses the `foray` database + role
+  created by `packages/foray/docker/initdb/00-foray.sql` inside the shared
+  `pgvector/pgvector:pg16` container. Start it with `docker compose up -d db`. It
+  reads **`FORAY_DATABASE_URL`** (not Juicebox's `DATABASE_URL`), default
+  `postgresql://foray:foray@localhost:5432/foray`. The init script only runs on a
+  fresh `pgdata` volume; if the `foray` db is missing, `docker compose down -v`
+  first.
+- **Setup:** `cd packages/foray && uv sync --extra dev`, then
+  `FORAY_DATABASE_URL=... ./scripts/migrate.sh` (idempotent numbered-SQL applier).
+- **Pipeline is offline-first.** `harvest`/`enrich`/`freshness` need `GITHUB_TOKEN`;
+  `score` (Batch API) and query `parse` use `ANTHROPIC_API_KEY`. All fail fast with
+  a clear message when a required key is missing (never silent). Without keys, use
+  `scripts/seed_synthetic.py` (fake GitHub-shaped profiles) + `score.run --offline`
+  (explicit spend-free heuristic) to exercise derive -> embed -> score -> search
+  end to end.
+- **Search API:** `uv run uvicorn foray.api.app:app --port 8100` (UI at `/`,
+  `POST /search`, SSE `GET /search/stream`). The archetype **score is in the JSON
+  payload but must never be rendered** (see the static UI); results are shown by
+  rank + evidence only, and lists are never padded below the display floor.
+- **Tests:** `cd packages/foray && uv run pytest -q`. DB-backed tests auto-skip if
+  Postgres/`archetype_scores` are unavailable, so offline unit tests always run.

@@ -27,6 +27,11 @@ GITHUB_GRAPHQL = "https://api.github.com/graphql"
 BATCH_SIZE = 40
 STALE_AFTER = "90 days"
 
+# GitHub answers batched GraphQL with occasional 502s, and its secondary rate
+# limiter with 403/429 — all transient. A long harvest must ride these out.
+TRANSIENT_STATUSES = {403, 429, 500, 502, 503, 504}
+MAX_TRANSIENT_RETRIES = 6
+
 _FRAGMENT = """
 fragment F on User {
   name login email company location bio websiteUrl twitterUsername createdAt
@@ -85,15 +90,33 @@ class GitHubGraphQL:
         log.info("graphql.rate_limited", reset_at=reset_at, sleep=round(delay, 1))
         await asyncio.sleep(delay)
 
+    async def _post_with_retry(self, body: dict) -> httpx.Response:
+        """POST, riding out transient statuses with backoff (Retry-After wins)."""
+        delay = 2.0
+        for attempt in range(MAX_TRANSIENT_RETRIES):
+            self.request_count += 1
+            resp = await self._client.post(GITHUB_GRAPHQL, json=body)
+            if resp.status_code not in TRANSIENT_STATUSES:
+                resp.raise_for_status()
+                return resp
+            retry_after = resp.headers.get("retry-after")
+            sleep = float(retry_after) if retry_after else delay
+            log.info(
+                "graphql.transient",
+                status=resp.status_code,
+                attempt=attempt + 1,
+                sleep=round(sleep, 1),
+            )
+            await asyncio.sleep(min(sleep, 120.0))
+            delay = min(delay * 2, 90.0)
+        resp.raise_for_status()  # out of retries: surface the last status
+        return resp
+
     async def fetch_batch(self, logins: list[str]) -> dict[str, dict | None]:
         query = build_query(len(logins))
         variables = {f"l{i}": login for i, login in enumerate(logins)}
         while True:
-            self.request_count += 1
-            resp = await self._client.post(
-                GITHUB_GRAPHQL, json={"query": query, "variables": variables}
-            )
-            resp.raise_for_status()
+            resp = await self._post_with_retry({"query": query, "variables": variables})
             payload = resp.json()
             errors = payload.get("errors") or []
             data = payload.get("data")

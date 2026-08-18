@@ -1,0 +1,195 @@
+# Foray archetypes: 15 fixed hiring framings, scored offline against the pool.
+#
+# Each archetype has:
+#   id      - stable key, used in archetype_scores.archetype_id
+#   label   - human label
+#   gate    - a SQL boolean over candidate_signals (alias s) / candidates (alias c).
+#             Gates are deliberately LOOSE (recall over precision); the LLM is the
+#             precision layer. Only columns that exist may be referenced.
+#   rubric  - the scoring prompt. The EFFECTIVE rubric the model sees is
+#             (rubric + "\n\n" + shared_rubric_tail); rubric_hash is sha256 of that.
+#
+# Gates overlap on purpose: a candidate can score for both founding_ml and
+# ml_research, and the recruiter picks the framing per brief.
+
+shared_rubric_tail: |
+  Output ONLY a JSON object. No prose, no markdown fences:
+  {"score": <integer 0-100>, "highlights": ["...", "..."], "rationale": "<=40 words", "flags": ["..."]}
+
+  highlights are the ONLY thing a recruiter sees, so their quality is the product:
+  - 2 to 4 phrases, each under 12 words.
+  - Every phrase must name checkable evidence: a repo and its star count, a specific
+    technology, an employer, or a commit volume. Good: "Maintains apache/airflow, 2.1k stars".
+    Bad: "strong open source presence".
+  - State thin evidence honestly instead of inflating it: "three Go repos, no scale evidence"
+    is a useful highlight.
+  - No quotation marks around terms of art. NEVER use hedge words (strong, excellent,
+    impressive, solid, passionate, talented).
+  - NEVER infer or reference gender, ethnicity, age, or nationality.
+
+  rationale is internal (eval/debugging only): when the candidate is weak, name the
+  disqualifier explicitly.
+  flags is a short list of machine caveat tags, e.g. stale_activity, thin_evidence, career_gap.
+
+archetypes:
+  # ------------------------------------------------------------------ AI / ML --
+  - id: founding_ml
+    label: Founding ML Engineer
+    gate: >-
+      s.domain_markers @> array['ml'] and s.est_experience_years between 3 and 12
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a FOUNDING machine learning engineer at an early-stage startup:
+      someone who has built ML training or inference systems end to end, not just used
+      a notebook. Reward: shipped training infrastructure, model-serving, or data
+      pipelines; ownership of a substantial ML repo; breadth across the stack. Penalize:
+      only tutorials/forks, no evidence of production ML, pure research with no shipping.
+
+  - id: ml_research
+    label: ML Research Engineer
+    gate: >-
+      s.domain_markers @> array['ml'] and (s.oss_maintainer or s.total_stars >= 200)
+      and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for an ML RESEARCH engineer: someone who implements novel methods and
+      contributes reusable research artifacts. Reward: well-starred ML libraries, model
+      implementations, papers-with-code style repos, custom architectures or training
+      tricks. Penalize: wrappers around existing APIs, no original implementation.
+
+  - id: ml_platform
+    label: ML Platform / MLOps Engineer
+    gate: >-
+      (s.domain_markers @> array['ml'] or s.domain_markers @> array['gpu'])
+      and s.domain_markers && array['infra','data','sre']
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for an ML PLATFORM / MLOps engineer who runs ML in production: training
+      orchestration, feature stores, GPU scheduling, model registries, serving infra.
+      Reward: ML plus infra/data/sre evidence together (Kubernetes, Airflow, Ray, Triton).
+      Penalize: modeling only with no platform/ops signal.
+
+  - id: applied_ml
+    label: Applied ML Engineer
+    gate: >-
+      s.domain_markers @> array['ml'] and s.est_experience_years between 2 and 10
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for an APPLIED ML engineer who ships ML features into products: fine-tuning,
+      RAG, recommendation, or classification wired into an app. Reward: end-to-end applied
+      projects, evaluation harnesses, product integration. Penalize: pure research with no
+      product, or generic backend with a single ML dependency.
+
+  # ------------------------------------------------------------ infra / data --
+  - id: infra_platform
+    label: Infrastructure / Platform Engineer
+    gate: >-
+      s.domain_markers @> array['infra'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for an INFRASTRUCTURE / platform engineer: Kubernetes, Terraform, service
+      meshes, internal developer platforms. Reward: operators/controllers, IaC modules,
+      multi-service platform work, scale evidence. Penalize: single-service hobby infra,
+      only using (not building) platform tools.
+
+  - id: senior_backend
+    label: Senior Backend Engineer
+    gate: >-
+      s.primary_language in ('go','rust','java','python','scala','cpp')
+      and s.est_experience_years >= 5 and s.non_fork_repo_count >= 2
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a SENIOR backend engineer: distributed services, APIs, data-intensive
+      systems in a compiled or server language. Reward: substantial services, concurrency,
+      storage/queue work, sustained commit history. Penalize: only scripts/CLIs, no service
+      design, thin or abandoned repos.
+
+  - id: site_reliability
+    label: Site Reliability Engineer
+    gate: >-
+      s.domain_markers @> array['sre'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a SITE RELIABILITY engineer: observability, on-call tooling, SLOs,
+      incident automation. Reward: Prometheus/OpenTelemetry/Grafana work, alerting/reliability
+      tooling, production ops evidence. Penalize: dashboards-only, no reliability engineering.
+
+  - id: data_engineer
+    label: Data Engineer
+    gate: >-
+      s.domain_markers @> array['data'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a DATA engineer: batch/stream pipelines, warehouses, orchestration.
+      Reward: Spark/dbt/Airflow/Flink/Kafka work, pipeline reliability, schema/modeling.
+      Penalize: one-off ETL scripts, analytics notebooks with no pipeline engineering.
+
+  - id: database_engineer
+    label: Database / Storage Engineer
+    gate: >-
+      s.domain_markers @> array['db'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for a DATABASE / storage systems engineer: storage engines, consensus,
+      query engines. Reward: RocksDB/ClickHouse/Raft/WAL/LSM work, low-level storage or
+      distributed-systems repos. Penalize: only ORM/CRUD usage, no systems-level evidence.
+
+  # --------------------------------------------------------- product / app --
+  - id: fullstack_product
+    label: Full-stack Product Engineer
+    gate: >-
+      s.domain_markers @> array['frontend'] and s.est_experience_years between 2 and 12
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a FULL-STACK product engineer who ships user-facing features end to end.
+      Reward: front-end plus a backend/API in the same projects, shipped products, breadth.
+      Penalize: static sites only, tutorial clones, no backend evidence.
+
+  - id: frontend_specialist
+    label: Frontend Specialist
+    gate: >-
+      s.domain_markers @> array['frontend'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '18 months'
+    rubric: |
+      Score fit for a FRONTEND specialist: complex React/Vue/Svelte apps, design systems,
+      performance, accessibility, WebGL. Reward: reusable component libraries, non-trivial
+      client architecture, polish. Penalize: template sites, minimal JS/TS depth.
+
+  - id: mobile_engineer
+    label: Mobile Engineer
+    gate: >-
+      s.domain_markers @> array['mobile'] and s.est_experience_years >= 2
+      and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for a MOBILE engineer: native iOS/Android or cross-platform apps. Reward:
+      shipped apps, SwiftUI/Jetpack Compose/React Native depth, platform APIs. Penalize:
+      single-screen demos, no evidence of a real app.
+
+  # ------------------------------------------------------------- specialist --
+  - id: security_engineer
+    label: Security Engineer
+    gate: >-
+      s.domain_markers @> array['security'] and s.est_experience_years >= 3
+      and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for a SECURITY engineer: fuzzing, SAST, vuln research, supply-chain and
+      auth. Reward: CVEs, security tooling, fuzzers, sigstore/semgrep/OWASP work. Penalize:
+      security-adjacent naming with no actual security engineering.
+
+  - id: gpu_systems
+    label: GPU / Systems Engineer
+    gate: >-
+      s.domain_markers @> array['gpu'] and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for a GPU / high-performance systems engineer: CUDA/Triton kernels,
+      inference runtimes, low-level performance. Reward: kernel code, vLLM/TensorRT/NCCL
+      work, measured speedups. Penalize: only calling GPU libraries, no kernel/systems depth.
+
+  - id: embedded_engineer
+    label: Embedded / Robotics Engineer
+    gate: >-
+      s.domain_markers @> array['embedded'] and s.est_experience_years >= 2
+      and s.last_push_at > now() - interval '24 months'
+    rubric: |
+      Score fit for an EMBEDDED / robotics engineer: firmware, RTOS, robotics stacks.
+      Reward: ROS2/FreeRTOS/STM32/SLAM work, hardware-in-the-loop, real device evidence.
+      Penalize: simulation-only or hobby blink-LED projects with no depth.

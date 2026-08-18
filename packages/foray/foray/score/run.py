@@ -1,14 +1,16 @@
 """Score gated candidates against archetypes.
 
-Default path: the Anthropic Batch API (50% off), rubric in a cached system prefix,
-candidate blob in the user turn, forced JSON output. custom_id is
-``{candidate_id}:{archetype_id}`` so results map back statelessly.
+Default path: bounded-concurrency chat completions against OpenRouter (any
+OpenRouter model slug; FORAY_SCORING_MODEL defaults to a cheap open-weight
+model). Rubric in the system turn, candidate blob in the user turn, forced JSON
+output parsed defensively. OpenRouter has no batch API, so bulk scoring is a
+fan-out of single requests with a semaphore.
 
 Modes:
   --dry-run     print request count + projected $ and exit (no spend)
   --sample N    score N candidates synchronously and print them (no DB write)
   --offline     score with the spend-free heuristic (explicit; model=offline-heuristic)
-  (default)     submit a Batch job, poll, parse, upsert into archetype_scores
+  (default)     fan out requests, parse, upsert into archetype_scores
   --stale-only  only rescore rows whose rubric_hash no longer matches
 """
 
@@ -16,11 +18,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
 from typing import Any
+
+import httpx
 
 from ..config import settings
 from ..db import close_pool, get_pool
+from ..llm import achat, chat
 from ..log import get_logger
 from .archetypes import Archetype, load_archetypes, sync_archetypes
 from .common import (
@@ -86,59 +90,49 @@ async def run_offline(conn, arch: Archetype, rows: list[Any]) -> int:
     return len(rows)
 
 
-# -------------------------------------------------------------------- batch --
+# --------------------------------------------------------------- openrouter --
 
 
-def _build_request(arch: Archetype, row: Any) -> dict[str, Any]:
-    return {
-        "custom_id": f"{row['id']}:{arch.id}",
-        "params": {
-            "model": settings.scoring_model,
-            "max_tokens": 400,
-            "system": [
-                {"type": "text", "text": arch.rubric, "cache_control": {"type": "ephemeral"}}
-            ],
-            "messages": [{"role": "user", "content": build_user_content(row)}],
-        },
-    }
+async def run_openrouter(conn, arch: Archetype, rows: list[Any], concurrency: int) -> int:
+    """Fan out completions with a semaphore; DB writes stay on this task.
 
+    Requests run concurrently, but upserts/error rows are applied sequentially
+    from the gathered results because asyncpg connections are not task-safe.
+    """
+    semaphore = asyncio.Semaphore(max(1, concurrency))
 
-async def run_batch(conn, arch: Archetype, rows: list[Any], poll_interval: float) -> int:
-    from anthropic import Anthropic
+    async def score_one(client: httpx.AsyncClient, row: Any) -> tuple[Any, str, Exception | None]:
+        async with semaphore:
+            try:
+                text = await achat(
+                    client,
+                    arch.rubric,
+                    build_user_content(row),
+                    model=settings.scoring_model,
+                )
+                return row, text, None
+            except Exception as exc:  # noqa: BLE001 - recorded per-row, must not kill the run
+                return row, "", exc
 
-    client = Anthropic(api_key=settings.anthropic_api_key)
-    requests = [_build_request(arch, row) for row in rows]
-    row_by_id = {str(row["id"]): row for row in rows}
-
-    batch = client.messages.batches.create(requests=requests)
-    log.info("batch.created", batch_id=batch.id, requests=len(requests))
-    while True:
-        current = client.messages.batches.retrieve(batch.id)
-        if current.processing_status == "ended":
-            break
-        log.info("batch.polling", batch_id=batch.id, status=current.processing_status)
-        await asyncio.sleep(poll_interval)
+    async with httpx.AsyncClient(base_url=settings.openrouter_base_url, timeout=90.0) as client:
+        results = await asyncio.gather(*(score_one(client, row) for row in rows))
 
     ok = 0
     failures = 0
-    for result in client.messages.batches.results(batch.id):
-        custom_id = result.custom_id
-        candidate_id_str, _arch_id = custom_id.split(":", 1)
-        row = row_by_id.get(candidate_id_str)
-        res = result.result
-        if res.type != "succeeded":
+    for row, text, exc in results:
+        custom_id = f"{row['id']}:{arch.id}"
+        if exc is not None:
             failures += 1
-            await _record_error(conn, int(candidate_id_str), arch.id, custom_id, "", res.type)
+            await _record_error(conn, row["id"], arch.id, custom_id, "", str(exc))
             continue
-        text = res.message.content[0].text if res.message.content else ""
         try:
             parsed = parse_scoring_json(text)
-            await _upsert(conn, int(candidate_id_str), arch, parsed, settings.scoring_model)
+            await _upsert(conn, row["id"], arch, parsed, settings.scoring_model)
             ok += 1
-        except Exception as exc:  # noqa: BLE001 - a bad parse must not kill the batch
+        except Exception as exc2:  # noqa: BLE001 - a bad parse must not kill the run
             failures += 1
-            await _record_error(conn, int(candidate_id_str), arch.id, custom_id, text, str(exc))
-    log.info("batch.done", batch_id=batch.id, ok=ok, failures=failures)
+            await _record_error(conn, row["id"], arch.id, custom_id, text, str(exc2))
+    log.info("openrouter.done", archetype=arch.id, ok=ok, failures=failures)
     return ok
 
 
@@ -146,17 +140,8 @@ async def run_batch(conn, arch: Archetype, rows: list[Any], poll_interval: float
 
 
 def run_sample(arch: Archetype, rows: list[Any]) -> None:
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=settings.anthropic_api_key)
     for row in rows:
-        msg = client.messages.create(
-            model=settings.scoring_model,
-            max_tokens=400,
-            system=[{"type": "text", "text": arch.rubric, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": build_user_content(row)}],
-        )
-        text = msg.content[0].text if msg.content else ""
+        text = chat(arch.rubric, build_user_content(row), model=settings.scoring_model)
         try:
             parsed = parse_scoring_json(text)
             print(f"\n{row['login']}  score={parsed['score']}  flags={parsed['flags']}")
@@ -189,16 +174,19 @@ async def amain(args: argparse.Namespace) -> int:
 
         total_calls = sum(len(rows) for _a, rows in plan)
         projected = total_calls * PER_CALL_USD
-        print(f"to score: {total_calls} candidate-archetype calls | projected ${projected:.2f}")
+        print(
+            f"to score: {total_calls} candidate-archetype calls | "
+            f"~${projected:.2f} at {settings.scoring_model}"
+        )
         for arch, rows in plan:
             print(f"  {arch.id:22s} {len(rows):6d}")
 
         if args.dry_run:
             return 0
 
-        if not args.offline and not args.sample:
-            settings.require("anthropic_api_key")
-            if projected > settings.spend_confirm_threshold_usd and not args.yes:
+        if not args.offline:
+            settings.require("openrouter_api_key")
+            if not args.sample and projected > settings.spend_confirm_threshold_usd and not args.yes:
                 raise SystemExit(
                     f"projected ${projected:.2f} exceeds ${settings.spend_confirm_threshold_usd:.0f}; "
                     f"re-run with --yes to confirm."
@@ -209,12 +197,11 @@ async def amain(args: argparse.Namespace) -> int:
             if not rows:
                 continue
             if args.sample:
-                settings.require("anthropic_api_key")
                 run_sample(arch, rows)
             elif args.offline:
                 scored += await run_offline(conn, arch, rows)
             else:
-                scored += await run_batch(conn, arch, rows, args.poll_interval)
+                scored += await run_openrouter(conn, arch, rows, args.concurrency)
 
         if not args.sample:
             print(f"scored {scored} candidate-archetype pairs")
@@ -231,7 +218,12 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=0, help="score N synchronously and print (no DB write)")
     ap.add_argument("--offline", action="store_true", help="spend-free heuristic scorer (explicit)")
     ap.add_argument("--stale-only", action="store_true", help="only rescore rubric_hash mismatches")
-    ap.add_argument("--poll-interval", type=float, default=15.0, help="batch poll seconds")
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=settings.scoring_concurrency,
+        help="parallel OpenRouter requests (default FORAY_SCORING_CONCURRENCY)",
+    )
     return asyncio.run(amain(ap.parse_args()))
 
 

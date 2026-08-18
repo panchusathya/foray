@@ -42,7 +42,7 @@ async def amain(args: argparse.Namespace) -> int:
     await close_pool()  # sub-steps manage their own pools
 
     score_args = ["foray.score.run", "--stale-only"]
-    score_args.append("--offline" if not settings.anthropic_api_key else "--yes")
+    score_args.append("--offline" if not settings.openrouter_api_key else "--yes")
 
     steps = [
         ["foray.enrich.derive"],

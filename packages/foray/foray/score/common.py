@@ -11,11 +11,13 @@ from typing import Any
 
 from .archetypes import Archetype
 
-# Per-call cost estimate (Haiku 4.5 via Batch API: input $0.50/MTok, output $2.50/MTok).
+# Per-call cost estimate. Ballpark for a cheap open-weight model on OpenRouter
+# (gpt-oss-120b class: ~$0.10/MTok in, ~$0.50/MTok out); a projection shown
+# before spend, not a bill — actual price depends on FORAY_SCORING_MODEL.
 INPUT_TOKENS_EST = 1650
 OUTPUT_TOKENS_EST = 250
-INPUT_USD_PER_MTOK = 0.50
-OUTPUT_USD_PER_MTOK = 2.50
+INPUT_USD_PER_MTOK = 0.10
+OUTPUT_USD_PER_MTOK = 0.50
 PER_CALL_USD = (
     INPUT_TOKENS_EST / 1e6 * INPUT_USD_PER_MTOK
     + OUTPUT_TOKENS_EST / 1e6 * OUTPUT_USD_PER_MTOK

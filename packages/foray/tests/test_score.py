@@ -39,7 +39,8 @@ def test_gate_marker_extraction():
 
 
 def test_per_call_cost_matches_spec():
-    assert abs(PER_CALL_USD - 0.00145) < 1e-4
+    # 1650 in @ $0.10/MTok + 250 out @ $0.50/MTok (open-weight model ballpark).
+    assert abs(PER_CALL_USD - 0.00029) < 1e-5
 
 
 def test_parse_scoring_json_strips_fences_and_clamps():

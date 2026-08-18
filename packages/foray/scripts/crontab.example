@@ -4,7 +4,7 @@
 # tier (embeddings/scores) quarterly over the full pool.
 #
 # Install with: crontab packages/foray/scripts/crontab.example
-# Ensure FORAY_DATABASE_URL (and GITHUB_TOKEN/ANTHROPIC_API_KEY for the tiers
+# Ensure FORAY_DATABASE_URL (and GITHUB_TOKEN/OPENROUTER_API_KEY for the tiers
 # that need them) are present in the cron environment.
 
 0  3 * * *    /workspace/packages/foray/scripts/refresh_events.sh        # daily,     watchlist

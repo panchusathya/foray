@@ -33,7 +33,8 @@ FORAY_DATABASE_URL=postgresql://foray:foray@localhost:5432/foray ./scripts/migra
 ```
 
 Secrets live in the repo-root `.env` (see `.env.example`): `GITHUB_TOKEN`
-(harvest/enrich), `ANTHROPIC_API_KEY` (scoring + query parse), `APOLLO_API_KEY`
+(harvest/enrich), `OPENROUTER_API_KEY` (scoring + query parse via OpenRouter;
+model slugs in `FORAY_SCORING_MODEL`/`FORAY_PARSE_MODEL`), `APOLLO_API_KEY`
 (Phase 6 only), and `FORAY_DATABASE_URL`. Every command that needs a key fails
 fast with a clear message if it is missing.
 

@@ -2,7 +2,7 @@
 
 Foray shares the Juicebox monorepo's ``.env`` but namespaces its own database
 URL as ``FORAY_DATABASE_URL`` so it never clobbers Juicebox's ``DATABASE_URL``.
-Secrets (GitHub / Anthropic / Apollo) are optional at load time so that
+Secrets (GitHub / OpenRouter / Apollo) are optional at load time so that
 infrastructure commands (migrate, derive) import cleanly; each command that
 needs a key calls ``settings.require(...)`` and fails fast with a clear error.
 """
@@ -36,16 +36,20 @@ class Settings(BaseSettings):
 
     # --- secrets (optional at load; required per-command via require()) ---
     github_token: str = Field(default="", validation_alias="GITHUB_TOKEN")
-    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    openrouter_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
     apollo_api_key: str = Field(default="", validation_alias="APOLLO_API_KEY")
 
-    # --- models ---
+    # --- models (any OpenRouter slug; defaults are cheap open-weight models) ---
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL"
+    )
     scoring_model: str = Field(
-        default="claude-haiku-4-5-20251001", validation_alias="FORAY_SCORING_MODEL"
+        default="openai/gpt-oss-120b", validation_alias="FORAY_SCORING_MODEL"
     )
     parse_model: str = Field(
-        default="claude-haiku-4-5-20251001", validation_alias="FORAY_PARSE_MODEL"
+        default="openai/gpt-oss-120b", validation_alias="FORAY_PARSE_MODEL"
     )
+    scoring_concurrency: int = Field(default=6, validation_alias="FORAY_SCORING_CONCURRENCY")
     embedding_model: str = Field(
         default="BAAI/bge-small-en-v1.5", validation_alias="FORAY_EMBEDDING_MODEL"
     )
@@ -85,7 +89,7 @@ class Settings(BaseSettings):
 
 _ENV_NAMES = {
     "github_token": "GITHUB_TOKEN",
-    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "openrouter_api_key": "OPENROUTER_API_KEY",
     "apollo_api_key": "APOLLO_API_KEY",
     "database_url": "FORAY_DATABASE_URL",
 }

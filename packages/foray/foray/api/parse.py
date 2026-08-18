@@ -101,16 +101,9 @@ def _llm_schema_prompt() -> str:
 
 def llm_parse(query: str) -> ParsedFilter | None:
     try:
-        from anthropic import Anthropic
+        from ..llm import chat
 
-        client = Anthropic(api_key=settings.anthropic_api_key)
-        msg = client.messages.create(
-            model=settings.parse_model,
-            max_tokens=400,
-            system=[{"type": "text", "text": _llm_schema_prompt()}],
-            messages=[{"role": "user", "content": query}],
-        )
-        text = msg.content[0].text if msg.content else "{}"
+        text = chat(_llm_schema_prompt(), query, model=settings.parse_model) or "{}"
         if text.strip().startswith("```"):
             text = text.strip().split("\n", 1)[1].rsplit("```", 1)[0]
         obj = json.loads(text)
@@ -140,7 +133,7 @@ async def parse_query(conn, query: str, *, use_llm: bool | None = None) -> tuple
         parsed = ParsedFilter(**data)
         return parsed, ("cache" if parsed.archetype_id else "vector-fallback")
 
-    want_llm = bool(settings.anthropic_api_key) if use_llm is None else use_llm
+    want_llm = bool(settings.openrouter_api_key) if use_llm is None else use_llm
     parsed = llm_parse(query) if want_llm else None
     parser_name = "llm"
     if parsed is None:

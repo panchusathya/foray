@@ -133,7 +133,7 @@ docker compose -f docker-compose.prod.yml exec -T db psql -U juicebox -d foray -
 
 The service runs its SQL migrations on container start. The database starts
 empty — populate it with the offline pipeline (needs `GITHUB_TOKEN` and
-`ANTHROPIC_API_KEY` in `.env`), run inside the container:
+`OPENROUTER_API_KEY` in `.env`), run inside the container:
 
 ```bash
 alias foray-run='docker compose -f docker-compose.prod.yml exec -T foray python -m'
@@ -146,8 +146,9 @@ foray-run foray.score.run --dry-run          # prints request count + cost
 foray-run foray.score.run --yes              # all archetypes by default
 ```
 
-Scoring uses the Haiku Batch API and confirms before spending more than
-`FORAY_SPEND_CONFIRM_THRESHOLD_USD` (default $25). The query path never calls
+Scoring fans out requests to OpenRouter (cheap open-weight model by default;
+set `FORAY_SCORING_MODEL` to any OpenRouter slug) and confirms before spending
+more than `FORAY_SPEND_CONFIRM_THRESHOLD_USD` (default $25). The query path never calls
 an external API; the 4 GB VM benefits from a swap file during embedding runs
 (`fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile`).
 

@@ -322,6 +322,45 @@ class TestOutreachApi:
         assert run["sent"] == 0 and not mailbox.outbox
 
 
+class TestOrgAndSuppressions:
+    def test_postal_address_round_trips(self, client, account):
+        headers = account["headers"]
+        body = client.patch(
+            "/v1/org",
+            json={"postal_address": "1 Market St, San Francisco, CA 94105"},
+            headers=headers,
+        ).json()
+        assert "1 Market St" in body["postal_address"]
+        assert client.get("/v1/org", headers=headers).json()["postal_address"] == body["postal_address"]
+
+    def test_suppression_list_blocks_sends(self, client, loaded_org, mailbox):
+        headers = loaded_org["headers"]
+        added = client.post(
+            "/v1/suppressions",
+            json={"email": "ada@example.com", "reason": "manual"},
+            headers=headers,
+        )
+        assert added.status_code == 201
+        listed = client.get("/v1/suppressions", headers=headers).json()
+        assert listed[0]["email"] == "ada@example.com"
+
+        sequence = TestOutreachApi()._sequence(client, headers)
+        candidate = client.get("/v1/candidates?q=ada", headers=headers).json()[0]
+        client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate["id"]]},
+            headers=headers,
+        )
+        run = client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers).json()
+        assert run["sent"] == 0
+        assert not mailbox.outbox
+
+        removed = client.delete(
+            "/v1/suppressions", params={"email": "ada@example.com"}, headers=headers
+        )
+        assert removed.status_code == 200
+
+
 class TestAgentsApi:
     def test_agent_run_fills_the_pipeline(self, client, loaded_org):
         headers = loaded_org["headers"]

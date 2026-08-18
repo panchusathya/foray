@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
@@ -14,6 +15,7 @@ from ..models import (
     Candidate,
     Enrollment,
     Message,
+    Org,
     Project,
     ProjectCandidate,
     Sequence,
@@ -23,6 +25,15 @@ from ..models import (
 )
 from ..security import signed_tracking_token
 from . import templates
+from .compliance import (
+    append_footer,
+    compliance_headers,
+    is_suppressed,
+    normalize_email,
+    postal_address_for,
+    suppress,
+    unsubscribe_url,
+)
 from .personalize import personalize
 from .replies import ReplyVerdict, classify_reply
 from .sender import OutboundEmail, get_sender
@@ -165,6 +176,16 @@ def _finish_enrollment(enrollment: Enrollment, status: str, reason: str = "") ->
     enrollment.next_send_at = None
 
 
+def _existing_outbound(db: Session, enrollment_id: str, step_id: str) -> Message | None:
+    return db.scalar(
+        select(Message).where(
+            Message.enrollment_id == enrollment_id,
+            Message.step_id == step_id,
+            Message.direction == "outbound",
+        )
+    )
+
+
 def send_step(
     db: Session,
     *,
@@ -176,6 +197,37 @@ def send_step(
     dry_run: bool = False,
 ) -> Message:
     settings = get_settings()
+    existing = _existing_outbound(db, enrollment.id, step.id)
+    if existing is not None and existing.status == "sent":
+        return existing
+    if existing is not None and existing.status == "failed" and existing.error in {
+        "suppressed",
+        "no email address on file",
+    }:
+        return existing
+
+    to_address = normalize_email(candidate.primary_email or "")
+    if to_address and is_suppressed(db, org_id=sequence.org_id, email=to_address):
+        message = existing or Message(
+            org_id=sequence.org_id,
+            enrollment_id=enrollment.id,
+            candidate_id=candidate.id,
+            step_id=step.id,
+            channel=step.channel,
+            direction="outbound",
+            to_address=to_address,
+            status="failed",
+            error="suppressed",
+        )
+        if existing is None:
+            db.add(message)
+            db.flush()
+        else:
+            message.status = "failed"
+            message.error = "suppressed"
+        _finish_enrollment(enrollment, "stopped", "suppressed")
+        return message
+
     context = enrollment.personalization or None
     subject, body, context = build_message_content(
         db, sequence=sequence, step=step, candidate=candidate, context=context
@@ -183,26 +235,47 @@ def send_step(
     if not enrollment.personalization:
         enrollment.personalization = context
 
-    to_address = candidate.primary_email or ""
-    message = Message(
-        org_id=sequence.org_id,
-        enrollment_id=enrollment.id,
-        candidate_id=candidate.id,
-        step_id=step.id,
-        channel=step.channel,
-        direction="outbound",
-        to_address=to_address,
-        subject=subject,
-        body=body,
-        status="queued",
-    )
-    db.add(message)
-    db.flush()  # need message.id for tracking links
+    message = existing
+    if message is None:
+        message = Message(
+            org_id=sequence.org_id,
+            enrollment_id=enrollment.id,
+            candidate_id=candidate.id,
+            step_id=step.id,
+            channel=step.channel,
+            direction="outbound",
+            to_address=to_address,
+            subject=subject,
+            body=body,
+            status="queued",
+        )
+        try:
+            with db.begin_nested():
+                db.add(message)
+                db.flush()
+        except IntegrityError:
+            message = _existing_outbound(db, enrollment.id, step.id)
+            if message is None:
+                raise
+            if message.status == "sent":
+                return message
+    else:
+        message.subject = subject
+        message.body = body
+        message.to_address = to_address
 
     if not to_address:
         message.status = "failed"
         message.error = "no email address on file"
         _finish_enrollment(enrollment, "stopped", "missing_email")
+        return message
+
+    org = db.get(Org, sequence.org_id)
+    address = postal_address_for(org)
+    sender = get_sender()
+    if sender.name == "smtp" and not address:
+        message.status = "failed"
+        message.error = "postal address required for commercial email"
         return message
 
     token = signed_tracking_token(message.id)
@@ -212,15 +285,24 @@ def send_step(
         message_id=message.id,
         token=token,
     )
+    unsub = unsubscribe_url(
+        base_url=settings.base_url, message_id=message.id, token=token
+    )
+    text_body, html_body = append_footer(
+        body, html_body, unsub_url=unsub, postal_address=address
+    )
 
     email = OutboundEmail(
         to=to_address,
         subject=subject,
-        text_body=body,
+        text_body=text_body,
         html_body=html_body,
         from_email=sequence.from_email or settings.outreach_from_email,
         from_name=sequence.from_name or settings.outreach_from_name,
-        headers={"X-Juicebox-Message-Id": message.id},
+        headers={
+            "X-Juicebox-Message-Id": message.id,
+            **compliance_headers(unsub),
+        },
     )
 
     if dry_run:
@@ -228,11 +310,12 @@ def send_step(
         message.provider_message_id = "dry-run"
         return message
 
-    result = get_sender().send(email)
+    result = sender.send(email)
     if result.ok:
         message.status = "sent"
         message.sent_at = now
         message.provider_message_id = result.provider_message_id
+        message.error = ""
         record_event(
             db,
             org_id=sequence.org_id,
@@ -255,6 +338,99 @@ def send_step(
     return message
 
 
+def due_enrollments(
+    db: Session,
+    *,
+    org_id: str,
+    now: datetime,
+    sequence_id: str | None = None,
+    limit: int | None = None,
+) -> list[Enrollment]:
+    query = (
+        select(Enrollment)
+        .join(Sequence, Sequence.id == Enrollment.sequence_id)
+        .where(
+            Sequence.org_id == org_id,
+            Sequence.status == "active",
+            Enrollment.status == "active",
+            Enrollment.next_send_at.is_not(None),
+            Enrollment.next_send_at <= now,
+        )
+        .options(selectinload(Enrollment.sequence).selectinload(Sequence.steps))
+        .order_by(Enrollment.next_send_at)
+    )
+    if sequence_id:
+        query = query.where(Enrollment.sequence_id == sequence_id)
+    if limit:
+        query = query.limit(limit)
+    return list(db.scalars(query).all())
+
+
+def process_enrollment(
+    db: Session,
+    enrollment: Enrollment,
+    *,
+    now: datetime,
+    dry_run: bool = False,
+    step_id: str | None = None,
+) -> tuple[str, Message | None]:
+    """Send the current step if it is due. Status is for the worker / run_due."""
+    due_at = _aware(enrollment.next_send_at)
+    if enrollment.status != "active":
+        return "skipped", None
+
+    sequence = enrollment.sequence
+    steps = sorted(sequence.steps, key=lambda s: s.step_order)
+    if enrollment.current_step >= len(steps):
+        _finish_enrollment(enrollment, "completed")
+        return "completed", None
+
+    step = steps[enrollment.current_step]
+    if step_id and step.id != step_id:
+        # This send job is for a step that already ran.
+        return "skipped", _existing_outbound(db, enrollment.id, step_id)
+
+    if due_at is None or due_at > now:
+        return "skipped", None
+
+    if not dry_run:
+        remaining_cap = max(
+            0, get_settings().outreach_daily_cap - _sent_today(db, sequence.org_id, now)
+        )
+        if remaining_cap == 0:
+            return "deferred", None
+
+    candidate = db.get(Candidate, enrollment.candidate_id)
+    if candidate is None:
+        _finish_enrollment(enrollment, "stopped", "candidate_deleted")
+        return "stopped", None
+
+    step = steps[enrollment.current_step]
+    message = send_step(
+        db,
+        enrollment=enrollment,
+        sequence=sequence,
+        step=step,
+        candidate=candidate,
+        now=now,
+        dry_run=dry_run,
+    )
+    if message.status == "failed":
+        return "failed", message
+    if enrollment.status != "active":
+        return "stopped", message
+
+    enrollment.current_step += 1
+    if enrollment.current_step >= len(steps):
+        _finish_enrollment(enrollment, "completed")
+        _advance_pipeline_stage(db, enrollment)
+        return "completed", message
+    next_step = steps[enrollment.current_step]
+    enrollment.next_send_at = now + timedelta(days=max(next_step.delay_days, 0))
+    _advance_pipeline_stage(db, enrollment)
+    return "sent", message
+
+
 def run_due(
     db: Session,
     *,
@@ -265,82 +441,41 @@ def run_due(
     sequence_id: str | None = None,
 ) -> RunSummary:
     """Send every step that is due. Safe to call repeatedly (cron/worker)."""
-    settings = get_settings()
     now = now or utcnow()
     summary = RunSummary()
 
-    remaining_cap = max(0, settings.outreach_daily_cap - _sent_today(db, org_id, now))
+    remaining_cap = max(0, get_settings().outreach_daily_cap - _sent_today(db, org_id, now))
     if remaining_cap == 0 and not dry_run:
         logger.info("daily outreach cap reached for org %s", org_id)
         return summary
 
-    query = (
-        select(Enrollment)
-        .join(Sequence, Sequence.id == Enrollment.sequence_id)
-        .where(
-            Sequence.org_id == org_id,
-            Sequence.status == "active",
-            Enrollment.status == "active",
-            Enrollment.next_send_at.is_not(None),
-        )
-        .options(selectinload(Enrollment.sequence).selectinload(Sequence.steps))
-        .order_by(Enrollment.next_send_at)
-    )
-    if sequence_id:
-        query = query.where(Enrollment.sequence_id == sequence_id)
-    if limit:
-        query = query.limit(limit)
-
-    for enrollment in db.scalars(query):
-        due_at = _aware(enrollment.next_send_at)
-        if due_at is None or due_at > now:
-            continue
+    for enrollment in due_enrollments(
+        db, org_id=org_id, now=now, sequence_id=sequence_id, limit=limit
+    ):
         if not dry_run and summary.sent >= remaining_cap:
             summary.skipped += 1
             continue
 
-        sequence = enrollment.sequence
-        steps = sorted(sequence.steps, key=lambda s: s.step_order)
-        if enrollment.current_step >= len(steps):
-            _finish_enrollment(enrollment, "completed")
+        status, message = process_enrollment(db, enrollment, now=now, dry_run=dry_run)
+        if status == "skipped":
+            continue
+        if status == "deferred":
+            summary.skipped += 1
+            continue
+        if status == "completed" and message is None:
             summary.completed += 1
             continue
-
-        candidate = db.get(Candidate, enrollment.candidate_id)
-        if candidate is None:
-            _finish_enrollment(enrollment, "stopped", "candidate_deleted")
+        if message is None:
             continue
 
-        step = steps[enrollment.current_step]
-        message = send_step(
-            db,
-            enrollment=enrollment,
-            sequence=sequence,
-            step=step,
-            candidate=candidate,
-            now=now,
-            dry_run=dry_run,
-        )
         summary.processed += 1
         summary.messages.append(message)
-
         if message.status == "failed":
             summary.failed += 1
-            continue
-        summary.sent += 1
-
-        if enrollment.status != "active":  # send_step may have stopped it
-            continue
-
-        enrollment.current_step += 1
-        if enrollment.current_step >= len(steps):
-            _finish_enrollment(enrollment, "completed")
-            summary.completed += 1
         else:
-            next_step = steps[enrollment.current_step]
-            enrollment.next_send_at = now + timedelta(days=max(next_step.delay_days, 0))
-
-        _advance_pipeline_stage(db, enrollment)
+            summary.sent += 1
+        if status == "completed" or enrollment.status == "completed":
+            summary.completed += 1
 
     db.flush()
     return summary
@@ -401,6 +536,24 @@ def record_reply(
         if verdict.intent == "bounce":
             message.status = "bounced"
             _finish_enrollment(enrollment, "bounced", "bounced")
+            suppress(
+                db,
+                org_id=message.org_id,
+                email=message.to_address,
+                reason="bounce",
+                source="bounce",
+                source_message_id=message.id,
+            )
+        elif verdict.intent == "unsubscribe":
+            suppress(
+                db,
+                org_id=message.org_id,
+                email=message.to_address,
+                reason="unsubscribe",
+                source="reply",
+                source_message_id=message.id,
+            )
+            _finish_enrollment(enrollment, "replied", "unsubscribe")
         elif verdict.should_stop_sequence and enrollment.sequence.stop_on_reply:
             _finish_enrollment(enrollment, "replied", verdict.intent)
         if enrollment.project_id and verdict.intent not in {"bounce", "out_of_office"}:
@@ -423,6 +576,32 @@ def record_reply(
     )
     db.flush()
     return verdict
+
+
+def apply_unsubscribe(db: Session, message: Message, *, source: str = "tracking") -> bool:
+    """Honour an opt-out from a tracking link or one-click header. Idempotent."""
+    if message.direction != "outbound":
+        return False
+    suppress(
+        db,
+        org_id=message.org_id,
+        email=message.to_address,
+        reason="unsubscribe",
+        source=source,
+        source_message_id=message.id,
+    )
+    enrollment = db.get(Enrollment, message.enrollment_id)
+    if enrollment is not None and enrollment.status == "active":
+        _finish_enrollment(enrollment, "replied", "unsubscribe")
+    record_event(
+        db,
+        org_id=message.org_id,
+        type="outreach.unsubscribed",
+        subject_type="message",
+        subject_id=message.id,
+        payload={"candidate_id": message.candidate_id, "source": source},
+    )
+    return True
 
 
 def find_message_for_reply(

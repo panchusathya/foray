@@ -176,13 +176,28 @@ The template language has no loops, conditionals or expressions — recruiters
 paste into a form, so the renderer must not be able to execute anything.
 
 Sending goes through a provider interface (`console` by default, `smtp` for
-real delivery, `memory` for tests). Opens and clicks are tracked with
-HMAC-signed URLs so the endpoints can't be walked. Replies are classified into
-eight intents; anything except an out-of-office stops the sequence, bounces mark
-the enrollment, and a referral outranks a decline because "not for me, but talk
-to Sam" is a lead, not a rejection.
+real delivery, `memory` for tests). Each `(enrollment, step)` pair can produce
+at most one outbound `Message` row — a second worker cannot insert a duplicate.
+Opens, clicks and unsubscribes are tracked with HMAC-signed URLs so the
+endpoints can't be walked. Every send carries a `List-Unsubscribe` header and a
+footer with the opt-out link; SMTP additionally requires a physical postal
+address (`OUTREACH_POSTAL_ADDRESS` or `PATCH /v1/org`). Opt-outs and bounces
+land on a per-org suppression list and stop further mail.
+
+Replies are classified into eight intents; anything except an out-of-office
+stops the sequence, bounces mark the enrollment, and a referral outranks a
+decline because "not for me, but talk to Sam" is a lead, not a rejection.
 
 A daily send cap is enforced per org.
+
+Background work lives in a `jobs` table. `juicebox work` claims due rows
+(Postgres uses `SKIP LOCKED` so multiple workers don't double-send).
+`juicebox run-outreach` / `run-agents` still exist as synchronous one-shots.
+
+```bash
+juicebox work            # loop
+juicebox work --once     # drain and exit (`make worker`)
+```
 
 ---
 
@@ -194,7 +209,8 @@ threshold (carrying their match evidence onto the pipeline card), and can enroll
 them into a sequence automatically.
 
 ```bash
-juicebox run-agents      # every agent whose cadence has elapsed
+juicebox work --once     # also runs due agents via the job queue
+juicebox run-agents      # synchronous one-shot, same as before
 ```
 
 ---
@@ -231,6 +247,8 @@ signature so third-party systems never hold a Juicebox API key.
 | `GET`  | `/v1/searches/{id}` | Replay a persisted search |
 | `POST` | `/v1/projects/{id}/candidates` | Add to a pipeline, carrying match rationale |
 | `POST` | `/v1/sequences` · `/{id}/enroll` · `/{id}/run` | Outreach |
+| `GET`/`PATCH` | `/v1/org` | Workspace name and postal address |
+| `GET`/`POST`/`DELETE` | `/v1/suppressions` | Do-not-contact list |
 | `POST` | `/v1/webhooks/inbound-email` | Reply intake and classification |
 | `POST` | `/v1/agents/{id}/run` | Run a sourcing agent |
 | `GET`  | `/v1/analytics/funnel` | Pipeline + outreach metrics |
@@ -255,6 +273,7 @@ most:
 | `RETRIEVAL_BACKEND` | `auto` | `postgres` uses FTS+pgvector; `memory` keeps the RAM index |
 | `RERANK_TOP_K` | `20` | How many candidates get a model call per search; `0` disables |
 | `EMAIL_PROVIDER` | `console` | `smtp` to actually send |
+| `OUTREACH_POSTAL_ADDRESS` | *(empty)* | CAN-SPAM footer; required for SMTP |
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
 
 ---
@@ -262,7 +281,7 @@ most:
 ## Testing
 
 ```bash
-make test        # 161 Python tests + 9 Node tests
+make test        # 174 Python tests + 9 Node tests
 make eval        # search quality metrics
 make lint
 make test-live   # contract tests against the real APIs; needs keys
@@ -317,14 +336,17 @@ Honest boundaries of what's here:
   `make test` keep the in-process BM25+numpy snapshot. Force either with
   `RETRIEVAL_BACKEND=memory|postgres`. Recreate the compose `pgdata` volume if
   you previously ran vanilla `postgres:16` — that image has no pgvector.
-- **The worker loop is a `sleep` loop.** Fine for a demo; use cron, Cloud
-  Scheduler or Temporal for real send scheduling.
-- **Email deliverability is not solved here.** SPF/DKIM/DMARC, warmup, domain
-  rotation and suppression lists are operational work outside this codebase.
+- **The worker is a durable job queue.** `juicebox work` claims `jobs` rows
+  (outreach ticks/sends and agent ticks). Postgres uses `FOR UPDATE SKIP LOCKED`.
+  SQLite is single-process. Failed jobs retry with backoff, then park.
+- **Email deliverability is not solved here.** SPF/DKIM/DMARC, warmup and
+  domain rotation are operational work outside this codebase. The suppression
+  list and unsubscribe link *are* in the product.
 - **`hashing` embeddings are lexical-ish, not semantic.** They are deterministic
   and free, which is right for tests and demos. Switch to a real embedding model
   before judging semantic recall, then `juicebox reembed`.
-- **Compliance is your call.** Sourcing and outreach are regulated differently
-  across jurisdictions (GDPR, CAN-SPAM, CCPA, EU AI Act rules on automated
-  candidate evaluation). The scoring layer is deliberately explainable so
-  decisions can be audited, but the legal posture is yours.
+- **Compliance is your call.** The productised floor is a postal address, a
+  working unsubscribe, and a suppression list. Sourcing and outreach are still
+  regulated differently across jurisdictions (GDPR, CAN-SPAM, CCPA, EU AI Act).
+  The scoring layer is deliberately explainable so decisions can be audited, but
+  the legal posture is yours.

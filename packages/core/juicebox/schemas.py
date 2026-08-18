@@ -49,6 +49,35 @@ class ApiKeyOut(BaseModel):
     created_at: datetime
 
 
+class OrgOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    slug: str
+    postal_address: str
+
+
+class OrgPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    postal_address: str | None = Field(default=None, max_length=400)
+
+
+class SuppressionIn(BaseModel):
+    email: EmailStr
+    reason: Literal["unsubscribe", "bounce", "manual"] = "manual"
+
+
+class SuppressionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    email: str
+    reason: str
+    source: str
+    created_at: datetime
+
+
 # --------------------------------------------------------------------------
 # candidates
 # --------------------------------------------------------------------------
@@ -414,6 +443,7 @@ class RunSequenceResponse(BaseModel):
     sent: int
     failed: int
     completed: int
+    skipped: int = 0
     messages: list[MessageOut]
 
 

@@ -14,7 +14,7 @@ from .db import create_all
 from .llm.client import get_llm
 from .llm.embeddings import get_embedder
 from .migrate import is_up_to_date
-from .routers import agents, analytics, auth, candidates, outreach, projects, search, track
+from .routers import agents, analytics, auth, candidates, org, outreach, projects, search, track
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s"
@@ -66,6 +66,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth.router)
+    app.include_router(org.router)
+    app.include_router(org.suppressions_router)
     app.include_router(candidates.router)
     app.include_router(search.router)
     app.include_router(projects.router)

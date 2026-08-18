@@ -184,6 +184,7 @@ def run_sequence(
         sent=summary.sent,
         failed=summary.failed,
         completed=summary.completed,
+        skipped=summary.skipped,
         messages=[MessageOut.model_validate(m) for m in summary.messages],
     )
 

@@ -1,0 +1,16 @@
+# Machine learning. Gated additionally on python fraction > 0.2 (see markers.py).
+torch
+pytorch
+jax
+transformers
+diffusers
+sklearn
+scikit-learn
+tensorflow
+keras
+huggingface
+onnx
+xgboost
+lightgbm
+llama
+stable-diffusion

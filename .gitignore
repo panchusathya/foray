@@ -22,6 +22,11 @@ data/*.db-wal
 data/*.db-shm
 eval/report*.json
 
+# foray: never commit raw candidate exports or anything with personal emails
+data/out/
+*.csv
+packages/foray/data/out/
+
 # editors / os
 .DS_Store
 .idea/

@@ -11,12 +11,14 @@ import { LoginPage } from './pages/Login.jsx';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
+import { SourcingPage } from './pages/Sourcing.jsx';
 import { SequencesPage } from './pages/Sequences.jsx';
 import { SettingsPage } from './pages/Settings.jsx';
 
 const NAV = [
   { to: '/', label: 'Home', end: true },
   { to: '/search', label: 'Search' },
+  { to: '/sourcing', label: 'Sourcing' },
   { to: '/projects', label: 'Projects' },
   { to: '/sequences', label: 'Sequences' },
   { to: '/contacts', label: 'Contacts' },
@@ -112,6 +114,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/sourcing" element={<SourcingPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/sequences" element={<SequencesPage />} />

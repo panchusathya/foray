@@ -1,0 +1,10 @@
+lsp
+bazel
+eslint
+pytest-plugin
+prettier
+esbuild
+rollup
+monorepo
+language-server
+pre-commit

@@ -12,6 +12,10 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Creates a separate `foray` role + database in the same container so the
+      # Foray sourcing engine (packages/foray) shares Postgres without touching
+      # Juicebox's data. Runs once, on first initialization of the volume.
+      - ./packages/foray/docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U juicebox"]
       interval: 5s

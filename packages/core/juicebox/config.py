@@ -81,6 +81,14 @@ class Settings:
     llm_enabled: bool = field(default_factory=lambda: _env_bool("JUICEBOX_LLM_ENABLED", True))
     llm_max_concurrency: int = field(default_factory=lambda: _env_int("LLM_MAX_CONCURRENCY", 8))
     llm_timeout_seconds: float = field(default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 120.0))
+    # Retries cover 429s and 5xx only; a refusal or bad JSON is not retried.
+    llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
+    llm_retry_initial_delay: float = field(
+        default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)
+    )
+    llm_retry_max_delay: float = field(
+        default_factory=lambda: _env_float("LLM_RETRY_MAX_DELAY", 8.0)
+    )
 
     # --- embeddings ------------------------------------------------------
     # "hashing" needs no network; "voyage" uses VOYAGE_API_KEY.

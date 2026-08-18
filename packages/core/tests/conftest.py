@@ -17,10 +17,12 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
+    # Retry logic is asserted by call counts, so don't actually sleep for it.
+    monkeypatch.setenv("LLM_RETRY_INITIAL_DELAY", "0")
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
-    from juicebox.llm.client import reset_llm
+    from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
     from juicebox.outreach.sender import set_sender
     from juicebox.search.engine import reset_engine
@@ -39,6 +41,8 @@ def isolated_environment(tmp_path, monkeypatch):
 
     db_module.reset_engine()
     reset_settings_cache()
+    # A test that injected a fake client must not leak it into the next one.
+    set_llm(None)
     reset_llm()
     reset_embedder()
     reset_engine()

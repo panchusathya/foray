@@ -12,6 +12,24 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+DEV_SECRET_KEY = "dev-secret-change-me-in-production"
+
+# Values that must never sign tokens in production: the shipped default, the
+# ones in .env.example and docker-compose.yml, and the obvious placeholders.
+INSECURE_SECRET_KEYS = frozenset(
+    {
+        DEV_SECRET_KEY,
+        "changeme",
+        "change-me",
+        "secret",
+        "test-secret",
+    }
+)
+
+
+class ConfigError(RuntimeError):
+    """Configuration that is unsafe to run with."""
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -50,9 +68,7 @@ class Settings:
     app_name: str = "Juicebox"
     env: str = field(default_factory=lambda: _env("JUICEBOX_ENV", "development"))
     base_url: str = field(default_factory=lambda: _env("BASE_URL", "http://localhost:8000"))
-    secret_key: str = field(
-        default_factory=lambda: _env("SECRET_KEY", "dev-secret-change-me-in-production")
-    )
+    secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", DEV_SECRET_KEY))
     access_token_ttl_seconds: int = field(
         default_factory=lambda: _env_int("ACCESS_TOKEN_TTL_SECONDS", 60 * 60 * 12)
     )
@@ -129,10 +145,44 @@ class Settings:
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
 
+    @property
+    def is_production(self) -> bool:
+        return self.env.strip().lower() in {"production", "prod"}
+
+    def validate(self) -> None:
+        """Fail fast on settings that are only safe in development.
+
+        SECRET_KEY signs auth tokens and the outreach tracking HMACs, so a known
+        value means anyone can mint a token for any workspace. That is worth
+        refusing to boot over, but only in production — every other environment
+        keeps working with no .env at all.
+        """
+        if not self.is_production:
+            return
+
+        problems: list[str] = []
+        if not self.secret_key or self.secret_key in INSECURE_SECRET_KEYS:
+            problems.append(
+                "SECRET_KEY is unset or still the development default; generate one with "
+                '`python -c "import secrets; print(secrets.token_urlsafe(48))"`'
+            )
+        elif len(self.secret_key) < 32:
+            problems.append(
+                f"SECRET_KEY is only {len(self.secret_key)} characters; use at least 32"
+            )
+
+        if problems:
+            raise ConfigError(
+                "refusing to start with JUICEBOX_ENV=production:\n  - "
+                + "\n  - ".join(problems)
+            )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    settings.validate()
+    return settings
 
 
 def reset_settings_cache() -> None:

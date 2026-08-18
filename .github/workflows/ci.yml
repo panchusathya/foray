@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a PR makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+  # No credentials in CI: the suite must pass with the model switched off.
+  JUICEBOX_LLM_ENABLED: "false"
+
+jobs:
+  python:
+    name: python (sqlite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/core/pyproject.toml
+
+      - name: Install
+        run: pip install -e "packages/core[dev]"
+
+      - name: Lint
+        run: ruff check packages/core eval
+
+      - name: Test
+        run: pytest -q
+        working-directory: packages/core
+
+  postgres:
+    name: python (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: juicebox
+          POSTGRES_PASSWORD: juicebox
+          POSTGRES_DB: juicebox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U juicebox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://juicebox:juicebox@localhost:5432/juicebox
+      JUICEBOX_TEST_DATABASE_URL: postgresql+psycopg://juicebox:juicebox@localhost:5432/juicebox
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/core/pyproject.toml
+
+      - name: Install
+        run: pip install -e "packages/core[postgres,dev]"
+
+      - name: Migrate
+        run: python -m alembic upgrade head
+        working-directory: packages/core
+
+      # Catches a model change that shipped without a migration.
+      - name: Check for schema drift
+        run: python -m alembic check
+        working-directory: packages/core
+
+      - name: Test against postgres
+        run: pytest -q
+        working-directory: packages/core
+
+  eval:
+    name: search quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/core/pyproject.toml
+
+      - name: Install
+        run: pip install -e "packages/core[dev]"
+
+      # Heuristic parser only, so the gate measures retrieval and scoring rather
+      # than model variance.
+      - name: Score the labelled query set
+        run: python eval/run_eval.py --corpus-size 400 --min-ndcg 0.8
+
+  node:
+    name: ingest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test
+        run: npm test
+        working-directory: packages/ingest
+
+  web:
+    name: web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: packages/web/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: packages/web
+
+      - name: Build
+        run: npm run build
+        working-directory: packages/web
+
+  lockfile:
+    name: uv lock is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Fails if pyproject.toml changed without relocking.
+      - name: Verify lockfile
+        run: uv lock --check
+        working-directory: packages/core

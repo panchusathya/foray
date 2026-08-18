@@ -18,6 +18,25 @@ from fastapi.testclient import TestClient
 TEST_DATABASE_URL = os.environ.get("JUICEBOX_TEST_DATABASE_URL", "")
 
 
+def pytest_configure(config):
+    """Fail clearly when the Postgres URL is set but its driver is missing.
+
+    Otherwise every test errors on connect and the real cause is buried.
+    """
+    if not TEST_DATABASE_URL:
+        return
+    from sqlalchemy.engine import make_url
+
+    try:
+        # get_dialect() alone does not import the driver; import_dbapi() does.
+        make_url(TEST_DATABASE_URL).get_dialect().import_dbapi()
+    except Exception as exc:  # reported verbatim below
+        raise pytest.UsageError(
+            f"JUICEBOX_TEST_DATABASE_URL={TEST_DATABASE_URL!r} is unusable: {exc}\n"
+            'Install the driver with: pip install -e "packages/core[postgres]"'
+        ) from exc
+
+
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path, monkeypatch):
     """Every test gets its own database, no model calls and a memory mailbox."""

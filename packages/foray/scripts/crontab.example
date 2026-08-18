@@ -1,0 +1,13 @@
+# Foray tiered refresh. Each job is flock-wrapped so overlapping runs cannot
+# happen. Tier by field volatility: immutable data is never refreshed, volatile
+# data (employer/title/location) weekly on the active subset only, and the slow
+# tier (embeddings/scores) quarterly over the full pool.
+#
+# Install with: crontab packages/foray/scripts/crontab.example
+# Ensure FORAY_DATABASE_URL (and GITHUB_TOKEN/ANTHROPIC_API_KEY for the tiers
+# that need them) are present in the cron environment.
+
+0  3 * * *    /workspace/packages/foray/scripts/refresh_events.sh        # daily,     watchlist
+0  4 * * 0    /workspace/packages/foray/scripts/refresh_volatile.sh      # weekly,    active subset
+0  5 1 */3 *  /workspace/packages/foray/scripts/refresh_slow.sh          # quarterly, full pool
+30 2 * * *    /workspace/packages/foray/scripts/refresh_active_view.sh   # nightly,   recompute active set

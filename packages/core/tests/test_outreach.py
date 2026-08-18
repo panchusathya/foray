@@ -4,7 +4,7 @@ import pytest
 
 from juicebox.models import Candidate, Enrollment, Message, utcnow
 from juicebox.outreach import templates
-from juicebox.outreach.compliance import is_suppressed, suppress
+from juicebox.outreach.suppressions import is_suppressed, suppress
 from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
 from juicebox.outreach.sequencer import (
@@ -129,8 +129,10 @@ class TestSequenceRun:
         assert len(mailbox.outbox) == 1
         assert mailbox.outbox[0].to == "ada@example.com"
         assert "Hi Ada," in mailbox.outbox[0].text_body
-        assert "List-Unsubscribe" in mailbox.outbox[0].headers
-        assert "/t/u/" in mailbox.outbox[0].text_body
+        # Reads like a personal email — no bulk-mail footer or headers.
+        assert "unsubscribe" not in mailbox.outbox[0].text_body.lower()
+        assert "unsubscribe" not in mailbox.outbox[0].html_body.lower()
+        assert "List-Unsubscribe" not in mailbox.outbox[0].headers
 
         enrollment = session.query(Enrollment).one()
         assert enrollment.current_step == 1
@@ -282,7 +284,7 @@ class TestSendIdempotency:
         assert len(mailbox.outbox) == 1
 
 
-class TestCompliance:
+class TestSuppressions:
     def test_suppressed_address_is_not_contacted(
         self, session, outreach_fixture, mailbox
     ):
@@ -298,7 +300,7 @@ class TestCompliance:
         assert enrollment.status == "stopped"
         assert enrollment.stopped_reason == "suppressed"
 
-    def test_unsubscribe_reply_adds_to_the_suppression_list(
+    def test_opt_out_reply_adds_to_the_do_not_contact_list(
         self, session, outreach_fixture, mailbox
     ):
         sequence = outreach_fixture["sequence"]
@@ -312,27 +314,11 @@ class TestCompliance:
             session,
             message=message,
             subject="Re",
-            body="Please unsubscribe me from this list.",
+            body="Please stop contacting me about roles.",
         )
         session.commit()
         assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
-        assert session.query(Enrollment).one().status == "replied"
-
-    def test_unsubscribe_link_stops_mail(self, client, session, outreach_fixture, mailbox):
-        sequence = outreach_fixture["sequence"]
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
-        session.commit()
-        run_due(session, org_id=sequence.org_id)
-        session.commit()
-        message = session.query(Message).filter_by(direction="outbound").one()
-        token = signed_tracking_token(message.id)
-
-        response = client.get(f"/t/u/{message.id}?k={token}")
-        assert response.status_code == 200
-        session.expire_all()
-        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
-        assert session.get(Enrollment, message.enrollment_id).status == "replied"
+        assert session.query(Enrollment).filter_by(candidate_id=ada.id).first().status == "replied"
 
         # A later enrolment of the same person must not send.
         enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])

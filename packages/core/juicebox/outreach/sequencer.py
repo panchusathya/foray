@@ -15,7 +15,6 @@ from ..models import (
     Candidate,
     Enrollment,
     Message,
-    Org,
     Project,
     ProjectCandidate,
     Sequence,
@@ -25,18 +24,10 @@ from ..models import (
 )
 from ..security import signed_tracking_token
 from . import templates
-from .compliance import (
-    append_footer,
-    compliance_headers,
-    is_suppressed,
-    normalize_email,
-    postal_address_for,
-    suppress,
-    unsubscribe_url,
-)
 from .personalize import personalize
 from .replies import ReplyVerdict, classify_reply
 from .sender import OutboundEmail, get_sender
+from .suppressions import is_suppressed, normalize_email, suppress
 
 logger = logging.getLogger(__name__)
 
@@ -270,14 +261,7 @@ def send_step(
         _finish_enrollment(enrollment, "stopped", "missing_email")
         return message
 
-    org = db.get(Org, sequence.org_id)
-    address = postal_address_for(org)
     sender = get_sender()
-    if sender.name == "smtp" and not address:
-        message.status = "failed"
-        message.error = "postal address required for commercial email"
-        return message
-
     token = signed_tracking_token(message.id)
     html_body = templates.add_tracking(
         templates.to_html(body),
@@ -285,24 +269,15 @@ def send_step(
         message_id=message.id,
         token=token,
     )
-    unsub = unsubscribe_url(
-        base_url=settings.base_url, message_id=message.id, token=token
-    )
-    text_body, html_body = append_footer(
-        body, html_body, unsub_url=unsub, postal_address=address
-    )
 
     email = OutboundEmail(
         to=to_address,
         subject=subject,
-        text_body=text_body,
+        text_body=body,
         html_body=html_body,
         from_email=sequence.from_email or settings.outreach_from_email,
         from_name=sequence.from_name or settings.outreach_from_name,
-        headers={
-            "X-Juicebox-Message-Id": message.id,
-            **compliance_headers(unsub),
-        },
+        headers={"X-Juicebox-Message-Id": message.id},
     )
 
     if dry_run:
@@ -576,32 +551,6 @@ def record_reply(
     )
     db.flush()
     return verdict
-
-
-def apply_unsubscribe(db: Session, message: Message, *, source: str = "tracking") -> bool:
-    """Honour an opt-out from a tracking link or one-click header. Idempotent."""
-    if message.direction != "outbound":
-        return False
-    suppress(
-        db,
-        org_id=message.org_id,
-        email=message.to_address,
-        reason="unsubscribe",
-        source=source,
-        source_message_id=message.id,
-    )
-    enrollment = db.get(Enrollment, message.enrollment_id)
-    if enrollment is not None and enrollment.status == "active":
-        _finish_enrollment(enrollment, "replied", "unsubscribe")
-    record_event(
-        db,
-        org_id=message.org_id,
-        type="outreach.unsubscribed",
-        subject_type="message",
-        subject_id=message.id,
-        payload={"candidate_id": message.candidate_id, "source": source},
-    )
-    return True
 
 
 def find_message_for_reply(

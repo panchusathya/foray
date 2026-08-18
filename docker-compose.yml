@@ -51,7 +51,6 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
-      OUTREACH_POSTAL_ADDRESS: ${OUTREACH_POSTAL_ADDRESS:-}
     depends_on:
       api:
         condition: service_started

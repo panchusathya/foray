@@ -323,15 +323,13 @@ class TestOutreachApi:
 
 
 class TestOrgAndSuppressions:
-    def test_postal_address_round_trips(self, client, account):
+    def test_org_name_round_trips(self, client, account):
         headers = account["headers"]
         body = client.patch(
-            "/v1/org",
-            json={"postal_address": "1 Market St, San Francisco, CA 94105"},
-            headers=headers,
+            "/v1/org", json={"name": "Foray Search"}, headers=headers
         ).json()
-        assert "1 Market St" in body["postal_address"]
-        assert client.get("/v1/org", headers=headers).json()["postal_address"] == body["postal_address"]
+        assert body["name"] == "Foray Search"
+        assert client.get("/v1/org", headers=headers).json()["name"] == "Foray Search"
 
     def test_suppression_list_blocks_sends(self, client, loaded_org, mailbox):
         headers = loaded_org["headers"]

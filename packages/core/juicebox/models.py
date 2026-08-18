@@ -57,8 +57,6 @@ class Org(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("org"))
     name: Mapped[str] = mapped_column(String(200))
     slug: Mapped[str] = mapped_column(String(80), unique=True)
-    # CAN-SPAM requires a physical postal address on commercial mail.
-    postal_address: Mapped[str] = mapped_column(String(400), default="")
 
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 

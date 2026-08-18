@@ -55,12 +55,10 @@ class OrgOut(BaseModel):
     id: str
     name: str
     slug: str
-    postal_address: str
 
 
 class OrgPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    postal_address: str | None = Field(default=None, max_length=400)
 
 
 class SuppressionIn(BaseModel):

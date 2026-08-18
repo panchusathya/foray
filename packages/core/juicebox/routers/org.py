@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..deps import Principal, get_db, get_principal, require_write
 from ..models import Org, Suppression
-from ..outreach.compliance import suppress, unsuppress
+from ..outreach.suppressions import suppress, unsuppress
 from ..schemas import OrgOut, OrgPatch, SuppressionIn, SuppressionOut
 
 router = APIRouter(prefix="/v1/org", tags=["org"])
@@ -37,8 +37,6 @@ def patch_org(
     org = _org(db, principal.org_id)
     if payload.name is not None:
         org.name = payload.name
-    if payload.postal_address is not None:
-        org.postal_address = payload.postal_address.strip()
     db.flush()
     return OrgOut.model_validate(org)
 

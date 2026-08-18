@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import Float, String, bindparam, func, select, text
 from sqlalchemy.dialects.postgresql import ARRAY, TEXT
 from sqlalchemy.orm import Session, selectinload
 
@@ -155,12 +155,12 @@ class PostgresIndex:
                 """
                 WITH params AS (
                     SELECT
-                        :org_id AS org_id,
+                        CAST(:org_id AS text) AS org_id,
                         :excl_companies AS excl_companies,
                         :excl_titles AS excl_titles,
-                        :neg_tsquery AS neg_tsquery,
-                        :min_bound AS min_bound,
-                        :max_bound AS max_bound
+                        CAST(:neg_tsquery AS text) AS neg_tsquery,
+                        CAST(:min_bound AS double precision) AS min_bound,
+                        CAST(:max_bound AS double precision) AS max_bound
                 ),
                 base AS (
                     SELECT
@@ -224,12 +224,12 @@ class PostgresIndex:
                 FROM classified
                 """
             ).bindparams(
-                bindparam("org_id"),
+                bindparam("org_id", type_=String()),
                 bindparam("excl_companies", type_=ARRAY(TEXT())),
                 bindparam("excl_titles", type_=ARRAY(TEXT())),
-                bindparam("neg_tsquery"),
-                bindparam("min_bound"),
-                bindparam("max_bound"),
+                bindparam("neg_tsquery", type_=String()),
+                bindparam("min_bound", type_=Float()),
+                bindparam("max_bound", type_=Float()),
             )
         )
         row = self.db.execute(sql, params).one()

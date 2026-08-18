@@ -262,7 +262,7 @@ most:
 ## Testing
 
 ```bash
-make test        # 158 Python tests + 9 Node tests
+make test        # 161 Python tests + 9 Node tests
 make eval        # search quality metrics
 make lint
 make test-live   # contract tests against the real APIs; needs keys

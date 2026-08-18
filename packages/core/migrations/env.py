@@ -6,12 +6,17 @@ upgrade head` always targets the same database the app would open.
 
 from __future__ import annotations
 
+from contextlib import suppress
+
 from alembic import context
 from sqlalchemy import pool
 
 from juicebox.config import get_settings
 from juicebox.db import get_engine
 from juicebox.models import Base
+
+with suppress(ImportError):
+    from pgvector.sqlalchemy import Vector as _PgVector  # noqa: F401
 
 config = context.config
 target_metadata = Base.metadata

@@ -26,7 +26,9 @@ def upgrade() -> None:
         return
 
     op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
-    # JSON array -> pgvector. Empty arrays become NULL (no useful direction).
+    # JSON array -> pgvector. Empty / non-array values become NULL.
+    # Postgres forbids a subquery in USING, but json-array text is already
+    # the `[1,2,3]` literal pgvector accepts.
     op.execute(
         sa.text(
             """
@@ -37,11 +39,7 @@ def upgrade() -> None:
                     WHEN embedding IS NULL THEN NULL
                     WHEN json_typeof(embedding::json) <> 'array' THEN NULL
                     WHEN json_array_length(embedding::json) = 0 THEN NULL
-                    ELSE (
-                        SELECT array_agg(trim(elem)::float ORDER BY ord)::vector
-                        FROM json_array_elements_text(embedding::json)
-                            WITH ORDINALITY AS t(elem, ord)
-                    )
+                    ELSE embedding::text::vector
                 END
             )
             """

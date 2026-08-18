@@ -16,13 +16,14 @@ the enrollment, pipeline stage, and the do-not-contact list all live there.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import MailboxConnection, Message, utcnow
+from ..models import MailboxConnection, Message, ReplyDraft, utcnow
 from ..outreach.sequencer import find_message_for_reply, record_reply
 from .microsoft import GraphClient, MicrosoftError
 
@@ -36,6 +37,8 @@ class SyncSummary:
     matched: int = 0
     skipped: int = 0
     intents: list[str] = field(default_factory=list)
+    drafts_sent: int = 0
+    drafts_discarded: int = 0
 
 
 def _from_address(payload: dict) -> str:
@@ -101,6 +104,7 @@ def sync_mailbox(
 
     if not connection.inbox_delta_link:
         connection.inbox_delta_link = client.inbox_delta_baseline()
+        connection.sent_delta_link = client.sent_delta_baseline()
         connection.last_synced_at = now
         db.flush()
         summary.initialized = True
@@ -147,9 +151,82 @@ def sync_mailbox(
         _enqueue_reply_draft(db, connection=connection, graph_message_id=payload.get("id", ""))
 
     connection.inbox_delta_link = delta_link
+    _sync_sent_items(db, connection, client, summary, now)
     connection.last_synced_at = now
     db.flush()
     return summary
+
+
+# Everything below the first of these markers is quoted history, not the reply.
+_QUOTE_MARKERS = re.compile(
+    r"(?:\r?\n)+(?:"
+    r"-----\s*Original Message\s*-----"
+    r"|_{10,}"
+    r"|From:\s.+"
+    r"|On .{0,120}wrote:"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def strip_quoted_history(text: str) -> str:
+    """The user's own words from a sent reply, without the quoted thread."""
+    return _QUOTE_MARKERS.split(text or "", maxsplit=1)[0].strip()
+
+
+def _sync_sent_items(
+    db: Session,
+    connection: MailboxConnection,
+    client: GraphClient,
+    summary: SyncSummary,
+    now: datetime,
+) -> None:
+    """Learn what happened to our reply drafts by watching Sent Items.
+
+    A sent message with a draft's own id means the user sent (a possibly
+    edited version of) our draft. A different message on the same conversation
+    means they discarded ours and wrote their own — the strongest style
+    signal of all. Either way the final text lands on the ReplyDraft row.
+    """
+    if not connection.sent_delta_link:
+        connection.sent_delta_link = client.sent_delta_baseline()
+        return
+    messages, delta_link = client.sent_delta(connection.sent_delta_link)
+    for payload in messages:
+        if payload.get("@removed") is not None or payload.get("isDraft"):
+            continue
+        sent_text = strip_quoted_history(_body_text(payload))
+        draft = db.scalar(
+            select(ReplyDraft).where(
+                ReplyDraft.mailbox_id == connection.id,
+                ReplyDraft.graph_draft_id == payload.get("id", ""),
+            )
+        )
+        if draft is not None:
+            if draft.status == "created":
+                draft.status = "sent"
+                draft.final_sent_text = sent_text
+                draft.sent_at = now
+                summary.drafts_sent += 1
+            continue
+        conversation_id = payload.get("conversationId", "")
+        if not conversation_id:
+            continue
+        abandoned = db.scalar(
+            select(ReplyDraft)
+            .join(Message, Message.id == ReplyDraft.inbound_message_id)
+            .where(
+                ReplyDraft.mailbox_id == connection.id,
+                ReplyDraft.status == "created",
+                Message.conversation_id == conversation_id,
+            )
+        )
+        if abandoned is not None and sent_text:
+            abandoned.status = "discarded"
+            abandoned.final_sent_text = sent_text
+            abandoned.sent_at = now
+            summary.drafts_discarded += 1
+    connection.sent_delta_link = delta_link
 
 
 def _enqueue_reply_draft(

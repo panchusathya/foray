@@ -134,6 +134,17 @@ def oauth_callback(
     connection.status = "active"
     connection.error = ""
     db.flush()
+    # Baseline the delta cursors NOW: a reply that lands between connect and
+    # the first worker sync must not fall on the wrong side of the cursor.
+    try:
+        client = microsoft.GraphClient(db, connection)
+        if not connection.inbox_delta_link:
+            connection.inbox_delta_link = client.inbox_delta_baseline()
+        if not connection.sent_delta_link:
+            connection.sent_delta_link = client.sent_delta_baseline()
+        db.flush()
+    except Exception as exc:  # noqa: BLE001 - the first sync will baseline instead
+        logger.warning("delta baseline at connect failed for %s: %s", connection.address, exc)
     record_event(
         db,
         org_id=org_id,
@@ -175,6 +186,8 @@ def sync_now(
         "matched": summary.matched,
         "skipped": summary.skipped,
         "intents": summary.intents,
+        "drafts_sent": summary.drafts_sent,
+        "drafts_discarded": summary.drafts_discarded,
         "last_synced_at": connection.last_synced_at,
     }
 

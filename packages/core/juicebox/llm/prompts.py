@@ -358,6 +358,12 @@ with specifics rather than making them up.
 their availability. If they asked questions, address them. If they declined, \
 thank them briefly and leave the door open. If they deferred, ask when to \
 check back. If they pointed to someone else, thank them and ask for an intro.
+
+If <style_examples> are provided, they show what this recruiter actually sent \
+in earlier threads (paired with the draft they were given). Match their voice — \
+greeting, sign-off, sentence length, formality — and learn from how they \
+changed past drafts. Their sent version always outranks the drafted one. Copy \
+voice, never content: facts still come only from this thread's context.
 """
 
 REPLY_DRAFT_SCHEMA: dict[str, Any] = {
@@ -377,8 +383,15 @@ def reply_draft_prompt(
     outbound_body: str,
     reply_body: str,
     intent: str,
+    style_examples: str = "",
 ) -> str:
+    style_block = (
+        f"<style_examples>\n{style_examples.strip()}\n</style_examples>\n\n"
+        if style_examples.strip()
+        else ""
+    )
     return (
+        f"{style_block}"
         f"<candidate>\n{candidate_context.strip()}\n</candidate>\n\n"
         f"<role>\n{role_context.strip()}\n</role>\n\n"
         f"<my_original_email>\n{outbound_body.strip()}\n</my_original_email>\n\n"

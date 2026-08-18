@@ -199,14 +199,21 @@ class GraphClient:
         "isDraft,receivedDateTime"
     )
 
-    def inbox_delta_baseline(self) -> str:
-        """Start delta tracking at 'now' — history is not outreach replies."""
-        url = f"/me/mailFolders/inbox/messages/delta?$deltatoken=latest&{self._DELTA_SELECT}"
+    def _delta_baseline(self, folder: str) -> str:
+        """Start delta tracking at 'now' — history is not outreach traffic."""
+        url = f"/me/mailFolders/{folder}/messages/delta?$deltatoken=latest&{self._DELTA_SELECT}"
         page = self._request("GET", url, headers={"Prefer": 'IdType="ImmutableId"'}).json()
         return page.get("@odata.deltaLink", "")
 
+    def inbox_delta_baseline(self) -> str:
+        return self._delta_baseline("inbox")
+
+    def sent_delta_baseline(self) -> str:
+        return self._delta_baseline("sentitems")
+
     def inbox_delta(self, delta_link: str) -> tuple[list[dict], str]:
-        """Walk every page since the stored delta link.
+        """Walk every page since the stored delta link (works for any folder —
+        the link itself carries the folder).
 
         Returns (messages, new_delta_link). The Prefer headers keep ids
         immutable across mailbox moves and bodies in plain text.
@@ -225,6 +232,9 @@ class GraphClient:
                 continue
             return messages, page.get("@odata.deltaLink", delta_link)
         return messages, delta_link
+
+    # Same walker; the name keeps call sites honest about which cursor they hold.
+    sent_delta = inbox_delta
 
 
 class GraphSender:

@@ -12,24 +12,39 @@ from juicebox.outreach.suppressions import is_suppressed
 
 
 class FakeDeltaClient:
-    """Stands in for GraphClient: hands out queued delta pages."""
+    """Stands in for GraphClient: hands out queued delta pages per folder."""
 
     def __init__(self):
         self.batches: list[list[dict]] = []
+        self.sent_batches: list[list[dict]] = []
         self.baseline_calls = 0
+        self.sent_baseline_calls = 0
         self.delta_calls = 0
+        self.sent_delta_calls = 0
 
     def queue(self, *messages: dict) -> None:
         self.batches.append(list(messages))
+
+    def queue_sent(self, *messages: dict) -> None:
+        self.sent_batches.append(list(messages))
 
     def inbox_delta_baseline(self) -> str:
         self.baseline_calls += 1
         return "https://graph.test/delta?token=0"
 
+    def sent_delta_baseline(self) -> str:
+        self.sent_baseline_calls += 1
+        return "https://graph.test/sent-delta?token=0"
+
     def inbox_delta(self, delta_link: str) -> tuple[list[dict], str]:
         self.delta_calls += 1
         batch = self.batches.pop(0) if self.batches else []
         return batch, f"https://graph.test/delta?token={self.delta_calls}"
+
+    def sent_delta(self, delta_link: str) -> tuple[list[dict], str]:
+        self.sent_delta_calls += 1
+        batch = self.sent_batches.pop(0) if self.sent_batches else []
+        return batch, f"https://graph.test/sent-delta?token={self.sent_delta_calls}"
 
 
 def _inbound(

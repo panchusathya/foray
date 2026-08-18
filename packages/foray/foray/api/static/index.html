@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foray</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #0b0d10; color: #e6e8eb;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    header { padding: 28px 24px 8px; }
+    h1 { margin: 0; font-size: 26px; letter-spacing: -0.5px; }
+    h1 span { color: #f5a623; }
+    .sub { color: #8b929a; margin-top: 4px; }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 0 24px 60px; }
+    form { display: flex; gap: 10px; margin: 18px 0; }
+    input {
+      flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #2a2f37;
+      background: #14171c; color: #e6e8eb; font-size: 15px;
+    }
+    button {
+      padding: 12px 20px; border-radius: 10px; border: none; cursor: pointer;
+      background: #f5a623; color: #1a1205; font-weight: 600; font-size: 15px;
+    }
+    .note { color: #8b929a; margin: 8px 0 18px; }
+    .card {
+      border: 1px solid #232830; border-radius: 14px; padding: 16px 18px;
+      margin-bottom: 14px; background: #12151a;
+    }
+    .card h3 { margin: 0 0 2px; font-size: 17px; }
+    .card h3 a { color: #e6e8eb; text-decoration: none; }
+    .card h3 a:hover { color: #f5a623; }
+    .meta { color: #9aa1a9; font-size: 13px; margin-bottom: 10px; }
+    .tag { font-size: 11px; color: #f5a623; border: 1px solid #4a3a12;
+           border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+    ul.hl { margin: 8px 0; padding-left: 18px; }
+    ul.hl li { margin: 2px 0; }
+    .chips { margin-top: 8px; }
+    .chip { display: inline-block; font-size: 11px; color: #cbd0d6; background: #1c2128;
+            border: 1px solid #2a2f37; border-radius: 999px; padding: 2px 9px; margin: 2px 4px 0 0; }
+    .chip.flag { color: #e0b0b0; border-color: #4a2a2a; background: #201414; }
+    .repos { color: #8b929a; font-size: 13px; margin-top: 8px; }
+    .links a { color: #6fb1ff; text-decoration: none; margin-right: 12px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>for<span>ay</span></h1>
+      <div class="sub">GitHub-sourced engineers, ranked by archetype fit. No score shown &mdash; rank and evidence only.</div>
+    </div>
+  </header>
+  <div class="wrap">
+    <form id="f">
+      <input id="q" placeholder="e.g. founding ML engineer in SF, 3-8 years, shipped training infra"
+             value="founding ML engineer, shipped training infrastructure" />
+      <button type="submit">Search</button>
+    </form>
+    <div id="note" class="note"></div>
+    <div id="results"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('f');
+    const note = document.getElementById('note');
+    const results = document.getElementById('results');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = document.getElementById('q').value.trim();
+      if (!query) return;
+      note.textContent = 'Searching…';
+      results.innerHTML = '';
+      const t0 = performance.now();
+      const resp = await fetch('/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      const data = await resp.json();
+      const ms = Math.round(performance.now() - t0);
+      const arch = data.archetype ? data.archetype.label : 'semantic search';
+      note.textContent = `${arch} · parser=${data.parser} · ${data.returned} shown of ${data.total_matched} matched · ${ms}ms`
+        + (data.message ? ` — ${data.message}` : '');
+      for (const c of data.results) render(c);
+    });
+
+    function render(c) {
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      const emp = c.employer
+        ? `${c.employer}<span class="tag">inferred</span>`
+        : 'employer unknown';
+      const exp = (c.est_experience_years != null)
+        ? `~${c.est_experience_years}y (est., ${c.experience_confidence})`
+        : '';
+
+      const hl = (c.highlights || []).map((h) => `<li>${escapeHtml(h)}</li>`).join('');
+      const markerChips = (c.domain_markers || []).map((m) => `<span class="chip">${escapeHtml(m)}</span>`).join('');
+      const flagChips = (c.flags || []).map((fl) => `<span class="chip flag">${escapeHtml(fl)}</span>`).join('');
+      const repos = (c.top_repos || []).slice(0, 3)
+        .map((r) => `${escapeHtml(r.name)} (${r.stars}★)`).join(' · ');
+
+      const linkedin = c.linkedin_url
+        ? `<a href="${c.linkedin_url}" target="_blank" rel="noopener">LinkedIn</a>` : '';
+
+      card.innerHTML = `
+        <h3>#${c.rank} <a href="${c.github_url}" target="_blank" rel="noopener">${escapeHtml(c.name || c.login)}</a></h3>
+        <div class="meta">${emp} · ${exp} · ${escapeHtml(c.primary_language || '')} · ${escapeHtml(c.location || '')}</div>
+        <ul class="hl">${hl}</ul>
+        ${repos ? `<div class="repos">${repos}</div>` : ''}
+        <div class="chips">${markerChips}${flagChips}</div>
+        <div class="links">
+          <a href="${c.github_url}" target="_blank" rel="noopener">GitHub</a>${linkedin}
+        </div>`;
+      results.appendChild(card);
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (ch) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+      ));
+    }
+  </script>
+</body>
+</html>

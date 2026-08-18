@@ -346,6 +346,11 @@ class SequenceStep(Base):
     step_order: Mapped[int] = mapped_column(Integer, default=0)
     channel: Mapped[str] = mapped_column(String(32), default="email")
     delay_days: Mapped[int] = mapped_column(Integer, default=0)
+    # Stored now, honoured by the scheduler in the send-windows workstream:
+    # delay_unit days|business_days; send_at_time "HH:MM"; send_timezone IANA name.
+    delay_unit: Mapped[str] = mapped_column(String(16), default="days")
+    send_at_time: Mapped[str] = mapped_column(String(5), default="")
+    send_timezone: Mapped[str] = mapped_column(String(64), default="")
     subject_template: Mapped[str] = mapped_column(Text, default="")
     body_template: Mapped[str] = mapped_column(Text, default="")
 

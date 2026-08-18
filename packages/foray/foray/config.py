@@ -1,0 +1,96 @@
+"""Configuration, loaded from the repo-root ``.env`` with pydantic-settings.
+
+Foray shares the Juicebox monorepo's ``.env`` but namespaces its own database
+URL as ``FORAY_DATABASE_URL`` so it never clobbers Juicebox's ``DATABASE_URL``.
+Secrets (GitHub / Anthropic / Apollo) are optional at load time so that
+infrastructure commands (migrate, derive) import cleanly; each command that
+needs a key calls ``settings.require(...)`` and fails fast with a clear error.
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent  # packages/foray
+REPO_ROOT = PACKAGE_ROOT.parent.parent  # repo root
+DATA_DIR = PACKAGE_ROOT / "data"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=(REPO_ROOT / ".env", PACKAGE_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # --- storage (namespaced to avoid colliding with Juicebox's DATABASE_URL) ---
+    database_url: str = Field(
+        default="postgresql://foray:foray@localhost:5432/foray",
+        validation_alias="FORAY_DATABASE_URL",
+    )
+
+    # --- secrets (optional at load; required per-command via require()) ---
+    github_token: str = Field(default="", validation_alias="GITHUB_TOKEN")
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+    apollo_api_key: str = Field(default="", validation_alias="APOLLO_API_KEY")
+
+    # --- models ---
+    scoring_model: str = Field(
+        default="claude-haiku-4-5-20251001", validation_alias="FORAY_SCORING_MODEL"
+    )
+    parse_model: str = Field(
+        default="claude-haiku-4-5-20251001", validation_alias="FORAY_PARSE_MODEL"
+    )
+    embedding_model: str = Field(
+        default="BAAI/bge-small-en-v1.5", validation_alias="FORAY_EMBEDDING_MODEL"
+    )
+    embedding_dim: int = Field(default=384, validation_alias="FORAY_EMBEDDING_DIM")
+
+    # --- retrieval blend (Phase 5) ---
+    score_weight: float = Field(default=0.7, validation_alias="FORAY_SCORE_WEIGHT")
+    vector_weight: float = Field(default=0.3, validation_alias="FORAY_VECTOR_WEIGHT")
+    rerank_pool: int = Field(default=300, validation_alias="FORAY_RERANK_POOL")
+    result_limit: int = Field(default=40, validation_alias="FORAY_RESULT_LIMIT")
+
+    # --- harvest tuning ---
+    github_rpm: int = Field(default=28, validation_alias="FORAY_GITHUB_RPM")
+
+    # --- scoring spend guard ---
+    spend_confirm_threshold_usd: float = Field(
+        default=25.0, validation_alias="FORAY_SPEND_CONFIRM_THRESHOLD_USD"
+    )
+
+    @property
+    def data_dir(self) -> Path:
+        return DATA_DIR
+
+    def require(self, *names: str) -> None:
+        """Fail fast if any named secret/config is missing. Never degrade silently."""
+        missing = [n for n in names if not getattr(self, n, None)]
+        if missing:
+            pretty = ", ".join(sorted({_ENV_NAMES.get(n, n.upper()) for n in missing}))
+            raise SystemExit(
+                f"Foray: missing required configuration: {pretty}. "
+                f"Set it in {REPO_ROOT / '.env'} (see .env.example)."
+            )
+
+
+_ENV_NAMES = {
+    "github_token": "GITHUB_TOKEN",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "apollo_api_key": "APOLLO_API_KEY",
+    "database_url": "FORAY_DATABASE_URL",
+}
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

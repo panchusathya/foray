@@ -1,6 +1,7 @@
 """Operational CLI: ``juicebox <command>``.
 
     juicebox init-db
+    juicebox migrate [revision] [--down]
     juicebox seed [--count 120]
     juicebox import <file.jsonl> --org <org_id>
     juicebox search "senior ML engineers in SF" --org <org_id>
@@ -20,7 +21,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .db import create_all, session_scope
+from .db import session_scope
+from .migrate import ensure_schema
 from .models import Org
 from .repository import reembed_org, upsert_candidates
 
@@ -60,15 +62,28 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 def cmd_init_db(_args: argparse.Namespace) -> int:
-    create_all()
-    print("schema created")
+    from .migrate import current_revision
+
+    how = ensure_schema()
+    print(f"schema ready via {how} (revision {current_revision()})")
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    from . import migrate
+
+    if args.down:
+        migrate.downgrade(args.revision)
+    else:
+        migrate.upgrade(args.revision)
+    print(f"database at revision {migrate.current_revision()}")
     return 0
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
     from .seed import seed_demo
 
-    create_all()
+    ensure_schema()
     with session_scope() as db:
         info = seed_demo(db, candidate_count=args.count)
     print(json.dumps(info, indent=2))
@@ -81,7 +96,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if not path.exists():
         raise SystemExit(f"file not found: {path}")
     records = _read_jsonl(path)
-    create_all()
+    ensure_schema()
     with session_scope() as db:
         org_id = _resolve_org(db, args.org)
         result = upsert_candidates(db, org_id=org_id, payloads=records)
@@ -183,7 +198,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="juicebox", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init-db", help="create tables").set_defaults(func=cmd_init_db)
+    sub.add_parser("init-db", help="bring the schema to head").set_defaults(func=cmd_init_db)
+
+    migrate_cmd = sub.add_parser("migrate", help="run database migrations")
+    migrate_cmd.add_argument("revision", nargs="?", default="head")
+    migrate_cmd.add_argument(
+        "--down", action="store_true", help="downgrade to the given revision instead"
+    )
+    migrate_cmd.set_defaults(func=cmd_migrate)
 
     seed = sub.add_parser("seed", help="create the demo workspace")
     seed.add_argument("--count", type=int, default=120)

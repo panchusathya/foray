@@ -22,6 +22,14 @@ install: ## Create the venv and install every package
 	$(BIN)/python -m pip install -e "packages/core[dev]"
 	cd packages/web && npm install
 
+.PHONY: migrate
+migrate: ## Bring the database schema up to the latest migration
+	$(BIN)/python -m juicebox.cli migrate
+
+.PHONY: migration
+migration: ## Autogenerate a migration from model changes (NAME="what changed")
+	cd packages/core && ../../$(BIN)/python -m alembic revision --autogenerate -m "$(NAME)"
+
 .PHONY: seed
 seed: ## Create the demo workspace (org, project, sequence, agent, 120 people)
 	$(BIN)/python -m juicebox.cli seed

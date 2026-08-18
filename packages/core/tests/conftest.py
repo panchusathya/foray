@@ -1,16 +1,31 @@
-"""Test fixtures: an isolated SQLite database and an authenticated API client."""
+"""Test fixtures: an isolated database and an authenticated API client.
+
+SQLite by default, so the suite needs no infrastructure. Set
+``JUICEBOX_TEST_DATABASE_URL`` to run the identical suite against a real
+PostgreSQL — the production database deserves the same coverage:
+
+    JUICEBOX_TEST_DATABASE_URL=postgresql+psycopg://juicebox:juicebox@localhost/juicebox_test \\
+        pytest
+"""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
+
+TEST_DATABASE_URL = os.environ.get("JUICEBOX_TEST_DATABASE_URL", "")
 
 
 @pytest.fixture(autouse=True)
 def isolated_environment(tmp_path, monkeypatch):
     """Every test gets its own database, no model calls and a memory mailbox."""
-    db_path = tmp_path / "test.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+    if TEST_DATABASE_URL:
+        monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    else:
+        db_path = tmp_path / "test.db"
+        monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("JUICEBOX_LLM_ENABLED", "false")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
@@ -36,6 +51,10 @@ def isolated_environment(tmp_path, monkeypatch):
     invalidate()
     set_sender(None)
 
+    if TEST_DATABASE_URL:
+        # One shared database, so wipe it between tests instead of relying on a
+        # fresh file per test the way the SQLite path does.
+        db_module.drop_all()
     db_module.create_all()
     yield
 

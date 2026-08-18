@@ -12,6 +12,7 @@ COPY packages/core/pyproject.toml /app/packages/core/pyproject.toml
 COPY packages/core/juicebox/__init__.py /app/packages/core/juicebox/__init__.py
 RUN pip install --upgrade pip && pip install "/app/packages/core[postgres]"
 
+# Includes migrations/, which `juicebox migrate` resolves relative to the package.
 COPY packages/core /app/packages/core
 COPY eval /app/eval
 RUN pip install --no-deps -e /app/packages/core

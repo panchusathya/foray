@@ -13,6 +13,7 @@ from .config import get_settings
 from .db import create_all
 from .llm.client import get_llm
 from .llm.embeddings import get_embedder
+from .migrate import is_up_to_date
 from .routers import agents, analytics, auth, candidates, outreach, projects, search, track
 
 logging.basicConfig(
@@ -24,7 +25,15 @@ logger = logging.getLogger("juicebox")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
-    create_all()
+    if settings.is_sqlite:
+        # Zero-setup dev/demo path: the local file may not exist yet.
+        create_all()
+    elif not is_up_to_date():
+        # Never mutate a real database implicitly — several workers boot at once
+        # and `alembic upgrade head` is a deploy step, not a side effect.
+        logger.warning(
+            "database schema is not at the latest migration; run `juicebox migrate`"
+        )
     llm = get_llm()
     logger.info(
         "juicebox %s up | db=%s | llm=%s | embeddings=%s",

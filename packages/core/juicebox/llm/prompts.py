@@ -297,6 +297,8 @@ Style — plain, normal prose:
 - Subjects under 60 characters. Bodies under 120 words.
 - State the role and why you're writing in the first two sentences.
 - Never invent facts about the candidate, the company, or the role beyond the brief.
+- Every body ends exactly with "Best,
+Tushar" — no other sign-off, no other name, never a placeholder in the signature.
 
 Structure:
 - The first step has delay_days 0. Follow-ups wait 2-4 business days.

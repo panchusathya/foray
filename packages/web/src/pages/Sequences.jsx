@@ -18,7 +18,7 @@ const STARTER_STEPS = [
     body_template:
       'Hi {{ first_name }},\n\n{{ opening_line }}\n\n{{ why_relevant }}\n\n' +
       "We're hiring a {{ role_title | senior engineer }} and I'd love 15 minutes to walk you " +
-      'through it. Open to a chat this week?',
+      'through it. Open to a chat this week?\n\nBest,\nTushar',
   },
 ];
 

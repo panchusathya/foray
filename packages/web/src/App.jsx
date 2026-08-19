@@ -1,6 +1,6 @@
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
+import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 
-import { Loading } from './components/common.jsx';
+import { Loading, PageHeader } from './components/common.jsx';
 import { useAuth } from './lib/auth.jsx';
 import { CurrentProjectProvider, useCurrentProject } from './lib/project.jsx';
 import { AgentsPage } from './pages/Agents.jsx';
@@ -71,6 +71,19 @@ function CurrentProjectSection() {
   );
 }
 
+function NotFoundPage() {
+  return (
+    <div className="stack">
+      <PageHeader title="Page not found" subtitle="That page doesn't exist or has moved." />
+      <div className="card empty">
+        <Link to="/" className="nav-link">
+          Back to home
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 function Shell({ children }) {
   const { user, logout } = useAuth();
   return (
@@ -124,7 +137,7 @@ export function App() {
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Shell>
     </CurrentProjectProvider>

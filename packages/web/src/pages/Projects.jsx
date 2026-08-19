@@ -3,10 +3,15 @@ import { Link, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { PIPELINE_STAGES, api } from '../lib/api.js';
+import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
 
 export function ProjectsPage() {
   const projects = useAsync(() => api.listProjects(), []);
+  // The sidebar "Current project" section and the Home quick-actions read the
+  // shared CurrentProject context, so a new project has to refresh that too —
+  // otherwise they keep showing "Create your first project" until a full reload.
+  const { reload: reloadCurrentProject, setProject } = useCurrentProject();
   const [form, setForm] = useState({ name: '', role_title: '', location: '', description: '' });
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -17,9 +22,11 @@ export function ProjectsPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.createProject(form);
+      const created = await api.createProject(form);
       setForm({ name: '', role_title: '', location: '', description: '' });
       projects.reload();
+      await reloadCurrentProject();
+      if (created?.id) setProject(created.id);
     } catch (caught) {
       setError(caught);
     } finally {

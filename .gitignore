@@ -32,6 +32,17 @@ data/out/
 *.csv
 packages/foray/data/out/
 
+# purchased datasets (Bright Data LinkedIn export, etc.). Real people's personal
+# data, gigabytes of it — inputs live under data/ and must never reach a remote.
+data/in/
+data/*.json
+data/*.jsonl
+data/snap_*
+*.jsonl
+*.json.gz
+# ...except the synthetic demo corpus, which is generated and belongs in git.
+!data/seed/*.jsonl
+
 # editors / os
 .DS_Store
 .idea/

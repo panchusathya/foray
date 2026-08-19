@@ -59,6 +59,7 @@ export const api = {
   me: () => request('/v1/auth/me'),
 
   candidateCount: () => request('/v1/candidates/count'),
+  bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
   listCandidates: (params = {}) => {
     // Backwards-compatible: accepts a bare query string or {q, limit, offset}.
     const { q = '', limit, offset } = typeof params === 'string' ? { q: params } : params;

@@ -191,10 +191,11 @@ def send_step(
     existing = _existing_outbound(db, enrollment.id, step.id)
     if existing is not None and existing.status == "sent":
         return existing
-    if existing is not None and existing.status == "failed" and existing.error in {
-        "suppressed",
-        "no email address on file",
-    }:
+    # Suppression is a permanent decision about a person, so a suppressed
+    # failure stays sticky. A missing email is a temporary state of our data:
+    # if it gets backfilled later, a re-run should retry rather than return the
+    # stale failure forever.
+    if existing is not None and existing.status == "failed" and existing.error == "suppressed":
         return existing
 
     to_address = normalize_email(candidate.primary_email or "")

@@ -108,6 +108,40 @@ class TestCandidates:
         ).json()
         assert response["guesses"][0]["email"] == "ada.okonkwo@modal.com"
 
+    def test_flat_current_role_fields_survive_without_experiences(self, client, account):
+        created = client.post(
+            "/v1/candidates/bulk",
+            json={
+                "candidates": [
+                    {
+                        "source": "foray",
+                        "source_id": "gh-42",
+                        "full_name": "Grace Ideh",
+                        "emails": ["grace@example.com"],
+                        "current_title": "Staff Engineer",
+                        "current_company": "Tailscale",
+                        "current_company_domain": "tailscale.com",
+                        "seniority": "staff",
+                        "years_experience": 9.5,
+                    }
+                ]
+            },
+            headers=account["headers"],
+        ).json()
+        assert created["created"] == 1
+
+        candidate_id = client.get(
+            "/v1/candidates?q=grace", headers=account["headers"]
+        ).json()[0]["id"]
+        detail = client.get(
+            f"/v1/candidates/{candidate_id}", headers=account["headers"]
+        ).json()
+        assert detail["current_title"] == "Staff Engineer"
+        assert detail["current_company"] == "Tailscale"
+        assert detail["current_company_domain"] == "tailscale.com"
+        assert detail["seniority"] == "staff"
+        assert detail["years_experience"] == 9.5
+
     def test_missing_candidate_returns_404(self, client, account):
         assert client.get("/v1/candidates/cand_nope", headers=account["headers"]).status_code == 404
 

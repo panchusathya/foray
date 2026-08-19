@@ -160,6 +160,17 @@ class CandidateIn(BaseModel):
     phones: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     industries: list[str] = Field(default_factory=list)
+    # normalize_candidate() reads these, but pydantic's extra='ignore' plus
+    # model_dump(exclude_none=True) dropped them before they reached it, so an
+    # importer that has no experiences[] (e.g. Foray) lost employer and
+    # experience. years_experience stays None-default, NOT 0.0: normalize only
+    # computes from experiences when it is None, so a 0.0 default would zero out
+    # every import that relies on the computed value.
+    current_title: str = ""
+    current_company: str = ""
+    current_company_domain: str = ""
+    seniority: str = ""
+    years_experience: float | None = None
     experiences: list[ExperienceIn] = Field(default_factory=list)
     educations: list[EducationIn] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
@@ -229,6 +240,7 @@ class CandidateOut(BaseModel):
     industries: list[str]
     current_title: str
     current_company: str
+    current_company_domain: str
     seniority: str
     years_experience: float
     experiences: list[ExperienceOut] = Field(default_factory=list)

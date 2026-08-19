@@ -21,6 +21,7 @@ async function forayRequest(path, { method = 'GET', body } = {}) {
 
 export const foray = {
   health: () => forayRequest('/health'),
-  search: (query, limit = 40) => forayRequest('/search', { method: 'POST', body: { query, limit } }),
+  search: (query, limit = 40, hasContact = false) =>
+    forayRequest('/search', { method: 'POST', body: { query, limit, has_contact: hasContact } }),
   enrich: (login) => forayRequest(`/candidate/${encodeURIComponent(login)}/enrich`),
 };

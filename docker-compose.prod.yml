@@ -162,6 +162,10 @@ services:
     mem_limit: 2500m
     logging: *default_logging
     environment: *foray_env
+    volumes:
+      # Bulk import inputs (the Bright Data export). Read-only: jobs consume
+      # files here, never write them.
+      - ./data/in:/data/in:ro
     depends_on:
       db:
         condition: service_healthy

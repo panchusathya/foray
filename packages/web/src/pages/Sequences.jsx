@@ -212,6 +212,23 @@ export function SequencesPage() {
     }
   }
 
+  async function remove(sequence) {
+    if (
+      !window.confirm(
+        `Delete “${sequence.name}”? Enrolments and sent-message history for this sequence go with it.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.deleteSequence(sequence.id);
+      sequences.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   return (
     <div className="stack">
       <PageHeader
@@ -264,6 +281,9 @@ export function SequencesPage() {
                     Open
                   </button>
                 </Link>
+                <button type="button" className="tiny ghost" onClick={() => remove(sequence)}>
+                  Delete
+                </button>
               </div>
             </div>
           ))}

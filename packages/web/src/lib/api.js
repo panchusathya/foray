@@ -78,6 +78,7 @@ export const api = {
 
   listProjects: () => request('/v1/projects'),
   createProject: (payload) => request('/v1/projects', { method: 'POST', body: payload }),
+  deleteProject: (id) => request(`/v1/projects/${id}`, { method: 'DELETE' }),
   getPipeline: (projectId) => request(`/v1/projects/${projectId}/pipeline`),
   addToProject: (projectId, payload) =>
     request(`/v1/projects/${projectId}/candidates`, { method: 'POST', body: payload }),
@@ -86,6 +87,7 @@ export const api = {
 
   listSequences: () => request('/v1/sequences'),
   createSequence: (payload) => request('/v1/sequences', { method: 'POST', body: payload }),
+  deleteSequence: (id) => request(`/v1/sequences/${id}`, { method: 'DELETE' }),
   getSequence: (id) => request(`/v1/sequences/${id}`),
   updateSequence: (id, payload) => request(`/v1/sequences/${id}`, { method: 'PATCH', body: payload }),
   replaceSteps: (id, steps) => request(`/v1/sequences/${id}/steps`, { method: 'PUT', body: steps }),

@@ -34,6 +34,24 @@ export function ProjectsPage() {
     }
   }
 
+  async function remove(project) {
+    if (
+      !window.confirm(
+        `Delete “${project.name}”? Pipeline cards and sourcing agents for this role go with it. Sequences stay, but lose the role title.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.deleteProject(project.id);
+      projects.reload();
+      await reloadCurrentProject();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   return (
     <div className="stack">
       <PageHeader title="Projects" subtitle="One project per role you're filling." />
@@ -80,14 +98,21 @@ export function ProjectsPage() {
       ) : (
         <div className="grid two">
           {(projects.data ?? []).map((project) => (
-            <Link key={project.id} to={`/projects/${project.id}`} className="card" style={{ textDecoration: 'none' }}>
+            <div key={project.id} className="card stack" style={{ gap: 8 }}>
               <div className="spread">
-                <strong>{project.name}</strong>
-                <Badge>{project.status}</Badge>
+                <Link to={`/projects/${project.id}`} style={{ fontWeight: 600, textDecoration: 'none' }}>
+                  {project.name}
+                </Link>
+                <div className="row">
+                  <Badge>{project.status}</Badge>
+                  <button type="button" className="tiny ghost" onClick={() => remove(project)}>
+                    Delete
+                  </button>
+                </div>
               </div>
               <div className="small muted">{project.role_title || 'No role title'}</div>
               {project.location ? <div className="small muted">{project.location}</div> : null}
-            </Link>
+            </div>
           ))}
         </div>
       )}

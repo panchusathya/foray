@@ -282,6 +282,42 @@ class TestPipeline:
         pipeline = client.get(f"/v1/projects/{project['id']}/pipeline", headers=headers).json()
         assert len(pipeline) == 1
 
+    def test_delete_project_removes_pipeline_and_unlinks_sequences(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        project = self._project(client, headers)
+        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
+        client.post(
+            f"/v1/projects/{project['id']}/candidates",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        )
+        sequence = client.post(
+            "/v1/sequences",
+            json={
+                "name": "Tied to the project",
+                "project_id": project["id"],
+                "personalize": False,
+                "steps": [
+                    {
+                        "delay_days": 0,
+                        "subject_template": "Hi",
+                        "body_template": "Hi there",
+                    }
+                ],
+            },
+            headers=headers,
+        ).json()
+        assert sequence["project_id"] == project["id"]
+
+        deleted = client.delete(f"/v1/projects/{project['id']}", headers=headers)
+        assert deleted.status_code == 204
+        assert client.get(f"/v1/projects/{project['id']}", headers=headers).status_code == 404
+        leftover = client.get(f"/v1/sequences/{sequence['id']}", headers=headers).json()
+        assert leftover["project_id"] is None
+
+    def test_delete_unknown_project_is_404(self, client, account):
+        assert client.delete("/v1/projects/proj_nope", headers=account["headers"]).status_code == 404
+
 
 class TestOutreachApi:
     def _sequence(self, client, headers, project_id=None):

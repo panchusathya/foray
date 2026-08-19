@@ -225,3 +225,26 @@ class TestGenerateSequence:
             headers=loaded_org["headers"],
         )
         assert response.status_code == 404
+
+
+class TestDeleteSequence:
+    def test_delete_removes_sequence_and_enrollments(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        candidate = _first_candidate(client, headers)
+        enrolled = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate["id"]]},
+            headers=headers,
+        )
+        assert enrolled.status_code == 200
+        assert client.get(
+            f"/v1/sequences/{sequence['id']}/enrollments", headers=headers
+        ).json()
+
+        deleted = client.delete(f"/v1/sequences/{sequence['id']}", headers=headers)
+        assert deleted.status_code == 204
+        assert client.get(f"/v1/sequences/{sequence['id']}", headers=headers).status_code == 404
+
+    def test_delete_unknown_sequence_is_404(self, client, account):
+        assert client.delete("/v1/sequences/seq_nope", headers=account["headers"]).status_code == 404

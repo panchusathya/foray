@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -86,6 +86,7 @@ function normalizeSteps(steps) {
 
 export function SequenceEditorPage() {
   const { sequenceId } = useParams();
+  const navigate = useNavigate();
   const sequence = useAsync(() => api.getSequence(sequenceId), [sequenceId]);
   const enrollments = useAsync(() => api.listEnrollments(sequenceId), [sequenceId]);
   const candidates = useAsync(() => api.listCandidates({ limit: 25 }), []);
@@ -179,6 +180,23 @@ export function SequenceEditorPage() {
     }
   }
 
+  async function remove() {
+    if (
+      !window.confirm(
+        `Delete “${meta.name}”? Enrolments and sent-message history for this sequence go with it.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.deleteSequence(sequenceId);
+      navigate('/sequences');
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   async function runPreview() {
     const candidateId = previewCandidate || candidates.data?.[0]?.id;
     if (!candidateId) {
@@ -218,6 +236,9 @@ export function SequenceEditorPage() {
         <div className="row">
           <button type="button" className="tiny" onClick={toggleStatus}>
             {status === 'active' ? 'Pause' : 'Activate'}
+          </button>
+          <button type="button" className="tiny ghost" onClick={remove}>
+            Delete
           </button>
           <button type="button" className="primary" disabled={!dirty || saving} onClick={() => save()}>
             {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}

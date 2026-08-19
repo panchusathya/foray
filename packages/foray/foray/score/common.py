@@ -6,15 +6,14 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-from .archetypes import Archetype
 
 # Per-call cost, config-driven so the projection and the spend guard track the
 # actual FORAY_SCORING_MODEL. Default matches gpt-oss-120b measured spend
 # (~$0.0003/call); the old hard-coded value was Haiku-batch pricing, 4.8x high.
-from ..config import settings  # noqa: E402
+from ..config import settings
+from .archetypes import Archetype
 
 PER_CALL_USD = settings.scoring_usd_per_call
 
@@ -26,7 +25,9 @@ SELECT_COLUMNS = """
     s.total_stars, s.max_repo_stars, s.non_fork_repo_count,
     s.commits_last_year, s.prs_last_year, s.last_push_at,
     s.est_experience_years, s.experience_confidence, s.domain_markers,
-    s.oss_maintainer, s.top_repos, s.topics
+    s.oss_maintainer, s.top_repos, s.topics,
+    s.evidence_kind, s.title, s.activity_at, s.activity_kind,
+    s.tenure_months, s.location_metro, s.employer_domain
 """
 
 
@@ -41,7 +42,8 @@ def _as_json(value: Any, default):
 async def gate_count(conn, arch: Archetype) -> int:
     return await conn.fetchval(
         f"select count(*) from candidate_signals s "
-        f"join candidates c on c.id = s.candidate_id where ({arch.gate})"
+        f"join candidates c on c.id = s.candidate_id "
+        f"where c.merged_into is null and ({arch.gate})"
     )
 
 
@@ -61,7 +63,11 @@ async def candidates_to_score(
         -- build_user_content falls back to bare login when embed_blob is empty,
         -- producing a garbage score with a MATCHING rubric_hash that is then
         -- never rescored. Never score a candidate before it is embedded.
-        where ({arch.gate}) and ({clause}) and c.embed_blob is not null
+        where c.merged_into is null
+          and ({arch.gate}) and ({clause}) and c.embed_blob is not null
+          -- LinkedIn rows without even a title are unrankable stubs; spending
+          -- a model call on them buys nothing.
+          and (s.evidence_kind = 'github' or s.title is not null)
         order by c.id
         {'limit $3' if limit else ''}
         """,
@@ -78,9 +84,38 @@ def _mix_summary(language_mix: dict[str, float]) -> str:
 
 def build_user_content(row: Any) -> str:
     language_mix = _as_json(row["language_mix"], {})
+    kind = row["evidence_kind"] if "evidence_kind" in row.keys() else "github"
+
+    if kind == "linkedin":
+        # No code evidence exists for this person. Saying so up front — and
+        # omitting the zeroed GitHub numerics entirely — is what stops the
+        # model reading "0 stars, 0 commits" as a terrible engineer.
+        activity = row["activity_at"]
+        activity_str = activity.strftime("%Y-%m") if activity else "unknown"
+        tenure = row["tenure_months"]
+        tenure_str = f"{tenure // 12}y {tenure % 12}m" if tenure else "unknown"
+        return (
+            "Evidence type: LinkedIn profile only — no public code is available "
+            "for this person.\n\n"
+            f"{row['embed_blob'] or row['login']}\n\n"
+            f"Signals: ~{row['est_experience_years']}y experience "
+            f"({row['experience_confidence']} confidence); "
+            f"current title {row['title'] or 'unknown'}; "
+            f"employer {row['employer'] or 'unknown'} "
+            f"(domain {row['employer_domain'] or 'n/a'}); "
+            f"tenure in current role {tenure_str}; "
+            f"location {row['location_metro'] or 'unknown'}; "
+            f"activity basis: {row['activity_kind'] or 'unknown'} ({activity_str}); "
+            f"domain markers {list(row['domain_markers'])}."
+        )
+
     last_push = row["last_push_at"]
     last_push_str = last_push.strftime("%Y-%m") if last_push else "unknown"
+    header = (
+        "Evidence type: GitHub and LinkedIn combined.\n\n" if kind == "both" else ""
+    )
     return (
+        f"{header}"
         f"{row['embed_blob'] or row['login']}\n\n"
         f"Signals: ~{row['est_experience_years']}y experience "
         f"({row['experience_confidence']} confidence); "
@@ -124,12 +159,26 @@ def parse_scoring_json(text: str) -> dict[str, Any]:
 def _months_since(dt: datetime | None) -> float:
     if not dt:
         return 9999.0
-    return (datetime.now(timezone.utc) - dt).days / 30.44
+    return (datetime.now(UTC) - dt).days / 30.44
 
 
 def heuristic_score(row: Any, arch: Archetype) -> int:
     """A spread-out, spend-free proxy for the real LLM score (demos/tests only)."""
     markers = set(row["domain_markers"])
+    kind = row["evidence_kind"] if "evidence_kind" in row.keys() else "github"
+    if kind == "linkedin":
+        # Career-evidence branch: the GitHub penalties below (stars, commits,
+        # push recency, fork count) would zero every LinkedIn row.
+        score = 25.0
+        if arch.gate_markers() & markers:
+            score += 25
+        score += min(20.0, float(row["est_experience_years"]))
+        if row["experience_confidence"] == "high":
+            score += 10
+        title = row["title"] if "title" in row.keys() else None
+        if title:
+            score += 5
+        return max(0, min(100, round(score)))
     score = 20.0
     if arch.gate_markers() & markers:
         score += 20

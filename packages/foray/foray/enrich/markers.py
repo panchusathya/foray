@@ -55,13 +55,22 @@ def _haystack(repos: list[dict]) -> str:
     return " ".join(parts).lower()
 
 
-def detect_markers(repos: list[dict], language_mix: dict[str, float]) -> list[str]:
+def detect_markers(
+    repos: list[dict],
+    language_mix: dict[str, float],
+    *,
+    require_language_gate: bool = True,
+) -> list[str]:
+    """``require_language_gate=False`` is for LinkedIn-derived pseudo-repos:
+    the gate exists to stop a stray .py file awarding ``ml``, but a profile
+    that *says* machine learning is a deliberate claim, and LinkedIn people
+    have no language mix to clear the threshold with."""
     haystack = _haystack(repos)
     awarded: list[str] = []
     for marker, terms in load_markers().items():
         if not any(_term_pattern(term).search(haystack) for term in terms):
             continue
-        if marker in LANGUAGE_GATE:
+        if require_language_gate and marker in LANGUAGE_GATE:
             langs, threshold = LANGUAGE_GATE[marker]
             frac = sum(language_mix.get(lang, 0.0) for lang in langs)
             if frac <= threshold:

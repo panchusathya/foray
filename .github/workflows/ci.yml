@@ -183,21 +183,33 @@ jobs:
         run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env config >/dev/null
 
   staging-smoke:
-    # Boots the staging stack (db + api + web, not Foray — that image is 3 GB
-    # with CPU torch and is already built by the docker job). Proves migrations
-    # run on juicebox_staging and /health is reachable on the localhost port.
-    name: staging smoke (db + api + web)
+    # Boots the full staging stack INCLUDING Foray (the 3 GB CPU-torch image —
+    # the build cost buys the Sourcing specs, which otherwise self-skip and
+    # leave every LinkedIn rendering change untested). Proves migrations run on
+    # juicebox_staging/foray_staging and drives the browser suite end to end.
+    name: staging smoke + browser suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Boot staging stack
+      - name: Boot staging stack (with Foray, so the Sourcing specs run)
         run: >
           docker compose -f docker-compose.staging.yml --env-file deploy/ci.env
-          up -d --build --wait --wait-timeout 300
+          --profile foray up -d --build --wait --wait-timeout 600
 
       - name: Health
         run: curl -sf http://127.0.0.1:18080/health
+
+      # Both evidence kinds, then derive + embed so search actually returns
+      # hits. Without this the Sourcing specs self-skip and every LinkedIn
+      # rendering change ships untested.
+      - name: Seed Foray with synthetic candidates (both sources)
+        run: |
+          compose="docker compose -f docker-compose.staging.yml --env-file deploy/ci.env"
+          $compose run --rm --no-deps -T foray python scripts/seed_synthetic.py --count 40
+          $compose run --rm --no-deps -T foray python scripts/seed_synthetic.py --count 40 --source linkedin
+          $compose run --rm --no-deps -T foray python -m foray.enrich.derive
+          $compose run --rm --no-deps -T foray python -m foray.embed.run
 
       - uses: actions/setup-node@v4
         with:

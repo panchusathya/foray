@@ -74,7 +74,7 @@ def _build_filters(
     parsed: ParsedFilter, start: int, *, has_contact: bool = False
 ) -> tuple[str, list, int]:
     clauses = [
-        f"s.last_push_at > now() - interval '{int(settings.activity_floor_months)} months'",
+        f"s.activity_at > now() - interval '{int(settings.activity_floor_months)} months'",
         "c.embedding is not null",
     ]
     if has_contact:
@@ -109,11 +109,17 @@ def _build_filters(
 def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
     emails = _as_json(row["emails"], []) if "emails" in row.keys() else []
     emails = emails or []
+    source = row["source"] if "source" in row.keys() else "github"
     return {
         "rank": rank,
         "login": row["login"],
         "name": row["name"],
-        "github_url": f"https://github.com/{row['login']}",
+        # A LinkedIn-only person has a synthetic 'li:' login; a github.com link
+        # built from it would be a dead 404.
+        "source": source,
+        "github_url": (
+            f"https://github.com/{row['login']}" if source != "linkedin" else None
+        ),
         "linkedin_url": row["linkedin_url"],
         "linkedin_source": row["linkedin_source"],
         # Observed addresses only: guesses are filtered in SQL and can never
@@ -153,7 +159,7 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
 async def _vector_fallback(conn, query: str, qvec: str, parser: str, limit: int) -> SearchResult:
     rows = await conn.fetch(
         f"""
-        select c.id, c.login, c.name, c.location_raw, c.linkedin_url, c.linkedin_source,
+        select c.id, c.login, c.name, c.source, c.location_raw, c.linkedin_url, c.linkedin_source,
                s.employer, s.employer_source, s.employer_domain, s.primary_language,
                s.est_experience_years, s.experience_confidence, s.last_push_at,
                s.top_repos, s.domain_markers, s.topics,
@@ -163,7 +169,7 @@ async def _vector_fallback(conn, query: str, qvec: str, parser: str, limit: int)
         from candidates c
         join candidate_signals s on s.candidate_id = c.id
         {EMAILS_LATERAL}
-        where c.embedding is not null
+        where c.embedding is not null and c.merged_into is null
         order by c.embedding <=> $1::halfvec
         limit $2
         """,
@@ -209,7 +215,7 @@ async def run_search(
         select count(*) from candidate_signals s
         join candidates c on c.id = s.candidate_id
         join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-        where {where_count}
+        where c.merged_into is null and {where_count}
         """,
         arch.id,
         *filter_params,
@@ -224,11 +230,11 @@ async def run_search(
             from candidate_signals s
             join candidates c on c.id = s.candidate_id
             join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-            where {where_main}
+            where c.merged_into is null and {where_main}
             order by a.score desc
             limit $2
         )
-        select c.id, c.login, c.name, c.location_raw, c.linkedin_url, c.linkedin_source,
+        select c.id, c.login, c.name, c.source, c.location_raw, c.linkedin_url, c.linkedin_source,
                s.employer, s.employer_source, s.employer_domain, s.primary_language,
                s.est_experience_years, s.experience_confidence, s.last_push_at,
                s.top_repos, s.domain_markers, s.topics,

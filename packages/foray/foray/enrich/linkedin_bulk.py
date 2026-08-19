@@ -34,7 +34,7 @@ join archetype_scores  a on a.candidate_id = c.id
 where c.linkedin_url is null
   and ($4 or c.linkedin_checked_at is null
        or c.linkedin_checked_at < now() - make_interval(days => $2))
-  and s.last_push_at > now() - make_interval(months => $3)
+  and s.activity_at > now() - make_interval(months => $3)
   and ($5::text is null or a.archetype_id = $5)
 group by c.id, c.login
 having max(a.score) >= $1

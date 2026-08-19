@@ -14,7 +14,7 @@ import argparse
 import asyncio
 import json
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from foray.db import close_pool, get_pool
 
@@ -44,8 +44,8 @@ def _iso(dt: datetime) -> str:
 def make_node(rng: random.Random, i: int) -> dict:
     theme_names = rng.sample(list(THEMES), k=rng.choice([1, 1, 2]))
     created_year = rng.randint(2012, 2021)
-    created = datetime(created_year, rng.randint(1, 12), rng.randint(1, 28), tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
+    created = datetime(created_year, rng.randint(1, 12), rng.randint(1, 28), tzinfo=UTC)
+    now = datetime.now(UTC)
     recent_push = now - timedelta(days=rng.randint(5, 500))
 
     repos = []
@@ -109,6 +109,11 @@ async def amain(args: argparse.Namespace) -> int:
                 "truncate candidates, raw_profiles, candidate_signals, archetype_scores, "
                 "shortlist_events restart identity cascade"
             )
+        if args.source == "linkedin":
+            await seed_linkedin(conn, rng, args.count)
+            print(f"seeded {args.count} synthetic LinkedIn candidates + raw_profiles")
+            await close_pool()
+            return 0
         for i in range(args.count):
             node = make_node(rng, i)
             cid = await conn.fetchval(
@@ -121,9 +126,9 @@ async def amain(args: argparse.Namespace) -> int:
                 node["location"],
             )
             await conn.execute(
-                "insert into raw_profiles (candidate_id, login, data, fetched_at) "
-                "values ($1, $2, $3::jsonb, now()) "
-                "on conflict (candidate_id) do update set data = excluded.data, fetched_at = now()",
+                "insert into raw_profiles (candidate_id, source, login, data, fetched_at) "
+                "values ($1, 'github', $2, $3::jsonb, now()) "
+                "on conflict (candidate_id, source) do update set data = excluded.data, fetched_at = now()",
                 cid,
                 node["login"],
                 json.dumps(node),
@@ -133,9 +138,98 @@ async def amain(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_linkedin_record(rng: random.Random, i: int) -> dict:
+    """A Bright Data-shaped record, for CI/E2E fixtures — real data never
+    reaches a runner, which is exactly why this mode exists."""
+    theme_names = rng.sample(list(THEMES), k=1)
+    theme = THEMES[theme_names[0]]
+    first = FIRST[i % len(FIRST)]
+    last = LAST[(i * 7) % len(LAST)]
+    slug = f"{first.lower()}-{last.lower()}-synth{i:05d}"
+    start_year = rng.randint(2012, 2023)
+    title = rng.choice(
+        [
+            f"Senior {theme_names[0].title()} Engineer",
+            f"Staff Software Engineer, {theme_names[0]}",
+            "Software Engineer",
+            f"{theme_names[0].title()} Engineer",
+        ]
+    )
+    company = rng.choice(["Stripe", "Databricks", "Cloudflare", "Acme Labs", "OpenAI"])
+    return {
+        "id": slug,
+        "linkedin_id": slug,
+        "linkedin_num_id": str(90_000_000 + i),
+        "url": f"https://www.linkedin.com/in/{slug}",
+        "name": f"{first} {last}",
+        "first_name": first,
+        "last_name": last,
+        "city": "San Francisco Bay Area",
+        "country_code": "US",
+        "position": title,
+        "about": f"{title} working on {', '.join(theme['terms'])}.",
+        "current_company": {"company_id": company.lower(), "name": company},
+        "current_company_name": company,
+        "experience": [
+            {
+                "title": title,
+                "company": company,
+                "start_date": f"Jan {start_year + 2}",
+                "end_date": None,
+                "positions": None,
+            },
+            {
+                "title": "Software Engineer",
+                "company": "Initech",
+                "start_date": f"Jun {start_year}",
+                "end_date": f"Dec {start_year + 1}",
+                "positions": None,
+            },
+        ],
+        "education": [{"title": "State University", "degree": "BSc"}],
+        "certifications": None,
+        "followers": rng.randint(50, 3000),
+        "connections": rng.randint(50, 500),
+    }
+
+
+async def seed_linkedin(conn, rng: random.Random, count: int) -> None:
+    from foray.ingest.linkedin_map import to_import_row
+
+    for i in range(count):
+        record = make_linkedin_record(rng, i)
+        row = to_import_row(record)
+        assert row is not None
+        cid = await conn.fetchval(
+            "insert into candidates (login, name, location_raw, linkedin_url, linkedin_slug, "
+            "linkedin_source, source, discovery_shard) "
+            "values ($1, $2, $3, $4, $5, 'synthetic', 'linkedin', 'synthetic') "
+            "on conflict (login) do update set name = excluded.name returning id",
+            row.login,
+            row.name,
+            row.location_raw,
+            row.linkedin_url,
+            row.slug,
+        )
+        await conn.execute(
+            "insert into raw_profiles (candidate_id, source, login, data, fetched_at) "
+            "values ($1, 'linkedin', $2, $3::jsonb, now()) "
+            "on conflict (candidate_id, source) do update set data = excluded.data, fetched_at = now()",
+            cid,
+            row.login,
+            json.dumps(record),
+        )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Seed synthetic raw_profiles for offline dev.")
     ap.add_argument("--count", type=int, default=300)
+    ap.add_argument(
+        "--source",
+        choices=("github", "linkedin"),
+        default="github",
+        help="which evidence kind to fabricate",
+    )
     ap.add_argument("--reset", action="store_true", help="truncate foray tables first")
     return asyncio.run(amain(ap.parse_args()))
 

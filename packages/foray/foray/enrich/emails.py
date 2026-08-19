@@ -10,6 +10,10 @@ Sources, in confidence order (see UPSERT: an address is never downgraded):
                    here). 75 needs author-name/login attribution, 55 needs the
                    same address across >=2 pushes.
   apollo_work / apollo_personal (85/70) -- captured by enrich.apollo (PR 2).
+  linkedin (80) -- a business address found in a Bright Data export's free
+                   text (rare: ~0.2% of records). Below apollo_work because a
+                   scraped self-declared address is weaker than a verified
+                   work record; above commit because it is self-published.
   guess (25)    -- reserved; never written by this module and always excluded
                    from the search payload, so a guess can never become a
                    send-to address downstream.

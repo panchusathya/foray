@@ -213,10 +213,14 @@ def derive_linkedin_signals(record: dict, *, asof: datetime) -> dict[str, Any]:
         "top_repos": [],
         "topics": [],
         "evidence_kind": "linkedin",
-        # Employed-now beats snapshot-existed: an open current role is a real
-        # recency claim; the export snapshot is the floor.
-        "activity_at": role_start or asof,
-        "activity_kind": "role" if role_start else "snapshot",
+        # The snapshot date IS the recency claim: the person was captured in
+        # this state (employed, at this role) as of the export. Using the
+        # role's START date here was a bug — it made anyone in the same job
+        # for >18 months fail the recency gates, silently excluding exactly
+        # the long-tenured seniors a search most wants. Tenure lives in
+        # current_role_start_at/tenure_months, not in the activity clock.
+        "activity_at": asof,
+        "activity_kind": "snapshot",
         "current_role_start_at": role_start,
         "tenure_months": tenure_months(roles, asof=asof),
         "profile_asof": asof,

@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     vector_weight: float = Field(default=0.3, validation_alias="FORAY_VECTOR_WEIGHT")
     rerank_pool: int = Field(default=300, validation_alias="FORAY_RERANK_POOL")
     result_limit: int = Field(default=40, validation_alias="FORAY_RESULT_LIMIT")
-    display_floor: int = Field(default=45, validation_alias="FORAY_DISPLAY_FLOOR")
+    display_floor: int = Field(default=20, validation_alias="FORAY_DISPLAY_FLOOR")
     activity_floor_months: int = Field(default=24, validation_alias="FORAY_ACTIVITY_FLOOR_MONTHS")
     min_results_before_widen: int = Field(default=12, validation_alias="FORAY_MIN_RESULTS")
 

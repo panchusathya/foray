@@ -30,13 +30,25 @@ def _community_orgs() -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _freemail() -> set[str]:
+def freemail_domains() -> set[str]:
     path = settings.data_dir / "freemail.txt"
     return {
         line.strip().lower()
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     }
+
+
+def domain_of(email: str) -> str | None:
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        return None
+    return email.rsplit("@", 1)[-1] or None
+
+
+def is_work_domain(email: str) -> bool:
+    domain = domain_of(email)
+    return bool(domain) and domain not in freemail_domains()
 
 
 def _canonical_company(raw: str) -> str:
@@ -69,7 +81,7 @@ def infer_employer(node: dict) -> tuple[str | None, str | None]:
     email = (node.get("email") or "").strip().lower()
     if "@" in email:
         domain = email.rsplit("@", 1)[-1]
-        if domain and domain not in _freemail():
+        if domain and domain not in freemail_domains():
             # Map through aliases too (e.g. stripe.com -> Stripe if listed).
             base = domain.split(".")[0]
             return _aliases().get(base, domain), "email_domain"

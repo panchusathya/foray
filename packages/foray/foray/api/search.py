@@ -26,6 +26,21 @@ def _as_json(value: Any, default):
     return json.loads(value) if isinstance(value, str) else value
 
 
+# Bounded to the result set (rerank_pool at most), never the count query. The
+# source <> 'guess' predicate lives HERE, in SQL, so a guessed address cannot
+# reach any consumer of the search payload.
+EMAILS_LATERAL = """
+        left join lateral (
+            select jsonb_agg(jsonb_build_object(
+                     'email', e.email, 'source', e.source, 'is_work', e.is_work,
+                     'confidence', e.confidence, 'verified', e.verified)
+                   order by e.is_work desc, e.confidence desc, e.first_seen_at) as emails
+            from candidate_emails e
+            where e.candidate_id = c.id and e.source <> 'guess'
+        ) em on true
+"""
+
+
 @dataclass
 class SearchResult:
     query: str
@@ -55,11 +70,21 @@ class SearchResult:
         }
 
 
-def _build_filters(parsed: ParsedFilter, start: int) -> tuple[str, list, int]:
+def _build_filters(
+    parsed: ParsedFilter, start: int, *, has_contact: bool = False
+) -> tuple[str, list, int]:
     clauses = [
         f"s.last_push_at > now() - interval '{int(settings.activity_floor_months)} months'",
         "c.embedding is not null",
     ]
+    if has_contact:
+        # Parameterless on purpose so the $i arithmetic below is untouched.
+        # Guesses are excluded here too: a guess is never "contactable".
+        clauses.append(
+            "(c.linkedin_url is not null or exists ("
+            " select 1 from candidate_emails e"
+            " where e.candidate_id = c.id and e.source <> 'guess'))"
+        )
     params: list = []
     i = start
     if parsed.metros:
@@ -82,6 +107,8 @@ def _build_filters(parsed: ParsedFilter, start: int) -> tuple[str, list, int]:
 
 
 def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
+    emails = _as_json(row["emails"], []) if "emails" in row.keys() else []
+    emails = emails or []
     return {
         "rank": rank,
         "login": row["login"],
@@ -89,8 +116,13 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "github_url": f"https://github.com/{row['login']}",
         "linkedin_url": row["linkedin_url"],
         "linkedin_source": row["linkedin_source"],
+        # Observed addresses only: guesses are filtered in SQL and can never
+        # appear here (and therefore never become a send-to address downstream).
+        "emails": emails,
+        "has_contact": bool(emails) or bool(row["linkedin_url"]),
         "employer": row["employer"],
         "employer_source": row["employer_source"],
+        "employer_domain": row["employer_domain"] if "employer_domain" in row.keys() else None,
         "est_experience_years": (
             round(float(row["est_experience_years"]), 1)
             if row["est_experience_years"] is not None
@@ -100,6 +132,7 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "primary_language": row["primary_language"],
         "location": row["location_raw"],
         "top_repos": _as_json(row["top_repos"], []),
+        "topics": list(row["topics"])[:12] if "topics" in row.keys() and row["topics"] else [],
         "last_push_at": row["last_push_at"].isoformat() if row["last_push_at"] else None,
         "highlights": _as_json(row["highlights"], []) if has_score else [],
         "flags": _as_json(row["flags"], []) if has_score else [],
@@ -112,20 +145,24 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
             "employer": row["employer"] is not None,
             "est_experience_years": True,
             "linkedin_url": False,
+            "emails": False,  # guesses excluded upstream; everything here is observed
         },
     }
 
 
 async def _vector_fallback(conn, query: str, qvec: str, parser: str, limit: int) -> SearchResult:
     rows = await conn.fetch(
-        """
+        f"""
         select c.id, c.login, c.name, c.location_raw, c.linkedin_url, c.linkedin_source,
-               s.employer, s.employer_source, s.primary_language, s.est_experience_years,
-               s.experience_confidence, s.last_push_at, s.top_repos, s.domain_markers,
+               s.employer, s.employer_source, s.employer_domain, s.primary_language,
+               s.est_experience_years, s.experience_confidence, s.last_push_at,
+               s.top_repos, s.domain_markers, s.topics,
                null::smallint as score, '[]'::jsonb as highlights, '[]'::jsonb as flags,
+               em.emails,
                (1 - (c.embedding <=> $1::halfvec)) as cos_sim
         from candidates c
         join candidate_signals s on s.candidate_id = c.id
+        {EMAILS_LATERAL}
         where c.embedding is not null
         order by c.embedding <=> $1::halfvec
         limit $2
@@ -148,7 +185,14 @@ async def _vector_fallback(conn, query: str, qvec: str, parser: str, limit: int)
     )
 
 
-async def run_search(conn, query: str, limit: int | None = None, *, use_llm: bool | None = None) -> SearchResult:
+async def run_search(
+    conn,
+    query: str,
+    limit: int | None = None,
+    *,
+    use_llm: bool | None = None,
+    has_contact: bool = False,
+) -> SearchResult:
     limit = limit or settings.result_limit
     parsed, parser = await parse_query(conn, query, use_llm=use_llm)
     qvec = to_halfvec_literal(embed_query(parsed.free_text or query))
@@ -157,8 +201,9 @@ async def run_search(conn, query: str, limit: int | None = None, *, use_llm: boo
     if arch is None:
         return await _vector_fallback(conn, query, qvec, parser, limit)
 
-    # Count query: $1 = archetype, filter params start at $2.
-    where_count, filter_params, _ = _build_filters(parsed, start=2)
+    # Count query: $1 = archetype, filter params start at $2. has_contact is in
+    # the filters so total_matched reflects the real contactable pool.
+    where_count, filter_params, _ = _build_filters(parsed, start=2, has_contact=has_contact)
     total_matched = await conn.fetchval(
         f"""
         select count(*) from candidate_signals s
@@ -171,7 +216,7 @@ async def run_search(conn, query: str, limit: int | None = None, *, use_llm: boo
     )
 
     # Main query: $1 = archetype, $2 = pool limit, filter params start at $3, qvec last.
-    where_main, filter_params, qvec_i = _build_filters(parsed, start=3)
+    where_main, filter_params, qvec_i = _build_filters(parsed, start=3, has_contact=has_contact)
     rows = await conn.fetch(
         f"""
         with pool as (
@@ -184,14 +229,17 @@ async def run_search(conn, query: str, limit: int | None = None, *, use_llm: boo
             limit $2
         )
         select c.id, c.login, c.name, c.location_raw, c.linkedin_url, c.linkedin_source,
-               s.employer, s.employer_source, s.primary_language, s.est_experience_years,
-               s.experience_confidence, s.last_push_at, s.top_repos, s.domain_markers,
+               s.employer, s.employer_source, s.employer_domain, s.primary_language,
+               s.est_experience_years, s.experience_confidence, s.last_push_at,
+               s.top_repos, s.domain_markers, s.topics,
                a.score, a.highlights, a.flags,
+               em.emails,
                (1 - (c.embedding <=> ${qvec_i}::halfvec)) as cos_sim
         from pool p
         join candidates c on c.id = p.id
         join candidate_signals s on s.candidate_id = c.id
         join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
+        {EMAILS_LATERAL}
         """,
         arch.id,
         settings.rerank_pool,

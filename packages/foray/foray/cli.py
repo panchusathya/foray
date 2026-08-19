@@ -14,6 +14,7 @@ _COMMANDS = {
     "shards": "foray.harvest.shards",
     "harvest": "foray.harvest.search",
     "enrich": "foray.enrich.profiles",
+    "emails": "foray.enrich.emails",
     "derive": "foray.enrich.derive",
     "embed": "foray.embed.run",
     "gate": "foray.score.gate",

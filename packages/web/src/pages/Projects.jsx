@@ -129,81 +129,7 @@ export function ProjectDetailPage() {
   const { projectId } = useParams();
   const pipeline = useAsync(() => api.getPipeline(projectId), [projectId]);
   const funnel = useAsync(() => api.funnel(projectId), [projectId]);
-  const sequences = useAsync(() => api.listSequences(), []);
   const [error, setError] = useState(null);
-  const [selected, setSelected] = useState(() => new Set());
-  const [sequenceId, setSequenceId] = useState('');
-  const [enrolling, setEnrolling] = useState(false);
-  const [notice, setNotice] = useState('');
-
-  // Sequences for this role first; org-wide ones without a project still work
-  // (enroll passes project_id explicitly, so stage moves land in this pipeline).
-  const enrollable = (sequences.data ?? []).filter(
-    (sequence) => sequence.project_id === projectId || !sequence.project_id,
-  );
-
-  function toggleSelected(candidateId) {
-    setSelected((previous) => {
-      const next = new Set(previous);
-      if (next.has(candidateId)) next.delete(candidateId);
-      else next.add(candidateId);
-      return next;
-    });
-  }
-
-  async function enrollSelected() {
-    const sequence = enrollable.find((s) => s.id === sequenceId) ?? enrollable[0];
-    if (!sequence) return;
-    const chosen = (pipeline.data ?? []).filter((entry) => selected.has(entry.candidate.id));
-    const withoutEmail = chosen.filter((entry) => !(entry.candidate.emails ?? []).length);
-    // The sequencer stops an enrollment for an email-less candidate; it retries
-    // on a later run once an address is backfilled, but warn up front anyway.
-    const lines = [
-      `Enroll ${chosen.length} candidate${chosen.length === 1 ? '' : 's'} in “${sequence.name}”?`,
-    ];
-    if (withoutEmail.length) {
-      lines.push(`${withoutEmail.length} of them have no email yet and won't send until one is found.`);
-    }
-    if (sequence.status !== 'active') {
-      lines.push('The sequence is paused — it will be activated so sending can start.');
-    }
-    if (!window.confirm(lines.join('\n'))) return;
-
-    setEnrolling(true);
-    setError(null);
-    setNotice('');
-    try {
-      await api.enroll(sequence.id, {
-        candidate_ids: chosen.map((entry) => entry.candidate.id),
-        project_id: projectId,
-      });
-      if (sequence.status !== 'active') {
-        await api.setSequenceStatus(sequence.id, 'active');
-        sequences.reload();
-      }
-      setSelected(new Set());
-      // Fire what's already due instead of waiting for the next worker tick.
-      // Failure here is non-fatal: the worker sends due steps within a minute.
-      let sentNow = 0;
-      try {
-        const run = await api.runSequence(sequence.id);
-        sentNow = run?.sent ?? 0;
-      } catch {
-        /* worker fallback */
-      }
-      setNotice(
-        sentNow
-          ? `Enrolled ${chosen.length} in “${sequence.name}” — ${sentNow} email${sentNow === 1 ? '' : 's'} sent.`
-          : `Enrolled ${chosen.length} in “${sequence.name}” — due steps send within about a minute.`,
-      );
-      pipeline.reload();
-      funnel.reload();
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setEnrolling(false);
-    }
-  }
 
   async function move(entry, stage, { override = false } = {}) {
     setError(null);
@@ -247,43 +173,6 @@ export function ProjectDetailPage() {
         contacted someone yourself outside a sequence.
       </div>
       <ErrorBox error={error} />
-      {notice ? <div className="card small">{notice}</div> : null}
-
-      {selected.size > 0 ? (
-        <div className="card spread small">
-          <span>
-            {selected.size} selected
-          </span>
-          <div className="row">
-            {enrollable.length ? (
-              <>
-                <select
-                  style={{ width: 260 }}
-                  value={sequenceId || enrollable[0].id}
-                  onChange={(event) => setSequenceId(event.target.value)}
-                >
-                  {enrollable.map((sequence) => (
-                    <option key={sequence.id} value={sequence.id}>
-                      {sequence.name}
-                      {sequence.status !== 'active' ? ' (paused)' : ''}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" className="primary tiny" disabled={enrolling} onClick={enrollSelected}>
-                  {enrolling ? 'Enrolling…' : 'Enroll in sequence'}
-                </button>
-              </>
-            ) : (
-              <Link className="badge" to="/sequences">
-                Create a sequence first →
-              </Link>
-            )}
-            <button type="button" className="tiny ghost" onClick={() => setSelected(new Set())}>
-              clear
-            </button>
-          </div>
-        </div>
-      ) : null}
 
       {pipeline.loading ? <Loading /> : null}
 
@@ -306,16 +195,7 @@ export function ProjectDetailPage() {
                   .slice(0, 2);
                 return (
                   <div className="pipeline-card" key={entry.id}>
-                    <label className="row" style={{ gap: 6, alignItems: 'baseline' }}>
-                      {entry.stage !== 'rejected' ? (
-                        <input
-                          type="checkbox"
-                          checked={selected.has(entry.candidate.id)}
-                          onChange={() => toggleSelected(entry.candidate.id)}
-                        />
-                      ) : null}
-                      <span className="name">{entry.candidate.full_name}</span>
-                    </label>
+                    <div className="name">{entry.candidate.full_name}</div>
                     <div className="small muted">
                       {entry.candidate.current_title || '—'}
                       {entry.candidate.current_company ? ` · ${entry.candidate.current_company}` : ''}

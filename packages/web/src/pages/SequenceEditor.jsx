@@ -84,6 +84,117 @@ function normalizeSteps(steps) {
   }));
 }
 
+/**
+ * Who to enrol. Defaults to the sequence's own project pipeline — the people
+ * already shortlisted for this role — and falls back to a search over every
+ * candidate for anyone outside it.
+ */
+function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
+  const [source, setSource] = useState(projectId ? 'project' : 'all');
+  const [query, setQuery] = useState('');
+  const [picked, setPicked] = useState(() => new Set());
+
+  const pipeline = useAsync(
+    () => (projectId ? api.getPipeline(projectId) : Promise.resolve([])),
+    [projectId],
+  );
+  const all = useAsync(() => api.listCandidates({ q: query, limit: 50 }), [query]);
+
+  const rows =
+    source === 'project'
+      ? (pipeline.data ?? []).map((entry) => entry.candidate)
+      : (all.data ?? []);
+  const available = rows.filter((candidate) => !enrolledIds.has(candidate.id));
+  const chosen = available.filter((candidate) => picked.has(candidate.id));
+  const withoutEmail = chosen.filter((candidate) => !(candidate.emails ?? []).length);
+
+  function toggle(id) {
+    setPicked((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div className="card stack" style={{ gap: 8 }}>
+      <div className="row small">
+        {projectId ? (
+          <select style={{ width: 200 }} value={source} onChange={(event) => setSource(event.target.value)}>
+            <option value="project">This project&apos;s pipeline</option>
+            <option value="all">All candidates</option>
+          </select>
+        ) : null}
+        {source === 'all' ? (
+          <input
+            type="search"
+            placeholder="Search candidates…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        ) : null}
+        <button
+          type="button"
+          className="tiny ghost"
+          onClick={() => setPicked(new Set(available.map((candidate) => candidate.id)))}
+        >
+          select all
+        </button>
+      </div>
+
+      {(source === 'project' ? pipeline.loading : all.loading) ? (
+        <Loading label="Loading candidates…" />
+      ) : available.length ? (
+        <div className="stack" style={{ gap: 4, maxHeight: 260, overflowY: 'auto' }}>
+          {available.map((candidate) => (
+            <label key={candidate.id} className="row small" style={{ gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={picked.has(candidate.id)}
+                onChange={() => toggle(candidate.id)}
+              />
+              <span>{candidate.full_name}</span>
+              <span className="muted">
+                {candidate.current_title || '—'}
+                {candidate.current_company ? ` · ${candidate.current_company}` : ''}
+              </span>
+              {!(candidate.emails ?? []).length ? <span className="muted">no email</span> : null}
+            </label>
+          ))}
+        </div>
+      ) : (
+        <Empty>
+          {source === 'project'
+            ? 'Everyone in this pipeline is already enrolled.'
+            : 'No candidates match.'}
+        </Empty>
+      )}
+
+      <div className="row spread">
+        <span className="small muted">
+          {withoutEmail.length
+            ? `${withoutEmail.length} of ${chosen.length} have no email yet — they wait until one is found.`
+            : ''}
+        </span>
+        <div className="row">
+          <button type="button" className="tiny ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="tiny primary"
+            disabled={!chosen.length || busy}
+            onClick={() => onEnroll(chosen.map((candidate) => candidate.id))}
+          >
+            {busy ? 'Enrolling…' : `Enrol ${chosen.length || ''}`.trim()}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SequenceEditorPage() {
   const { sequenceId } = useParams();
   const navigate = useNavigate();
@@ -101,6 +212,9 @@ export function SequenceEditorPage() {
   const [needsPause, setNeedsPause] = useState(false);
   const [preview, setPreview] = useState(null);
   const [previewCandidate, setPreviewCandidate] = useState('');
+  const [picking, setPicking] = useState(false);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollError, setEnrollError] = useState(null);
   const bodyRef = useRef(null);
   const subjectRef = useRef(null);
   const lastFocused = useRef('body');
@@ -167,6 +281,29 @@ export function SequenceEditorPage() {
       else setError(caught);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function enrollCandidates(candidateIds) {
+    setEnrolling(true);
+    setEnrollError(null);
+    setNotice('');
+    try {
+      await api.enroll(sequenceId, {
+        candidate_ids: candidateIds,
+        project_id: sequence.data.project_id ?? null,
+      });
+      await enrollments.reload();
+      setPicking(false);
+      setNotice(
+        status === 'active'
+          ? `Enrolled ${candidateIds.length} — each sends at the time its first step schedules.`
+          : `Enrolled ${candidateIds.length}. Activate the sequence to start sending.`,
+      );
+    } catch (caught) {
+      setEnrollError(caught);
+    } finally {
+      setEnrolling(false);
     }
   }
 
@@ -443,7 +580,16 @@ export function SequenceEditorPage() {
 
           <div className="card stack">
             <div className="spread">
-              <strong className="small">Enrollments</strong>
+              <div className="row">
+                <strong className="small">Enrollments</strong>
+                <button
+                  type="button"
+                  className="tiny primary"
+                  onClick={() => setPicking((open) => !open)}
+                >
+                  {picking ? 'Close' : '+ Add people'}
+                </button>
+              </div>
               <div className="row small muted">
                 <label>
                   <input
@@ -464,26 +610,62 @@ export function SequenceEditorPage() {
               </div>
             </div>
             <ErrorBox error={enrollments.error} />
+            {enrollError ? <ErrorBox error={enrollError} /> : null}
+
+            {/* Enrolling schedules; only an active sequence actually sends. Say
+                so here rather than silently activating on the user's behalf. */}
+            {status !== 'active' && (enrollments.data ?? []).some((e) => e.status === 'active') ? (
+              <div className="card small spread" style={{ margin: 0 }}>
+                <span>
+                  {(enrollments.data ?? []).filter((e) => e.status === 'active').length} enrolled and
+                  waiting — nothing sends while the sequence is {status}.
+                </span>
+                <button type="button" className="tiny primary" onClick={toggleStatus}>
+                  Activate
+                </button>
+              </div>
+            ) : null}
+
+            {picking ? (
+              <CandidatePicker
+                projectId={sequence.data.project_id}
+                enrolledIds={new Set((enrollments.data ?? []).map((e) => e.candidate_id))}
+                busy={enrolling}
+                onCancel={() => setPicking(false)}
+                onEnroll={enrollCandidates}
+              />
+            ) : null}
+
             {enrollments.loading ? (
               <Loading label="Loading enrollments…" />
             ) : (enrollments.data ?? []).length ? (
               <div className="stack" style={{ gap: 6 }}>
                 {enrollments.data.map((enrollment) => (
-                  <div key={enrollment.id} className="row small">
-                    <Badge tone={enrollment.status === 'active' ? 'strong' : ''}>
-                      {enrollment.status}
-                    </Badge>
-                    <span className="mono muted">step {enrollment.current_step + 1}</span>
-                    <span className="muted">
-                      {enrollment.next_send_at
-                        ? `next: ${new Date(enrollment.next_send_at).toLocaleString()}`
-                        : enrollment.stopped_reason || ''}
+                  <div key={enrollment.id} className="row small spread">
+                    <span className="row" style={{ gap: 6 }}>
+                      <Badge tone={enrollment.status === 'active' ? 'strong' : ''}>
+                        {enrollment.status}
+                      </Badge>
+                      <span>{enrollment.candidate?.full_name ?? enrollment.candidate_id}</span>
+                      {!(enrollment.candidate?.emails ?? []).length ? (
+                        <span className="muted" title="No email on file — this step can't send yet">
+                          no email
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="row muted" style={{ gap: 6 }}>
+                      <span className="mono">step {enrollment.current_step + 1}</span>
+                      <span>
+                        {enrollment.next_send_at
+                          ? `next: ${new Date(enrollment.next_send_at).toLocaleString()}`
+                          : enrollment.stopped_reason || ''}
+                      </span>
                     </span>
                   </div>
                 ))}
               </div>
             ) : (
-              <Empty>Nobody enrolled yet — add candidates from Search or a project pipeline.</Empty>
+              <Empty>Nobody enrolled yet — use “Add people” to enrol candidates.</Empty>
             )}
           </div>
         </div>

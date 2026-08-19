@@ -337,6 +337,7 @@ def list_enrollments(
     rows = db.scalars(
         select(Enrollment)
         .where(Enrollment.sequence_id == sequence_id)
+        .options(selectinload(Enrollment.candidate))
         .order_by(Enrollment.created_at.desc())
     ).all()
     return [EnrollmentOut.model_validate(row) for row in rows]

@@ -505,6 +505,7 @@ class EnrollmentOut(BaseModel):
     current_step: int
     next_send_at: datetime | None
     stopped_reason: str
+    candidate: CandidateSummary
 
 
 class MessageOut(BaseModel):

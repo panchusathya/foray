@@ -113,110 +113,77 @@ async def backfill_profile_emails(conn, *, limit: int = 0, dry_run: bool = False
 
 
 # ------------------------------------------------------------- commit mining --
+# Public PushEvent payloads no longer include commits[] (GitHub removed the
+# embedded commit list, and with it author emails), so mining goes through the
+# commits API on the candidate's OWN top repos instead:
+#     GET /repos/{login}/{repo}/commits?author={login}
+# GitHub resolves ?author= to the account, so every returned commit was
+# authored by the candidate — attribution is structural, not heuristic.
 
-GITHUB_EVENTS = "https://api.github.com/users/{login}/events/public"
+GITHUB_REPO_COMMITS = "https://api.github.com/repos/{login}/{repo}/commits"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-_NOT_ALNUM = re.compile(r"[^a-z0-9]")
 
 # Local parts that are automation, never a person.
 BOT_LOCALPARTS = {"actions", "github-actions", "dependabot", "renovate", "noreply", "bot", "ci"}
 
 
-def _norm(text: str | None) -> str:
-    return _NOT_ALNUM.sub("", (text or "").lower())
-
-
-def extract_commit_emails(
-    events: list[dict], *, candidate_name: str | None, login: str
-) -> dict[str, dict]:
-    """{email: {pushes, name_match}} from public events, with the attribution guard.
-
-    PushEvent.commits[].author is whoever AUTHORED the commit — a merge or a
-    rebase carries a colleague's address. Callers only accept an address when
-    the author name matches the candidate (or the local part matches the
-    login), or the same address appears across >=2 distinct pushes.
-    """
-    norm_name = _norm(candidate_name)
-    norm_login = _norm(login)
-    found: dict[str, dict] = {}
-    for event in events:
-        if event.get("type") != "PushEvent":
+def extract_own_commit_emails(commits: list[dict]) -> dict[str, int]:
+    """{email: occurrences} from an author-filtered commit list of the
+    candidate's own repo. Noreply and automation addresses are dropped."""
+    found: dict[str, int] = {}
+    for item in commits:
+        author = (item.get("commit") or {}).get("author") or {}
+        email = (author.get("email") or "").strip().lower()
+        if not EMAIL_RE.match(email):
             continue
-        push_id = event.get("id")
-        for commit in (event.get("payload") or {}).get("commits") or []:
-            author = commit.get("author") or {}
-            email = (author.get("email") or "").strip().lower()
-            author_name = author.get("name") or ""
-            if not EMAIL_RE.match(email):
-                continue
-            if email.endswith("@users.noreply.github.com"):
-                continue
-            local = email.split("@", 1)[0]
-            if local in BOT_LOCALPARTS or author_name.endswith("[bot]"):
-                continue
-            entry = found.setdefault(email, {"pushes": set(), "name_match": False})
-            entry["pushes"].add(push_id)
-            norm_author = _norm(author_name)
-            if (norm_name and norm_author == norm_name) or _norm(local) == norm_login:
-                entry["name_match"] = True
+        if email.endswith("@users.noreply.github.com") or email.endswith("@github.com"):
+            continue
+        if email.split("@", 1)[0] in BOT_LOCALPARTS:
+            continue
+        found[email] = found.get(email, 0) + 1
     return found
 
 
-def accepted_commit_emails(found: dict[str, dict]) -> list[tuple[str, int, str]]:
-    """[(email, confidence, evidence)] applying the attribution thresholds."""
-    accepted = []
-    for email, entry in found.items():
-        pushes = len(entry["pushes"])
-        if entry["name_match"]:
-            accepted.append((email, 75, f"commit author, name match, {pushes} push(es)"))
-        elif pushes >= 2:
-            accepted.append((email, 55, f"commit author across {pushes} pushes, no name match"))
-    return accepted
+async def _fetch_own_commits(
+    client: httpx.AsyncClient, limiter: RateLimiter, login: str, repo: str
+) -> list[dict]:
+    await limiter.wait()
+    resp = await request_with_retry(
+        client,
+        "GET",
+        GITHUB_REPO_COMMITS.format(login=login, repo=repo),
+        log=log,
+        params={"author": login, "per_page": 30},
+    )
+    remaining = resp.headers.get("x-ratelimit-remaining")
+    if remaining is not None and int(remaining) < 100:
+        import time as _time
 
-
-async def _fetch_events(client: httpx.AsyncClient, limiter: RateLimiter, login: str, pages: int) -> list[dict]:
-    events: list[dict] = []
-    for page in range(1, pages + 1):
-        await limiter.wait()
-        resp = await request_with_retry(
-            client,
-            "GET",
-            GITHUB_EVENTS.format(login=login),
-            log=log,
-            params={"per_page": 100, "page": page},
-        )
-        remaining = resp.headers.get("x-ratelimit-remaining")
-        if remaining is not None and int(remaining) < 100:
-            import time as _time
-
-            reset = int(resp.headers.get("x-ratelimit-reset", "0"))
-            delay = max(1.0, reset - _time.time() + 5)
-            log.info("events.rate_low", remaining=remaining, sleep=round(delay, 1))
-            await asyncio.sleep(min(delay, 3600.0))
-        batch = resp.json()
-        if not batch:
-            break
-        events.extend(batch)
-        if len(batch) < 100:
-            break
-    return events
+        reset = int(resp.headers.get("x-ratelimit-reset", "0"))
+        delay = max(1.0, reset - _time.time() + 5)
+        log.info("commits.rate_low", remaining=remaining, sleep=round(delay, 1))
+        await asyncio.sleep(min(delay, 3600.0))
+    body = resp.json()
+    return body if isinstance(body, list) else []
 
 
 async def mine_commit_emails(
     conn,
     *,
     limit: int = 0,
-    pages: int = 1,
+    repos_per_candidate: int = 2,
     concurrency: int = 4,
     dry_run: bool = False,
 ) -> int:
-    """Mine commit-author emails from public push events. Core REST quota
-    (5,000/hr) — a different bucket from the Search API's 30/min."""
+    """Mine commit-author emails from the candidate's own top repos, author-
+    filtered by GitHub. Core REST quota (5,000/hr) — a different bucket from
+    the Search API's 30/min."""
     settings.require("github_token")
     rows = await conn.fetch(
         f"""
-        select c.id, c.login, c.name
+        select c.id, c.login, s.top_repos
         from candidates c
+        join candidate_signals s on s.candidate_id = c.id
         where c.commit_emails_checked_at is null
            or c.commit_emails_checked_at < now() - interval '180 days'
         order by c.id
@@ -228,6 +195,8 @@ async def mine_commit_emails(
         print(f"commit mining would check {len(rows)} candidates (dry run)")
         return 0
 
+    import json as _json
+
     limiter = RateLimiter(settings.github_rest_rpm)
     semaphore = asyncio.Semaphore(max(1, concurrency))
     stored = 0
@@ -235,11 +204,18 @@ async def mine_commit_emails(
 
     async def fetch_one(client: httpx.AsyncClient, row) -> tuple:
         async with semaphore:
+            top = row["top_repos"]
+            top = _json.loads(top) if isinstance(top, str) else (top or [])
+            repos = [r.get("name") for r in top if r.get("name")][:repos_per_candidate]
+            found: dict[str, int] = {}
             try:
-                events = await _fetch_events(client, limiter, row["login"], pages)
-                return row, extract_commit_emails(
-                    events, candidate_name=row["name"], login=row["login"]
-                ), None
+                for repo in repos:
+                    commits = await _fetch_own_commits(client, limiter, row["login"], repo)
+                    for email, count in extract_own_commit_emails(commits).items():
+                        found[email] = found.get(email, 0) + count
+                    if found:
+                        break  # first repo with usable addresses is enough
+                return row, found, None
             except Exception as exc:  # noqa: BLE001 - recorded per-row, never fatal
                 return row, {}, exc
 
@@ -267,17 +243,17 @@ async def mine_commit_emails(
                 str(exc)[:500],
             )
         else:
-            for email, confidence, evidence in accepted_commit_emails(found):
+            for email, occurrences in found.items():
                 await conn.execute(
                     UPSERT_EMAIL,
                     row["id"],
                     email,
                     "commit",
                     is_work_domain(email),
-                    confidence,
+                    75,
                     False,
-                    evidence,
-                    len(found[email]["pushes"]),
+                    f"authored commits in own repo ({occurrences} commit(s))",
+                    occurrences,
                 )
                 stored += 1
         # Stamp hit or miss: the negative cache and the resume cursor.
@@ -300,7 +276,7 @@ async def amain(args: argparse.Namespace) -> int:
                 await mine_commit_emails(
                     conn,
                     limit=args.limit,
-                    pages=args.pages,
+                    repos_per_candidate=args.repos,
                     concurrency=args.concurrency,
                     dry_run=args.dry_run,
                 )
@@ -313,8 +289,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Acquire contact emails for candidates.")
     ap.add_argument("--source", choices=["profile", "commit", "all"], default="profile")
     ap.add_argument("--limit", type=int, default=0, help="max addresses/candidates (0 = all)")
-    ap.add_argument("--pages", type=int, default=1, help="event pages per candidate (max 3)")
-    ap.add_argument("--concurrency", type=int, default=4, help="parallel event fetches")
+    ap.add_argument("--repos", type=int, default=2, help="own repos to try per candidate")
+    ap.add_argument("--concurrency", type=int, default=4, help="parallel commit fetches")
     ap.add_argument("--dry-run", action="store_true", help="count only, write nothing")
     return asyncio.run(amain(ap.parse_args()))
 

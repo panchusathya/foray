@@ -245,6 +245,33 @@ class TestPipeline:
         )
         assert bad.status_code == 422
 
+    def test_outreach_driven_stages_reject_manual_moves_without_override(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        project = self._project(client, headers)
+        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
+        entry = client.post(
+            f"/v1/projects/{project['id']}/candidates",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        ).json()[0]
+
+        # "contacted" is outreach-driven: a bare manual move is refused.
+        blocked = client.patch(
+            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
+            json={"stage": "contacted"},
+            headers=headers,
+        )
+        assert blocked.status_code == 409
+
+        # ...but an explicit override records a manual touch.
+        overridden = client.patch(
+            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
+            json={"stage": "contacted", "override": True},
+            headers=headers,
+        )
+        assert overridden.status_code == 200
+        assert overridden.json()["stage"] == "contacted"
+
     def test_adding_the_same_candidate_twice_is_a_no_op(self, client, loaded_org):
         headers = loaded_org["headers"]
         project = self._project(client, headers)

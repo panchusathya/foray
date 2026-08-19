@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..deps import Principal, get_db, get_principal, require_write
 from ..models import (
+    OUTREACH_DRIVEN_STAGES,
     PIPELINE_STAGES,
     Candidate,
     Project,
@@ -213,6 +214,19 @@ def update_stage(
     if entry is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline entry not found"
+        )
+    if (
+        payload.stage in OUTREACH_DRIVEN_STAGES
+        and payload.stage != entry.stage
+        and not payload.override
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"'{payload.stage}' is set automatically when outreach sends or a reply "
+                "lands. Pass override=true to record a manual touch (e.g. you reached out "
+                "yourself)."
+            ),
         )
     previous = entry.stage
     entry.stage = payload.stage

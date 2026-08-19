@@ -33,7 +33,9 @@ function CreateSequenceModal({ projects, sequences, defaultProjectId, onClose })
   const [error, setError] = useState(null);
   const [form, setForm] = useState({
     name: '',
-    project_id: defaultProjectId ?? '',
+    // A sequence is tied to a project (its role fills {{ role_title }} etc.), so
+    // default to the current project rather than the "No project" placeholder.
+    project_id: defaultProjectId || projects[0]?.id || '',
     prompt: '',
     num_steps: 3,
     clone_id: sequences[0]?.id ?? '',
@@ -78,7 +80,23 @@ function CreateSequenceModal({ projects, sequences, defaultProjectId, onClose })
           </button>
         </div>
 
-        {mode === null ? (
+        {!projects.length ? (
+          <div className="stack" style={{ gap: 10 }}>
+            <p className="small muted" style={{ margin: 0 }}>
+              A sequence personalises around a project&apos;s role, so create a project first.
+            </p>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                onClose();
+                navigate('/projects');
+              }}
+            >
+              Create a project
+            </button>
+          </div>
+        ) : mode === null ? (
           <div className="stack" style={{ gap: 8 }}>
             <button type="button" className="option" onClick={() => setMode('ai')}>
               ✦ Generate with AI
@@ -143,17 +161,22 @@ function CreateSequenceModal({ projects, sequences, defaultProjectId, onClose })
               </select>
             ) : null}
             {mode !== 'clone' ? (
-              <select
-                value={form.project_id}
-                onChange={(event) => setForm({ ...form, project_id: event.target.value })}
-              >
-                <option value="">No project</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+              <label className="stack" style={{ gap: 4 }}>
+                <select
+                  value={form.project_id}
+                  onChange={(event) => setForm({ ...form, project_id: event.target.value })}
+                  required
+                >
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="small muted">
+                  {"The project's role fills {{ role_title }} in your templates."}
+                </span>
+              </label>
             ) : null}
             <div className="row">
               <button type="submit" className="primary" disabled={busy}>

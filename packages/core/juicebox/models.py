@@ -216,6 +216,13 @@ PIPELINE_STAGES = (
     "rejected",
 )
 
+# Stages that are driven by outreach state, not by hand: a candidate becomes
+# "contacted" when a sequence step actually sends and "replied" when a reply
+# lands (see outreach/sequencer.py::_advance_pipeline_stage). The pipeline board
+# must not let a recruiter click through these; a manual touch outside the system
+# is still possible via an explicit override.
+OUTREACH_DRIVEN_STAGES = ("contacted", "replied")
+
 
 class Project(Base, TimestampMixin):
     __tablename__ = "projects"

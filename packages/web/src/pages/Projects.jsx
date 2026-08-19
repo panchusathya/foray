@@ -95,20 +95,38 @@ export function ProjectsPage() {
   );
 }
 
+// "contacted" and "replied" are driven by outreach (a send / a reply), not by
+// hand — the backend refuses a bare manual move into them. A recruiter who
+// reached out themselves can still record it via an explicit override.
+const OUTREACH_DRIVEN_STAGES = new Set(['contacted', 'replied']);
+
 export function ProjectDetailPage() {
   const { projectId } = useParams();
   const pipeline = useAsync(() => api.getPipeline(projectId), [projectId]);
   const funnel = useAsync(() => api.funnel(projectId), [projectId]);
   const [error, setError] = useState(null);
 
-  async function move(entry, stage) {
+  async function move(entry, stage, { override = false } = {}) {
     setError(null);
     try {
-      await api.updateStage(projectId, entry.id, { stage });
+      await api.updateStage(projectId, entry.id, { stage, override });
       pipeline.reload();
       funnel.reload();
     } catch (caught) {
       setError(caught);
+    }
+  }
+
+  function manualTouch(entry, stage) {
+    const label = stage === 'contacted' ? 'contacted' : 'replied';
+    const verb = stage === 'contacted' ? 'reached out to' : 'heard back from';
+    if (
+      window.confirm(
+        `Mark ${entry.candidate.full_name} as ${label}? Only do this if you ${verb} them ` +
+          `yourself outside a sequence — otherwise it happens automatically.`,
+      )
+    ) {
+      move(entry, stage, { override: true });
     }
   }
 
@@ -124,6 +142,11 @@ export function ProjectDetailPage() {
         subtitle="Every card keeps the match evidence that put the person here."
         actions={<Link className="badge" to="/">Back to search</Link>}
       />
+      <div className="card small muted">
+        Sourced → Contacted → Replied advance automatically as outreach sends and replies land.
+        Screening onward you move by hand. Use the small "I reached out" link only when you
+        contacted someone yourself outside a sequence.
+      </div>
       <ErrorBox error={error} />
 
       {pipeline.loading ? <Loading /> : null}
@@ -161,9 +184,19 @@ export function ProjectDetailPage() {
                       </div>
                     ))}
                     <div className="row" style={{ marginTop: 8 }}>
-                      {next ? (
+                      {next && !OUTREACH_DRIVEN_STAGES.has(next) ? (
                         <button type="button" className="tiny" onClick={() => move(entry, next)}>
                           → {next}
+                        </button>
+                      ) : null}
+                      {next && OUTREACH_DRIVEN_STAGES.has(next) ? (
+                        <button
+                          type="button"
+                          className="tiny ghost"
+                          title={`Records a manual touch — ${next} normally happens automatically`}
+                          onClick={() => manualTouch(entry, next)}
+                        >
+                          {next === 'contacted' ? 'I reached out →' : 'Log reply →'}
                         </button>
                       ) : null}
                       {entry.stage !== 'rejected' ? (

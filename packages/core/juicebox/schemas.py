@@ -392,6 +392,9 @@ class AddToProjectRequest(BaseModel):
 class StageUpdate(BaseModel):
     stage: str
     notes: str | None = None
+    # "contacted"/"replied" are set automatically by outreach; override records a
+    # manual touch (e.g. the recruiter reached out themselves outside the system).
+    override: bool = False
 
 
 class PipelineEntryOut(BaseModel):

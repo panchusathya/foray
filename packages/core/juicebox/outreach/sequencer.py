@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -50,6 +51,49 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 # --------------------------------------------------------------------------
+# scheduling
+# --------------------------------------------------------------------------
+
+
+def _add_delay(base: datetime, days: int, unit: str) -> datetime:
+    if unit == "business_days":
+        result = base
+        remaining = max(days, 0)
+        while remaining > 0:
+            result += timedelta(days=1)
+            if result.weekday() < 5:
+                remaining -= 1
+        return result
+    return base + timedelta(days=max(days, 0))
+
+
+def schedule_step_at(step: SequenceStep, *, base: datetime) -> datetime:
+    """When a step should send: delay (calendar or business days) from ``base``,
+    snapped to the step's send_at_time in its timezone when one is set.
+
+    The snap lands on the delay's end date even when that time of day is
+    earlier than the delay boundary — "1 day later at 09:00" means tomorrow
+    morning, not the day after. Only a time already in the past (a 0-delay
+    step enrolled in the afternoon) rolls forward a day.
+    """
+    due = _add_delay(base, step.delay_days, step.delay_unit)
+    if not step.send_at_time:
+        return due
+    try:
+        zone = ZoneInfo(step.send_timezone) if step.send_timezone else UTC
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = UTC
+    hour, minute = (int(part) for part in step.send_at_time.split(":"))
+    local = due.astimezone(zone).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if local < base.astimezone(zone):
+        local += timedelta(days=1)
+    if step.delay_unit == "business_days":
+        while local.weekday() >= 5:
+            local += timedelta(days=1)
+    return local.astimezone(UTC)
+
+
+# --------------------------------------------------------------------------
 # enrolment
 # --------------------------------------------------------------------------
 
@@ -66,7 +110,7 @@ def enroll_candidates(
     """Idempotent: re-enrolling an existing candidate returns the existing row."""
     now = now or utcnow()
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
-    first_delay = steps[0].delay_days if steps else 0
+    first_due = schedule_step_at(steps[0], base=now) if steps else now
 
     existing = {
         row.candidate_id: row
@@ -92,7 +136,7 @@ def enroll_candidates(
             project_id=project_id or sequence.project_id,
             status="active",
             current_step=0,
-            next_send_at=(now + timedelta(days=first_delay)) if start_immediately else None,
+            next_send_at=first_due if start_immediately else None,
         )
         db.add(enrollment)
         created.append(enrollment)
@@ -406,7 +450,7 @@ def process_enrollment(
         _advance_pipeline_stage(db, enrollment)
         return "completed", message
     next_step = steps[enrollment.current_step]
-    enrollment.next_send_at = now + timedelta(days=max(next_step.delay_days, 0))
+    enrollment.next_send_at = schedule_step_at(next_step, base=now)
     _advance_pipeline_stage(db, enrollment)
     return "sent", message
 

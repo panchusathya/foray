@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,6 +12,7 @@ from juicebox.outreach.sequencer import (
     preview_step,
     record_reply,
     run_due,
+    schedule_step_at,
     send_step,
 )
 from juicebox.outreach.suppressions import is_suppressed, suppress
@@ -109,6 +110,66 @@ class TestPersonalization:
         assert subject == "Senior Machine Learning Engineer at Founding ML Engineer"
         assert body.startswith("Hi Ada,")
         assert session.query(Message).count() == 0
+
+
+class TestStepScheduling:
+    """schedule_step_at is pure — no DB, just a step's scheduling fields."""
+
+    @staticmethod
+    def step(**overrides):
+        from juicebox.models import SequenceStep
+
+        defaults = dict(delay_days=0, delay_unit="days", send_at_time="", send_timezone="")
+        return SequenceStep(**{**defaults, **overrides})
+
+    def test_plain_delay_is_unchanged(self):
+        base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)  # a Monday
+        due = schedule_step_at(self.step(delay_days=3), base=base)
+        assert due == base + timedelta(days=3)
+
+    def test_business_days_skip_the_weekend(self):
+        friday = datetime(2026, 1, 16, 10, 0, tzinfo=UTC)
+        due = schedule_step_at(
+            self.step(delay_days=1, delay_unit="business_days"), base=friday
+        )
+        assert due == datetime(2026, 1, 19, 10, 0, tzinfo=UTC)  # Monday
+
+    def test_send_time_snaps_to_the_delay_day(self):
+        base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)
+        due = schedule_step_at(self.step(delay_days=1, send_at_time="09:00"), base=base)
+        assert due == datetime(2026, 1, 13, 9, 0, tzinfo=UTC)
+
+    def test_todays_time_already_past_rolls_to_tomorrow(self):
+        base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)
+        due = schedule_step_at(self.step(send_at_time="09:00"), base=base)
+        assert due == datetime(2026, 1, 13, 9, 0, tzinfo=UTC)
+
+    def test_todays_time_still_ahead_sends_today(self):
+        base = datetime(2026, 1, 12, 6, 30, tzinfo=UTC)
+        due = schedule_step_at(self.step(send_at_time="09:00"), base=base)
+        assert due == datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
+
+    def test_timezone_is_honored(self):
+        base = datetime(2026, 1, 12, 8, 0, tzinfo=UTC)
+        due = schedule_step_at(
+            self.step(delay_days=1, send_at_time="09:00", send_timezone="America/Los_Angeles"),
+            base=base,
+        )
+        assert due == datetime(2026, 1, 13, 17, 0, tzinfo=UTC)  # 09:00 PST
+
+    def test_unknown_timezone_falls_back_to_utc(self):
+        base = datetime(2026, 1, 12, 6, 0, tzinfo=UTC)
+        due = schedule_step_at(
+            self.step(send_at_time="09:00", send_timezone="Mars/Olympus_Mons"), base=base
+        )
+        assert due == datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
+
+    def test_snapped_business_day_never_lands_on_a_weekend(self):
+        friday_evening = datetime(2026, 1, 16, 22, 0, tzinfo=UTC)
+        due = schedule_step_at(
+            self.step(delay_unit="business_days", send_at_time="09:00"), base=friday_evening
+        )
+        assert due == datetime(2026, 1, 19, 9, 0, tzinfo=UTC)  # Monday, not Saturday
 
 
 class TestSequenceRun:

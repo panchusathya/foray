@@ -20,6 +20,9 @@ dependencies = [
     "PyYAML>=6.0",
     # Encrypts mailbox OAuth tokens at rest (integrations/crypto.py).
     "cryptography>=42",
+    # zoneinfo's tz database: absent on Windows and not guaranteed in slim
+    # images — without it every send_timezone silently degrades to UTC.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

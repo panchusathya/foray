@@ -184,6 +184,10 @@ class Settings:
         default_factory=lambda: _env_int("WORKER_LOCK_TIMEOUT_SECONDS", 15 * 60)
     )
     worker_max_attempts: int = field(default_factory=lambda: _env_int("WORKER_MAX_ATTEMPTS", 5))
+    # How far back the one-off Outlook history import reaches (candidates only).
+    mailbox_backfill_days: int = field(
+        default_factory=lambda: _env_int("MAILBOX_BACKFILL_DAYS", 365)
+    )
 
     @property
     def resolved_llm_provider(self) -> str:

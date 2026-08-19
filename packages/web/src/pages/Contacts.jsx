@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -29,7 +30,7 @@ export function ContactsPage() {
   }, [query]);
 
   const candidates = useAsync(
-    () => api.listCandidates({ q: debounced, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    () => api.listCandidates({ q: debounced, limit: PAGE_SIZE, offset: page * PAGE_SIZE, include_history: true }),
     [debounced, page],
   );
   const count = useAsync(() => api.candidateCount(), []);
@@ -60,7 +61,11 @@ export function ContactsPage() {
             {rows.map((candidate) => (
               <div key={candidate.id} className="card spread">
                 <div>
-                  <div style={{ fontWeight: 600 }}>{candidate.full_name}</div>
+                  <div style={{ fontWeight: 600 }}>
+                    <Link to={`/contacts/${candidate.id}`} style={{ textDecoration: 'none' }}>
+                      {candidate.full_name}
+                    </Link>
+                  </div>
                   <div className="muted small">
                     {[candidate.current_title, candidate.current_company]
                       .filter(Boolean)
@@ -74,6 +79,11 @@ export function ContactsPage() {
                   ))}
                   {candidate.years_experience ? (
                     <Badge tone="accent">{Math.round(candidate.years_experience)}y</Badge>
+                  ) : null}
+                  {candidate.history?.last_emailed_at ? (
+                    <Badge tone="strong">
+                      emailed {new Date(candidate.history.last_emailed_at).toLocaleDateString()}
+                    </Badge>
                   ) : null}
                 </div>
               </div>

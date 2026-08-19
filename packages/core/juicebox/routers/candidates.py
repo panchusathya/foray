@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..deps import Principal, get_db, get_principal, require_write
 from ..enrich.email import guess_emails
 from ..models import Candidate
+from ..outreach.history import candidate_history_stats, candidate_timeline
 from ..repository import upsert_candidates
 from ..schemas import (
     BulkCandidateIn,
@@ -16,6 +17,10 @@ from ..schemas import (
     CandidateIn,
     CandidateOut,
     CandidateSummary,
+    CandidateTimelineOut,
+    HistoryStatsOut,
+    MessageOut,
+    ThreadOut,
 )
 
 router = APIRouter(prefix="/v1/candidates", tags=["candidates"])
@@ -66,6 +71,9 @@ def list_candidates(
     seniority: list[str] | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    include_history: bool = Query(
+        default=False, description="Attach first/last-contact stats (one grouped query)"
+    ),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[CandidateSummary]:
@@ -93,7 +101,16 @@ def list_candidates(
         wanted = {s.lower() for s in skill}
         rows = [r for r in rows if wanted & {s.lower() for s in (r.skills or [])}]
 
-    return [CandidateSummary.model_validate(r) for r in rows]
+    summaries = [CandidateSummary.model_validate(r) for r in rows]
+    if include_history and summaries:
+        stats = candidate_history_stats(
+            db, org_id=principal.org_id, candidate_ids=[s.id for s in summaries]
+        )
+        for summary in summaries:
+            found = stats.get(summary.id)
+            if found is not None:
+                summary.history = HistoryStatsOut(**found.__dict__)
+    return summaries
 
 
 @router.get("/count")
@@ -120,6 +137,39 @@ def get_candidate(
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
     return CandidateOut.model_validate(candidate)
+
+
+@router.get("/{candidate_id}/timeline", response_model=CandidateTimelineOut)
+def get_candidate_timeline(
+    candidate_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> CandidateTimelineOut:
+    """Contact history: the stats header plus messages grouped into threads,
+    in one round trip — sequence sends and synced Outlook mail together."""
+    candidate = db.scalar(
+        select(Candidate).where(
+            Candidate.id == candidate_id, Candidate.org_id == principal.org_id
+        )
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    stats, threads = candidate_timeline(
+        db, org_id=principal.org_id, candidate_id=candidate_id, limit=limit
+    )
+    return CandidateTimelineOut(
+        stats=HistoryStatsOut(**stats.__dict__),
+        threads=[
+            ThreadOut(
+                conversation_id=thread.conversation_id,
+                subject=thread.subject,
+                last_at=thread.last_at,
+                messages=[MessageOut.model_validate(m) for m in thread.messages],
+            )
+            for thread in threads
+        ],
+    )
 
 
 @router.get("/{candidate_id}/email-guesses")

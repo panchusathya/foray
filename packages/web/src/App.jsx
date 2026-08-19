@@ -5,6 +5,7 @@ import { useAuth } from './lib/auth.jsx';
 import { CurrentProjectProvider, useCurrentProject } from './lib/project.jsx';
 import { AgentsPage } from './pages/Agents.jsx';
 import { AnalyticsPage } from './pages/Analytics.jsx';
+import { CandidateDetailPage } from './pages/CandidateDetail.jsx';
 import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
 import { LoginPage } from './pages/Login.jsx';
@@ -134,6 +135,7 @@ export function App() {
           <Route path="/sequences/:sequenceId" element={<SequenceEditorPage />} />
           <Route path="/outreach" element={<Navigate to="/sequences" replace />} />
           <Route path="/contacts" element={<ContactsPage />} />
+          <Route path="/contacts/:candidateId" element={<CandidateDetailPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

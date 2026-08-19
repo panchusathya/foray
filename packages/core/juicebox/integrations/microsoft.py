@@ -160,6 +160,15 @@ class GraphClient:
         url = path if path.startswith("https://") else f"{GRAPH_BASE}{path}"
         with httpx.Client(timeout=_HTTP_TIMEOUT) as http:
             response = http.request(method, url, json=json, headers=request_headers)
+            if response.status_code in (429, 503):
+                # Graph throttling. Honour Retry-After once (bounded — the job
+                # queue owns real backoff); bulk callers like backfill would
+                # otherwise hard-fail on the first throttled page.
+                import time as _time
+
+                delay = min(float(response.headers.get("Retry-After") or 2), 30.0)
+                _time.sleep(delay)
+                response = http.request(method, url, json=json, headers=request_headers)
         if response.status_code >= 400:
             raise MicrosoftError(
                 f"graph {method} {path} failed ({response.status_code}): {response.text[:500]}",
@@ -195,8 +204,9 @@ class GraphClient:
 
     # Fields the inbox sync needs; body arrives as text via the Prefer header.
     _DELTA_SELECT = (
-        "$select=id,conversationId,internetMessageId,from,subject,bodyPreview,body,"
-        "isDraft,receivedDateTime"
+        "$select=id,conversationId,internetMessageId,from,toRecipients,ccRecipients,"
+        "subject,bodyPreview,body,isDraft,receivedDateTime,sentDateTime,"
+        "hasAttachments,webLink"
     )
 
     def _delta_baseline(self, folder: str) -> str:
@@ -235,6 +245,24 @@ class GraphClient:
 
     # Same walker; the name keeps call sites honest about which cursor they hold.
     sent_delta = inbox_delta
+
+    def search_participant(self, address: str, *, top: int = 25) -> list[dict]:
+        """Messages exchanged with one address, for the bounded history backfill.
+
+        ``$search`` forbids ``$orderby``/``$filter``, so the date window is the
+        caller's job, applied client-side. One page only — this is a per-known-
+        candidate lookup, not a mailbox crawl.
+        """
+        quoted = address.replace('"', "")
+        url = (
+            f'/me/messages?$search="participants:{quoted}"'
+            f"&$top={min(top, 25)}&{self._DELTA_SELECT}"
+        )
+        headers = {
+            "Prefer": 'IdType="ImmutableId", outlook.body-content-type="text"',
+        }
+        page = self._request("GET", url, headers=headers).json()
+        return page.get("value", [])
 
 
 class GraphSender:

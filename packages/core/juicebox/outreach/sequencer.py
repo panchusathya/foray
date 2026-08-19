@@ -623,10 +623,14 @@ def record_reply(
         step_id=message.step_id,
         channel=message.channel,
         direction="inbound",
+        # The reply came FROM the candidate's address; sent_at makes the
+        # timeline sort real instead of falling back to created_at.
+        from_address=message.to_address,
         to_address=message.to_address,
         subject=subject,
         body=body,
         status="received",
+        sent_at=now,
         reply_intent=verdict.intent,
         reply_text=body,
         mailbox_id=mailbox_id,

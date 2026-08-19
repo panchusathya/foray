@@ -71,6 +71,7 @@ class MailboxConnectionOut(BaseModel):
     status: str
     error: str
     user_id: str | None
+    thread_sync_enabled: bool
     last_synced_at: datetime | None
     created_at: datetime
 
@@ -248,6 +249,14 @@ class CandidateOut(BaseModel):
     updated_at: datetime
 
 
+class HistoryStatsOut(BaseModel):
+    first_contacted_at: datetime | None = None
+    last_emailed_at: datetime | None = None
+    last_reply_at: datetime | None = None
+    outbound_count: int = 0
+    inbound_count: int = 0
+
+
 class CandidateSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -263,6 +272,9 @@ class CandidateSummary(BaseModel):
     skills: list[str]
     linkedin_url: str
     emails: list[str]
+    # Populated only when the caller asked for history (include_history=true) —
+    # None means "not requested", not "never contacted".
+    history: HistoryStatsOut | None = None
 
 
 # --------------------------------------------------------------------------
@@ -513,17 +525,36 @@ class MessageOut(BaseModel):
 
     id: str
     candidate_id: str
+    enrollment_id: str | None
     channel: str
     direction: str
+    source: str
+    from_address: str
     to_address: str
     subject: str
     body: str
     status: str
+    conversation_id: str
+    web_link: str
+    attachment_count: int
+    created_at: datetime
     sent_at: datetime | None
     opened_at: datetime | None
     clicked_at: datetime | None
     replied_at: datetime | None
     reply_intent: str
+
+
+class ThreadOut(BaseModel):
+    conversation_id: str
+    subject: str
+    last_at: datetime | None
+    messages: list[MessageOut]
+
+
+class CandidateTimelineOut(BaseModel):
+    stats: HistoryStatsOut
+    threads: list[ThreadOut]
 
 
 class RunSequenceResponse(BaseModel):

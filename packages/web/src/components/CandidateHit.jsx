@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge, ScoreBar } from './common.jsx';
 
@@ -37,7 +38,11 @@ export function CandidateHit({ hit, selected, onToggle }) {
       <div className="hit-body">
         <div className="spread">
           <div>
-            <h3>{candidate.full_name}</h3>
+            <h3>
+              <Link to={`/contacts/${candidate.id}`} style={{ textDecoration: 'none' }}>
+                {candidate.full_name}
+              </Link>
+            </h3>
             <div className="meta">
               {candidate.current_title || '—'}
               {candidate.current_company ? ` · ${candidate.current_company}` : ''}

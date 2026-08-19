@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .jobs import (
     KIND_AGENT_TICK,
+    KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
@@ -211,11 +212,35 @@ def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
     }
 
 
+def _handle_mailbox_backfill(db: Session, job: Job, now) -> dict[str, Any]:
+    """One batch of the historical import; re-enqueues itself until done."""
+    from .integrations.backfill import backfill_mailbox_history
+    from .models import MailboxConnection
+
+    connection = db.get(MailboxConnection, job.payload.get("mailbox_id", ""))
+    if connection is None or connection.status != "active":
+        return {"skipped": "mailbox gone or inactive"}
+    offset = int(job.payload.get("offset") or 0)
+    result = backfill_mailbox_history(db, connection, offset=offset, now=now)
+    next_offset = result.get("next_offset")
+    if next_offset is not None:
+        enqueue(
+            db,
+            org_id=job.org_id,
+            kind=KIND_MAILBOX_BACKFILL,
+            idempotency_key=f"{KIND_MAILBOX_BACKFILL}:{connection.id}:{next_offset}",
+            payload={"org_id": job.org_id, "mailbox_id": connection.id, "offset": next_offset},
+            run_at=now + timedelta(seconds=30),
+        )
+    return result
+
+
 HANDLERS = {
     KIND_OUTREACH_TICK: _handle_outreach_tick,
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_AGENT_TICK: _handle_agent_tick,
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
+    KIND_MAILBOX_BACKFILL: _handle_mailbox_backfill,
     KIND_REPLY_DRAFT: _handle_reply_draft,
 }
 

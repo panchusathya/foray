@@ -188,8 +188,73 @@ def sync_now(
         "intents": summary.intents,
         "drafts_sent": summary.drafts_sent,
         "drafts_discarded": summary.drafts_discarded,
+        "sent_ingested": summary.sent_ingested,
+        "inbound_ingested": summary.inbound_ingested,
         "last_synced_at": connection.last_synced_at,
     }
+
+
+@router.patch("/{connection_id}/thread-sync")
+def set_thread_sync(
+    connection_id: str,
+    enabled: bool = Query(...),
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Opt in/out of copying candidate correspondence into the CRM timeline.
+
+    Off by default on every connection: connecting a mailbox for sending must
+    not silently start retaining its contents. Only mail that resolves to a
+    candidate already in a project, sequence or prior thread is ever stored.
+    """
+    connection = db.get(MailboxConnection, connection_id)
+    if connection is None or connection.org_id != principal.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    connection.thread_sync_enabled = enabled
+    db.flush()
+    record_event(
+        db,
+        org_id=principal.org_id,
+        type="integration.thread_sync",
+        subject_type="mailbox",
+        subject_id=connection.id,
+        actor_id=principal.user_id,
+        payload={"enabled": enabled},
+    )
+    return {"thread_sync_enabled": connection.thread_sync_enabled}
+
+
+@router.post("/{connection_id}/backfill")
+def backfill_history(
+    connection_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Queue the bounded historical import (last MAILBOX_BACKFILL_DAYS days,
+    known candidates only). Explicit button, never automatic."""
+    from ..jobs import KIND_MAILBOX_BACKFILL, enqueue
+
+    connection = db.get(MailboxConnection, connection_id)
+    if connection is None or connection.org_id != principal.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    if connection.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Mailbox is {connection.status}; reconnect it first",
+        )
+    if not connection.thread_sync_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Enable thread sync first — backfill stores mailbox content",
+        )
+    job = enqueue(
+        db,
+        org_id=principal.org_id,
+        kind=KIND_MAILBOX_BACKFILL,
+        idempotency_key=f"{KIND_MAILBOX_BACKFILL}:{connection.id}:0",
+        payload={"org_id": principal.org_id, "mailbox_id": connection.id, "offset": 0},
+    )
+    return {"queued": True, "job_id": job.id}
 
 
 @router.delete("/{connection_id}")

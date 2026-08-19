@@ -15,9 +15,11 @@ from ..llm.client import get_llm
 from ..llm.prompts import (
     DRAFT_SEQUENCE_SCHEMA,
     DRAFT_SEQUENCE_SYSTEM,
+    SEQUENCE_TEMPLATE_VARIABLES,
     draft_sequence_prompt,
 )
 from ..models import Project
+from . import templates
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +97,12 @@ def _coerce_steps(raw: Any, num_steps: int) -> list[dict[str, Any]]:
         body = str(item.get("body_template", "")).strip()
         if not body:
             continue
+        # The prompt lists the legal variables; the model is not bound by it, and
+        # an invented name renders as a blank in a real email.
+        subject = templates.keep_known_variables(
+            str(item.get("subject_template", "")).strip(), SEQUENCE_TEMPLATE_VARIABLES
+        )
+        body = templates.keep_known_variables(body, SEQUENCE_TEMPLATE_VARIABLES)
         try:
             delay = int(item.get("delay_days", 0))
         except (TypeError, ValueError):
@@ -102,7 +110,7 @@ def _coerce_steps(raw: Any, num_steps: int) -> list[dict[str, Any]]:
         unit = item.get("delay_unit")
         steps.append(
             {
-                "subject_template": str(item.get("subject_template", "")).strip(),
+                "subject_template": subject,
                 "body_template": body,
                 "delay_days": min(max(delay, 0), 90),
                 "delay_unit": unit if unit in ("days", "business_days") else "days",

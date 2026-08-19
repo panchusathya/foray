@@ -42,6 +42,25 @@ class TestTemplates:
     def test_used_variables_listed(self):
         assert templates.used_variables("{{ a }} {{ b }} {{ a }}") == ["a", "b"]
 
+    def test_unknown_variables_are_dropped_from_generated_copy(self):
+        """A model asked for a signature writes {{your_name}} whatever the prompt
+        says, and render() would collapse it to a blank in a real email."""
+        from juicebox.llm.prompts import SEQUENCE_TEMPLATE_VARIABLES
+
+        cleaned = templates.keep_known_variables(
+            "Hi {{first_name}},\n\nBest,\n{{your_name}}", SEQUENCE_TEMPLATE_VARIABLES
+        )
+        assert "{{first_name}}" in cleaned
+        assert "your_name" not in cleaned
+
+    def test_an_unknown_variable_with_a_fallback_keeps_the_fallback_text(self):
+        cleaned = templates.keep_known_variables("at {{employer | your team}}", ["first_name"])
+        assert cleaned == "at your team"
+
+    def test_keeping_known_variables_leaves_a_clean_template_alone(self):
+        template = "Hi {{first_name}}, about {{role_title}}."
+        assert templates.keep_known_variables(template, ["first_name", "role_title"]) == template
+
     def test_html_escapes_and_paragraphs(self):
         html = templates.to_html("Hi <script>\n\nSecond para")
         assert "&lt;script&gt;" in html

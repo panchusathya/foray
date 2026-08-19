@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..deps import Principal, get_db, get_principal, require_write
+from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
     Enrollment,
@@ -17,7 +18,9 @@ from ..models import (
     Sequence,
     SequenceStep,
 )
+from ..outreach import templates
 from ..outreach.drafts import draft_sequence
+from ..outreach.personalize import personalize
 from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
@@ -307,10 +310,46 @@ def preview(
     )
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
-    subject, body, context = preview_step(
-        db, sequence=sequence, candidate=candidate, step_order=payload.step_order
+    enrollment = None
+    if payload.enrollment_id:
+        enrollment = db.scalar(
+            select(Enrollment).where(
+                Enrollment.id == payload.enrollment_id,
+                Enrollment.sequence_id == sequence.id,
+            )
+        )
+    ai_status = "off"
+    steps = sorted(sequence.steps, key=lambda s: s.step_order)
+    step = next((s for s in steps if s.step_order == payload.step_order), steps[0] if steps else None)
+    has_directives = bool(
+        step
+        and templates.used_directives(f"{step.subject_template or ''}\n{step.body_template or ''}")
     )
-    return PreviewResponse(subject=subject, body=body, personalization=context)
+    try:
+        subject, body, context = preview_step(
+            db,
+            sequence=sequence,
+            candidate=candidate,
+            step_order=payload.step_order,
+            enrollment=enrollment,
+        )
+        if has_directives:
+            ai_status = "resolved"
+    except LLMUnavailable:
+        # A preview must inform, not fail: show the directive as a visible
+        # marker so the recruiter sees where AI text will go once a model is
+        # available. Sending still fails closed — this leniency is preview-only.
+        context = personalize(candidate, None, use_llm=False)
+        subject = templates.render(
+            templates.mark_directives(step.subject_template or ""), context
+        ).strip()
+        body = templates.render(
+            templates.mark_directives(step.body_template or ""), context
+        ).strip()
+        ai_status = "unavailable"
+    return PreviewResponse(
+        subject=subject, body=body, personalization=context, ai_status=ai_status
+    )
 
 
 @router.post("/{sequence_id}/enroll", response_model=list[EnrollmentOut])

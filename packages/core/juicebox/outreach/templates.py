@@ -9,13 +9,81 @@ a form, so the renderer must not be able to execute anything.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 _VAR_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}")
+# An AI directive: ``{{ai: personalize this, say why the role fits}}``. The
+# sigil is deliberate — a bare multi-word placeholder is far more likely to be
+# a typo'd variable than a request for prose, and a typo must stay a harmless
+# blank rather than become a paid model call. Disjoint from _VAR_RE by
+# construction (a variable name cannot contain a colon or a space), and
+# ``[^{}]`` forbids nesting: the resolver receives the whole variable bag, so
+# there is nothing to interpolate inside an instruction.
+_AI_RE = re.compile(r"\{\{\s*ai\s*:\s*(?P<instruction>[^{}]+?)\s*\}\}", re.IGNORECASE)
 _LINK_RE = re.compile(r'href="(https?://[^"]+)"', re.IGNORECASE)
+
+
+class MissingDirective(ValueError):
+    """A directive had no resolved text. Raised, never defaulted: the only code
+    allowed to remove a directive span is the code substituting real prose,
+    otherwise an instruction meant for the model could reach a candidate."""
+
+
+@dataclass(frozen=True)
+class Directive:
+    key: str
+    instruction: str
+
+
+def _directive_key(instruction: str) -> str:
+    normalised = " ".join(instruction.split()).lower()
+    return "ai:" + hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:12]
+
+
+def used_directives(template: str) -> list[Directive]:
+    """Every distinct AI directive in the template, in first-seen order."""
+    seen: dict[str, Directive] = {}
+    for match in _AI_RE.finditer(template or ""):
+        instruction = match.group("instruction").strip()
+        key = _directive_key(instruction)
+        seen.setdefault(key, Directive(key=key, instruction=instruction))
+    return list(seen.values())
+
+
+def render_directives(template: str, resolved: dict[str, str]) -> str:
+    """Replace each directive span with its resolved prose.
+
+    Raises ``MissingDirective`` on any gap — there is deliberately no fallback
+    branch here (see MissingDirective).
+    """
+    if not template:
+        return ""
+
+    def substitute(match: re.Match[str]) -> str:
+        instruction = match.group("instruction").strip()
+        key = _directive_key(instruction)
+        text = resolved.get(key)
+        if not text:
+            raise MissingDirective(f"unresolved AI directive: {instruction[:80]}")
+        return text
+
+    return _AI_RE.sub(substitute, template)
+
+
+def mark_directives(template: str) -> str:
+    """Replace each directive with a visible ``[AI: instruction]`` marker.
+
+    Preview-only: it shows the recruiter where model text will land when no
+    model is available. The send path never uses this — sending fails closed.
+    """
+    return _AI_RE.sub(
+        lambda match: f"[AI: {match.group('instruction').strip()}]", template or ""
+    )
 
 
 def used_variables(template: str) -> list[str]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from foray.embed.blob import build_blob
 
 
@@ -52,10 +54,14 @@ def test_blob_handles_missing_fields():
     assert blob == "ghost"
 
 
+@pytest.mark.model
 def test_embedding_similarity_similar_beats_dissimilar():
     # Uses the real model (downloaded once, cached). Similar profiles must be
-    # closer in cosine space than dissimilar ones.
+    # closer in cosine space than dissimilar ones. CI skips this (no HF fetch);
+    # the foray Docker image bakes the model and is built on every push.
     import numpy as np
+
+    pytest.importorskip("sentence_transformers")
 
     from foray.embed.model import embed_documents
 

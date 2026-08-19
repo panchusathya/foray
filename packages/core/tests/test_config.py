@@ -51,6 +51,13 @@ class TestProductionGuard:
         assert settings.is_production
         assert settings.secret_key == "x" * 48
 
+    def test_staging_is_not_production_but_still_rejects_the_default_secret(self, settings_for):
+        with pytest.raises(ConfigError, match="SECRET_KEY"):
+            settings_for(JUICEBOX_ENV="staging", SECRET_KEY=DEV_SECRET_KEY)
+        settings = settings_for(JUICEBOX_ENV="staging", SECRET_KEY="x" * 48)
+        assert settings.is_production is False
+        assert settings.requires_secure_secret is True
+
 
 class TestDevelopmentStaysEasy:
     def test_development_accepts_the_default_secret(self, settings_for):

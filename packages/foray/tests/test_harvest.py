@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-
 import asyncpg
-import pytest
 
 from foray.config import settings
 from foray.db import _asyncpg_dsn
@@ -22,6 +19,7 @@ from foray.harvest.search import (
     parse_range,
     split_range,
 )
+from tests.dbutil import requires_db
 
 
 # ------------------------------------------------------------------ offline logic --
@@ -83,24 +81,6 @@ def test_split_converges():
 
 
 # ---------------------------------------------------------------------- DB tests --
-
-
-def _db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-            await conn.close()
-            return True
-        except Exception:
-            return False
-
-    try:
-        return asyncio.run(_check())
-    except Exception:
-        return False
-
-
-requires_db = pytest.mark.skipif(not _db_reachable(), reason="Postgres not reachable")
 
 
 @requires_db

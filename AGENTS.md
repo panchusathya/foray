@@ -81,4 +81,7 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
   run the Juicebox API (:8000, for login), the web dev server (:5173), and the
   Foray API (:8100) together. The page must never render the score.
 - **Tests:** `cd packages/foray && uv run pytest -q`. DB-backed tests auto-skip if
-  Postgres/`archetype_scores` are unavailable, so offline unit tests always run.
+  Postgres is unreachable. CI always starts pgvector and runs those tests
+  (plus `migrate.sh` against both `foray` and `foray_staging`). The embedding
+  similarity test is marked `model` and is skipped in CI (no Hugging Face
+  fetch); the foray Docker image still bakes the model on every push.

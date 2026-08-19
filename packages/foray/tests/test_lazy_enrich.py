@@ -77,31 +77,11 @@ async def test_apollo_not_called_without_allow_flag():
 
 # --------------------------------------------------------------- freshness --
 
-import asyncio  # noqa: E402
-
 import asyncpg  # noqa: E402
 
 from foray.config import settings  # noqa: E402
 from foray.db import _asyncpg_dsn  # noqa: E402
-
-
-def _db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-            n = await conn.fetchval("select count(*) from candidates")
-            await conn.close()
-            return n > 0
-        except Exception:
-            return False
-
-    try:
-        return asyncio.run(_check())
-    except Exception:
-        return False
-
-
-requires_db = pytest.mark.skipif(not _db_reachable(), reason="Postgres not reachable / empty")
+from tests.dbutil import requires_db  # noqa: E402
 
 
 @requires_db

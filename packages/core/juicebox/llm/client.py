@@ -1,4 +1,4 @@
-"""Thin gateway over the Anthropic Messages API.
+"""Thin gateway over a chat model, currently Anthropic or OpenRouter.
 
 Design rules:
   * every call is optional — if no API key is configured, ``available`` is False
@@ -12,7 +12,12 @@ Design rules:
 ``output_config`` carries ``effort`` on every request, which the Anthropic SDK
 only models from 0.78 onwards. An older SDK installs happily and then fails
 every call, so the capability is checked up front and reported as unavailable
-rather than discovered one silent fallback at a time.
+rather than discovered one silent fallback at a time. That check governs the
+Anthropic path only — an old SDK must not disable OpenRouter.
+
+The Anthropic request shape stays the internal representation regardless of
+provider; ``llm/openrouter.py`` translates it at the edge. That keeps this
+module, every call site, and the test fakes provider-agnostic.
 """
 
 from __future__ import annotations
@@ -90,6 +95,7 @@ class ModelUsage:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -101,21 +107,30 @@ class CostLedger:
     retries: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float = 0.0
     last_error: str = ""
     by_model: dict[str, ModelUsage] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
 
-    def record_success(self, model: str, input_tokens: int, output_tokens: int) -> None:
+    def record_success(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float = 0.0,
+    ) -> None:
         with self._lock:
             self.calls += 1
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
+            self.cost_usd += cost_usd
             usage = self.by_model.setdefault(model or "unknown", ModelUsage())
             usage.calls += 1
             usage.input_tokens += input_tokens
             usage.output_tokens += output_tokens
+            usage.cost_usd += cost_usd
 
     def record_retry(self) -> None:
         with self._lock:
@@ -134,6 +149,7 @@ class CostLedger:
                 "retries": self.retries,
                 "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens,
+                "cost_usd": round(self.cost_usd, 6),
                 "last_error": self.last_error,
                 "by_model": {name: asdict(usage) for name, usage in self.by_model.items()},
             }
@@ -152,6 +168,41 @@ class Transport(Protocol):
 
     async def acomplete(self, kwargs: dict[str, Any]) -> LLMResult:  # pragma: no cover
         ...
+
+
+def loose_json(text: str) -> Any:
+    """Parse JSON that a model may have wrapped in prose or a fenced block.
+
+    Anthropic's ``output_config.format`` guarantees clean JSON, but not every
+    OpenRouter provider honours ``response_format`` that strictly, and a fenced
+    reply is otherwise indistinguishable from a hard failure. Strict parsing is
+    tried first so well-behaved responses are unaffected.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    body = text.strip()
+    if body.startswith("```"):
+        # ```json\n{...}\n``` — drop the fence line and any trailing fence.
+        body = body.split("\n", 1)[1] if "\n" in body else ""
+        if body.rstrip().endswith("```"):
+            body = body.rstrip()[: -len("```")]
+        try:
+            return json.loads(body.strip())
+        except json.JSONDecodeError:
+            body = text.strip()
+
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = body.find(opener)
+        end = body.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(body[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    raise ValueError("no JSON object found in model output")
 
 
 def _extract(response: Any) -> LLMResult:
@@ -292,9 +343,16 @@ class LLMClient:
         enabled: bool | None = None,
     ) -> None:
         settings = get_settings()
-        self._api_key = api_key if api_key is not None else settings.anthropic_api_key
-        self.model = model or settings.llm_model
-        self.fast_model = settings.llm_fast_model
+        self._provider = settings.resolved_llm_provider
+        default_key = (
+            settings.openrouter_api_key
+            if self._provider == "openrouter"
+            else settings.anthropic_api_key
+        )
+        self._api_key = api_key if api_key is not None else default_key
+        self._base_url = settings.openrouter_base_url
+        self.model = model or settings.resolved_llm_model
+        self.fast_model = settings.resolved_llm_fast_model
         self._enabled = settings.llm_enabled if enabled is None else enabled
         self._timeout = settings.llm_timeout_seconds
         self._semaphore = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
@@ -304,7 +362,12 @@ class LLMClient:
         self.ledger = CostLedger()
 
         self._transport = transport
-        self._sdk_ok, self._sdk_reason = sdk_capability()
+        # The SDK capability check only governs the Anthropic path; an old
+        # anthropic install must not disable OpenRouter.
+        if self._provider == "anthropic":
+            self._sdk_ok, self._sdk_reason = sdk_capability()
+        else:
+            self._sdk_ok, self._sdk_reason = True, ""
         if transport is None and self._enabled and self._api_key and not self._sdk_ok:
             # A key is configured, so the operator expects AI to be on. Saying so
             # once at error level beats N warnings from N silent fallbacks.
@@ -313,11 +376,17 @@ class LLMClient:
     # -- availability ----------------------------------------------------
 
     @property
+    def provider(self) -> str:
+        return "fake" if self._transport is not None else self._provider
+
+    @property
     def available(self) -> bool:
         if not self._enabled:
             return False
         if self._transport is not None:
             return True
+        if self._provider == "none":
+            return False
         return bool(self._api_key) and self._sdk_ok
 
     @property
@@ -326,15 +395,28 @@ class LLMClient:
             return ""
         if not self._enabled:
             return "JUICEBOX_LLM_ENABLED is false"
-        if not self._api_key:
-            return "ANTHROPIC_API_KEY is not set"
+        if self._provider == "none" or not self._api_key:
+            return "no LLM provider configured: set ANTHROPIC_API_KEY or OPENROUTER_API_KEY"
         return self._sdk_reason or "no usable backend"
 
     def _require_transport(self) -> Transport:
         if not self.available:
-            raise LLMUnavailable(f"Anthropic client is not configured: {self.unavailable_reason}")
+            raise LLMUnavailable(f"LLM client is not configured: {self.unavailable_reason}")
         if self._transport is None:
-            self._transport = AnthropicTransport(api_key=self._api_key, timeout=self._timeout)
+            if self._provider == "openrouter":
+                # Imported lazily so client.py has no import-time dependency on
+                # httpx or on the transport module (which imports LLMResult).
+                from .openrouter import OpenRouterTransport
+
+                self._transport = OpenRouterTransport(
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                    timeout=self._timeout,
+                )
+            else:
+                self._transport = AnthropicTransport(
+                    api_key=self._api_key, timeout=self._timeout
+                )
         return self._transport
 
     # -- request assembly ------------------------------------------------
@@ -367,8 +449,8 @@ class LLMClient:
         if not result.text:
             raise LLMUnavailable("empty model response")
         try:
-            result.data = json.loads(result.text)
-        except json.JSONDecodeError as exc:
+            result.data = loose_json(result.text)
+        except ValueError as exc:
             raise LLMUnavailable(f"model returned non-JSON output: {exc}") from exc
         return result
 
@@ -382,8 +464,21 @@ class LLMClient:
         return delay * (0.5 + random.random() / 2)
 
     def _finish(self, result: LLMResult) -> LLMResult:
-        self.ledger.record_success(result.model, result.input_tokens, result.output_tokens)
+        self.ledger.record_success(
+            result.model, result.input_tokens, result.output_tokens, self._cost_of(result)
+        )
         return result
+
+    def _cost_of(self, result: LLMResult) -> float:
+        """OpenRouter reports its own cost; fall back to published prices."""
+        if self._provider != "openrouter":
+            return 0.0
+        reported = getattr(self._transport, "last_cost_usd", None)
+        if reported is not None:
+            return float(reported)
+        from .openrouter import estimated_cost_usd
+
+        return estimated_cost_usd(result.model, result.input_tokens, result.output_tokens)
 
     def _fail(self, exc: BaseException) -> LLMUnavailable:
         self.ledger.record_failure(f"{type(exc).__name__}: {exc}")

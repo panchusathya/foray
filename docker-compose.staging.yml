@@ -39,6 +39,11 @@ x-staging-app-env: &staging_app_env
   OUTREACH_FROM_EMAIL: staging@localhost
   JUICEBOX_LLM_ENABLED: ${JUICEBOX_LLM_ENABLED:-false}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Off by default here (JUICEBOX_LLM_ENABLED=false above); set both to rehearse
+  # a real generation against staging.
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  JUICEBOX_LLM_PROVIDER: ${JUICEBOX_LLM_PROVIDER:-openrouter}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-z-ai/glm-5.2}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
   VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
 

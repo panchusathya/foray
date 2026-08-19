@@ -49,6 +49,12 @@ x-app-env: &app_env
   SECRET_KEY: ${SECRET_KEY:?generate with secrets.token_urlsafe(48) - see .env.production.example}
   CORS_ORIGINS: https://${APP_DOMAIN}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # The app's AI (sequence drafting, personalisation, reply drafts) runs through
+  # OpenRouter here: there is no Anthropic key on this host, and without these
+  # two lines every one of those features silently falls back to heuristics.
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  JUICEBOX_LLM_PROVIDER: ${JUICEBOX_LLM_PROVIDER:-openrouter}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-z-ai/glm-5.2}
   JUICEBOX_LLM_ENABLED: ${JUICEBOX_LLM_ENABLED:-true}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
   VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}

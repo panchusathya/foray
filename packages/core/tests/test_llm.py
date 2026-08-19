@@ -167,6 +167,78 @@ class TestAvailability:
         assert ok, reason
 
 
+class TestProviderResolution:
+    """Which backend a bare Settings resolves to, and what that makes available."""
+
+    @staticmethod
+    def _settings(monkeypatch, **env):
+        from juicebox.config import get_settings, reset_settings_cache
+
+        for name in (
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "JUICEBOX_LLM_PROVIDER",
+            "JUICEBOX_LLM_MODEL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        reset_settings_cache()
+        return get_settings()
+
+    def test_neither_key_resolves_to_none(self, monkeypatch):
+        assert self._settings(monkeypatch).resolved_llm_provider == "none"
+
+    def test_anthropic_key_alone_picks_anthropic(self, monkeypatch):
+        settings = self._settings(monkeypatch, ANTHROPIC_API_KEY="sk-test")
+        assert settings.resolved_llm_provider == "anthropic"
+        assert settings.resolved_llm_model == "claude-opus-5"
+
+    def test_openrouter_key_alone_picks_openrouter_and_its_model(self, monkeypatch):
+        settings = self._settings(monkeypatch, OPENROUTER_API_KEY="or-test")
+        assert settings.resolved_llm_provider == "openrouter"
+        assert settings.resolved_llm_model == "z-ai/glm-5.2"
+
+    def test_both_keys_prefer_anthropic_so_dev_setups_are_unchanged(self, monkeypatch):
+        settings = self._settings(
+            monkeypatch, ANTHROPIC_API_KEY="sk-test", OPENROUTER_API_KEY="or-test"
+        )
+        assert settings.resolved_llm_provider == "anthropic"
+
+    def test_an_explicit_provider_overrides_key_precedence(self, monkeypatch):
+        settings = self._settings(
+            monkeypatch,
+            ANTHROPIC_API_KEY="sk-test",
+            OPENROUTER_API_KEY="or-test",
+            JUICEBOX_LLM_PROVIDER="openrouter",
+        )
+        assert settings.resolved_llm_provider == "openrouter"
+        assert settings.resolved_llm_model == "z-ai/glm-5.2"
+
+    def test_model_override_wins_over_the_provider_default(self, monkeypatch):
+        settings = self._settings(
+            monkeypatch, OPENROUTER_API_KEY="or-test", JUICEBOX_LLM_MODEL="z-ai/glm-4.6"
+        )
+        assert settings.resolved_llm_model == "z-ai/glm-4.6"
+
+    def test_unconfigured_client_names_both_env_vars(self, monkeypatch):
+        self._settings(monkeypatch)
+        client = LLMClient(enabled=True)
+        assert client.available is False
+        assert "ANTHROPIC_API_KEY" in client.unavailable_reason
+        assert "OPENROUTER_API_KEY" in client.unavailable_reason
+
+    def test_openrouter_does_not_need_the_anthropic_sdk_floor(self, monkeypatch):
+        """An old anthropic install must not disable a working OpenRouter key."""
+        self._settings(monkeypatch, OPENROUTER_API_KEY="or-test")
+        monkeypatch.setattr(
+            "juicebox.llm.client.sdk_capability", lambda: (False, "anthropic 0.40 is too old")
+        )
+        client = LLMClient(enabled=True)
+        assert client.available is True
+        assert client.provider == "openrouter"
+
+
 class TestCallerDegradation:
     """The product must stay usable when the model does not."""
 

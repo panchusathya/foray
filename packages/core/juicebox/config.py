@@ -90,9 +90,25 @@ class Settings:
 
     # --- llm -------------------------------------------------------------
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY", ""))
-    llm_model: str = field(default_factory=lambda: _env("JUICEBOX_LLM_MODEL", "claude-opus-5"))
-    llm_fast_model: str = field(
-        default_factory=lambda: _env("JUICEBOX_LLM_FAST_MODEL", "claude-opus-5")
+    openrouter_api_key: str = field(default_factory=lambda: _env("OPENROUTER_API_KEY", ""))
+    openrouter_base_url: str = field(
+        default_factory=lambda: _env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    )
+    # auto: whichever key is present, Anthropic first so a developer's existing
+    # key keeps working. Pin it explicitly in production so a stray key cannot
+    # silently redirect spend to another provider.
+    llm_provider: str = field(
+        default_factory=lambda: _env("JUICEBOX_LLM_PROVIDER", "auto").lower()
+    )
+    openrouter_model: str = field(
+        default_factory=lambda: _env("OPENROUTER_MODEL", "z-ai/glm-5.2")
+    )
+    # Deliberately empty by default: the per-provider default is chosen at
+    # runtime, because hardcoding an Anthropic slug here would follow the
+    # OpenRouter path and 404.
+    llm_model_override: str = field(default_factory=lambda: _env("JUICEBOX_LLM_MODEL", ""))
+    llm_fast_model_override: str = field(
+        default_factory=lambda: _env("JUICEBOX_LLM_FAST_MODEL", "")
     )
     llm_enabled: bool = field(default_factory=lambda: _env_bool("JUICEBOX_LLM_ENABLED", True))
     llm_max_concurrency: int = field(default_factory=lambda: _env_int("LLM_MAX_CONCURRENCY", 8))
@@ -168,6 +184,38 @@ class Settings:
         default_factory=lambda: _env_int("WORKER_LOCK_TIMEOUT_SECONDS", 15 * 60)
     )
     worker_max_attempts: int = field(default_factory=lambda: _env_int("WORKER_MAX_ATTEMPTS", 5))
+
+    @property
+    def resolved_llm_provider(self) -> str:
+        """``anthropic`` | ``openrouter`` | ``none``.
+
+        Under ``auto`` a present Anthropic key wins, so an existing dev setup
+        behaves exactly as before; production has no Anthropic key and lands on
+        OpenRouter without needing a flag.
+        """
+        if self.llm_provider in {"anthropic", "openrouter", "none"}:
+            return self.llm_provider
+        if self.anthropic_api_key:
+            return "anthropic"
+        if self.openrouter_api_key:
+            return "openrouter"
+        return "none"
+
+    @property
+    def resolved_llm_model(self) -> str:
+        if self.llm_model_override:
+            return self.llm_model_override
+        return (
+            self.openrouter_model
+            if self.resolved_llm_provider == "openrouter"
+            else "claude-opus-5"
+        )
+
+    @property
+    def resolved_llm_fast_model(self) -> str:
+        if self.llm_fast_model_override:
+            return self.llm_fast_model_override
+        return self.resolved_llm_model
 
     @property
     def is_sqlite(self) -> bool:

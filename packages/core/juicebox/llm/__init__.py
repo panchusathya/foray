@@ -9,6 +9,7 @@ from .client import (
     Transport,
     get_llm,
     is_retryable,
+    loose_json,
     reset_llm,
     sdk_capability,
     set_llm,
@@ -22,6 +23,13 @@ from .embeddings import (
     reset_embedder,
     tokenize,
 )
+from .openrouter import (
+    LLMTransportError,
+    OpenRouterTransport,
+    estimated_cost_usd,
+    from_openrouter,
+    to_openrouter,
+)
 
 __all__ = [
     "MIN_ANTHROPIC_VERSION",
@@ -31,17 +39,23 @@ __all__ = [
     "HashingEmbedder",
     "LLMClient",
     "LLMResult",
+    "LLMTransportError",
     "LLMUnavailable",
+    "OpenRouterTransport",
     "Transport",
     "cosine_similarity",
     "embed_text",
     "embed_texts",
+    "estimated_cost_usd",
+    "from_openrouter",
     "get_embedder",
     "get_llm",
     "is_retryable",
+    "loose_json",
     "reset_embedder",
     "reset_llm",
     "sdk_capability",
     "set_llm",
+    "to_openrouter",
     "tokenize",
 ]

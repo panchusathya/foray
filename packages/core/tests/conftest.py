@@ -47,6 +47,11 @@ def isolated_environment(tmp_path, monkeypatch):
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("JUICEBOX_LLM_ENABLED", "false")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    # Both provider keys must be blank: the repo-root .env carries a real
+    # OPENROUTER_API_KEY for Foray, and a test that enables the LLM would
+    # otherwise reach the network.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("JUICEBOX_LLM_PROVIDER", "none")
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("SECRET_KEY", "test-secret")

@@ -84,6 +84,38 @@ class TestCandidates:
         ).json()
         assert second["created"] == 0 and second["updated"] == 3
 
+    def test_bulk_passthrough_fields_survive_without_experiences(self, client, account):
+        # Importers with no experiences[] (e.g. Foray) supply employer and
+        # experience directly; these fields used to be silently dropped by the
+        # schema before reaching normalize_candidate().
+        payload = {
+            "source": "foray",
+            "source_id": "janedoe",
+            "full_name": "Jane Doe",
+            "github_url": "https://github.com/janedoe",
+            "current_company": "Stripe",
+            "current_company_domain": "stripe.com",
+            "years_experience": 7.2,
+            "emails": ["jane@stripe.com"],
+            "skills": ["go", "infra"],
+            "raw": {"foray": {"score": 71}},
+        }
+        result = client.post(
+            "/v1/candidates/bulk",
+            json={"candidates": [payload]},
+            headers=account["headers"],
+        ).json()
+        assert result["created"] == 1
+
+        detail = client.get(
+            f"/v1/candidates/{result['ids'][0]}", headers=account["headers"]
+        ).json()
+        assert detail["current_company"] == "Stripe"
+        assert detail["current_company_domain"] == "stripe.com"
+        assert detail["years_experience"] == 7.2
+        assert detail["emails"] == ["jane@stripe.com"]
+        assert detail["source"] == "foray" and detail["source_id"] == "janedoe"
+
     def test_enrichment_is_visible_on_read(self, client, loaded_org):
         listing = client.get(
             "/v1/candidates?q=ada", headers=loaded_org["headers"]

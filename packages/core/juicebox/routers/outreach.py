@@ -188,6 +188,22 @@ def update_sequence(
     return SequenceOut.model_validate(sequence)
 
 
+@router.delete("/{sequence_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_sequence(
+    sequence_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> None:
+    """Remove a sequence and its enrollments/messages. Agents that auto-enroll
+    into it keep running but lose the auto-enroll link."""
+    sequence = _load_sequence(db, sequence_id, principal.org_id)
+    for enrollment in db.scalars(
+        select(Enrollment).where(Enrollment.sequence_id == sequence_id)
+    ).all():
+        db.delete(enrollment)
+    db.delete(sequence)
+
+
 @router.put("/{sequence_id}/steps", response_model=SequenceOut)
 def replace_steps(
     sequence_id: str,

@@ -277,6 +277,33 @@ class TestPipeline:
         )
         assert bad.status_code == 422
 
+    def test_outreach_driven_stages_reject_manual_moves_without_override(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        project = self._project(client, headers)
+        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
+        entry = client.post(
+            f"/v1/projects/{project['id']}/candidates",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        ).json()[0]
+
+        # "contacted" is outreach-driven: a bare manual move is refused.
+        blocked = client.patch(
+            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
+            json={"stage": "contacted"},
+            headers=headers,
+        )
+        assert blocked.status_code == 409
+
+        # ...but an explicit override records a manual touch.
+        overridden = client.patch(
+            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
+            json={"stage": "contacted", "override": True},
+            headers=headers,
+        )
+        assert overridden.status_code == 200
+        assert overridden.json()["stage"] == "contacted"
+
     def test_adding_the_same_candidate_twice_is_a_no_op(self, client, loaded_org):
         headers = loaded_org["headers"]
         project = self._project(client, headers)
@@ -286,6 +313,42 @@ class TestPipeline:
         client.post(f"/v1/projects/{project['id']}/candidates", json=payload, headers=headers)
         pipeline = client.get(f"/v1/projects/{project['id']}/pipeline", headers=headers).json()
         assert len(pipeline) == 1
+
+    def test_delete_project_removes_pipeline_and_unlinks_sequences(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        project = self._project(client, headers)
+        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
+        client.post(
+            f"/v1/projects/{project['id']}/candidates",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        )
+        sequence = client.post(
+            "/v1/sequences",
+            json={
+                "name": "Tied to the project",
+                "project_id": project["id"],
+                "personalize": False,
+                "steps": [
+                    {
+                        "delay_days": 0,
+                        "subject_template": "Hi",
+                        "body_template": "Hi there",
+                    }
+                ],
+            },
+            headers=headers,
+        ).json()
+        assert sequence["project_id"] == project["id"]
+
+        deleted = client.delete(f"/v1/projects/{project['id']}", headers=headers)
+        assert deleted.status_code == 204
+        assert client.get(f"/v1/projects/{project['id']}", headers=headers).status_code == 404
+        leftover = client.get(f"/v1/sequences/{sequence['id']}", headers=headers).json()
+        assert leftover["project_id"] is None
+
+    def test_delete_unknown_project_is_404(self, client, account):
+        assert client.delete("/v1/projects/proj_nope", headers=account["headers"]).status_code == 404
 
 
 class TestOutreachApi:

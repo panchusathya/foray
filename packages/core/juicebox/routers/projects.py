@@ -8,11 +8,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..deps import Principal, get_db, get_principal, require_write
 from ..models import (
+    OUTREACH_DRIVEN_STAGES,
     PIPELINE_STAGES,
     Candidate,
     Project,
     ProjectCandidate,
     SearchResult,
+    SourcingAgent,
     record_event,
 )
 from ..schemas import (
@@ -85,6 +87,22 @@ def update_project(
         setattr(project, key, value)
     db.flush()
     return ProjectOut.model_validate(project)
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(
+    project_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> None:
+    """Remove a project. Pipeline cards and sourcing agents go with it;
+    sequences keep their copy but lose the project link (role_title becomes empty)."""
+    project = _load_project(db, project_id, principal.org_id)
+    for agent in db.scalars(
+        select(SourcingAgent).where(SourcingAgent.project_id == project_id)
+    ).all():
+        db.delete(agent)
+    db.delete(project)
 
 
 @router.post("/{project_id}/candidates", response_model=list[PipelineEntryOut])
@@ -213,6 +231,19 @@ def update_stage(
     if entry is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline entry not found"
+        )
+    if (
+        payload.stage in OUTREACH_DRIVEN_STAGES
+        and payload.stage != entry.stage
+        and not payload.override
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"'{payload.stage}' is set automatically when outreach sends or a reply "
+                "lands. Pass override=true to record a manual touch (e.g. you reached out "
+                "yourself)."
+            ),
         )
     previous = entry.stage
     entry.stage = payload.stage

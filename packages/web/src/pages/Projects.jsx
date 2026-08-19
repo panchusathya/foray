@@ -3,10 +3,15 @@ import { Link, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { PIPELINE_STAGES, api } from '../lib/api.js';
+import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
 
 export function ProjectsPage() {
   const projects = useAsync(() => api.listProjects(), []);
+  // The sidebar "Current project" section and the Home quick-actions read the
+  // shared CurrentProject context, so a new project has to refresh that too —
+  // otherwise they keep showing "Create your first project" until a full reload.
+  const { reload: reloadCurrentProject, setProject } = useCurrentProject();
   const [form, setForm] = useState({ name: '', role_title: '', location: '', description: '' });
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -17,13 +22,33 @@ export function ProjectsPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.createProject(form);
+      const created = await api.createProject(form);
       setForm({ name: '', role_title: '', location: '', description: '' });
       projects.reload();
+      await reloadCurrentProject();
+      if (created?.id) setProject(created.id);
     } catch (caught) {
       setError(caught);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function remove(project) {
+    if (
+      !window.confirm(
+        `Delete “${project.name}”? Pipeline cards and sourcing agents for this role go with it. Sequences stay, but lose the role title.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.deleteProject(project.id);
+      projects.reload();
+      await reloadCurrentProject();
+    } catch (caught) {
+      setError(caught);
     }
   }
 
@@ -73,14 +98,21 @@ export function ProjectsPage() {
       ) : (
         <div className="grid two">
           {(projects.data ?? []).map((project) => (
-            <Link key={project.id} to={`/projects/${project.id}`} className="card" style={{ textDecoration: 'none' }}>
+            <div key={project.id} className="card stack" style={{ gap: 8 }}>
               <div className="spread">
-                <strong>{project.name}</strong>
-                <Badge>{project.status}</Badge>
+                <Link to={`/projects/${project.id}`} style={{ fontWeight: 600, textDecoration: 'none' }}>
+                  {project.name}
+                </Link>
+                <div className="row">
+                  <Badge>{project.status}</Badge>
+                  <button type="button" className="tiny ghost" onClick={() => remove(project)}>
+                    Delete
+                  </button>
+                </div>
               </div>
               <div className="small muted">{project.role_title || 'No role title'}</div>
               {project.location ? <div className="small muted">{project.location}</div> : null}
-            </Link>
+            </div>
           ))}
         </div>
       )}
@@ -88,20 +120,38 @@ export function ProjectsPage() {
   );
 }
 
+// "contacted" and "replied" are driven by outreach (a send / a reply), not by
+// hand — the backend refuses a bare manual move into them. A recruiter who
+// reached out themselves can still record it via an explicit override.
+const OUTREACH_DRIVEN_STAGES = new Set(['contacted', 'replied']);
+
 export function ProjectDetailPage() {
   const { projectId } = useParams();
   const pipeline = useAsync(() => api.getPipeline(projectId), [projectId]);
   const funnel = useAsync(() => api.funnel(projectId), [projectId]);
   const [error, setError] = useState(null);
 
-  async function move(entry, stage) {
+  async function move(entry, stage, { override = false } = {}) {
     setError(null);
     try {
-      await api.updateStage(projectId, entry.id, { stage });
+      await api.updateStage(projectId, entry.id, { stage, override });
       pipeline.reload();
       funnel.reload();
     } catch (caught) {
       setError(caught);
+    }
+  }
+
+  function manualTouch(entry, stage) {
+    const label = stage === 'contacted' ? 'contacted' : 'replied';
+    const verb = stage === 'contacted' ? 'reached out to' : 'heard back from';
+    if (
+      window.confirm(
+        `Mark ${entry.candidate.full_name} as ${label}? Only do this if you ${verb} them ` +
+          `yourself outside a sequence — otherwise it happens automatically.`,
+      )
+    ) {
+      move(entry, stage, { override: true });
     }
   }
 
@@ -117,6 +167,11 @@ export function ProjectDetailPage() {
         subtitle="Every card keeps the match evidence that put the person here."
         actions={<Link className="badge" to="/">Back to search</Link>}
       />
+      <div className="card small muted">
+        Sourced → Contacted → Replied advance automatically as outreach sends and replies land.
+        Screening onward you move by hand. Use the small "I reached out" link only when you
+        contacted someone yourself outside a sequence.
+      </div>
       <ErrorBox error={error} />
 
       {pipeline.loading ? <Loading /> : null}
@@ -154,9 +209,19 @@ export function ProjectDetailPage() {
                       </div>
                     ))}
                     <div className="row" style={{ marginTop: 8 }}>
-                      {next ? (
+                      {next && !OUTREACH_DRIVEN_STAGES.has(next) ? (
                         <button type="button" className="tiny" onClick={() => move(entry, next)}>
                           → {next}
+                        </button>
+                      ) : null}
+                      {next && OUTREACH_DRIVEN_STAGES.has(next) ? (
+                        <button
+                          type="button"
+                          className="tiny ghost"
+                          title={`Records a manual touch — ${next} normally happens automatically`}
+                          onClick={() => manualTouch(entry, next)}
+                        >
+                          {next === 'contacted' ? 'I reached out →' : 'Log reply →'}
                         </button>
                       ) : null}
                       {entry.stage !== 'rejected' ? (

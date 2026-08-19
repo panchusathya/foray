@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Badge, Empty, ErrorBox, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -64,7 +64,11 @@ function ForayHit({ hit, selected, onToggle }) {
         <input
           type="checkbox"
           checked={selected}
-          onChange={() => onToggle(hit)}
+          onClick={(event) => {
+            event.preventDefault();
+            onToggle(event);
+          }}
+          onChange={() => {}}
           aria-label={`Select ${hit.login}`}
         />
         <div style={{ marginTop: 6 }}>{hit.rank}</div>
@@ -153,18 +157,43 @@ export function SourcingPage() {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
   const [addState, setAddState] = useState('');
+  const lastIndex = useRef(null);
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]));
   }, []);
 
-  function toggle(hit) {
-    setSelected((previous) => {
-      const next = new Map(previous);
-      if (next.has(hit.login)) next.delete(hit.login);
-      else next.set(hit.login, hit);
-      return next;
-    });
+  function toggle(hit, index, event) {
+    const hits = result?.results ?? [];
+    if (event?.shiftKey && lastIndex.current != null && hits.length) {
+      const from = Math.min(lastIndex.current, index);
+      const to = Math.max(lastIndex.current, index);
+      setSelected((previous) => {
+        const next = new Map(previous);
+        for (let i = from; i <= to; i += 1) {
+          const item = hits[i];
+          if (item) next.set(item.login, item);
+        }
+        return next;
+      });
+    } else {
+      setSelected((previous) => {
+        const next = new Map(previous);
+        if (next.has(hit.login)) next.delete(hit.login);
+        else next.set(hit.login, hit);
+        return next;
+      });
+      lastIndex.current = index;
+    }
+  }
+
+  function selectAll() {
+    const hits = result?.results ?? [];
+    if (hits.length && hits.every((hit) => selected.has(hit.login))) {
+      setSelected(new Map());
+    } else {
+      setSelected(new Map(hits.map((hit) => [hit.login, hit])));
+    }
   }
 
   async function runSearch(text) {
@@ -179,6 +208,7 @@ export function SourcingPage() {
       setResult(response);
       setElapsed(Math.round(performance.now() - started));
       setSelected(new Map());
+      lastIndex.current = null;
     } catch (caught) {
       setError(caught);
       setResult(null);
@@ -292,6 +322,27 @@ export function SourcingPage() {
           {result.results.length > 0 ? (
             <div className="card spread">
               <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <label className="small muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={
+                      result.results.length > 0 &&
+                      result.results.every((hit) => selected.has(hit.login))
+                    }
+                    ref={(node) => {
+                      if (node) {
+                        const some = result.results.some((hit) => selected.has(hit.login));
+                        const all = result.results.every((hit) => selected.has(hit.login));
+                        node.indeterminate = some && !all;
+                      }
+                    }}
+                    onChange={selectAll}
+                    aria-label="Select all results"
+                  />
+                  {selected.size
+                    ? `${selected.size} of ${result.results.length} selected`
+                    : `Select all ${result.results.length}`}
+                </label>
                 <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                   <option value="">No project (import only)</option>
                   {projects.map((project) => (
@@ -325,12 +376,12 @@ export function SourcingPage() {
             <Empty>Nothing cleared the bar. Widen the search — drop a filter or lower the experience.</Empty>
           ) : (
             <div className="stack">
-              {result.results.map((hit) => (
+              {result.results.map((hit, index) => (
                 <ForayHit
                   key={hit.login}
                   hit={hit}
                   selected={selected.has(hit.login)}
-                  onToggle={toggle}
+                  onToggle={(event) => toggle(hit, index, event)}
                 />
               ))}
             </div>

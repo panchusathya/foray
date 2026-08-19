@@ -199,6 +199,23 @@ def sync_mailbox(
     _sync_sent_items(db, connection, client, summary, now, address_index)
     connection.last_synced_at = now
     db.flush()
+    if summary.seen or summary.matched or summary.unmatched_discarded:
+        # A silent discard once cost two real candidate replies during deploy
+        # churn and was undiagnosable afterwards — the consuming container's
+        # logs were gone and the job row just said "succeeded". Every non-empty
+        # pass now leaves a durable trace of what it did with each count.
+        logger.info(
+            "mailbox sync %s: seen=%d matched=%d skipped=%d intents=%s "
+            "sent_ingested=%d inbound_ingested=%d unmatched_discarded=%d",
+            connection.address,
+            summary.seen,
+            summary.matched,
+            summary.skipped,
+            summary.intents,
+            summary.sent_ingested,
+            summary.inbound_ingested,
+            summary.unmatched_discarded,
+        )
     return summary
 
 

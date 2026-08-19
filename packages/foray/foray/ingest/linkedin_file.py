@@ -29,6 +29,17 @@ from ..log import Heartbeat, get_logger
 from .linkedin_map import is_target_geo, to_import_row
 from .stream import file_key, stream_records
 
+
+def _jsonb_safe(record: dict) -> str:
+    """Serialise for a jsonb column. Postgres rejects \\u0000 anywhere in
+    jsonb text, and a handful of scraped profiles carry embedded NULs — one
+    poison record otherwise aborts its whole 500-row batch."""
+    return (
+        json.dumps(record, ensure_ascii=False)
+        .replace("\\u0000", "")
+        .replace("\x00", "")
+    )
+
 log = get_logger("ingest.linkedin")
 
 # Not nightly's lock (0x0F0A): the import may run alongside a nightly, but two
@@ -110,7 +121,7 @@ async def import_file(
                             row.slug,
                             shard_tag,
                         )
-                        await conn.execute(_UPSERT_RAW, candidate_id, row.login, json.dumps(record))
+                        await conn.execute(_UPSERT_RAW, candidate_id, row.login, _jsonb_safe(record))
                         for email in row.emails:
                             await conn.execute(
                                 UPSERT_EMAIL,

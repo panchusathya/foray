@@ -56,8 +56,20 @@ async def amain(args: argparse.Namespace) -> int:
     embedded = 0
     skipped = 0
     async with pool.acquire() as conn:
+        # By default only fetch rows whose blob inputs could have changed since
+        # the last embed: a signals re-derive (derived_at) or a profile refetch
+        # (fetched_at) after embedded_at, or never embedded. This is a strict
+        # SUPERSET of "actually changed" (the Python blob diff below catches the
+        # false positives cheaply), and it keeps the nightly run from pulling
+        # every candidate+signals into memory at 100k. --all restores the full
+        # scan; a change to blob.py itself needs --all --force.
+        changed = (
+            "where c.embedding is null or c.embedded_at is null or c.embed_blob is null "
+            "or s.derived_at > c.embedded_at "
+            "or (r.fetched_at is not null and r.fetched_at > c.embedded_at)"
+        )
         rows = await conn.fetch(
-            """
+            f"""
             select c.id, c.login, c.name, c.embed_blob as old_blob,
                    (c.embedding is null) as needs_vector,
                    r.data->>'bio' as bio,
@@ -66,6 +78,7 @@ async def amain(args: argparse.Namespace) -> int:
             from candidates c
             join candidate_signals s on s.candidate_id = c.id
             left join raw_profiles r on r.candidate_id = c.id
+            {"" if args.all else changed}
             order by c.id
             """
             + (" limit $1" if args.limit else ""),
@@ -111,6 +124,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Embed candidate blobs into halfvec(384).")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--all", action="store_true", help="scan every candidate, not just changed")
     ap.add_argument("--force", action="store_true", help="re-embed even if blob unchanged")
     ap.add_argument("--skip-index", action="store_true", help="do not build the HNSW index")
     return asyncio.run(amain(ap.parse_args()))

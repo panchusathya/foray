@@ -284,27 +284,49 @@ async def amain(args: argparse.Namespace) -> int:
             await close_pool()
             return 0
 
-        rows = await conn.fetch(
-            "select candidate_id, data from raw_profiles order by candidate_id "
-            + ("limit $1" if args.limit else ""),
-            *([args.limit] if args.limit else []),
+        # Fetch ids first (small), then pull the heavy JSONB in chunks. The old
+        # "select candidate_id, data from raw_profiles" loaded every ~30 KB node
+        # into memory at once and OOMed the 4 GB VM around 40-50k profiles;
+        # --stale-only also makes an incremental nightly run touch only new work
+        # instead of re-deriving the lowest ids every night.
+        where = (
+            "left join candidate_signals s on s.candidate_id = r.candidate_id "
+            "where s.candidate_id is null or s.derived_at < r.fetched_at"
+            if args.stale_only
+            else ""
         )
+        ids = [
+            r["candidate_id"]
+            for r in await conn.fetch(
+                f"select r.candidate_id from raw_profiles r {where} "
+                f"order by r.candidate_id " + ("limit $1" if args.limit else ""),
+                *([args.limit] if args.limit else []),
+            )
+        ]
+        CHUNK = 500
         with Heartbeat(log, lambda: {"processed": processed}):
-            for row in rows:
-                node = row["data"]
-                if isinstance(node, str):
-                    node = json.loads(node)
-                try:
-                    signals = derive_signals(node)
-                    await _upsert_signals(conn, row["candidate_id"], node, signals)
-                except Exception as exc:  # noqa: BLE001 - isolate one bad row
-                    await conn.execute(
-                        "insert into enrich_errors (candidate_id, stage, error) values ($1, 'derive', $2)",
-                        row["candidate_id"],
-                        str(exc)[:500],
-                    )
-                    log.error("derive.error", candidate_id=row["candidate_id"], error=str(exc))
-                processed += 1
+            for start in range(0, len(ids), CHUNK):
+                batch = ids[start : start + CHUNK]
+                rows = await conn.fetch(
+                    "select candidate_id, data from raw_profiles "
+                    "where candidate_id = any($1::bigint[])",
+                    batch,
+                )
+                for row in rows:
+                    node = row["data"]
+                    if isinstance(node, str):
+                        node = json.loads(node)
+                    try:
+                        signals = derive_signals(node)
+                        await _upsert_signals(conn, row["candidate_id"], node, signals)
+                    except Exception as exc:  # noqa: BLE001 - isolate one bad row
+                        await conn.execute(
+                            "insert into enrich_errors (candidate_id, stage, error) values ($1, 'derive', $2)",
+                            row["candidate_id"],
+                            str(exc)[:500],
+                        )
+                        log.error("derive.error", candidate_id=row["candidate_id"], error=str(exc))
+                    processed += 1
         log.info("derive.done", processed=processed)
         print(f"derived signals for {processed} candidates (0 API calls)")
 
@@ -319,6 +341,11 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Derive candidate_signals from raw_profiles (no API).")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument(
+        "--stale-only",
+        action="store_true",
+        help="only candidates with no signals or signals older than their profile",
+    )
     ap.add_argument("--histogram", action="store_true", help="print marker distribution")
     ap.add_argument("--sample", type=int, default=0, help="print N random derived candidates")
     ap.add_argument(

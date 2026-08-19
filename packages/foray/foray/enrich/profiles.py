@@ -31,18 +31,23 @@ GITHUB_GRAPHQL = "https://api.github.com/graphql"
 BATCH_SIZE = 12
 STALE_AFTER = "90 days"
 
-_FRAGMENT = """
+# Page sizes are config-driven so the payload can be tuned on the VM without a
+# rebuild. Nested node count (repos x (topics + languages)) is what makes GitHub
+# time out server-side and null repositories.nodes; keep it modest. Do NOT drop
+# languages below ~3: primary_language / language_mix are derived only from
+# repo.languages.edges and gate several archetypes.
+_FRAGMENT_TMPL = """
 fragment F on User {
   name login email company location bio websiteUrl twitterUsername createdAt
   followers { totalCount }
   following { totalCount }
-  repositories(first: 30, ownerAffiliations: OWNER, isFork: false,
+  repositories(first: %(repos)d, ownerAffiliations: OWNER, isFork: false,
                orderBy: {field: STARGAZERS, direction: DESC}) {
     nodes {
       name description stargazerCount forkCount pushedAt createdAt isArchived
       primaryLanguage { name }
-      repositoryTopics(first: 10) { nodes { topic { name } } }
-      languages(first: 5) { edges { size node { name } } }
+      repositoryTopics(first: %(topics)d) { nodes { topic { name } } }
+      languages(first: %(languages)d) { edges { size node { name } } }
     }
   }
   organizations(first: 10) { nodes { login name } }
@@ -53,6 +58,14 @@ fragment F on User {
 """
 
 
+def _fragment() -> str:
+    return _FRAGMENT_TMPL % {
+        "repos": settings.enrich_repos,
+        "topics": settings.enrich_topics,
+        "languages": settings.enrich_languages,
+    }
+
+
 def build_query(n: int) -> str:
     params = ", ".join(f"$l{i}: String!" for i in range(n))
     nodes = "\n".join(f"  u{i}: user(login: $l{i}) {{ ...F }}" for i in range(n))
@@ -60,7 +73,7 @@ def build_query(n: int) -> str:
         f"query({params}) {{\n"
         f"  rateLimit {{ remaining resetAt cost }}\n"
         f"{nodes}\n"
-        f"}}\n{_FRAGMENT}"
+        f"}}\n{_fragment()}"
     )
 
 
@@ -175,15 +188,33 @@ async def _fetch_with_singles_fallback(
     return nodes
 
 
-async def _candidates_to_enrich(conn, limit: int, force: bool) -> list[tuple[int, str]]:
+async def _candidates_to_enrich(
+    conn, limit: int, force: bool, retry_errors: bool
+) -> list[tuple[int, str]]:
+    # Exclude candidates that hit a fetch error recently. Otherwise a
+    # permanently-dead login (suspended, deleted, renamed) never gets a
+    # raw_profiles row, keeps its low id, and is re-selected at the FRONT of
+    # this queue every night -- and once the dead set exceeds --limit, enrich
+    # makes zero progress and the pipeline silently deadlocks.
+    error_exclude = (
+        ""
+        if (force or retry_errors)
+        else """
+           and not exists (
+               select 1 from enrich_errors e
+               where e.candidate_id = c.id and e.stage = 'fetch'
+                 and e.created_at > now() - interval '14 days'
+           )"""
+    )
     rows = await conn.fetch(
         f"""
         select c.id, c.login
         from candidates c
         left join raw_profiles r on r.candidate_id = c.id
-        where r.candidate_id is null
+        where (r.candidate_id is null
            or $1
-           or r.fetched_at < now() - interval '{STALE_AFTER}'
+           or r.fetched_at < now() - interval '{STALE_AFTER}')
+        {error_exclude}
         order by c.id
         {'limit $2' if limit else ''}
         """,
@@ -201,7 +232,9 @@ async def amain(args: argparse.Namespace) -> int:
     missing = 0
     try:
         async with pool.acquire() as conn:
-            todo = await _candidates_to_enrich(conn, args.limit, args.force)
+            todo = await _candidates_to_enrich(
+                conn, args.limit, args.force, args.retry_errors
+            )
             id_by_login = {login: cid for cid, login in todo}
             logins = [login for _cid, login in todo]
 
@@ -246,8 +279,18 @@ async def amain(args: argparse.Namespace) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Fetch GitHub profiles+repos via batched GraphQL.")
     ap.add_argument("--limit", type=int, default=0, help="max candidates to enrich (0 = all due)")
-    ap.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="logins per GraphQL request")
+    ap.add_argument(
+        "--batch-size",
+        type=int,
+        default=settings.enrich_batch_size,
+        help="logins per GraphQL request",
+    )
     ap.add_argument("--force", action="store_true", help="re-fetch even if fetched within 90 days")
+    ap.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="include logins that recently failed to fetch (default excludes them)",
+    )
     return asyncio.run(amain(ap.parse_args()))
 
 

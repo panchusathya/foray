@@ -45,6 +45,17 @@ async def health() -> dict:
     }
 
 
+@app.get("/stats")
+async def stats() -> dict:
+    from ..status import collect, recent_runs
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        counts = await collect(conn)
+        runs = await recent_runs(conn, 8)
+    return {"counts": counts, "runs": [{k: str(v) for k, v in r.items()} for r in runs]}
+
+
 @app.post("/search")
 async def search(body: SearchBody) -> dict:
     pool = await get_pool()

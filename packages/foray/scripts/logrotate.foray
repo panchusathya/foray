@@ -1,0 +1,11 @@
+# Install to /etc/logrotate.d/foray. copytruncate because cron's >> keeps the
+# file descriptor open across rotations.
+/var/log/foray/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

@@ -49,7 +49,25 @@ class Settings(BaseSettings):
     parse_model: str = Field(
         default="openai/gpt-oss-120b", validation_alias="FORAY_PARSE_MODEL"
     )
-    scoring_concurrency: int = Field(default=6, validation_alias="FORAY_SCORING_CONCURRENCY")
+    scoring_concurrency: int = Field(default=10, validation_alias="FORAY_SCORING_CONCURRENCY")
+    scoring_usd_per_call: float = Field(
+        default=0.0003, validation_alias="FORAY_SCORING_USD_PER_CALL"
+    )
+
+    # --- enrich payload (config-driven so it tunes without a rebuild) ---
+    enrich_repos: int = Field(default=18, validation_alias="FORAY_ENRICH_REPOS")
+    enrich_topics: int = Field(default=8, validation_alias="FORAY_ENRICH_TOPICS")
+    enrich_languages: int = Field(default=4, validation_alias="FORAY_ENRICH_LANGUAGES")
+    enrich_batch_size: int = Field(default=16, validation_alias="FORAY_ENRICH_BATCH_SIZE")
+
+    # --- nightly pipeline budgets ---
+    nightly_shards: int = Field(default=350, validation_alias="FORAY_NIGHTLY_SHARDS")
+    nightly_enrich: int = Field(default=12000, validation_alias="FORAY_NIGHTLY_ENRICH")
+    nightly_score_calls: int = Field(default=10000, validation_alias="FORAY_NIGHTLY_SCORE_CALLS")
+    nightly_budget_min: int = Field(default=450, validation_alias="FORAY_NIGHTLY_BUDGET_MIN")
+    monthly_spend_cap_usd: float = Field(
+        default=40.0, validation_alias="FORAY_MONTHLY_SPEND_CAP_USD"
+    )
     embedding_model: str = Field(
         default="BAAI/bge-small-en-v1.5", validation_alias="FORAY_EMBEDDING_MODEL"
     )

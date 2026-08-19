@@ -1,13 +1,16 @@
-# Foray tiered refresh. Each job is flock-wrapped so overlapping runs cannot
-# happen. Tier by field volatility: immutable data is never refreshed, volatile
-# data (employer/title/location) weekly on the active subset only, and the slow
-# tier (embeddings/scores) quarterly over the full pool.
+# Foray on the Docker deployment. The old per-tier wrappers (refresh_*.sh)
+# assumed a host virtualenv and are dead here; the nightly orchestrator runs
+# every tier as a phase inside a one-shot foray-jobs container instead.
 #
-# Install with: crontab packages/foray/scripts/crontab.example
-# Ensure FORAY_DATABASE_URL (and GITHUB_TOKEN/OPENROUTER_API_KEY for the tiers
-# that need them) are present in the cron environment.
+# Install with: crontab -l | cat - packages/foray/scripts/crontab.example | crontab -
+# (or paste these two lines into the host crontab). /var/log/foray must exist.
 
-0  3 * * *    /workspace/packages/foray/scripts/refresh_events.sh        # daily,     watchlist
-0  4 * * 0    /workspace/packages/foray/scripts/refresh_volatile.sh      # weekly,    active subset
-0  5 1 */3 *  /workspace/packages/foray/scripts/refresh_slow.sh          # quarterly, full pool
-30 2 * * *    /workspace/packages/foray/scripts/refresh_active_view.sh   # nightly,   recompute active set
+# Growth pipeline: harvest -> enrich -> derive -> embed -> emails -> score ->
+# active_view, each time-boxed. One lock, one log, one refresh_runs trail.
+0 23 * * *  /opt/juicebox/packages/foray/scripts/nightly.sh >> /var/log/foray/nightly.log 2>&1
+
+# Volatile-field refresh over the active subset, weekly (NOT nightly: at 100k
+# the active set makes one serial GraphQL call each and competes with enrich
+# for the same token/quota).
+0 12 * * 0  cd /opt/juicebox && docker compose -f docker-compose.prod.yml run --rm --no-deps -T \
+            foray-jobs python -m foray.refresh.volatile >> /var/log/foray/volatile.log 2>&1

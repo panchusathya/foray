@@ -13,6 +13,29 @@
 # api. db/api/web publish no host ports; ingest binds to localhost only.
 name: juicebox
 
+# Cap container logs everywhere: the VM has ~13 GB free and json-file defaults
+# to unbounded, which is the most likely way this box fills its disk.
+x-logging: &default_logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-foray-env: &foray_env
+  FORAY_DATABASE_URL: postgresql://foray:${FORAY_DB_PASSWORD:?set FORAY_DB_PASSWORD in .env}@db:5432/foray
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+  FORAY_DISPLAY_FLOOR: ${FORAY_DISPLAY_FLOOR:-20}
+  FORAY_ENRICH_REPOS: ${FORAY_ENRICH_REPOS:-18}
+  FORAY_ENRICH_BATCH_SIZE: ${FORAY_ENRICH_BATCH_SIZE:-16}
+  FORAY_SCORING_CONCURRENCY: ${FORAY_SCORING_CONCURRENCY:-10}
+  FORAY_NIGHTLY_SHARDS: ${FORAY_NIGHTLY_SHARDS:-350}
+  FORAY_NIGHTLY_ENRICH: ${FORAY_NIGHTLY_ENRICH:-12000}
+  FORAY_NIGHTLY_SCORE_CALLS: ${FORAY_NIGHTLY_SCORE_CALLS:-10000}
+  FORAY_NIGHTLY_BUDGET_MIN: ${FORAY_NIGHTLY_BUDGET_MIN:-450}
+  FORAY_MONTHLY_SPEND_CAP_USD: ${FORAY_MONTHLY_SPEND_CAP_USD:-40}
+
 x-app-env: &app_env
   JUICEBOX_ENV: production
   DATABASE_URL: postgresql+psycopg://juicebox:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/juicebox
@@ -42,6 +65,7 @@ services:
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    logging: *default_logging
     environment:
       POSTGRES_USER: juicebox
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -59,6 +83,7 @@ services:
       context: .
       dockerfile: packages/core/Dockerfile
     restart: unless-stopped
+    logging: *default_logging
     environment: *app_env
     depends_on:
       db:
@@ -72,6 +97,7 @@ services:
       context: .
       dockerfile: packages/core/Dockerfile
     restart: unless-stopped
+    logging: *default_logging
     environment: *app_env
     depends_on:
       # service_healthy, not service_started: the api healthcheck only passes
@@ -85,6 +111,7 @@ services:
       context: packages/ingest
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default_logging
     environment:
       JUICEBOX_API_URL: http://api:8000
       JUICEBOX_API_KEY: ${JUICEBOX_API_KEY:-}
@@ -105,11 +132,8 @@ services:
       context: packages/foray
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      FORAY_DATABASE_URL: postgresql://foray:${FORAY_DB_PASSWORD:?set FORAY_DB_PASSWORD in .env}@db:5432/foray
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+    logging: *default_logging
+    environment: *foray_env
     depends_on:
       db:
         condition: service_healthy
@@ -117,11 +141,27 @@ services:
       sh -c "./scripts/migrate.sh &&
              uvicorn foray.api.app:app --host 0.0.0.0 --port 8100"
 
+  # One-shot job runner for the nightly growth pipeline (compose profile "jobs",
+  # so `up` never starts it). Reuses the foray image; its own cgroup with a hard
+  # memory fence means an embed OOM cannot take down the search API.
+  foray-jobs:
+    image: juicebox-foray
+    profiles: ["jobs"]
+    restart: "no"
+    mem_limit: 2500m
+    logging: *default_logging
+    environment: *foray_env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python -m foray.refresh.nightly
+
   web:
     build:
       context: packages/web
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default_logging
     depends_on:
       - api
       - foray
@@ -135,6 +175,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default_logging
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}

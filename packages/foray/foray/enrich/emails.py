@@ -219,20 +219,8 @@ async def mine_commit_emails(
             except Exception as exc:  # noqa: BLE001 - recorded per-row, never fatal
                 return row, {}, exc
 
-    async with httpx.AsyncClient(
-        timeout=30.0,
-        headers={
-            "Authorization": f"Bearer {settings.github_token}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "foray-enricher",
-        },
-    ) as client:
-        with Heartbeat(log, lambda: {"checked": checked, "stored": stored}):
-            # Network fans out; DB writes stay serial on this one connection
-            # (asyncpg connections reject concurrent queries).
-            results = await asyncio.gather(*(fetch_one(client, r) for r in rows))
-
-    for row, found, exc in results:
+    async def _persist(row, found: dict, exc) -> None:
+        nonlocal checked, stored
         checked += 1
         if exc is not None:
             await conn.execute(
@@ -260,6 +248,23 @@ async def mine_commit_emails(
         await conn.execute(
             "update candidates set commit_emails_checked_at = now() where id = $1", row["id"]
         )
+
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        headers={
+            "Authorization": f"Bearer {settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "foray-enricher",
+        },
+    ) as client:
+        with Heartbeat(log, lambda: {"checked": checked, "stored": stored}):
+            # Network fans out (semaphore-bounded); writes happen on this one
+            # connection as each fetch completes, so a deadline kill keeps all
+            # progress up to that point instead of losing the whole batch.
+            tasks = [asyncio.ensure_future(fetch_one(client, r)) for r in rows]
+            for coro in asyncio.as_completed(tasks):
+                row, found, exc = await coro
+                await _persist(row, found, exc)
 
     log.info("commit_mining.done", checked=checked, stored=stored)
     print(f"commit mining: checked {checked} candidates, stored {stored} addresses")

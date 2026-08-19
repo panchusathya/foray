@@ -11,17 +11,12 @@ from typing import Any
 
 from .archetypes import Archetype
 
-# Per-call cost estimate. Ballpark for a cheap open-weight model on OpenRouter
-# (gpt-oss-120b class: ~$0.10/MTok in, ~$0.50/MTok out); a projection shown
-# before spend, not a bill — actual price depends on FORAY_SCORING_MODEL.
-INPUT_TOKENS_EST = 1650
-OUTPUT_TOKENS_EST = 250
-INPUT_USD_PER_MTOK = 0.10
-OUTPUT_USD_PER_MTOK = 0.50
-PER_CALL_USD = (
-    INPUT_TOKENS_EST / 1e6 * INPUT_USD_PER_MTOK
-    + OUTPUT_TOKENS_EST / 1e6 * OUTPUT_USD_PER_MTOK
-)
+# Per-call cost, config-driven so the projection and the spend guard track the
+# actual FORAY_SCORING_MODEL. Default matches gpt-oss-120b measured spend
+# (~$0.0003/call); the old hard-coded value was Haiku-batch pricing, 4.8x high.
+from ..config import settings  # noqa: E402
+
+PER_CALL_USD = settings.scoring_usd_per_call
 
 HEDGE_WORDS = {"strong", "excellent", "impressive", "solid", "passionate", "talented"}
 
@@ -63,7 +58,10 @@ async def candidates_to_score(
         join candidates c on c.id = s.candidate_id
         left join archetype_scores a
                on a.candidate_id = c.id and a.archetype_id = $2
-        where ({arch.gate}) and ({clause})
+        -- build_user_content falls back to bare login when embed_blob is empty,
+        -- producing a garbage score with a MATCHING rubric_hash that is then
+        -- never rescored. Never score a candidate before it is embedded.
+        where ({arch.gate}) and ({clause}) and c.embed_blob is not null
         order by c.id
         {'limit $3' if limit else ''}
         """,

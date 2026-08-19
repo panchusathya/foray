@@ -172,6 +172,28 @@ async def amain(args: argparse.Namespace) -> int:
             rows = await candidates_to_score(conn, arch, stale_only=args.stale_only, limit=limit)
             plan.append((arch, rows))
 
+        # --max-calls is a GLOBAL budget across all archetypes (unlike --limit,
+        # which is per-archetype and so caps at 15x). Allocate it PROPORTIONALLY
+        # so a nightly budget doesn't starve archetypes 4-15 for weeks.
+        if args.max_calls and not args.sample:
+            nonempty = [(a, r) for a, r in plan if r]
+            if nonempty:
+                per_arch = max(1, args.max_calls // len(nonempty))
+                budget_left = args.max_calls
+                trimmed = []
+                for a, r in plan:
+                    take = min(len(r), per_arch, budget_left)
+                    trimmed.append((a, r[:take]))
+                    budget_left -= take
+                # Hand any leftover budget to archetypes that still have rows.
+                if budget_left > 0:
+                    for idx, (a, r) in enumerate(plan):
+                        extra = min(len(r) - len(trimmed[idx][1]), budget_left)
+                        if extra > 0:
+                            trimmed[idx] = (a, r[: len(trimmed[idx][1]) + extra])
+                            budget_left -= extra
+                plan = trimmed
+
         total_calls = sum(len(rows) for _a, rows in plan)
         projected = total_calls * PER_CALL_USD
         print(
@@ -218,6 +240,12 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=0, help="score N synchronously and print (no DB write)")
     ap.add_argument("--offline", action="store_true", help="spend-free heuristic scorer (explicit)")
     ap.add_argument("--stale-only", action="store_true", help="only rescore rubric_hash mismatches")
+    ap.add_argument(
+        "--max-calls",
+        type=int,
+        default=0,
+        help="global cap on candidate-archetype calls this run (0 = no cap), split across archetypes",
+    )
     ap.add_argument(
         "--concurrency",
         type=int,

@@ -161,7 +161,10 @@ test.describe('enrolment send mode', () => {
     const project = await createProject(request, org, 'SendMode Role');
     await addToProject(request, org, project.id, ids);
     // First step pinned to a time that has certainly passed today or is far
-    // out — either way, default enrolment would NOT send immediately.
+    // out — either way, default enrolment would NOT send immediately. The
+    // follow-up step reproduces the reported bug: after a send-now, the row
+    // used to show only the follow-up's schedule ("tomorrow 9:00"), reading
+    // as if the first email never went.
     const sequence = await createSequence(request, org, project.id, {
       steps: [
         {
@@ -170,6 +173,13 @@ test.describe('enrolment send mode', () => {
           send_timezone: 'America/Los_Angeles',
           subject_template: 'Hi {{first_name}}',
           body_template: 'Hello {{first_name}}',
+        },
+        {
+          delay_days: 1,
+          send_at_time: '09:00',
+          send_timezone: 'America/Los_Angeles',
+          subject_template: 'Re: Hi {{first_name}}',
+          body_template: 'Following up.',
         },
       ],
     });
@@ -186,11 +196,18 @@ test.describe('enrolment send mode', () => {
     await picker.getByTestId('send-mode').getByText('right away').click();
     await picker.getByRole('button', { name: /^Enrol/ }).click();
 
-    // "Right away" bypasses the 09:00 slot: the run happens on the spot and
-    // the notice reports a real send (memory sender on test stacks).
-    await expect(page.getByText(/1 email sent|sending within a minute/)).toBeVisible();
-    const rows = page.getByTestId('enrollment-row');
-    await expect(rows.first()).toContainText('Ada sendmode');
+    // "Right away" bypasses the 09:00 slot: the send happens inside the
+    // enroll request itself, so the notice reports a definite count — never
+    // the worker-fallback wording, and never a stuck "Enrolling…" button.
+    await expect(page.getByText('1 email sent')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Enrolling/ })).toHaveCount(0);
+
+    // The row must say the first email WENT and that the pending schedule
+    // belongs to step 2 — the exact ambiguity that read as a lost send.
+    const row = page.getByTestId('enrollment-row').first();
+    await expect(row).toContainText('Ada sendmode');
+    await expect(row).toContainText('✓1 sent');
+    await expect(row).toContainText('next: step 2');
   });
 
   test('the default keeps the scheduled slot', async ({ page, request }) => {

@@ -358,23 +358,18 @@ export function SequenceEditorPage() {
     setEnrollError(null);
     setNotice('');
     try {
-      await api.enroll(sequenceId, {
+      // One request: with send_now the backend sends to exactly the people
+      // being enrolled before responding, so the returned rows already show
+      // the post-send state (current_step advanced, next = the follow-up).
+      // The old flow fired a second unbounded /run over the whole sequence,
+      // which could outlive the proxy timeout and leave this button stuck on
+      // "Enrolling…" while mail actually went out.
+      const rows = await api.enroll(sequenceId, {
         candidate_ids: candidateIds,
         project_id: sequence.data.project_id ?? null,
         send_now: sendNow,
       });
-      let sentNow = 0;
-      if (sendNow && status === 'active') {
-        // Don't wait for the worker tick — the recruiter chose "right away".
-        // Failure is non-fatal: the enrolment is due, the worker sends it
-        // within a minute regardless.
-        try {
-          const run = await api.runSequence(sequenceId);
-          sentNow = run?.sent ?? 0;
-        } catch {
-          /* worker fallback */
-        }
-      }
+      const sentNow = (rows ?? []).filter((row) => row.current_step > 0).length;
       await enrollments.reload();
       setPicking(false);
       if (status !== 'active') {
@@ -756,11 +751,16 @@ export function SequenceEditorPage() {
                       ) : null}
                     </span>
                     <span className="row muted" style={{ gap: 6 }}>
-                      <span className="mono">step {enrollment.current_step + 1}</span>
+                      {/* "✓2 sent · next: step 3 …" — without the sent count,
+                          a follow-up's schedule reads like the FIRST email is
+                          still waiting (a real support incident). */}
+                      {enrollment.current_step > 0 ? (
+                        <span className="mono">✓{enrollment.current_step} sent</span>
+                      ) : null}
                       <span>
                         {enrollment.next_send_at
-                          ? `next: ${new Date(enrollment.next_send_at).toLocaleString()}`
-                          : enrollment.stopped_reason || ''}
+                          ? `next: step ${enrollment.current_step + 1} · ${new Date(enrollment.next_send_at).toLocaleString()}`
+                          : enrollment.stopped_reason || (enrollment.status === 'completed' ? 'all steps sent' : '')}
                       </span>
                     </span>
                   </div>

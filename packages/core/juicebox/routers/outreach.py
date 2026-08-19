@@ -17,6 +17,7 @@ from ..models import (
     ReplyDraft,
     Sequence,
     SequenceStep,
+    utcnow,
 )
 from ..outreach import templates
 from ..outreach.drafts import draft_sequence
@@ -25,6 +26,7 @@ from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
     preview_step,
+    process_enrollment,
     record_reply,
     run_due,
 )
@@ -46,6 +48,11 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/v1/sequences", tags=["outreach"])
+
+# Upper bound on synchronous sends inside one enroll request. Anything past
+# this is due-now anyway, and the worker tick delivers it within a minute —
+# the cap keeps the request comfortably inside the proxy timeout.
+MAX_SEND_NOW = 25
 
 
 def _load_sequence(db: Session, sequence_id: str, org_id: str) -> Sequence:
@@ -378,6 +385,18 @@ def enroll(
         start_immediately=payload.start_immediately,
         send_now=payload.send_now,
     )
+    if payload.send_now and sequence.status == "active":
+        # Send here, in this request, to exactly the people just enrolled —
+        # bounded work, one round trip, and the response rows reflect the
+        # post-send state (current_step advanced, next_send_at = the follow-up).
+        # The UI used to fire a second unbounded /run covering the WHOLE
+        # sequence, which could outlive the proxy timeout and leave the button
+        # stuck on "Enrolling…" while mail actually went out.
+        now = utcnow()
+        for enrollment in enrollments[:MAX_SEND_NOW]:
+            if enrollment.status == "active" and enrollment.current_step == 0:
+                process_enrollment(db, enrollment, now=now)
+        db.flush()
     return [EnrollmentOut.model_validate(e) for e in enrollments]
 
 

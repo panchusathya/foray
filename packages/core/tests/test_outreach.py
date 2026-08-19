@@ -189,6 +189,97 @@ class TestSendNowOverride:
         assert again.next_send_at == scheduled
 
 
+class TestSendNowEndpoint:
+    """The enroll endpoint itself delivers when send_now is set — one bounded
+    request, and the response rows reflect the post-send state. The old flow
+    (a second unbounded /run over the whole sequence) could outlive the proxy
+    timeout while the UI showed Enrolling… forever."""
+
+    def _make_sequence(self, client, headers, steps):
+        return client.post(
+            "/v1/sequences",
+            json={"name": "SendNow", "personalize": False, "steps": steps},
+            headers=headers,
+        ).json()
+
+    def test_send_now_sends_inside_the_enroll_request(self, client, loaded_org, mailbox):
+        headers = loaded_org["headers"]
+        sequence = self._make_sequence(
+            client,
+            headers,
+            [
+                {
+                    "delay_days": 0,
+                    "send_at_time": "09:00",
+                    "send_timezone": "America/Los_Angeles",
+                    "subject_template": "Hi {{first_name}}",
+                    "body_template": "Hello {{first_name}}",
+                },
+                {"delay_days": 2, "subject_template": "Re", "body_template": "Bump"},
+            ],
+        )
+        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
+
+        rows = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate_id], "send_now": True},
+            headers=headers,
+        ).json()
+
+        # The email went out during THIS request, and the returned row shows
+        # it: step advanced, next_send_at now belongs to the follow-up.
+        assert len(mailbox.outbox) == 1
+        assert rows[0]["current_step"] == 1
+        assert rows[0]["next_send_at"] is not None
+
+    def test_without_send_now_the_enroll_request_sends_nothing(
+        self, client, loaded_org, mailbox
+    ):
+        headers = loaded_org["headers"]
+        sequence = self._make_sequence(
+            client,
+            headers,
+            [
+                {
+                    "delay_days": 0,
+                    "send_at_time": "09:00",
+                    "send_timezone": "America/Los_Angeles",
+                    "subject_template": "Hi {{first_name}}",
+                    "body_template": "Hello {{first_name}}",
+                }
+            ],
+        )
+        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
+        rows = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        ).json()
+        assert mailbox.outbox == []
+        assert rows[0]["current_step"] == 0
+
+    def test_send_now_on_a_paused_sequence_enrolls_but_does_not_send(
+        self, client, loaded_org, mailbox
+    ):
+        headers = loaded_org["headers"]
+        sequence = self._make_sequence(
+            client,
+            headers,
+            [{"delay_days": 0, "subject_template": "Hi", "body_template": "Hello"}],
+        )
+        client.patch(
+            f"/v1/sequences/{sequence['id']}/status?value=paused", headers=headers
+        )
+        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
+        rows = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate_id], "send_now": True},
+            headers=headers,
+        ).json()
+        assert mailbox.outbox == []
+        assert rows[0]["current_step"] == 0
+
+
 class TestStepScheduling:
     """schedule_step_at is pure — no DB, just a step's scheduling fields."""
 

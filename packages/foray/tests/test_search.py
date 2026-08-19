@@ -1,36 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import asyncpg
-import pytest
 
 from foray.api.parse import ParsedFilter, heuristic_parse
 from foray.api.search import _build_filters, run_search
 from foray.config import settings
 from foray.db import _asyncpg_dsn
-
-
-def _db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-            has_scores = await conn.fetchval("select count(*) from archetype_scores")
-            await conn.close()
-            return has_scores > 0
-        except Exception:
-            return False
-
-    try:
-        return asyncio.run(_check())
-    except Exception:
-        return False
-
-
-requires_scored_db = pytest.mark.skipif(
-    not _db_reachable(), reason="Postgres not reachable or no archetype_scores"
-)
+from tests.dbutil import requires_scored_db
 
 
 # ------------------------------------------------------------------- offline --

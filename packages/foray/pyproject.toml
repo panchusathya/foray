@@ -34,3 +34,6 @@ packages = ["foray"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "model: loads the local sentence-transformers embedding model",
+]

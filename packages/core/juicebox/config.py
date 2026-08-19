@@ -185,15 +185,22 @@ class Settings:
     def is_production(self) -> bool:
         return self.env.strip().lower() in {"production", "prod"}
 
+    @property
+    def requires_secure_secret(self) -> bool:
+        # Staging hosts a restored prod dump on the VM, so a known SECRET_KEY
+        # is as bad as it is in production. Local `development` still boots
+        # with the shipped default so `make api` needs no .env.
+        return self.env.strip().lower() in {"production", "prod", "staging"}
+
     def validate(self) -> None:
         """Fail fast on settings that are only safe in development.
 
         SECRET_KEY signs auth tokens and the outreach tracking HMACs, so a known
         value means anyone can mint a token for any workspace. That is worth
-        refusing to boot over, but only in production — every other environment
-        keeps working with no .env at all.
+        refusing to boot over in production and staging — every other
+        environment keeps working with no .env at all.
         """
-        if not self.is_production:
+        if not self.requires_secure_secret:
             return
 
         problems: list[str] = []
@@ -209,7 +216,7 @@ class Settings:
 
         if problems:
             raise ConfigError(
-                "refusing to start with JUICEBOX_ENV=production:\n  - "
+                f"refusing to start with JUICEBOX_ENV={self.env}:\n  - "
                 + "\n  - ".join(problems)
             )
 

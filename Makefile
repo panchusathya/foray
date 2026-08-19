@@ -65,6 +65,10 @@ test: test-core test-ingest ## Run every test suite
 test-core: ## Python tests
 	cd packages/core && ../../$(BIN)/python -m pytest -q
 
+.PHONY: test-foray
+test-foray: ## Foray tests (DB-backed tests skip if Postgres is down)
+	cd packages/foray && uv run pytest -q
+
 .PHONY: test-ingest
 test-ingest: ## Node tests
 	cd packages/ingest && npm test

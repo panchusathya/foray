@@ -57,3 +57,14 @@ See `migrations/001_init.sql`. The one decision that is expensive to reverse:
 archetype scores live in the normalized `archetype_scores` child table, not wide
 columns on `candidates` (adding an archetype is an INSERT; `rubric_hash` enables
 partial rescoring of stale rows).
+
+## Tests
+
+```bash
+uv run pytest -q                  # unit tests always; DB tests skip without Postgres
+uv run pytest -q -m "not model"   # CI shape: no Hugging Face download
+```
+
+CI starts `pgvector/pgvector:pg16`, applies `scripts/migrate.sh` to both `foray`
+and `foray_staging`, and runs the DB-backed tests. Rehearsing a migration
+against a restored production dump is a VM step — see `deploy/STAGING.md`.

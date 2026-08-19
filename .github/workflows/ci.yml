@@ -88,6 +88,121 @@ jobs:
         run: python ../../eval/run_eval.py --corpus-size 400 --min-ndcg 0.8 --database-url "$DATABASE_URL"
         working-directory: packages/core
 
+  foray:
+    # Foray is asyncpg + pgvector; SQLite cannot exercise it. Until this job
+    # existed, DB-backed tests skipped on CI and every Foray SQL change was
+    # first proven on the prod VM.
+    name: foray (postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: juicebox
+          POSTGRES_PASSWORD: juicebox
+          POSTGRES_DB: juicebox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U juicebox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FORAY_DATABASE_URL: postgresql://foray:foray@localhost:5432/foray
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/foray/pyproject.toml
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Create foray and foray_staging databases
+        env:
+          PGPASSWORD: juicebox
+        run: |
+          psql -h localhost -U juicebox -d juicebox -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE foray WITH LOGIN PASSWORD 'foray';
+          CREATE DATABASE foray OWNER foray;
+          CREATE DATABASE foray_staging OWNER foray;
+          SQL
+          psql -h localhost -U juicebox -d foray -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; GRANT ALL ON SCHEMA public TO foray;"
+          psql -h localhost -U juicebox -d foray_staging -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; GRANT ALL ON SCHEMA public TO foray;"
+
+      - name: Install foray (no torch — tests marked `model` are skipped)
+        run: |
+          pip install "asyncpg>=0.29" "pydantic>=2.7" "pydantic-settings>=2.3" \
+            "fastapi>=0.115" "httpx>=0.27" "pyyaml>=6.0" "tenacity>=8.5" \
+            "structlog>=24.1" "uvicorn>=0.30" "pytest>=8.0" "pytest-asyncio>=0.23"
+          pip install --no-deps -e packages/foray
+
+      - name: Migrate foray (twice — second run must be a no-op)
+        run: |
+          ./scripts/migrate.sh
+          ./scripts/migrate.sh
+        working-directory: packages/foray
+
+      - name: Migrate the staging database name
+        env:
+          FORAY_DATABASE_URL: postgresql://foray:foray@localhost:5432/foray_staging
+        run: |
+          ./scripts/migrate.sh
+          ./scripts/migrate.sh
+        working-directory: packages/foray
+
+      - name: Test
+        run: pytest -q -m "not model"
+        working-directory: packages/foray
+
+      - name: Synthetic seed, derive, profile-email dry-run
+        run: |
+          python scripts/seed_synthetic.py --count 25 --reset
+          python -m foray.enrich.derive --limit 25
+          python -m foray.enrich.emails --source profile --dry-run
+        working-directory: packages/foray
+
+  compose:
+    name: compose files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Isolation guards
+        run: python deploy/tests/check_compose.py
+
+      - name: Render prod compose
+        run: docker compose -f docker-compose.prod.yml --env-file deploy/ci.env config >/dev/null
+
+      - name: Render staging compose
+        run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env config >/dev/null
+
+  staging-smoke:
+    # Boots the staging stack (db + api + web, not Foray — that image is 3 GB
+    # with CPU torch and is already built by the docker job). Proves migrations
+    # run on juicebox_staging and /health is reachable on the localhost port.
+    name: staging smoke (db + api + web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Boot staging stack
+        run: >
+          docker compose -f docker-compose.staging.yml --env-file deploy/ci.env
+          up -d --build --wait --wait-timeout 300
+
+      - name: Health
+        run: curl -sf http://127.0.0.1:18080/health
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env down -v
+
   eval:
     name: search quality
     runs-on: ubuntu-latest

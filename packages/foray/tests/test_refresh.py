@@ -1,32 +1,11 @@
 from __future__ import annotations
 
-import asyncio
-
 import asyncpg
-import pytest
 
 from foray.config import settings
 from foray.db import _asyncpg_dsn
 from foray.refresh.common import RefreshRun
-
-
-def _db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-            await conn.fetchval("select 1 from active_candidates limit 1")
-            await conn.close()
-            return True
-        except Exception:
-            return False
-
-    try:
-        return asyncio.run(_check())
-    except Exception:
-        return False
-
-
-requires_db = pytest.mark.skipif(not _db_reachable(), reason="Postgres/MV not available")
+from tests.dbutil import requires_db
 
 
 @requires_db

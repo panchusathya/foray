@@ -110,10 +110,17 @@ gunzip -c /var/backups/juicebox/<date>.sql.gz | docker compose -f docker-compose
 cd /opt/juicebox
 git pull
 docker compose -f docker-compose.prod.yml up -d --build
+docker image prune -f
 ```
 
 Migrations run inside the api container before uvicorn starts; the worker
 waits for the api healthcheck. Expect a few seconds of downtime.
+
+Rehearse a migration or Foray pipeline change against a restored dump
+**before** merging to `main` — see [STAGING.md](STAGING.md). Staging is a
+second checkout (`/opt/juicebox-staging`) and a second compose project; it
+does not replace this prod deploy. Never `git checkout` a feature branch in
+`/opt/juicebox`.
 
 ## Foray sourcing engine
 

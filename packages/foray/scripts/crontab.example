@@ -4,6 +4,10 @@
 #
 # Install with: crontab -l | cat - packages/foray/scripts/crontab.example | crontab -
 # (or paste these two lines into the host crontab). /var/log/foray must exist.
+#
+# Never point FORAY_COMPOSE_FILE at docker-compose.staging.yml from this crontab.
+# Staging has its own one-shot `foray-jobs` profile for rehearsals; unattended
+# nightly must keep targeting prod.
 
 # Growth pipeline: harvest -> enrich -> derive -> embed -> emails -> score ->
 # active_view, each time-boxed. One lock, one log, one refresh_runs trail.

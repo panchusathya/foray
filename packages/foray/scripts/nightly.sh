@@ -7,6 +7,11 @@
 set -euo pipefail
 COMPOSE_FILE="${FORAY_COMPOSE_FILE:-/opt/juicebox/docker-compose.prod.yml}"
 
+if [[ "$COMPOSE_FILE" == *staging* && "${FORAY_ALLOW_STAGING_NIGHTLY:-}" != 1 ]]; then
+    echo '{"event":"nightly.refused","reason":"staging compose file; set FORAY_ALLOW_STAGING_NIGHTLY=1 to override"}' >&2
+    exit 2
+fi
+
 exec 9>"/var/lock/foray-nightly.lock"   # NOT /tmp: /tmp is per-container under Docker
 flock -n 9 || { echo '{"event":"nightly.skipped","reason":"already running"}'; exit 0; }
 

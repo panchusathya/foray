@@ -1,30 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-
-import asyncpg
-import pytest
-
-from foray.config import settings
-from foray.db import _asyncpg_dsn, close_pool, fetchval, get_pool
-
-
-def _db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-            await conn.close()
-            return True
-        except Exception:
-            return False
-
-    try:
-        return asyncio.run(_check())
-    except Exception:
-        return False
-
-
-requires_db = pytest.mark.skipif(not _db_reachable(), reason="Postgres not reachable")
+from tests.dbutil import requires_db
+from foray.db import close_pool, fetchval, get_pool
 
 
 @requires_db
@@ -48,6 +25,9 @@ async def test_core_tables_exist():
         "enrich_errors",
         "scoring_errors",
         "refresh_runs",
+        "candidate_emails",
+        "shortlist_events",
+        "query_parse_cache",
     }
     count = await fetchval(
         "select count(*) from information_schema.tables "

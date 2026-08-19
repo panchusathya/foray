@@ -307,7 +307,8 @@ most:
 ## Testing
 
 ```bash
-make test        # 174 Python tests + 9 Node tests
+make test        # Python (core) + Node tests
+make test-foray  # Foray; DB tests skip if Postgres is down
 make eval        # search quality metrics
 make lint
 make test-live   # contract tests against the real APIs; needs keys
@@ -331,8 +332,16 @@ contract — that the `output_config` request shape is accepted and decodes. Eac
 test skips itself unless its key is present, so it is never part of `make test`.
 
 CI runs lint, the suite on both SQLite and Postgres (including `alembic check`
-for schema drift), the eval gate, the Node tests, the web build, and a lockfile
-freshness check.
+for schema drift), Foray's suite against pgvector (SQL, migrations, derive),
+the eval gate, the Node tests, the web build, a lockfile freshness check,
+compose-file isolation guards, and a smoke boot of the staging stack.
+
+There is no automatic promotion onto the VM. After CI is green, an operator
+rehearses risky changes against a restored dump via
+[`deploy/STAGING.md`](deploy/STAGING.md) (`docker-compose.staging.yml`,
+separate Postgres, `juicebox_staging` / `foray_staging`), then merges to
+`main` and `git pull && compose up` on prod. Local Docker is optional; most
+day-to-day work is still the host venv + SQLite.
 
 ## Migrations
 

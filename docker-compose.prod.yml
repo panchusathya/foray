@@ -2,6 +2,11 @@
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
+# Staging (rehearse migrations against a restored dump before merging to main)
+# is a separate compose project — see docker-compose.staging.yml and
+# deploy/STAGING.md. Do not override this file with the staging file; overrides
+# merge ports additively.
+#
 # Reads secrets from a `.env` file next to this file (see
 # .env.production.example). This is deliberately a standalone file, not an
 # override of docker-compose.yml: overrides merge `ports` additively, so a

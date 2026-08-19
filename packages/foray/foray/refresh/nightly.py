@@ -43,7 +43,10 @@ def _phases() -> list[Phase]:
         Phase("derive", ["foray.enrich.derive", "--stale-only"], 20, "derived"),
         Phase("embed", ["foray.embed.run"], 40, "embedded"),
         Phase("emails", ["foray.enrich.emails", "--source", "commit", "--limit", str(settings.nightly_enrich)], 45, "with_email"),
-        Phase("score", ["foray.score.run", "--yes", "--stale-only",
+        # NOT --stale-only: that clause requires an existing score row, so new
+        # candidates would never be scored. The default rubric_hash-mismatch
+        # predicate covers both new (null hash) and stale rows.
+        Phase("score", ["foray.score.run", "--yes",
                         "--max-calls", str(settings.nightly_score_calls),
                         "--concurrency", str(settings.scoring_concurrency)], 90, "scored_pairs"),
         Phase("active_view", ["foray.refresh.active_view"], 10, "candidates"),

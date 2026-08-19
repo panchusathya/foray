@@ -107,12 +107,19 @@ def enroll_candidates(
     candidate_ids: list[str],
     project_id: str | None = None,
     start_immediately: bool = True,
+    send_now: bool = False,
     now: datetime | None = None,
 ) -> list[Enrollment]:
-    """Idempotent: re-enrolling an existing candidate returns the existing row."""
+    """Idempotent: re-enrolling an existing candidate returns the existing row.
+
+    ``send_now`` overrides the first step's schedule for THIS enrolment only:
+    a step pinned to 09:00 normally rolls a late-morning enrolment to tomorrow,
+    which is correct for a batch but surprising when a recruiter adds one
+    person and expects mail. Later steps keep their configured timing.
+    """
     now = now or utcnow()
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
-    first_due = schedule_step_at(steps[0], base=now) if steps else now
+    first_due = now if (send_now or not steps) else schedule_step_at(steps[0], base=now)
 
     existing = {
         row.candidate_id: row

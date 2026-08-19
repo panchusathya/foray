@@ -376,6 +376,7 @@ def enroll(
         candidate_ids=payload.candidate_ids,
         project_id=payload.project_id,
         start_immediately=payload.start_immediately,
+        send_now=payload.send_now,
     )
     return [EnrollmentOut.model_validate(e) for e in enrollments]
 

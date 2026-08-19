@@ -151,6 +151,80 @@ test.describe('enrolment lives in the sequence editor', () => {
   });
 });
 
+test.describe('enrolment send mode', () => {
+  test('a scheduled first step shows the choice, and right away really sends', async ({
+    page,
+    request,
+  }) => {
+    const org = await createOrg(request, 'sendmode');
+    const ids = await seedCandidates(request, org, 'sendmode');
+    const project = await createProject(request, org, 'SendMode Role');
+    await addToProject(request, org, project.id, ids);
+    // First step pinned to a time that has certainly passed today or is far
+    // out — either way, default enrolment would NOT send immediately.
+    const sequence = await createSequence(request, org, project.id, {
+      steps: [
+        {
+          delay_days: 0,
+          send_at_time: '09:00',
+          send_timezone: 'America/Los_Angeles',
+          subject_template: 'Hi {{first_name}}',
+          body_template: 'Hello {{first_name}}',
+        },
+      ],
+    });
+
+    await login(page, org.email);
+    await page.goto(`/sequences/${sequence.id}`);
+    await page.getByRole('button', { name: '+ Add people' }).click();
+
+    const picker = page.getByTestId('candidate-picker');
+    await expect(picker.getByTestId('send-mode')).toContainText('at the scheduled time');
+    await expect(picker.getByTestId('send-mode')).toContainText('right away');
+
+    await picker.getByTestId('picker-row').filter({ hasText: 'Ada sendmode' }).locator('input').check();
+    await picker.getByTestId('send-mode').getByText('right away').click();
+    await picker.getByRole('button', { name: /^Enrol/ }).click();
+
+    // "Right away" bypasses the 09:00 slot: the run happens on the spot and
+    // the notice reports a real send (memory sender on test stacks).
+    await expect(page.getByText(/1 email sent|sending within a minute/)).toBeVisible();
+    const rows = page.getByTestId('enrollment-row');
+    await expect(rows.first()).toContainText('Ada sendmode');
+  });
+
+  test('the default keeps the scheduled slot', async ({ page, request }) => {
+    const org = await createOrg(request, 'sendmode-def');
+    const ids = await seedCandidates(request, org, 'sendmode-def');
+    const project = await createProject(request, org, 'SendModeDef Role');
+    await addToProject(request, org, project.id, ids);
+    const sequence = await createSequence(request, org, project.id, {
+      steps: [
+        {
+          delay_days: 0,
+          send_at_time: '09:00',
+          send_timezone: 'America/New_York',
+          subject_template: 'Hi {{first_name}}',
+          body_template: 'Hello {{first_name}}',
+        },
+      ],
+    });
+
+    await login(page, org.email);
+    await page.goto(`/sequences/${sequence.id}`);
+    await page.getByRole('button', { name: '+ Add people' }).click();
+
+    const picker = page.getByTestId('candidate-picker');
+    await picker.getByTestId('picker-row').filter({ hasText: 'Grace sendmode-def' }).locator('input').check();
+    await picker.getByRole('button', { name: /^Enrol/ }).click();
+
+    await expect(page.getByText(/scheduled time/)).toBeVisible();
+    // The enrolment row shows a real future timestamp, not an immediate send.
+    await expect(page.getByTestId('enrollment-row').first()).toContainText('next:');
+  });
+});
+
+
 test.describe('step scheduling', () => {
   // A step with a send time does NOT send on enrolment, so the preview must
   // not claim it does — this caught the editor contradicting the sequencer.

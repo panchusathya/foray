@@ -505,6 +505,10 @@ class EnrollRequest(BaseModel):
     candidate_ids: list[str] = Field(min_length=1)
     project_id: str | None = None
     start_immediately: bool = True
+    # True = ignore the first step's send_at_time for this enrolment and make
+    # it due immediately. Distinct from start_immediately, which controls
+    # whether a next_send_at is set at all.
+    send_now: bool = False
 
 
 class EnrollmentOut(BaseModel):

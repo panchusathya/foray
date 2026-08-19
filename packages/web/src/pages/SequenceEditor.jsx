@@ -118,10 +118,15 @@ function normalizeSteps(steps) {
  * already shortlisted for this role — and falls back to a search over every
  * candidate for anyone outside it.
  */
-function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
+function CandidatePicker({ projectId, enrolledIds, busy, firstSendLabel, onCancel, onEnroll }) {
   const [source, setSource] = useState(projectId ? 'project' : 'all');
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState(() => new Set());
+  // 'scheduled' honours the first step's send time (an afternoon enrolment
+  // against a 9:00 step waits until tomorrow morning); 'now' sends on enrol.
+  // The label shows WHEN "scheduled" actually is, so the wait is never a
+  // surprise.
+  const [sendMode, setSendMode] = useState('scheduled');
 
   const pipeline = useAsync(
     () => (projectId ? api.getPipeline(projectId) : Promise.resolve([])),
@@ -205,6 +210,28 @@ function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
         </Empty>
       )}
 
+      <div className="row wrap small" data-testid="send-mode">
+        <span className="muted">First email:</span>
+        <label className="row" style={{ gap: 4 }}>
+          <input
+            type="radio"
+            name="send-mode"
+            checked={sendMode === 'scheduled'}
+            onChange={() => setSendMode('scheduled')}
+          />
+          at the scheduled time{firstSendLabel ? ` (${firstSendLabel})` : ''}
+        </label>
+        <label className="row" style={{ gap: 4 }}>
+          <input
+            type="radio"
+            name="send-mode"
+            checked={sendMode === 'now'}
+            onChange={() => setSendMode('now')}
+          />
+          right away
+        </label>
+      </div>
+
       <div className="row spread">
         <span className="small muted">
           {withoutEmail.length
@@ -219,7 +246,7 @@ function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
             type="button"
             className="tiny primary"
             disabled={!chosen.length || busy}
-            onClick={() => onEnroll(chosen.map((candidate) => candidate.id))}
+            onClick={() => onEnroll(chosen.map((candidate) => candidate.id), sendMode === 'now')}
           >
             {busy ? 'Enrolling…' : `Enrol ${chosen.length || ''}`.trim()}
           </button>
@@ -326,7 +353,7 @@ export function SequenceEditorPage() {
     }
   }
 
-  async function enrollCandidates(candidateIds) {
+  async function enrollCandidates(candidateIds, sendNow = false) {
     setEnrolling(true);
     setEnrollError(null);
     setNotice('');
@@ -334,14 +361,35 @@ export function SequenceEditorPage() {
       await api.enroll(sequenceId, {
         candidate_ids: candidateIds,
         project_id: sequence.data.project_id ?? null,
+        send_now: sendNow,
       });
+      let sentNow = 0;
+      if (sendNow && status === 'active') {
+        // Don't wait for the worker tick — the recruiter chose "right away".
+        // Failure is non-fatal: the enrolment is due, the worker sends it
+        // within a minute regardless.
+        try {
+          const run = await api.runSequence(sequenceId);
+          sentNow = run?.sent ?? 0;
+        } catch {
+          /* worker fallback */
+        }
+      }
       await enrollments.reload();
       setPicking(false);
-      setNotice(
-        status === 'active'
-          ? `Enrolled ${candidateIds.length} — each sends at the time its first step schedules.`
-          : `Enrolled ${candidateIds.length}. Activate the sequence to start sending.`,
-      );
+      if (status !== 'active') {
+        setNotice(`Enrolled ${candidateIds.length}. Activate the sequence to start sending.`);
+      } else if (sendNow) {
+        setNotice(
+          sentNow
+            ? `Enrolled ${candidateIds.length} — ${sentNow} email${sentNow === 1 ? '' : 's'} sent.`
+            : `Enrolled ${candidateIds.length} — sending within a minute.`,
+        );
+      } else {
+        setNotice(
+          `Enrolled ${candidateIds.length} — first email goes out at the step's scheduled time.`,
+        );
+      }
     } catch (caught) {
       setEnrollError(caught);
     } finally {
@@ -684,6 +732,7 @@ export function SequenceEditorPage() {
                 projectId={sequence.data.project_id}
                 enrolledIds={new Set((enrollments.data ?? []).map((e) => e.candidate_id))}
                 busy={enrolling}
+                firstSendLabel={schedule[0] === 'on enrollment' ? '' : schedule[0]}
                 onCancel={() => setPicking(false)}
                 onEnroll={enrollCandidates}
               />

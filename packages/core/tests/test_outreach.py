@@ -131,6 +131,64 @@ class TestPersonalization:
         assert session.query(Message).count() == 0
 
 
+class TestSendNowOverride:
+    """A recruiter adding one person late in the day expects mail now, not a
+    silent roll to tomorrow's send_at_time — send_now makes that explicit."""
+
+    def _sequence_with_morning_slot(self, session, fixture):
+        sequence = fixture["sequence"]
+        steps = sorted(sequence.steps, key=lambda s: s.step_order)
+        steps[0].send_at_time = "09:00"
+        steps[0].send_timezone = "America/Los_Angeles"
+        session.commit()
+        return sequence
+
+    def test_default_enrolment_waits_for_the_scheduled_slot(self, session, outreach_fixture):
+        sequence = self._sequence_with_morning_slot(session, outreach_fixture)
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enrollment = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[ada.id]
+        )[0]
+        # Snapped to a 09:00 Pacific slot, not "now".
+        assert enrollment.next_send_at.minute == 0
+
+    def test_send_now_makes_the_first_step_due_immediately(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = self._sequence_with_morning_slot(session, outreach_fixture)
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        now = utcnow()
+        enrollment = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[ada.id], send_now=True, now=now
+        )[0]
+        assert enrollment.next_send_at == now
+
+        summary = run_due(session, org_id=sequence.org_id, now=now)
+        assert summary.sent == 1
+        # Later steps keep their configured timing: the override was only for
+        # getting the first email out. (SQLite hands back naive datetimes.)
+        session.refresh(enrollment)
+        next_at = enrollment.next_send_at
+        if next_at.tzinfo is None:
+            next_at = next_at.replace(tzinfo=UTC)
+        assert next_at > now
+
+    def test_send_now_does_not_resend_to_existing_enrollments(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = self._sequence_with_morning_slot(session, outreach_fixture)
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        first = enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])[0]
+        scheduled = first.next_send_at
+        again = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[ada.id], send_now=True
+        )[0]
+        # Idempotent enrolment returns the existing row untouched — send_now on
+        # a re-enrol must not yank an already-scheduled send earlier.
+        assert again.id == first.id
+        assert again.next_send_at == scheduled
+
+
 class TestStepScheduling:
     """schedule_step_at is pure — no DB, just a step's scheduling fields."""
 

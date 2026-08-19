@@ -251,6 +251,10 @@ def clone_sequence(
         stop_on_reply=source.stop_on_reply,
         from_email=source.from_email,
         from_name=source.from_name,
+        # Without this the copy falls back to the server default sender, so a
+        # cloned sequence would quietly send from a different address than the
+        # one it was cloned from.
+        mailbox_id=source.mailbox_id,
     )
     db.add(copy)
     db.flush()
@@ -317,6 +321,16 @@ def enroll(
     db: Session = Depends(get_db),
 ) -> list[EnrollmentOut]:
     sequence = _load_sequence(db, sequence_id, principal.org_id)
+    # A project id from another org would otherwise reach the FK unchecked:
+    # a bogus one 500s, and a real one pins the enrolment cross-tenant.
+    if payload.project_id is not None:
+        project = db.scalar(
+            select(Project).where(
+                Project.id == payload.project_id, Project.org_id == principal.org_id
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     enrollments = enroll_candidates(
         db,
         sequence=sequence,

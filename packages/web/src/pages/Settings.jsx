@@ -8,6 +8,7 @@ export function SettingsPage() {
   const status = useAsync(() => api.microsoftStatus(), []);
   const [error, setError] = useState(null);
   const [syncNote, setSyncNote] = useState('');
+  const [syncing, setSyncing] = useState('');
 
   // The OAuth consent happens in another tab; refresh when the user comes back.
   useEffect(() => {
@@ -37,7 +38,11 @@ export function SettingsPage() {
   }
 
   async function syncNow(connectionId) {
+    // Concurrent syncs both read-then-write inbox_delta_link, so the second
+    // one can overwrite the first's cursor and re-import the same replies.
+    if (syncing) return;
     setError(null);
+    setSyncing(connectionId);
     try {
       const result = await api.microsoftSync(connectionId);
       setSyncNote(
@@ -48,6 +53,8 @@ export function SettingsPage() {
       status.reload();
     } catch (caught) {
       setError(caught);
+    } finally {
+      setSyncing('');
     }
   }
 
@@ -112,9 +119,10 @@ export function SettingsPage() {
                       <button
                         type="button"
                         className="tiny"
+                        disabled={!!syncing}
                         onClick={() => syncNow(connection.id)}
                       >
-                        Sync now
+                        {syncing === connection.id ? 'Syncing…' : 'Sync now'}
                       </button>
                     ) : null}
                     {connection.status !== 'revoked' ? (

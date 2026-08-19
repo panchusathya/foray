@@ -61,14 +61,40 @@ function addDelay(date, days, unit) {
   return result;
 }
 
+/**
+ * Mirrors schedule_step_at() in outreach/sequencer.py. A step with a send time
+ * never sends "on enrollment" — it waits for that time — so saying otherwise
+ * would contradict what the sequencer actually does.
+ *
+ * The snap is computed in the browser's timezone, so the date can be off by a
+ * day for a step configured in a distant zone; the zone is labelled rather
+ * than silently converted.
+ */
 function schedulePreview(steps) {
-  let cursor = new Date();
+  const now = new Date();
+  let cursor = now;
   return steps.map((step, index) => {
     cursor = addDelay(cursor, Number(step.delay_days) || 0, step.delay_unit);
-    const date = cursor.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+    if (step.send_at_time) {
+      const [hour, minute] = step.send_at_time.split(':').map(Number);
+      const snapped = new Date(cursor);
+      snapped.setHours(hour, minute, 0, 0);
+      if (snapped < now) snapped.setDate(snapped.getDate() + 1);
+      if (step.delay_unit === 'business_days') {
+        while (snapped.getDay() === 0 || snapped.getDay() === 6) {
+          snapped.setDate(snapped.getDate() + 1);
+        }
+      }
+      cursor = snapped;
+      const date = snapped.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      const zone = step.send_timezone ? ` ${step.send_timezone.split('/').pop().replace(/_/g, ' ')}` : '';
+      return `~${date} · ${step.send_at_time}${zone}`;
+    }
+
     if (index === 0 && (Number(step.delay_days) || 0) === 0) return 'on enrollment';
-    const at = step.send_at_time ? ` · ${step.send_at_time}` : '';
-    return `~${date}${at}`;
+    const date = cursor.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return `~${date}`;
   });
 }
 
@@ -118,7 +144,7 @@ function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
   }
 
   return (
-    <div className="card stack" style={{ gap: 8 }}>
+    <div className="card stack" style={{ gap: 8 }} data-testid="candidate-picker">
       <div className="row small">
         {projectId ? (
           <select style={{ width: 200 }} value={source} onChange={(event) => setSource(event.target.value)}>
@@ -148,7 +174,12 @@ function CandidatePicker({ projectId, enrolledIds, busy, onCancel, onEnroll }) {
       ) : available.length ? (
         <div className="stack" style={{ gap: 4, maxHeight: 260, overflowY: 'auto' }}>
           {available.map((candidate) => (
-            <label key={candidate.id} className="row small" style={{ gap: 6 }}>
+            <label
+              key={candidate.id}
+              className="row small"
+              style={{ gap: 6 }}
+              data-testid="picker-row"
+            >
               <input
                 type="checkbox"
                 checked={picked.has(candidate.id)}
@@ -218,9 +249,16 @@ export function SequenceEditorPage() {
   const bodyRef = useRef(null);
   const subjectRef = useRef(null);
   const lastFocused = useRef('body');
+  // Read inside the reload effect, which must not see a stale `dirty`.
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     if (!sequence.data) return;
+    // A reload that is not a save — pausing, activating, enrolling — must not
+    // wipe edits in progress. Pausing is the natural response to the 409 that
+    // step editing raises, so clobbering here loses exactly the work the user
+    // was trying to save.
+    if (dirtyRef.current && meta !== null) return;
     setMeta({
       name: sequence.data.name,
       personalize: sequence.data.personalize,
@@ -245,6 +283,7 @@ export function SequenceEditorPage() {
         )
       : false;
   const dirty = stepsDirty || metaDirty;
+  dirtyRef.current = dirty;
   const schedule = useMemo(() => schedulePreview(steps), [steps]);
 
   if (sequence.loading || !meta) return <Loading label="Loading sequence…" />;
@@ -615,7 +654,7 @@ export function SequenceEditorPage() {
             {/* Enrolling schedules; only an active sequence actually sends. Say
                 so here rather than silently activating on the user's behalf. */}
             {status !== 'active' && (enrollments.data ?? []).some((e) => e.status === 'active') ? (
-              <div className="card small spread" style={{ margin: 0 }}>
+              <div className="card small spread" style={{ margin: 0 }} data-testid="paused-banner">
                 <span>
                   {(enrollments.data ?? []).filter((e) => e.status === 'active').length} enrolled and
                   waiting — nothing sends while the sequence is {status}.
@@ -641,7 +680,7 @@ export function SequenceEditorPage() {
             ) : (enrollments.data ?? []).length ? (
               <div className="stack" style={{ gap: 6 }}>
                 {enrollments.data.map((enrollment) => (
-                  <div key={enrollment.id} className="row small spread">
+                  <div key={enrollment.id} className="row small spread" data-testid="enrollment-row">
                     <span className="row" style={{ gap: 6 }}>
                       <Badge tone={enrollment.status === 'active' ? 'strong' : ''}>
                         {enrollment.status}

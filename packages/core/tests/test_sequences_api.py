@@ -173,6 +173,70 @@ class TestCloneSequence:
             s["subject_template"] for s in sequence["steps"]
         ]
 
+    def test_clone_keeps_the_sending_mailbox(self, client, loaded_org, session):
+        # Dropping mailbox_id sends the copy from the server default instead of
+        # the connected Outlook account the original was set up with.
+        from juicebox.models import MailboxConnection
+
+        headers = loaded_org["headers"]
+        connection = MailboxConnection(
+            org_id=loaded_org["org_id"],
+            provider="microsoft",
+            address="recruiter@goforay.io",
+            status="active",
+        )
+        session.add(connection)
+        session.commit()
+
+        sequence = _create_sequence(client, headers)
+        patched = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_id": connection.id},
+            headers=headers,
+        )
+        assert patched.status_code == 200, patched.text
+
+        copy = client.post(f"/v1/sequences/{sequence['id']}/clone", headers=headers).json()
+        assert copy["mailbox_id"] == connection.id
+
+
+class TestEnrollGuards:
+    def test_enrolling_into_another_orgs_project_is_rejected(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        candidate = _first_candidate(client, headers)
+
+        rival = client.post(
+            "/v1/auth/signup",
+            json={
+                "org_name": "Rival",
+                "email": "rival-enroll@rival-talent.com",
+                "password": "supersecret1",
+            },
+        ).json()
+        rival_headers = {"Authorization": f"Bearer {rival['access_token']}"}
+        rival_project = client.post(
+            "/v1/projects", json={"name": "Rival role"}, headers=rival_headers
+        ).json()
+
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate["id"]], "project_id": rival_project["id"]},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
+    def test_enrolling_with_an_unknown_project_is_a_404_not_a_500(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        candidate = _first_candidate(client, headers)
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate["id"]], "project_id": "proj_does_not_exist"},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
 
 class TestGenerateSequence:
     def test_template_fallback_without_llm(self, client, loaded_org):

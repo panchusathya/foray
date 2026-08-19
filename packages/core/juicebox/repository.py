@@ -126,6 +126,11 @@ def upsert_candidates(
             _apply(candidate, data)  # populate before the INSERT, not after
             db.add(candidate)
             db.flush()
+            # Register it immediately: a payload can repeat a key (two Foray
+            # pages carrying the same login, a CSV with a duplicate row), and
+            # without this the second copy INSERTs again and trips
+            # uq_candidate_source, failing the whole batch with a 500.
+            existing[(data.source, data.source_id)] = candidate
             result.created += 1
         else:
             _apply(candidate, data)

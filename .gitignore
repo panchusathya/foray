@@ -14,6 +14,10 @@ node_modules/
 packages/web/dist/
 npm-debug.log*
 
+# playwright: traces and screenshots of test runs, regenerated every run
+packages/web/test-results/
+packages/web/playwright-report/
+
 # data + secrets
 .env
 .env.local

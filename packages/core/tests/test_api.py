@@ -174,6 +174,29 @@ class TestCandidates:
         assert detail["seniority"] == "staff"
         assert detail["years_experience"] == 9.5
 
+    def test_a_repeated_source_id_within_one_payload_collapses(self, client, account):
+        # Two Foray pages can carry the same login, and a CSV can repeat a row.
+        # Before the fix the second copy INSERTed again and the unique index
+        # failed the whole batch with a 500.
+        person = {
+            "source": "foray",
+            "source_id": "octocat",
+            "full_name": "Octo Cat",
+            "emails": ["octo@example.com"],
+        }
+        response = client.post(
+            "/v1/candidates/bulk",
+            json={"candidates": [person, {**person, "full_name": "Octo Cat (dupe)"}]},
+            headers=account["headers"],
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] == 1 and body["updated"] == 1
+        assert len(set(body["ids"])) == 1
+
+        listing = client.get("/v1/candidates?q=octo", headers=account["headers"]).json()
+        assert len(listing) == 1
+
     def test_missing_candidate_returns_404(self, client, account):
         assert client.get("/v1/candidates/cand_nope", headers=account["headers"]).status_code == 404
 

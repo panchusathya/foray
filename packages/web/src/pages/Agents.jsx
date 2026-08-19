@@ -11,6 +11,8 @@ export function AgentsPage() {
 
   const [error, setError] = useState(null);
   const [lastRun, setLastRun] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState('');
   const [form, setForm] = useState({
     name: '',
     project_id: '',
@@ -28,6 +30,10 @@ export function AgentsPage() {
       setError(new Error('Pick a project and write a query'));
       return;
     }
+    // Nothing makes agents unique, so a double-click creates two identical
+    // ones that then run on cadence forever.
+    if (busy) return;
+    setBusy(true);
     try {
       await api.createAgent({
         ...form,
@@ -40,16 +46,24 @@ export function AgentsPage() {
       agents.reload();
     } catch (caught) {
       setError(caught);
+    } finally {
+      setBusy(false);
     }
   }
 
   async function run(agentId) {
+    // Two concurrent runs race on uq_project_candidate and double-count
+    // total_added, so the loser 500s.
+    if (running) return;
     setError(null);
+    setRunning(agentId);
     try {
       setLastRun(await api.runAgent(agentId));
       agents.reload();
     } catch (caught) {
       setError(caught);
+    } finally {
+      setRunning('');
     }
   }
 
@@ -135,8 +149,8 @@ export function AgentsPage() {
           </label>
         </div>
         <div>
-          <button type="submit" className="primary">
-            Create agent
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? 'Creating…' : 'Create agent'}
           </button>
         </div>
       </form>
@@ -159,8 +173,13 @@ export function AgentsPage() {
                 </div>
                 <div className="row">
                   <Badge tone={agent.status === 'active' ? 'strong' : ''}>{agent.status}</Badge>
-                  <button type="button" className="tiny" onClick={() => run(agent.id)}>
-                    Run now
+                  <button
+                    type="button"
+                    className="tiny"
+                    disabled={!!running}
+                    onClick={() => run(agent.id)}
+                  >
+                    {running === agent.id ? 'Running…' : 'Run now'}
                   </button>
                 </div>
               </div>

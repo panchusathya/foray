@@ -12,8 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import httpx
 
@@ -98,7 +97,7 @@ class GitHubGraphQL:
             await asyncio.sleep(5)
             return
         reset = datetime.fromisoformat(reset_at.replace("Z", "+00:00"))
-        delay = max(1.0, (reset - datetime.now(timezone.utc)).total_seconds() + 5)
+        delay = max(1.0, (reset - datetime.now(UTC)).total_seconds() + 5)
         log.info("graphql.rate_limited", reset_at=reset_at, sleep=round(delay, 1))
         await asyncio.sleep(delay)
 
@@ -210,8 +209,11 @@ async def _candidates_to_enrich(
         f"""
         select c.id, c.login
         from candidates c
-        left join raw_profiles r on r.candidate_id = c.id
-        where (r.candidate_id is null
+        left join raw_profiles r
+               on r.candidate_id = c.id and r.source = 'github'
+        where c.source in ('github', 'both')
+          and c.merged_into is null
+          and (r.candidate_id is null
            or $1
            or r.fetched_at < now() - interval '{STALE_AFTER}')
         {error_exclude}
@@ -257,9 +259,9 @@ async def amain(args: argparse.Namespace) -> int:
                             )
                             continue
                         await conn.execute(
-                            "insert into raw_profiles (candidate_id, login, data, fetched_at) "
-                            "values ($1, $2, $3::jsonb, now()) "
-                            "on conflict (candidate_id) do update set "
+                            "insert into raw_profiles (candidate_id, source, login, data, fetched_at) "
+                            "values ($1, 'github', $2, $3::jsonb, now()) "
+                            "on conflict (candidate_id, source) do update set "
                             "data = excluded.data, login = excluded.login, fetched_at = now()",
                             cid,
                             login,

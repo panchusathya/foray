@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     nightly_enrich: int = Field(default=12000, validation_alias="FORAY_NIGHTLY_ENRICH")
     nightly_score_calls: int = Field(default=10000, validation_alias="FORAY_NIGHTLY_SCORE_CALLS")
     nightly_budget_min: int = Field(default=450, validation_alias="FORAY_NIGHTLY_BUDGET_MIN")
+    # Hard ceiling on LLM calls spent scoring LinkedIn-evidence rows in one
+    # run. Ungated, 200k rows x 15 archetypes would be ~$900; this plus the
+    # gates is the difference between that and ~$10.
+    linkedin_score_cap: int = Field(
+        default=30_000, validation_alias="FORAY_LINKEDIN_SCORE_CAP"
+    )
     monthly_spend_cap_usd: float = Field(
         default=40.0, validation_alias="FORAY_MONTHLY_SPEND_CAP_USD"
     )

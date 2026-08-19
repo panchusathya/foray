@@ -27,6 +27,13 @@ shared_rubric_tail: |
     impressive, solid, passionate, talented).
   - NEVER infer or reference gender, ethnicity, age, or nationality.
 
+  The user turn states the evidence type. For a LinkedIn-only profile, score the
+  career evidence that is present — roles, tenure, employers, stated domains. The
+  absence of public repositories, stars, or commits is NOT a negative for these
+  profiles and must not be penalized or mentioned. Never invent code evidence.
+  Add the flag linkedin_only for such profiles, and thin_evidence when the profile
+  is a bare title with no substance behind it.
+
   rationale is internal (eval/debugging only): when the candidate is weak, name the
   disqualifier explicitly.
   flags is a short list of machine caveat tags, e.g. stale_activity, thin_evidence, career_gap.
@@ -37,7 +44,7 @@ archetypes:
     label: Founding ML Engineer
     gate: >-
       s.domain_markers @> array['ml'] and s.est_experience_years between 3 and 12
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a FOUNDING machine learning engineer at an early-stage startup:
       someone who has built ML training or inference systems end to end, not just used
@@ -48,8 +55,11 @@ archetypes:
   - id: ml_research
     label: ML Research Engineer
     gate: >-
-      s.domain_markers @> array['ml'] and (s.oss_maintainer or s.total_stars >= 200)
-      and s.last_push_at > now() - interval '24 months'
+      s.domain_markers @> array['ml']
+      and ((s.evidence_kind = 'github' and (s.oss_maintainer or s.total_stars >= 200))
+           or (s.evidence_kind <> 'github'
+               and s.title ~* '(research|scientist|\mml\M|machine learning|\mai\M)'))
+      and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for an ML RESEARCH engineer: someone who implements novel methods and
       contributes reusable research artifacts. Reward: well-starred ML libraries, model
@@ -61,7 +71,7 @@ archetypes:
     gate: >-
       (s.domain_markers @> array['ml'] or s.domain_markers @> array['gpu'])
       and s.domain_markers && array['infra','data','sre']
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for an ML PLATFORM / MLOps engineer who runs ML in production: training
       orchestration, feature stores, GPU scheduling, model registries, serving infra.
@@ -72,7 +82,7 @@ archetypes:
     label: Applied ML Engineer
     gate: >-
       s.domain_markers @> array['ml'] and s.est_experience_years between 2 and 10
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for an APPLIED ML engineer who ships ML features into products: fine-tuning,
       RAG, recommendation, or classification wired into an app. Reward: end-to-end applied
@@ -84,7 +94,7 @@ archetypes:
     label: Infrastructure / Platform Engineer
     gate: >-
       s.domain_markers @> array['infra'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for an INFRASTRUCTURE / platform engineer: Kubernetes, Terraform, service
       meshes, internal developer platforms. Reward: operators/controllers, IaC modules,
@@ -94,9 +104,13 @@ archetypes:
   - id: senior_backend
     label: Senior Backend Engineer
     gate: >-
-      s.primary_language in ('go','rust','java','python','scala','cpp')
-      and s.est_experience_years >= 5 and s.non_fork_repo_count >= 2
-      and s.last_push_at > now() - interval '18 months'
+      s.est_experience_years >= 5
+      and ((s.evidence_kind = 'github'
+            and s.primary_language in ('go','rust','java','python','scala','cpp')
+            and s.non_fork_repo_count >= 2)
+           or (s.evidence_kind <> 'github'
+               and s.title ~* '(back.?end|platform|infrastructure|software engineer|\mswe\M)'))
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a SENIOR backend engineer: distributed services, APIs, data-intensive
       systems in a compiled or server language. Reward: substantial services, concurrency,
@@ -107,7 +121,7 @@ archetypes:
     label: Site Reliability Engineer
     gate: >-
       s.domain_markers @> array['sre'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a SITE RELIABILITY engineer: observability, on-call tooling, SLOs,
       incident automation. Reward: Prometheus/OpenTelemetry/Grafana work, alerting/reliability
@@ -117,7 +131,7 @@ archetypes:
     label: Data Engineer
     gate: >-
       s.domain_markers @> array['data'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a DATA engineer: batch/stream pipelines, warehouses, orchestration.
       Reward: Spark/dbt/Airflow/Flink/Kafka work, pipeline reliability, schema/modeling.
@@ -127,7 +141,7 @@ archetypes:
     label: Database / Storage Engineer
     gate: >-
       s.domain_markers @> array['db'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '24 months'
+      and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for a DATABASE / storage systems engineer: storage engines, consensus,
       query engines. Reward: RocksDB/ClickHouse/Raft/WAL/LSM work, low-level storage or
@@ -138,7 +152,7 @@ archetypes:
     label: Full-stack Product Engineer
     gate: >-
       s.domain_markers @> array['frontend'] and s.est_experience_years between 2 and 12
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a FULL-STACK product engineer who ships user-facing features end to end.
       Reward: front-end plus a backend/API in the same projects, shipped products, breadth.
@@ -148,7 +162,7 @@ archetypes:
     label: Frontend Specialist
     gate: >-
       s.domain_markers @> array['frontend'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '18 months'
+      and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a FRONTEND specialist: complex React/Vue/Svelte apps, design systems,
       performance, accessibility, WebGL. Reward: reusable component libraries, non-trivial
@@ -158,7 +172,7 @@ archetypes:
     label: Mobile Engineer
     gate: >-
       s.domain_markers @> array['mobile'] and s.est_experience_years >= 2
-      and s.last_push_at > now() - interval '24 months'
+      and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for a MOBILE engineer: native iOS/Android or cross-platform apps. Reward:
       shipped apps, SwiftUI/Jetpack Compose/React Native depth, platform APIs. Penalize:
@@ -169,7 +183,7 @@ archetypes:
     label: Security Engineer
     gate: >-
       s.domain_markers @> array['security'] and s.est_experience_years >= 3
-      and s.last_push_at > now() - interval '24 months'
+      and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for a SECURITY engineer: fuzzing, SAST, vuln research, supply-chain and
       auth. Reward: CVEs, security tooling, fuzzers, sigstore/semgrep/OWASP work. Penalize:
@@ -178,7 +192,7 @@ archetypes:
   - id: gpu_systems
     label: GPU / Systems Engineer
     gate: >-
-      s.domain_markers @> array['gpu'] and s.last_push_at > now() - interval '24 months'
+      s.domain_markers @> array['gpu'] and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for a GPU / high-performance systems engineer: CUDA/Triton kernels,
       inference runtimes, low-level performance. Reward: kernel code, vLLM/TensorRT/NCCL
@@ -188,7 +202,7 @@ archetypes:
     label: Embedded / Robotics Engineer
     gate: >-
       s.domain_markers @> array['embedded'] and s.est_experience_years >= 2
-      and s.last_push_at > now() - interval '24 months'
+      and s.activity_at > now() - interval '24 months'
     rubric: |
       Score fit for an EMBEDDED / robotics engineer: firmware, RTOS, robotics stacks.
       Reward: ROS2/FreeRTOS/STM32/SLAM work, hardware-in-the-loop, real device evidence.

@@ -13,7 +13,7 @@ from typing import Any
 
 from ..db import close_pool, get_pool
 from ..log import Heartbeat, get_logger
-from .blob import build_blob
+from .blob import build_blob, build_linkedin_blob
 from .model import EMBEDDING_MODEL_VERSION, embed_documents, to_halfvec_literal
 
 log = get_logger("embed.run")
@@ -38,6 +38,22 @@ def _as_list(value: Any) -> list:
 
 
 def blob_for_row(row: Any) -> str:
+    # A LinkedIn-only person embeds career prose; anyone with GitHub evidence
+    # keeps the code-shaped blob (merged identities carry both, and repos are
+    # the more distinctive signal for ranking engineers).
+    if row["evidence_kind"] == "linkedin":
+        import json as _json
+
+        record = row["li_data"]
+        if isinstance(record, str):
+            record = _json.loads(record)
+        return build_linkedin_blob(
+            record or {},
+            name=row["name"],
+            login=row["login"],
+            title=row["title"],
+            employer=row["employer"],
+        )
     return build_blob(
         name=row["name"],
         login=row["login"],
@@ -64,20 +80,25 @@ async def amain(args: argparse.Namespace) -> int:
         # every candidate+signals into memory at 100k. --all restores the full
         # scan; a change to blob.py itself needs --all --force.
         changed = (
-            "where c.embedding is null or c.embedded_at is null or c.embed_blob is null "
+            "and (c.embedding is null or c.embedded_at is null or c.embed_blob is null "
             "or s.derived_at > c.embedded_at "
-            "or (r.fetched_at is not null and r.fetched_at > c.embedded_at)"
+            "or (rg.fetched_at is not null and rg.fetched_at > c.embedded_at) "
+            "or (rl.fetched_at is not null and rl.fetched_at > c.embedded_at))"
         )
         rows = await conn.fetch(
             f"""
             select c.id, c.login, c.name, c.embed_blob as old_blob,
                    (c.embedding is null) as needs_vector,
-                   r.data->>'bio' as bio,
+                   rg.data->>'bio' as bio,
+                   rl.data as li_data,
+                   s.evidence_kind,
                    s.employer, s.title, s.primary_language, s.language_mix,
                    s.top_repos, s.topics
             from candidates c
             join candidate_signals s on s.candidate_id = c.id
-            left join raw_profiles r on r.candidate_id = c.id
+            left join raw_profiles rg on rg.candidate_id = c.id and rg.source = 'github'
+            left join raw_profiles rl on rl.candidate_id = c.id and rl.source = 'linkedin'
+            where c.merged_into is null
             {"" if args.all else changed}
             order by c.id
             """

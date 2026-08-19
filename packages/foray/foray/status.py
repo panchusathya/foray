@@ -12,8 +12,10 @@ from .db import close_pool, get_pool
 
 _COUNTS_SQL = """
 select
-  (select count(*) from candidates)                                        as candidates,
-  (select count(*) from raw_profiles)                                      as enriched,
+  (select count(*) from candidates where merged_into is null)             as candidates,
+  (select count(*) from candidates where source in ('linkedin','both')
+        and merged_into is null)                                           as linkedin_pool,
+  (select count(*) from raw_profiles where source = 'github')             as enriched,
   (select count(*) from candidate_signals)                                 as derived,
   (select count(*) from candidates where embedding is not null)            as embedded,
   (select count(distinct candidate_id) from archetype_scores)              as scored_candidates,
@@ -22,8 +24,10 @@ select
         where source <> 'guess')                                           as with_email,
   (select count(*) from candidates where linkedin_url is not null)         as with_linkedin,
   (select count(*) from candidates c
-     left join raw_profiles r on r.candidate_id = c.id
-     where r.candidate_id is null
+     left join raw_profiles r on r.candidate_id = c.id and r.source = 'github'
+     where c.source in ('github', 'both')
+       and c.merged_into is null
+       and r.candidate_id is null
        and not exists (select 1 from enrich_errors e
                        where e.candidate_id = c.id and e.stage = 'fetch'
                          and e.created_at > now() - interval '14 days'))    as enrich_backlog,
@@ -85,7 +89,7 @@ async def amain(args: argparse.Namespace) -> int:
     print("Foray pipeline status")
     print("---------------------")
     for key in (
-        "candidates", "enriched", "derived", "embedded",
+        "candidates", "linkedin_pool", "enriched", "derived", "embedded",
         "scored_candidates", "scored_pairs", "with_email", "with_linkedin",
         "enrich_backlog", "shards_done", "shards_pending", "shards_truncated",
         "enrich_errors_7d", "scoring_errors_7d",

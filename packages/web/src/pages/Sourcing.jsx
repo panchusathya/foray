@@ -77,9 +77,18 @@ function ForayHit({ hit, selected, onToggle }) {
         <div className="spread">
           <div>
             <h3>
-              <a href={hit.github_url} target="_blank" rel="noreferrer noopener">
-                {hit.name || hit.login}
-              </a>
+              {hit.github_url ? (
+                <a href={hit.github_url} target="_blank" rel="noreferrer noopener">
+                  {hit.name || hit.login}
+                </a>
+              ) : (
+                <span>{hit.name || hit.login}</span>
+              )}
+              {hit.source === 'linkedin' ? (
+                <span className="badge" style={{ marginLeft: 8 }} data-testid="source-badge">
+                  LinkedIn
+                </span>
+              ) : null}
             </h3>
             <div className="meta">
               {meta}
@@ -127,9 +136,11 @@ function ForayHit({ hit, selected, onToggle }) {
         ) : null}
 
         <div className="row" style={{ marginTop: 10 }}>
-          <a className="badge" href={hit.github_url} target="_blank" rel="noreferrer noopener">
-            GitHub
-          </a>
+          {hit.github_url ? (
+            <a className="badge" href={hit.github_url} target="_blank" rel="noreferrer noopener">
+              GitHub
+            </a>
+          ) : null}
           {linkedin ? (
             <a className="badge" href={linkedin} target="_blank" rel="noreferrer noopener">
               LinkedIn

@@ -407,12 +407,26 @@ class Message(Base, TimestampMixin):
             sqlite_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
             postgresql_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
         ),
+        # The per-candidate timeline sorts on sent_at; the graph-id index makes
+        # thread-sync ingest idempotent (one row per Outlook message, ever).
+        Index("ix_messages_candidate_sent", "candidate_id", "sent_at"),
+        Index("ix_messages_org_conversation", "org_id", "conversation_id"),
+        Index(
+            "uq_messages_org_graph_id",
+            "org_id",
+            "graph_message_id",
+            unique=True,
+            sqlite_where=text("graph_message_id != ''"),
+            postgresql_where=text("graph_message_id != ''"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("msg"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
-    enrollment_id: Mapped[str] = mapped_column(
-        ForeignKey("enrollments.id", ondelete="CASCADE"), index=True
+    # Nullable: mail synced from the user's own Outlook (source="outlook") has
+    # no sequence behind it. Sequence sends always set it.
+    enrollment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("enrollments.id", ondelete="CASCADE"), index=True, nullable=True
     )
     candidate_id: Mapped[str] = mapped_column(
         ForeignKey("candidates.id", ondelete="CASCADE"), index=True
@@ -422,6 +436,10 @@ class Message(Base, TimestampMixin):
     )
     channel: Mapped[str] = mapped_column(String(32), default="email")
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
+    # sequence: sent by the sequencer. outlook: synced from the user's mailbox
+    # (a manual email or a reply captured without a matching outbound).
+    source: Mapped[str] = mapped_column(String(20), default="sequence")
+    from_address: Mapped[str] = mapped_column(String(255), default="")
     to_address: Mapped[str] = mapped_column(String(255), default="")
     subject: Mapped[str] = mapped_column(String(500), default="")
     body: Mapped[str] = mapped_column(Text, default="")
@@ -449,8 +467,15 @@ class Message(Base, TimestampMixin):
     # idempotency key: a retried send must reuse the exact text that may have
     # already gone out, and the recruiter can audit what the model wrote.
     ai_fragments: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Thread-sync extras: the original HTML body when the plaintext is a
+    # conversion, Outlook's own deep link (the UI hands off rather than
+    # rendering untrusted HTML), and how many attachments the message carried
+    # (bytes are never stored).
+    body_html: Mapped[str] = mapped_column(Text, default="")
+    web_link: Mapped[str] = mapped_column(Text, default="")
+    attachment_count: Mapped[int] = mapped_column(Integer, default=0)
 
-    enrollment: Mapped[Enrollment] = relationship()
+    enrollment: Mapped[Enrollment | None] = relationship()
     candidate: Mapped[Candidate] = relationship()
 
 
@@ -479,6 +504,10 @@ class MailboxConnection(Base, TimestampMixin):
     error: Mapped[str] = mapped_column(Text, default="")
     inbox_delta_link: Mapped[str] = mapped_column(Text, default="")
     sent_delta_link: Mapped[str] = mapped_column(Text, default="")
+    # Opt-in for copying candidate correspondence (manual Outlook mail, both
+    # directions) into the CRM timeline. Off by default: connecting a mailbox
+    # for sending must not silently start retaining its contents.
+    thread_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

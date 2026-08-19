@@ -195,7 +195,14 @@ export function ProjectDetailPage() {
                   .slice(0, 2);
                 return (
                   <div className="pipeline-card" key={entry.id}>
-                    <div className="name">{entry.candidate.full_name}</div>
+                    <div className="name">
+                      <Link
+                        to={`/contacts/${entry.candidate.id}`}
+                        style={{ textDecoration: 'none' }}
+                      >
+                        {entry.candidate.full_name}
+                      </Link>
+                    </div>
                     <div className="small muted">
                       {entry.candidate.current_title || '—'}
                       {entry.candidate.current_company ? ` · ${entry.candidate.current_company}` : ''}

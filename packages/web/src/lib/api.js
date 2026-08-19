@@ -67,10 +67,20 @@ export const api = {
     if (q) search.set('q', q);
     if (limit != null) search.set('limit', String(limit));
     if (offset != null) search.set('offset', String(offset));
+    if (params.include_history) search.set('include_history', 'true');
     const suffix = search.toString();
     return request(`/v1/candidates${suffix ? `?${suffix}` : ''}`);
   },
   getCandidate: (id) => request(`/v1/candidates/${id}`),
+  candidateTimeline: (id, limit = 200) =>
+    request(`/v1/candidates/${id}/timeline?limit=${limit}`),
+  listMessages: ({ candidate_id, direction, limit = 50 } = {}) => {
+    const search = new URLSearchParams();
+    if (candidate_id) search.set('candidate_id', candidate_id);
+    if (direction) search.set('direction', direction);
+    search.set('limit', String(limit));
+    return request(`/v1/messages?${search}`);
+  },
 
   search: (payload) => request('/v1/search', { method: 'POST', body: payload }),
   recentSearches: () => request('/v1/searches?limit=10'),
@@ -116,6 +126,12 @@ export const api = {
     request(`/v1/integrations/microsoft/${connectionId}`, { method: 'DELETE' }),
   microsoftSync: (connectionId) =>
     request(`/v1/integrations/microsoft/${connectionId}/sync`, { method: 'POST' }),
+  microsoftThreadSync: (connectionId, enabled) =>
+    request(`/v1/integrations/microsoft/${connectionId}/thread-sync?enabled=${enabled}`, {
+      method: 'PATCH',
+    }),
+  microsoftBackfill: (connectionId) =>
+    request(`/v1/integrations/microsoft/${connectionId}/backfill`, { method: 'POST' }),
 };
 
 export const PIPELINE_STAGES = [

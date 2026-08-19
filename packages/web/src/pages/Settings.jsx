@@ -58,6 +58,45 @@ export function SettingsPage() {
     }
   }
 
+  async function toggleThreadSync(connection) {
+    const enabling = !connection.thread_sync_enabled;
+    if (
+      enabling &&
+      !window.confirm(
+        'Copy candidate correspondence from this mailbox into Foray? Only emails ' +
+          'with people already in a project or sequence are stored — nothing else ' +
+          'in the mailbox is read into the CRM.',
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.microsoftThreadSync(connection.id, enabling);
+      status.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  async function backfill(connection) {
+    if (
+      !window.confirm(
+        'Import the last 12 months of email history with known candidates? ' +
+          'This runs in the background and can take a while.',
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.microsoftBackfill(connection.id);
+      setSyncNote('History import queued — it runs in the background.');
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   const data = status.data;
 
   return (
@@ -123,6 +162,26 @@ export function SettingsPage() {
                         onClick={() => syncNow(connection.id)}
                       >
                         {syncing === connection.id ? 'Syncing…' : 'Sync now'}
+                      </button>
+                    ) : null}
+                    {connection.status === 'active' ? (
+                      <button
+                        type="button"
+                        className="tiny"
+                        data-testid="thread-sync-toggle"
+                        title="Copy emails with known candidates into their CRM timelines"
+                        onClick={() => toggleThreadSync(connection)}
+                      >
+                        {connection.thread_sync_enabled ? 'Thread sync: on' : 'Thread sync: off'}
+                      </button>
+                    ) : null}
+                    {connection.status === 'active' && connection.thread_sync_enabled ? (
+                      <button
+                        type="button"
+                        className="tiny ghost"
+                        onClick={() => backfill(connection)}
+                      >
+                        Import history
                       </button>
                     ) : null}
                     {connection.status !== 'revoked' ? (

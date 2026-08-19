@@ -58,6 +58,15 @@ def run_migrations_online() -> None:
     # Reuse the app's engine builder so SQLite pragmas and pool settings match.
     connectable = get_engine()
     with connectable.connect() as connection:
+        if connection.dialect.name == "sqlite":
+            # Batch mode rebuilds tables by drop-and-rename. With the app
+            # engine's foreign_keys=ON, rebuilding a table that other tables
+            # reference (messages <- reply_drafts) fails mid-swap on any
+            # populated database. Alembic's own batch-mode guidance is to turn
+            # enforcement off for the migration. The pragma is a no-op inside
+            # a transaction, and SQLAlchemy autobegins on exec_driver_sql —
+            # so it must go through the raw DBAPI connection instead.
+            connection.connection.driver_connection.execute("PRAGMA foreign_keys=OFF")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -68,6 +77,10 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+        if connection.dialect.name == "sqlite":
+            broken = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+            if broken:
+                raise RuntimeError(f"migration broke foreign keys: {broken[:5]}")
 
 
 if context.is_offline_mode():

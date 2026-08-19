@@ -26,8 +26,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # SQLite cannot ALTER COLUMN and the FK is unnamed, so batch-recreate.
-    with op.batch_alter_table("messages", recreate="always") as batch:
+    # SQLite cannot ALTER COLUMN and the FK is unnamed, so it needs a full
+    # batch-recreate. Postgres must NOT recreate: reply_drafts FKs into
+    # messages, so dropping messages_pkey mid-recreate fails with
+    # DependentObjectsStillExist — plain ALTERs are both sufficient and safe.
+    recreate = "always" if op.get_bind().dialect.name == "sqlite" else "never"
+    with op.batch_alter_table("messages", recreate=recreate) as batch:
         batch.alter_column("enrollment_id", existing_type=sa.String(40), nullable=True)
         batch.add_column(sa.Column("source", sa.String(20), nullable=False, server_default="sequence"))
         batch.add_column(sa.Column("from_address", sa.String(255), nullable=False, server_default=""))
@@ -79,7 +83,8 @@ def downgrade() -> None:
     op.drop_index("ix_messages_org_conversation", table_name="messages")
     op.drop_index("ix_messages_candidate_sent", table_name="messages")
     op.execute("DELETE FROM messages WHERE enrollment_id IS NULL")
-    with op.batch_alter_table("messages", recreate="always") as batch:
+    recreate = "always" if op.get_bind().dialect.name == "sqlite" else "never"
+    with op.batch_alter_table("messages", recreate=recreate) as batch:
         batch.drop_column("attachment_count")
         batch.drop_column("web_link")
         batch.drop_column("body_html")

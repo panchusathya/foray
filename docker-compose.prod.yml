@@ -77,6 +77,18 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     logging: *default_logging
+    # Tuned for the 4 vCPU / 8 GB host (the image defaults assume 1 GB total).
+    # maintenance_work_mem covers HNSW builds during the LinkedIn import.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - max_wal_size=2GB
     environment:
       POSTGRES_USER: juicebox
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}

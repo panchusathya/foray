@@ -38,7 +38,9 @@ class TextFetcher(Protocol):
 class HttpFetcher:
     def __init__(self) -> None:
         self._client = httpx.AsyncClient(
-            timeout=5.0, follow_redirects=True, headers={"User-Agent": "foray"}
+            timeout=5.0,
+            follow_redirects=True,
+            headers={"User-Agent": "foray/0.1 (+https://app.goforay.io)"},
         )
         self.calls = 0
 
@@ -107,10 +109,18 @@ async def resolve_and_store(
     allow_apollo: bool = False,
     apollo_reason: str | None = None,
     apollo: Callable[[dict], Awaitable[str | None]] | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Resolve LinkedIn for one candidate and cache the result permanently."""
+    """Resolve LinkedIn for one candidate. Hits cache permanently; misses cache
+    for FORAY_LINKEDIN_RECHECK_DAYS so the 3-fetch waterfall isn't re-run on
+    every click. allow_apollo bypasses the negative cache: the paid step exists
+    precisely for candidates the free steps already missed."""
+    from datetime import datetime, timedelta, timezone
+
+    from ..config import settings
+
     row = await conn.fetchrow(
-        "select c.id, c.login, c.linkedin_url, c.linkedin_source, r.data "
+        "select c.id, c.login, c.linkedin_url, c.linkedin_source, c.linkedin_checked_at, r.data "
         "from candidates c left join raw_profiles r on r.candidate_id = c.id "
         "where c.login = $1",
         login,
@@ -125,6 +135,16 @@ async def resolve_and_store(
             "found": True,
             "cached": True,
         }
+    if not force and not allow_apollo and row["linkedin_checked_at"] is not None:
+        age = datetime.now(timezone.utc) - row["linkedin_checked_at"]
+        if age < timedelta(days=settings.linkedin_recheck_days):
+            return {
+                "login": login,
+                "linkedin_url": None,
+                "linkedin_source": None,
+                "found": False,
+                "cached": True,
+            }
 
     import json
 

@@ -15,6 +15,7 @@ _COMMANDS = {
     "harvest": "foray.harvest.search",
     "enrich": "foray.enrich.profiles",
     "emails": "foray.enrich.emails",
+    "linkedin": "foray.enrich.linkedin_bulk",
     "derive": "foray.enrich.derive",
     "embed": "foray.embed.run",
     "gate": "foray.score.gate",

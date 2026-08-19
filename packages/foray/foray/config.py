@@ -66,6 +66,18 @@ class Settings(BaseSettings):
 
     # --- harvest tuning ---
     github_rpm: int = Field(default=28, validation_alias="FORAY_GITHUB_RPM")
+    # Core REST quota (events/public etc.) is 5,000/hr — a separate bucket from
+    # the Search API's 30/min that github_rpm governs. 70 rpm = 4,200/hr,
+    # leaving headroom for freshness checks.
+    github_rest_rpm: int = Field(default=70, validation_alias="FORAY_GITHUB_REST_RPM")
+
+    # --- contact enrichment ---
+    # A LinkedIn miss is retried after this many days (negative cache);
+    # allow_apollo and force bypass it.
+    linkedin_recheck_days: int = Field(default=90, validation_alias="FORAY_LINKEDIN_RECHECK_DAYS")
+    # Outbound politeness cap for the bulk waterfall (raw.githubusercontent +
+    # personal websites), independent of concurrency.
+    linkedin_rpm: int = Field(default=120, validation_alias="FORAY_LINKEDIN_RPM")
 
     # --- scoring spend guard ---
     spend_confirm_threshold_usd: float = Field(

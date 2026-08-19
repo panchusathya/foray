@@ -20,6 +20,7 @@ import httpx
 from ..config import settings
 from ..db import close_pool, get_pool
 from ..log import Heartbeat, get_logger
+from ._http import request_with_retry
 
 log = get_logger("enrich.profiles")
 
@@ -29,11 +30,6 @@ GITHUB_GRAPHQL = "https://api.github.com/graphql"
 # still returning 200 with partial data. 12 stays reliably under that.
 BATCH_SIZE = 12
 STALE_AFTER = "90 days"
-
-# GitHub answers batched GraphQL with occasional 502s, and its secondary rate
-# limiter with 403/429 — all transient. A long harvest must ride these out.
-TRANSIENT_STATUSES = {403, 429, 500, 502, 503, 504}
-MAX_TRANSIENT_RETRIES = 6
 
 _FRAGMENT = """
 fragment F on User {
@@ -94,26 +90,14 @@ class GitHubGraphQL:
         await asyncio.sleep(delay)
 
     async def _post_with_retry(self, body: dict) -> httpx.Response:
-        """POST, riding out transient statuses with backoff (Retry-After wins)."""
-        delay = 2.0
-        for attempt in range(MAX_TRANSIENT_RETRIES):
+        """POST, riding out transient statuses with backoff (shared policy)."""
+
+        def _count() -> None:
             self.request_count += 1
-            resp = await self._client.post(GITHUB_GRAPHQL, json=body)
-            if resp.status_code not in TRANSIENT_STATUSES:
-                resp.raise_for_status()
-                return resp
-            retry_after = resp.headers.get("retry-after")
-            sleep = float(retry_after) if retry_after else delay
-            log.info(
-                "graphql.transient",
-                status=resp.status_code,
-                attempt=attempt + 1,
-                sleep=round(sleep, 1),
-            )
-            await asyncio.sleep(min(sleep, 120.0))
-            delay = min(delay * 2, 90.0)
-        resp.raise_for_status()  # out of retries: surface the last status
-        return resp
+
+        return await request_with_retry(
+            self._client, "POST", GITHUB_GRAPHQL, log=log, on_request=_count, json=body
+        )
 
     async def fetch_batch(self, logins: list[str]) -> dict[str, dict | None]:
         query = build_query(len(logins))

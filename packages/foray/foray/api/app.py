@@ -98,37 +98,31 @@ class ApolloBody(BaseModel):
 @app.post("/candidate/{login}/apollo")
 async def apollo_resolve(login: str, body: ApolloBody) -> dict:
     """Explicit shortlist action: allow the Apollo step (a credit). Requires a reason."""
+    import functools
+
+    from ..enrich.apollo import match_and_store
     from ..enrich.linkedin import resolve_and_store
 
     settings.require("apollo_api_key")
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
+        candidate_id = await conn.fetchval(
             "insert into shortlist_events (candidate_id, reason) "
-            "select id, $2 from candidates where login = $1",
+            "select id, $2 from candidates where login = $1 "
+            "returning candidate_id",
             login,
             body.reason,
         )
+        if candidate_id is None:
+            return {"login": login, "linkedin_url": None, "linkedin_source": None, "found": False}
         result = await resolve_and_store(
-            conn, login, allow_apollo=True, apollo_reason=body.reason, apollo=_apollo_people_match
+            conn,
+            login,
+            allow_apollo=True,
+            apollo_reason=body.reason,
+            apollo=functools.partial(match_and_store, conn, candidate_id),
         )
     return result
-
-
-async def _apollo_people_match(node: dict) -> str | None:
-    """Apollo people-match by name + employer domain (only reached in shortlist context)."""
-    import httpx
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            "https://api.apollo.io/v1/people/match",
-            headers={"X-Api-Key": settings.apollo_api_key, "Content-Type": "application/json"},
-            json={"name": node.get("name"), "organization_name": node.get("company")},
-        )
-        if resp.status_code != 200:
-            return None
-        person = (resp.json() or {}).get("person") or {}
-        return person.get("linkedin_url")
 
 
 @app.get("/")

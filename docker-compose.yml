@@ -93,6 +93,7 @@ services:
       FORAY_DATABASE_URL: postgresql://foray:foray@db:5432/foray
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
     ports:
       - "8100:8100"
     depends_on:

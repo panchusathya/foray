@@ -77,6 +77,10 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     logging: *default_logging
+    # Parallel index builds use dynamic shared memory; Docker's default 64 MB
+    # /dev/shm made the 200k-row HNSW rebuild die with "could not resize
+    # shared memory segment ... No space left on device".
+    shm_size: 1gb
     # Tuned for the 4 vCPU / 8 GB host (the image defaults assume 1 GB total).
     # maintenance_work_mem covers HNSW builds during the LinkedIn import.
     command:

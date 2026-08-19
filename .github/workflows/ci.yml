@@ -199,6 +199,10 @@ jobs:
       - name: Health
         run: curl -sf http://127.0.0.1:18080/health
 
+      - name: Staging logs (on failure)
+        if: failure()
+        run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env logs --no-color
+
       - name: Teardown
         if: always()
         run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env down -v

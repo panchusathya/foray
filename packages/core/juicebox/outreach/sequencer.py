@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
+from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
     Enrollment,
@@ -25,6 +26,7 @@ from ..models import (
 )
 from ..security import signed_tracking_token
 from . import templates
+from .ai_directives import resolve_directives
 from .personalize import personalize
 from .replies import ReplyVerdict, classify_reply
 from .sender import OutboundEmail, resolve_sender
@@ -164,25 +166,60 @@ def build_message_content(
     step: SequenceStep,
     candidate: Candidate,
     context: dict | None = None,
-) -> tuple[str, str, dict]:
+    enrollment: Enrollment | None = None,
+    prior_fragments: dict[str, str] | None = None,
+) -> tuple[str, str, dict, dict[str, str]]:
+    """Render one step. Raises ``LLMUnavailable`` when the step contains
+    ``{{ai: ...}}`` directives and no model can resolve them — deliberately not
+    caught here, so a directive's instruction text can never reach a candidate.
+
+    ``prior_fragments`` (from a previous attempt's Message row) makes retries
+    reuse the exact text that may already have gone out. The personalize()
+    cache in ``enrollment.personalization`` is separate and never holds
+    directive output: fragments are per-step, that cache is per-enrollment.
+    """
     project = db.get(Project, sequence.project_id) if sequence.project_id else None
     if context is None:
         context = personalize(candidate, project, use_llm=sequence.personalize)
-    subject = templates.render(step.subject_template, context).strip()
-    body = templates.render(step.body_template, context).strip()
+
+    fragments = resolve_directives(
+        db,
+        sequence=sequence,
+        step=step,
+        candidate=candidate,
+        project=project,
+        enrollment=enrollment,
+        context=context,
+        prior=prior_fragments,
+    )
+
+    subject_template = templates.render_directives(step.subject_template or "", fragments)
+    body_template = templates.render_directives(step.body_template or "", fragments)
+    subject = templates.render(subject_template, context).strip()
+    body = templates.render(body_template, context).strip()
     if not subject:
         subject = context.get("subject_hint") or f"Quick note for {context.get('first_name', '')}".strip()
-    return subject, body, context
+    return subject, body, context, fragments
 
 
 def preview_step(
-    db: Session, *, sequence: Sequence, candidate: Candidate, step_order: int = 0
+    db: Session,
+    *,
+    sequence: Sequence,
+    candidate: Candidate,
+    step_order: int = 0,
+    enrollment: Enrollment | None = None,
 ) -> tuple[str, str, dict]:
+    """Preview honours directives too; the router decides how to present an
+    unresolvable one (banner + placeholder rather than a 500)."""
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     if not steps:
         raise ValueError("sequence has no steps")
     step = next((s for s in steps if s.step_order == step_order), steps[0])
-    return build_message_content(db, sequence=sequence, step=step, candidate=candidate)
+    subject, body, context, _ = build_message_content(
+        db, sequence=sequence, step=step, candidate=candidate, enrollment=enrollment
+    )
+    return subject, body, context
 
 
 # --------------------------------------------------------------------------
@@ -265,9 +302,39 @@ def send_step(
         return message
 
     context = enrollment.personalization or None
-    subject, body, context = build_message_content(
-        db, sequence=sequence, step=step, candidate=candidate, context=context
-    )
+    try:
+        subject, body, context, fragments = build_message_content(
+            db,
+            sequence=sequence,
+            step=step,
+            candidate=candidate,
+            context=context,
+            enrollment=enrollment,
+            prior_fragments=(existing.ai_fragments or None) if existing else None,
+        )
+    except LLMUnavailable as exc:
+        # Fail closed: a step with {{ai: ...}} directives must never send the
+        # raw instruction text. The enrollment stays active so the step retries
+        # once the model is back; the delay stops run_due hot-looping on it.
+        message = existing or Message(
+            org_id=sequence.org_id,
+            enrollment_id=enrollment.id,
+            candidate_id=candidate.id,
+            step_id=step.id,
+            channel=step.channel,
+            direction="outbound",
+            to_address=to_address,
+            status="failed",
+            error=f"ai_directive_unresolved: {exc}"[:490],
+        )
+        if existing is None:
+            db.add(message)
+            db.flush()
+        else:
+            message.status = "failed"
+            message.error = f"ai_directive_unresolved: {exc}"[:490]
+        enrollment.next_send_at = now + timedelta(minutes=15)
+        return message
     if not enrollment.personalization:
         enrollment.personalization = context
 
@@ -299,6 +366,8 @@ def send_step(
         message.subject = subject
         message.body = body
         message.to_address = to_address
+    if fragments:
+        message.ai_fragments = fragments
 
     if not to_address:
         message.status = "failed"

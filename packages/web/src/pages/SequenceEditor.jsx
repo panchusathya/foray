@@ -24,6 +24,9 @@ const VARIABLES = [
   ['opening_line', '{{ opening_line }}'],
   ['why_relevant', '{{ why_relevant }}'],
   ['subject_hint', '{{ subject_hint | A quick note }}'],
+  // Not a variable: an inline instruction the model resolves per candidate at
+  // send time, with the earlier emails of the thread as context.
+  ['ai: …', '{{ai: say why this role is a fit}}'],
 ];
 
 const TIMEZONES = [
@@ -606,13 +609,24 @@ export function SequenceEditorPage() {
             {dirty ? <div className="muted small">Save your changes to preview them.</div> : null}
             {preview ? (
               <>
+                {preview.ai_status === 'unavailable' ? (
+                  <div className="card small" data-testid="ai-unavailable-banner">
+                    No AI model is configured, so the [AI: …] parts below show where
+                    generated text will go. Sending waits until a model can write them.
+                  </div>
+                ) : null}
                 <div className="small muted">Subject</div>
                 <div>{preview.subject}</div>
                 <div className="small muted">Body</div>
-                <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{preview.body}</pre>
-                <Badge tone="accent">
-                  personalised by {preview.personalization?.personalized_by ?? 'template'}
-                </Badge>
+                <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }} data-testid="preview-body">{preview.body}</pre>
+                <div className="row">
+                  <Badge tone="accent">
+                    personalised by {preview.personalization?.personalized_by ?? 'template'}
+                  </Badge>
+                  {preview.ai_status === 'resolved' ? (
+                    <Badge tone="strong">AI fragments resolved</Badge>
+                  ) : null}
+                </div>
               </>
             ) : null}
           </div>

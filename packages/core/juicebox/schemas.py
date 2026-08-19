@@ -549,12 +549,18 @@ class InboundEmail(BaseModel):
 class PreviewRequest(BaseModel):
     candidate_id: str
     step_order: int = 0
+    # A later step's {{ai: ...}} follow-up reads the thread; previewing against
+    # a real enrollment shows it with that thread instead of reading like step 1.
+    enrollment_id: str | None = None
 
 
 class PreviewResponse(BaseModel):
     subject: str
     body: str
     personalization: dict[str, Any]
+    # off: no directives in the step · resolved: model wrote them ·
+    # unavailable: directives present but no model — body shows [AI: ...] markers.
+    ai_status: Literal["off", "resolved", "unavailable"] = "off"
 
 
 # --------------------------------------------------------------------------

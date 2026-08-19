@@ -444,6 +444,11 @@ class Message(Base, TimestampMixin):
 
     reply_intent: Mapped[str] = mapped_column(String(40), default="")
     reply_text: Mapped[str] = mapped_column(Text, default="")
+    # Resolved {{ai: ...}} fragments for this step, keyed by directive key.
+    # Lives on the Message because (enrollment, step) is already the send's
+    # idempotency key: a retried send must reuse the exact text that may have
+    # already gone out, and the recruiter can audit what the model wrote.
+    ai_fragments: Mapped[dict] = mapped_column(JSON, default=dict)
 
     enrollment: Mapped[Enrollment] = relationship()
     candidate: Mapped[Candidate] = relationship()

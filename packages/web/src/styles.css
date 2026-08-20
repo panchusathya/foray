@@ -388,3 +388,76 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .auth-card { width: 100%; max-width: 400px; background: var(--surface); }
 .auth-card h1 { margin: 0 0 6px; font-size: 24px; }
 .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+
+/* ---------- data grid ---------- */
+.dgrid-wrap { padding: 0; overflow: auto; max-height: calc(100vh - 300px); }
+.dgrid {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 13px;
+}
+.dgrid th,
+.dgrid td {
+  padding: 7px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dgrid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+}
+.dgrid tbody tr:last-child td { border-bottom: none; }
+.dgrid tbody tr:hover { background: var(--surface-2); }
+.dgrid td.num, .dgrid th.num { text-align: right; font-family: var(--mono); }
+.dgrid a { text-decoration: none; }
+.dgrid a:hover { text-decoration: underline; }
+.dgrid button.sort {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.dgrid button.sort:hover:not(:disabled) {
+  color: var(--accent-light);
+  transform: none;
+  border: none;
+  background: none;
+}
+.dgrid th[aria-sort] button.sort { color: var(--accent-light); }
+
+/* ---------- view tabs ---------- */
+.viewtabs {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.viewtabs a {
+  padding: 7px 12px;
+  border-radius: 8px 8px 0 0;
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 13.5px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.viewtabs a:hover { color: var(--text); background: var(--surface-2); }
+.viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); }

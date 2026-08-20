@@ -51,6 +51,19 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return payload;
 }
 
+/**
+ * Query string for the Contacts grid. Only keys the caller actually set are
+ * sent, so the API's own defaults stay authoritative.
+ */
+function contactParams(params = {}) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    search.set(key, String(value));
+  }
+  return search.toString();
+}
+
 export const api = {
   health: () => request('/health', { auth: false }),
 
@@ -59,6 +72,12 @@ export const api = {
   me: () => request('/v1/auth/me'),
 
   candidateCount: () => request('/v1/candidates/count'),
+
+  // The CRM grid reads through its own pair of methods. listCandidates keeps
+  // its exact shape and defaults because the sequence editor's enrol picker
+  // consumes it as a bare array of the whole org.
+  contactsGrid: (params = {}) => request(`/v1/candidates?${contactParams(params)}`),
+  contactsCount: (params = {}) => request(`/v1/candidates/count?${contactParams(params)}`),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
   // Buys contact details for sourced candidates. Goes through /v1 rather than
   // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends

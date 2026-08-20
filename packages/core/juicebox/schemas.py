@@ -290,6 +290,10 @@ class CandidateSummary(BaseModel):
     skills: list[str]
     linkedin_url: str
     emails: list[str]
+    # The grid's "Added" column, and what its Recently-added view sorts on.
+    # Optional because search hits are built from the in-memory index doc,
+    # which carries no timestamps -- those never render in the grid.
+    created_at: datetime | None = None
     # Populated only when the caller asked for history (include_history=true) —
     # None means "not requested", not "never contacted".
     history: HistoryStatsOut | None = None

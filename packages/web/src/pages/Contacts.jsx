@@ -1,113 +1,288 @@
 /**
- * Contacts — the global candidate browser. Debounced text search over
- * GET /v1/candidates with limit/offset paging.
+ * Contacts — the CRM grid.
+ *
+ * Every piece of grid state lives in the URL rather than in useState: preset
+ * views become plain links, the back button works, and a "going cold" list is
+ * something you can paste to someone. The loader deps are then just the flat
+ * param values, so useAsync keeps working unchanged.
+ *
+ * Sorting and paging are entirely server-side. At 200k rows the only client
+ * that stays honest is one that asks for a hundred rows and renders a hundred
+ * rows.
  */
 
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 
-import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
+import {
+  CONTACT_COLUMNS,
+  CONTACT_VIEWS,
+  DEFAULT_VIEW_ID,
+  PAGE_SIZE,
+  countParams,
+  resolveParams,
+  viewById,
+} from '../lib/contactViews.js';
+import { pageWindow } from '../lib/selection.js';
 import { useAsync } from '../lib/useAsync.js';
 
-const PAGE_SIZE = 50;
+const MINUTE = 60000;
+const DAY = 86400000;
 
-function location(candidate) {
-  return [candidate.location_city, candidate.location_country].filter(Boolean).join(', ');
+/** "3d", "6w", "14mo" — dense enough for a grid cell, with the full stamp on hover. */
+function relativeDate(value) {
+  if (!value) return null;
+  const then = new Date(value);
+  const days = Math.floor((Date.now() - then.getTime()) / DAY);
+  if (days <= 0) return 'today';
+  if (days < 7) return `${days}d`;
+  if (days < 60) return `${Math.floor(days / 7)}w`;
+  if (days < 730) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+function DateCell({ value }) {
+  const label = relativeDate(value);
+  if (!label) return <span className="muted">—</span>;
+  return <span title={new Date(value).toLocaleString()}>{label}</span>;
+}
+
+function Cell({ column, row }) {
+  const history = row.history ?? {};
+  switch (column) {
+    case 'full_name':
+      return (
+        <Link to={`/contacts/${row.id}`} title={row.full_name}>
+          {row.full_name}
+        </Link>
+      );
+    case 'current_title':
+      return row.current_title ? (
+        <span title={row.current_title}>{row.current_title}</span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'current_company':
+      return row.current_company ? (
+        <span title={row.current_company}>{row.current_company}</span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'last_emailed_at':
+      return <DateCell value={history.last_emailed_at} />;
+    case 'last_reply_at':
+      return <DateCell value={history.last_reply_at} />;
+    case 'touches':
+      return (
+        <span title="emails sent / replies received">
+          {history.outbound_count ?? 0}
+          <span className="muted"> / </span>
+          {history.inbound_count ?? 0}
+        </span>
+      );
+    case 'emails':
+      return row.emails?.length ? (
+        <span className="mono muted" title={row.emails.join(', ')}>
+          {row.emails[0]}
+        </span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'created_at':
+      return <DateCell value={row.created_at} />;
+    default:
+      return null;
+  }
+}
+
+function ViewTabs({ activeId }) {
+  return (
+    <nav className="viewtabs" data-testid="view-tabs">
+      {CONTACT_VIEWS.map((view) => (
+        <Link
+          key={view.id}
+          to={`/contacts?view=${view.id}`}
+          className={view.id === activeId ? 'active' : ''}
+        >
+          {view.label}
+        </Link>
+      ))}
+    </nav>
+  );
 }
 
 export function ContactsPage() {
-  const [query, setQuery] = useState('');
-  const [debounced, setDebounced] = useState('');
-  const [page, setPage] = useState(0);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const viewId = searchParams.get('view') ?? DEFAULT_VIEW_ID;
+  const view = viewById(viewId);
+  const sort = searchParams.get('sort') ?? view.sort;
+  const dir = searchParams.get('dir') ?? view.dir;
+  const page = Number(searchParams.get('page') ?? 0);
+  const urlQuery = searchParams.get('q') ?? '';
+
+  // The text box is the one thing that cannot live in the URL directly —
+  // a param write per keystroke would push a history entry per keystroke.
+  const [typed, setTyped] = useState(urlQuery);
+  useEffect(() => setTyped(urlQuery), [urlQuery]);
+
+  function patchParams(changes, { resetPage = true } = {}) {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === null || value === '') next.delete(key);
+      else next.set(key, String(value));
+    }
+    if (resetPage) next.delete('page');
+    setSearchParams(next);
+  }
 
   useEffect(() => {
-    const handle = setTimeout(() => {
-      setDebounced(query.trim());
-      setPage(0);
-    }, 300);
+    if (typed === urlQuery) return undefined;
+    const handle = setTimeout(() => patchParams({ q: typed }), 300);
     return () => clearTimeout(handle);
-  }, [query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typed]);
 
-  const candidates = useAsync(
-    () => api.listCandidates({ q: debounced, limit: PAGE_SIZE, offset: page * PAGE_SIZE, include_history: true }),
-    [debounced, page],
+  // Rounded so a re-render mid-minute cannot shift a 90-day boundary and
+  // re-fire the loader; the window only needs to be accurate to the minute.
+  const nowKey = Math.floor(Date.now() / MINUTE);
+  const now = useMemo(() => new Date(nowKey * MINUTE), [nowKey]);
+
+  const listParams = resolveParams(viewId, { q: urlQuery, sort, dir, page, now });
+  const totalParams = countParams(viewId, { q: urlQuery, now });
+  const listKey = JSON.stringify(listParams);
+  const totalKey = JSON.stringify(totalParams);
+
+  const rows = useAsync(
+    () => api.contactsGrid({ ...listParams, include_history: true }),
+    [listKey],
   );
-  const count = useAsync(() => api.candidateCount(), []);
+  const total = useAsync(() => api.contactsCount(totalParams), [totalKey]);
 
-  const rows = candidates.data ?? [];
-  const total = count.data?.count;
+  const data = rows.data ?? [];
+  const count = total.data?.count;
+  const lastPage = count != null ? Math.max(0, Math.ceil(count / PAGE_SIZE) - 1) : null;
+
+  function toggleSort(key) {
+    if (sort !== key) return patchParams({ sort: key, dir: 'asc' });
+    return patchParams({ sort: key, dir: dir === 'asc' ? 'desc' : 'asc' });
+  }
 
   return (
     <>
       <PageHeader
         title="Contacts"
-        subtitle={total != null ? `${total} candidates in your workspace.` : 'All candidates in your workspace.'}
+        subtitle={
+          count != null
+            ? `${count.toLocaleString()} ${count === 1 ? 'person' : 'people'} · ${view.blurb}`
+            : view.blurb
+        }
       />
+
+      <ViewTabs activeId={view.id} />
 
       <div className="stack">
         <input
           type="text"
           placeholder="Search by name, title, or company…"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          value={typed}
+          data-testid="contacts-search"
+          onChange={(event) => setTyped(event.target.value)}
         />
 
-        <ErrorBox error={candidates.error} />
-        {candidates.loading ? (
-          <Loading label="Loading candidates…" />
-        ) : rows.length ? (
-          <div className="stack" style={{ gap: 8 }}>
-            {rows.map((candidate) => (
-              <div key={candidate.id} className="card spread">
-                <div>
-                  <div style={{ fontWeight: 600 }}>
-                    <Link to={`/contacts/${candidate.id}`} style={{ textDecoration: 'none' }}>
-                      {candidate.full_name}
-                    </Link>
-                  </div>
-                  <div className="muted small">
-                    {[candidate.current_title, candidate.current_company]
-                      .filter(Boolean)
-                      .join(' · ')}
-                    {location(candidate) ? ` · ${location(candidate)}` : ''}
-                  </div>
-                </div>
-                <div className="row wrap" style={{ justifyContent: 'flex-end' }}>
-                  {(candidate.skills ?? []).slice(0, 4).map((skill) => (
-                    <Badge key={skill}>{skill}</Badge>
-                  ))}
-                  {candidate.years_experience ? (
-                    <Badge tone="accent">{Math.round(candidate.years_experience)}y</Badge>
-                  ) : null}
-                  {candidate.history?.last_emailed_at ? (
-                    <Badge tone="strong">
-                      emailed {new Date(candidate.history.last_emailed_at).toLocaleDateString()}
-                    </Badge>
-                  ) : null}
-                </div>
-              </div>
-            ))}
+        <ErrorBox error={rows.error} />
+
+        {rows.loading ? (
+          <Loading label="Loading contacts…" />
+        ) : data.length ? (
+          <div className="card dgrid-wrap">
+            <table className="dgrid" data-testid="contacts-grid">
+              <colgroup>
+                {view.columns.map((key) => (
+                  <col key={key} style={{ width: CONTACT_COLUMNS[key].width }} />
+                ))}
+              </colgroup>
+              <thead>
+                <tr>
+                  {view.columns.map((key) => {
+                    const column = CONTACT_COLUMNS[key];
+                    const active = column.sort && column.sort === sort;
+                    return (
+                      <th
+                        key={key}
+                        className={column.numeric ? 'num' : undefined}
+                        aria-sort={
+                          active ? (dir === 'asc' ? 'ascending' : 'descending') : undefined
+                        }
+                      >
+                        {column.sort ? (
+                          <button
+                            type="button"
+                            className="sort"
+                            data-testid={`sort-${column.sort}`}
+                            onClick={() => toggleSort(column.sort)}
+                          >
+                            {column.label}
+                            {active ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}
+                          </button>
+                        ) : (
+                          column.label
+                        )}
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((row) => (
+                  <tr key={row.id} data-testid="contact-row" data-id={row.id}>
+                    {view.columns.map((key) => (
+                      <td key={key} className={CONTACT_COLUMNS[key].numeric ? 'num' : undefined}>
+                        <Cell column={key} row={row} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : (
-          <Empty>
-            {debounced ? `No candidates match “${debounced}”.` : 'No candidates yet — import some via the ingest CLI.'}
-          </Empty>
+          <Empty>{urlQuery ? `No contacts match “${urlQuery}”.` : view.empty}</Empty>
         )}
 
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <button type="button" disabled={page === 0} onClick={() => setPage(page - 1)}>
-            Previous
-          </button>
-          <span className="muted small">Page {page + 1}</span>
-          <button
-            type="button"
-            disabled={rows.length < PAGE_SIZE}
-            onClick={() => setPage(page + 1)}
-          >
-            Next
-          </button>
-        </div>
+        {(page > 0 || data.length === PAGE_SIZE) && (
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <button
+              type="button"
+              disabled={page === 0}
+              onClick={() => patchParams({ page: page - 1 }, { resetPage: false })}
+            >
+              Previous
+            </button>
+            <div className="row" style={{ gap: 4 }}>
+              {lastPage != null &&
+                pageWindow(page, lastPage + 1).map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={n === page ? 'tiny' : 'tiny ghost'}
+                    onClick={() => patchParams({ page: n }, { resetPage: false })}
+                  >
+                    {n + 1}
+                  </button>
+                ))}
+            </div>
+            <button
+              type="button"
+              disabled={lastPage != null ? page >= lastPage : data.length < PAGE_SIZE}
+              onClick={() => patchParams({ page: page + 1 }, { resetPage: false })}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </>
   );

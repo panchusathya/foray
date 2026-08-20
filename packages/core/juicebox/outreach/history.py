@@ -39,6 +39,39 @@ def _when(column):
     return func.coalesce(column, Message.created_at)
 
 
+def contact_rollup_subquery(org_id: str):
+    """The same aggregate as ``candidate_history_stats``, shaped as a joinable
+    subquery so the CRM grid can *sort and filter* on contact recency.
+
+    ``candidate_history_stats`` decorates a page whose ids are already known --
+    it cannot answer "order every candidate by last contact". This can, at the
+    cost of a grouped scan of the org's messages, which is bounded by people
+    who actually have mail rather than by the sourced pool.
+
+    One definition, two callers: a divergence here would mean the grid sorts by
+    one number and the row displays another.
+    """
+    outbound = Message.direction == "outbound"
+    inbound = Message.direction == "inbound"
+    return (
+        select(
+            Message.candidate_id.label("candidate_id"),
+            func.min(case((outbound, _when(Message.sent_at)))).label("first_contacted_at"),
+            func.max(case((outbound, _when(Message.sent_at)))).label("last_emailed_at"),
+            func.max(case((inbound, _when(Message.sent_at)))).label("last_reply_at"),
+            func.sum(case((outbound, 1), else_=0)).label("outbound_count"),
+            func.sum(case((inbound, 1), else_=0)).label("inbound_count"),
+        )
+        .where(
+            Message.org_id == org_id,
+            # Queued rows are intentions, failed rows never reached anyone.
+            Message.status.in_(("sent", "received")),
+        )
+        .group_by(Message.candidate_id)
+        .subquery()
+    )
+
+
 def candidate_history_stats(
     db: Session, *, org_id: str, candidate_ids: list[str]
 ) -> dict[str, HistoryStats]:

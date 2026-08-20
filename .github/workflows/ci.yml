@@ -215,6 +215,11 @@ jobs:
     # juicebox_staging/foray_staging and drives the browser suite end to end.
     name: staging smoke + browser suite
     runs-on: ubuntu-latest
+    # This job shells into a booted stack, so a wedged container hangs a step
+    # rather than failing it. Without a ceiling it sits on the runner until the
+    # 6-hour default: runs #79, #80 and #83 burned 1h35m, 4h19m and 1h50m on
+    # the same deadlocked seed step.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

@@ -111,31 +111,37 @@ async def amain(args: argparse.Namespace) -> int:
             )
         if args.source == "linkedin":
             await seed_linkedin(conn, rng, args.count)
-            print(f"seeded {args.count} synthetic LinkedIn candidates + raw_profiles")
-            await close_pool()
-            return 0
-        for i in range(args.count):
-            node = make_node(rng, i)
-            cid = await conn.fetchval(
-                "insert into candidates (login, github_id, name, location_raw, discovery_shard) "
-                "values ($1, $2, $3, $4, 'synthetic') "
-                "on conflict (login) do update set name = excluded.name returning id",
-                node["login"],
-                1_000_000 + i,
-                node["name"],
-                node["location"],
-            )
-            await conn.execute(
-                "insert into raw_profiles (candidate_id, source, login, data, fetched_at) "
-                "values ($1, 'github', $2, $3::jsonb, now()) "
-                "on conflict (candidate_id, source) do update set data = excluded.data, fetched_at = now()",
-                cid,
-                node["login"],
-                json.dumps(node),
-            )
-    print(f"seeded {args.count} synthetic candidates + raw_profiles")
+            summary = f"seeded {args.count} synthetic LinkedIn candidates + raw_profiles"
+        else:
+            summary = await _seed_github(conn, rng, args.count)
+    # Outside the acquire: close_pool() waits for every connection to be
+    # released, so calling it while `conn` is still held deadlocks forever.
+    print(summary)
     await close_pool()
     return 0
+
+
+async def _seed_github(conn, rng: random.Random, count: int) -> str:
+    for i in range(count):
+        node = make_node(rng, i)
+        cid = await conn.fetchval(
+            "insert into candidates (login, github_id, name, location_raw, discovery_shard) "
+            "values ($1, $2, $3, $4, 'synthetic') "
+            "on conflict (login) do update set name = excluded.name returning id",
+            node["login"],
+            1_000_000 + i,
+            node["name"],
+            node["location"],
+        )
+        await conn.execute(
+            "insert into raw_profiles (candidate_id, source, login, data, fetched_at) "
+            "values ($1, 'github', $2, $3::jsonb, now()) "
+            "on conflict (candidate_id, source) do update set data = excluded.data, fetched_at = now()",
+            cid,
+            node["login"],
+            json.dumps(node),
+        )
+    return f"seeded {count} synthetic candidates + raw_profiles"
 
 
 def make_linkedin_record(rng: random.Random, i: int) -> dict:

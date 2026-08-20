@@ -297,12 +297,18 @@ async def test_search_never_raises_on_adversarial_query():
 
 @requires_db
 async def test_ef_search_does_not_leak_from_the_pool():
+    """SET LOCAL on a pooled connection must not survive the request.
+
+    ``show hnsw.ef_search`` can return '' on some pgvector builds when the
+    GUC has never been set in the session — do not int() that. A leak is
+    the raised request value (100, or 1.6*vector_k) sticking after search.
+    """
     conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
     try:
+        before = await conn.fetchval("show hnsw.ef_search")
         await run_search(conn, "backend engineer rust", 5, use_llm=False)
-        value = await conn.fetchval("show hnsw.ef_search")
-        # Default pgvector ef_search is 40. SET LOCAL must not stick.
-        assert str(value) in {"40", "20"} or int(value) <= 40
+        after = await conn.fetchval("show hnsw.ef_search")
+        assert after == before
     finally:
         await conn.close()
 

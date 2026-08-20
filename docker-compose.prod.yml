@@ -177,6 +177,8 @@ services:
     build:
       context: packages/foray
       dockerfile: Dockerfile
+      args:
+        FORAY_BAKE_RERANKER: "true"
     restart: unless-stopped
     logging: *default_logging
     cpus: 1.5

@@ -66,6 +66,39 @@ class TestTemplates:
         assert "&lt;script&gt;" in html
         assert html.count("<p>") == 2
 
+    def test_html_templates_keep_formatting_and_drop_scripts(self):
+        html = templates.to_html(
+            '<p>Hi {{ first_name }}, <strong>please</strong> read '
+            '<a href="https://jobs.example.com/role">this</a>'
+            '<script>alert(1)</script></p>'
+        )
+        assert "<strong>please</strong>" in html
+        assert '<a href="https://jobs.example.com/role">this</a>' in html
+        assert "{{ first_name }}" in html
+        assert "<script>" not in html
+        assert "alert" not in html
+
+    def test_html_templates_unwrap_unsafe_links(self):
+        html = templates.to_html('<p><a href="javascript:alert(1)">click</a></p>')
+        assert "javascript" not in html.lower()
+        assert html == "<p>click</p>"
+
+    def test_variables_still_substitute_inside_html(self):
+        rendered = templates.render(
+            "<p>Hi {{ first_name }}, <em>{{ role_title | the role }}</em></p>",
+            {"first_name": "Ada"},
+        )
+        html = templates.to_html(rendered)
+        assert html == "<p>Hi Ada, <em>the role</em></p>"
+
+    def test_to_text_strips_tags_and_keeps_plain_text(self):
+        assert templates.to_text("<p>Hi <strong>Ada</strong></p><p>Bye</p>") == "Hi Ada\n\nBye"
+        assert templates.to_text("Hi Ada,\n\nBye") == "Hi Ada,\n\nBye"
+
+    def test_sanitize_preview_leaves_plain_text_alone(self):
+        assert templates.sanitize_preview("Hi Ada") == "Hi Ada"
+        assert "<script>" not in templates.sanitize_preview("<p>Hi<script>alert(1)</script></p>")
+
     def test_tracking_rewrites_links_and_adds_pixel(self):
         html = templates.add_tracking(
             '<p><a href="https://jobs.example.com/role">role</a></p>',
@@ -367,6 +400,36 @@ class TestSequenceRun:
         assert enrollment.current_step == 1
         assert enrollment.status == "active"
         assert enrollment.next_send_at is not None
+
+    def test_html_body_template_sends_formatted_mail(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = outreach_fixture["sequence"]
+        steps = sorted(sequence.steps, key=lambda s: s.step_order)
+        steps[0].body_template = (
+            '<p>Hi {{ first_name }}, see <strong>us</strong> at '
+            '<a href="https://jobs.example.com/role">this role</a>.</p>'
+            "<p><script>alert(1)</script></p>"
+        )
+        session.commit()
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+
+        email = mailbox.outbox[0]
+        assert "<strong>us</strong>" in email.html_body
+        assert "this role" in email.html_body
+        assert "/t/c/" in email.html_body
+        assert "script" not in email.html_body
+        assert "alert" not in email.html_body
+        assert "<strong>" not in email.text_body
+        assert "Hi Ada" in email.text_body
+        assert "this role" in email.text_body
+        stored = session.query(Message).one()
+        assert stored.body == email.text_body
+        assert "<strong>" not in stored.body
 
     def test_nothing_sends_before_the_delay_elapses(
         self, session, outreach_fixture, mailbox

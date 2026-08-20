@@ -345,6 +345,7 @@ def send_step(
     if not enrollment.personalization:
         enrollment.personalization = context
 
+    plain_body = templates.to_text(body)
     message = existing
     if message is None:
         message = Message(
@@ -356,7 +357,7 @@ def send_step(
             direction="outbound",
             to_address=to_address,
             subject=subject,
-            body=body,
+            body=plain_body,
             status="queued",
         )
         try:
@@ -371,7 +372,7 @@ def send_step(
                 return message
     else:
         message.subject = subject
-        message.body = body
+        message.body = plain_body
         message.to_address = to_address
     if fragments:
         message.ai_fragments = fragments
@@ -394,7 +395,7 @@ def send_step(
     email = OutboundEmail(
         to=to_address,
         subject=subject,
-        text_body=body,
+        text_body=plain_body,
         html_body=html_body,
         from_email=sequence.from_email or settings.outreach_from_email,
         from_name=sequence.from_name or settings.outreach_from_name,

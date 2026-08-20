@@ -60,11 +60,11 @@ test.describe('AI directives in the sequence editor', () => {
     await login(page, org.email);
     await page.goto(`/sequences/${sequence.id}`);
 
-    await page.getByPlaceholder('Body — use variables for anything candidate-specific').click();
+    await page.getByTestId('email-body-editor').click();
     await page.getByRole('button', { name: 'ai: …' }).click();
 
-    await expect(
-      page.getByPlaceholder('Body — use variables for anything candidate-specific'),
-    ).toHaveValue(/\{\{ai: say why this role is a fit\}\}/);
+    await expect(page.getByTestId('email-body-editor')).toContainText(
+      '{{ai: say why this role is a fit}}',
+    );
   });
 });

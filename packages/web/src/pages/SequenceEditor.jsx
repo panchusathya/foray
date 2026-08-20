@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
+import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
 import { api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -326,12 +327,15 @@ export function SequenceEditorPage() {
   }
 
   function insertVariable(snippet) {
-    const isSubject = lastFocused.current === 'subject';
-    const node = isSubject ? subjectRef.current : bodyRef.current;
-    const key = isSubject ? 'subject_template' : 'body_template';
-    const value = steps[selected][key];
+    if (lastFocused.current !== 'subject') {
+      lastFocused.current = 'body';
+      bodyRef.current?.insert(snippet);
+      return;
+    }
+    const node = subjectRef.current;
+    const value = steps[selected].subject_template;
     const at = node ? node.selectionStart ?? value.length : value.length;
-    updateStep(selected, { [key]: value.slice(0, at) + snippet + value.slice(at) });
+    updateStep(selected, { subject_template: value.slice(0, at) + snippet + value.slice(at) });
   }
 
   async function save({ pauseFirst = false } = {}) {
@@ -550,15 +554,14 @@ export function SequenceEditorPage() {
                 }}
                 onChange={(event) => updateStep(selected, { subject_template: event.target.value })}
               />
-              <textarea
+              <EmailBodyEditor
+                key={selected}
                 ref={bodyRef}
-                rows={10}
-                placeholder="Body — use variables for anything candidate-specific"
                 value={step.body_template}
                 onFocus={() => {
                   lastFocused.current = 'body';
                 }}
-                onChange={(event) => updateStep(selected, { body_template: event.target.value })}
+                onChange={(html) => updateStep(selected, { body_template: html })}
               />
               <div className="row wrap small">
                 <label className="muted">
@@ -661,7 +664,17 @@ export function SequenceEditorPage() {
                 <div className="small muted">Subject</div>
                 <div>{preview.subject}</div>
                 <div className="small muted">Body</div>
-                <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }} data-testid="preview-body">{preview.body}</pre>
+                {looksLikeHtml(preview.body) ? (
+                  <div
+                    className="email-preview"
+                    data-testid="preview-body"
+                    dangerouslySetInnerHTML={{ __html: preview.body }}
+                  />
+                ) : (
+                  <pre className="email-preview" data-testid="preview-body">
+                    {preview.body}
+                  </pre>
+                )}
                 <div className="row">
                   <Badge tone="accent">
                     personalised by {preview.personalization?.personalized_by ?? 'template'}

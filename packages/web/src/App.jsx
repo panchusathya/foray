@@ -10,6 +10,7 @@ import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
 import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
+import { LoginPage } from './pages/Login.jsx';
 import { RematchPage } from './pages/Rematch.jsx';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';

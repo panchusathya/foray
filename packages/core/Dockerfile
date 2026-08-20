@@ -22,6 +22,9 @@ USER juicebox
 
 EXPOSE 8000
 
+# Assumes the default CMD below. Any service that reuses this image with a
+# non-HTTP command (the worker runs `juicebox.cli work`) must override this with
+# `healthcheck: {disable: true}` in compose, or it reports unhealthy forever.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"
 

@@ -438,8 +438,8 @@ class Message(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("msg"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
-    # Nullable: mail synced from the user's own Outlook (source="outlook") has
-    # no sequence behind it. Sequence sends always set it.
+    # Nullable: mail synced from the user's own mailbox (source names the
+    # provider) has no sequence behind it. Sequence sends always set it.
     enrollment_id: Mapped[str | None] = mapped_column(
         ForeignKey("enrollments.id", ondelete="CASCADE"), index=True, nullable=True
     )
@@ -451,8 +451,9 @@ class Message(Base, TimestampMixin):
     )
     channel: Mapped[str] = mapped_column(String(32), default="email")
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
-    # sequence: sent by the sequencer. outlook: synced from the user's mailbox
-    # (a manual email or a reply captured without a matching outbound).
+    # "sequence" means the sequencer sent it. Anything else is the provider it
+    # was synced from (microsoft | zoho) -- a manual email, or a reply captured
+    # without a matching outbound.
     source: Mapped[str] = mapped_column(String(20), default="sequence")
     from_address: Mapped[str] = mapped_column(String(255), default="")
     to_address: Mapped[str] = mapped_column(String(255), default="")

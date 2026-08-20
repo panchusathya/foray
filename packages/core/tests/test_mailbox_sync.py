@@ -11,7 +11,7 @@ from juicebox.integrations import microsoft
 from juicebox.integrations.crypto import encrypt_json
 from juicebox.integrations.microsoft import MicrosoftProvider
 from juicebox.integrations.providers import set_provider
-from juicebox.integrations.sync import sync_mailbox, sync_org_mailboxes
+from juicebox.integrations.sync import sync_mailbox
 from juicebox.models import Enrollment, MailboxConnection, Message
 from juicebox.outreach.sender import SendResult, set_sender_factory
 from juicebox.outreach.sequencer import enroll_candidates, run_due
@@ -254,62 +254,6 @@ class TestSyncMailbox:
             session, org_id=synced_org["connection"].org_id, email="ada@example.com"
         )
 
-    def test_org_sweep_survives_one_broken_mailbox(self, session, account):
-        good = MailboxConnection(
-            org_id=account["org_id"], address="good@goforay.io",
-            inbox_delta_link="https://graph.test/delta?token=g",
-        )
-        bad = MailboxConnection(org_id=account["org_id"], address="bad@goforay.io")
-        session.add_all([good, bad])
-        session.flush()
-
-        def fake_client(db, connection):
-            client = FakeDeltaClient()
-            if connection.address == "bad@goforay.io":
-                client.inbox_delta_baseline = lambda: (_ for _ in ()).throw(
-                    microsoft.MicrosoftError("token revoked", status_code=401)
-                )
-            return client
-
-        install_graph(fake_client)
-        results = sync_org_mailboxes(session, org_id=account["org_id"])
-        assert "good@goforay.io" in results
-        assert "bad@goforay.io" not in results
-        assert "token revoked" in bad.error
-
-    def test_the_sweep_covers_every_provider(self, session, account):
-        """The sweep must not filter by provider: a Zoho mailbox that never
-        gets polled is a mailbox whose replies are never detected."""
-        session.add(
-            MailboxConnection(
-                org_id=account["org_id"], address="z@goforay.io", provider="zoho"
-            )
-        )
-        session.flush()
-
-        seen: list[str] = []
-
-        class Recorder:
-            name = "zoho"
-
-            def read_cursor(self, connection, folder):
-                return ""
-
-            def iter_folder(self, db, connection, folder, *, cursor):
-                from juicebox.integrations.providers import FolderPage
-
-                seen.append(f"{connection.address}:{folder}")
-                return FolderPage(next_cursor="mark-1", initialized=True)
-
-            def commit_cursor(self, db, connection, folder, cursor):
-                return None
-
-        set_provider("zoho", Recorder())
-        install_graph(lambda db, conn: FakeDeltaClient())
-        results = sync_org_mailboxes(session, org_id=account["org_id"])
-        assert "z@goforay.io" in results
-        assert "z@goforay.io:inbox" in seen
-
 
 class TestWorkerWiring:
     def test_tick_is_scheduled_only_with_an_active_mailbox(self, session, account):
@@ -326,6 +270,35 @@ class TestWorkerWiring:
         ensure_ticks(session)
         kinds = {job.kind for job in session.query(Job).all()}
         assert KIND_MAILBOX_SYNC in kinds
+
+    def test_the_dispatcher_covers_every_provider(self, session, synced_org):
+        """A Zoho mailbox that never gets a job is a mailbox whose replies are
+        never detected, so the fan-out must not filter by provider."""
+        from juicebox.jobs import KIND_MAILBOX_SYNC, KIND_MAILBOX_SYNC_ONE, enqueue
+        from juicebox.models import Job
+        from juicebox.worker import process_job
+
+        zoho_box = MailboxConnection(
+            org_id=synced_org["connection"].org_id,
+            address="z@goforay.io",
+            provider="zoho",
+        )
+        session.add(zoho_box)
+        session.flush()
+        job = enqueue(
+            session,
+            org_id=synced_org["connection"].org_id,
+            kind=KIND_MAILBOX_SYNC,
+            idempotency_key="sync-dispatch-providers",
+            payload={"org_id": synced_org["connection"].org_id},
+        )
+        process_job(session, job)
+        session.commit()
+        queued = session.query(Job).filter_by(kind=KIND_MAILBOX_SYNC_ONE).all()
+        assert {j.payload["mailbox_id"] for j in queued} == {
+            synced_org["connection"].id,
+            zoho_box.id,
+        }
 
     def test_dispatcher_fans_out_per_mailbox_and_reschedules(self, session, synced_org):
         """One job per mailbox, so a slow mailbox cannot starve the others."""

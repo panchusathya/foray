@@ -71,8 +71,8 @@ _PAGE_LIMIT = 200
 # -- the next pass carries on and the warning says so.
 _MAX_CATCHUP_PAGES = 25
 
-# Zoho's own folder names, mapped from the logical ones sync.py asks for.
-_FOLDER_NAMES = {FOLDER_INBOX: "inbox", FOLDER_SENT: "sent"}
+# Zoho's own name for the Drafts folder, resolved at connect alongside the two
+# folders sync.py asks for by name.
 _DRAFTS = "drafts"
 
 

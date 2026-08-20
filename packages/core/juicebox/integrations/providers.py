@@ -189,11 +189,6 @@ def provider_names() -> list[str]:
     return sorted(_providers)
 
 
-def configured_providers() -> list[str]:
-    """Providers this deployment actually has credentials for."""
-    return [name for name in provider_names() if get_provider(name).is_configured()]
-
-
 def set_provider(name: str, provider: MailProvider | None) -> None:
     """Tests swap a provider in; None removes it."""
     if not _providers:

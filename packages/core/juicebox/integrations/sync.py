@@ -38,13 +38,7 @@ from sqlalchemy.orm import Session
 from ..models import MailboxConnection, Message, ReplyDraft, utcnow
 from ..outreach.sequencer import find_message_for_reply, record_reply
 from .matching import build_address_index, record_synced_message, resolve_candidate
-from .providers import (
-    FOLDER_INBOX,
-    FOLDER_SENT,
-    MailboxEvent,
-    ProviderError,
-    get_provider,
-)
+from .providers import FOLDER_INBOX, FOLDER_SENT, MailboxEvent, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -441,29 +435,3 @@ def _enqueue_reply_draft(
             "mailbox_id": connection.id,
         },
     )
-
-
-def sync_org_mailboxes(
-    db: Session, *, org_id: str, now: datetime | None = None
-) -> dict[str, SyncSummary]:
-    """Sync every active mailbox in the org, whatever provider it belongs to.
-
-    One broken mailbox must not stop the others — its error lands on the
-    connection row and the loop moves on.
-    """
-    now = now or utcnow()
-    results: dict[str, SyncSummary] = {}
-    connections = db.scalars(
-        select(MailboxConnection).where(
-            MailboxConnection.org_id == org_id,
-            MailboxConnection.status == "active",
-        )
-    ).all()
-    for connection in connections:
-        try:
-            results[connection.address] = sync_mailbox(db, connection, now=now)
-        except ProviderError as exc:
-            logger.warning("mailbox sync failed for %s: %s", connection.address, exc)
-            connection.error = str(exc)
-            db.flush()
-    return results

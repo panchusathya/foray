@@ -1,3 +1,5 @@
+import { appendFileSync } from 'node:fs';
+
 import { expect, test } from '@playwright/test';
 
 import { candidateFixtures, createOrg, uniqueEmail } from './support.js';
@@ -99,6 +101,17 @@ test.describe('durability probe (temporary)', () => {
 
     console.log(`\n=== durability probe ===\n${report}\n`);
     test.info().annotations.push({ type: 'probe', description: report });
+
+    // Also to the run summary. console.log lands in the step log, which GitHub
+    // lazy-loads and buries: the Python probe's summary read first try, its
+    // step output never did.
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(
+        process.env.GITHUB_STEP_SUMMARY,
+        `## Client-side durability probe\n\n\`\`\`\n${report}\n\`\`\`\n`,
+        'utf8',
+      );
+    }
 
     // Records, never gates: the point is the evidence above.
     expect(ITERATIONS).toBeGreaterThan(0);

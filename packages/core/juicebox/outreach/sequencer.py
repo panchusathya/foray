@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
+from ..crm import track_all
 from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
@@ -181,6 +182,11 @@ def enroll_candidates(
     now = now or utcnow()
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     first_due = now if (send_now or not steps) else schedule_step_at(steps[0], base=now)
+
+    # Choosing to email someone is a CRM action: it is what makes their replies
+    # worth keeping, and without it a contact could drop out of the CRM the
+    # moment they leave their last project.
+    track_all(db, org_id=sequence.org_id, candidate_ids=candidate_ids)
 
     existing = {
         row.candidate_id: row

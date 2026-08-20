@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(org.router)
     app.include_router(org.suppressions_router)
     app.include_router(candidates.router)
+    app.include_router(candidates.notes_router)
     app.include_router(search.router)
     app.include_router(projects.router)
     app.include_router(outreach.router)

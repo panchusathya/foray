@@ -93,6 +93,17 @@ export const api = {
     return request(`/v1/candidates${suffix ? `?${suffix}` : ''}`);
   },
   getCandidate: (id) => request(`/v1/candidates/${id}`),
+  updateCandidate: (id, payload) =>
+    request(`/v1/candidates/${id}`, { method: 'PATCH', body: payload }),
+
+  listNotes: (candidateId) => request(`/v1/candidates/${candidateId}/notes`),
+  createNote: (candidateId, payload) =>
+    request(`/v1/candidates/${candidateId}/notes`, { method: 'POST', body: payload }),
+  // Keyed by the note, not the person: the candidate in the path would be
+  // a second thing to keep consistent for no gain.
+  updateNote: (noteId, payload) =>
+    request(`/v1/notes/${noteId}`, { method: 'PATCH', body: payload }),
+  deleteNote: (noteId) => request(`/v1/notes/${noteId}`, { method: 'DELETE' }),
   candidateTimeline: (id, limit = 200) =>
     request(`/v1/candidates/${id}/timeline?limit=${limit}`),
   listMessages: ({ candidate_id, direction, limit = 50 } = {}) => {
@@ -184,6 +195,28 @@ export const MAIL_PROVIDERS = {
 export function providerLabel(provider) {
   return MAIL_PROVIDERS[provider]?.label ?? provider;
 }
+
+// Mirrors CRM_STATUSES in models.py. do_not_contact writes a real
+// suppression, which the sequencer honours on every send.
+export const CRM_STATUSES = [
+  'none',
+  'prospect',
+  'active',
+  'nurture',
+  'placed',
+  'do_not_contact',
+  'archived',
+];
+
+export const CRM_STATUS_LABELS = {
+  none: 'No status',
+  prospect: 'Prospect',
+  active: 'Active',
+  nurture: 'Nurture',
+  placed: 'Placed',
+  do_not_contact: 'Do not contact',
+  archived: 'Archived',
+};
 
 export const PIPELINE_STAGES = [
   'sourced',

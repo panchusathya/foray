@@ -8,9 +8,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from ..crm import add_note, edit_note, patch_candidate, set_tags, tags_for, track
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..enrich.email import guess_emails
-from ..models import Candidate, Enrollment, Message, ProjectCandidate, utcnow
+from ..models import (
+    CRM_STATUSES,
+    Candidate,
+    CandidateNote,
+    CandidateTag,
+    Enrollment,
+    Message,
+    ProjectCandidate,
+    record_event,
+    utcnow,
+)
 from ..outreach.history import (
     candidate_history_stats,
     candidate_timeline,
@@ -21,7 +32,10 @@ from ..schemas import (
     BulkCandidateIn,
     BulkUpsertResult,
     CandidateIn,
+    CandidateNoteIn,
+    CandidateNoteOut,
     CandidateOut,
+    CandidatePatch,
     CandidateSummary,
     CandidateTimelineOut,
     HistoryStatsOut,
@@ -30,6 +44,9 @@ from ..schemas import (
 )
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/candidates", tags=["candidates"])
+# Editing a note needs only the note: the candidate in the path would be a
+# second thing to keep consistent, and the row is org-scoped anyway.
+notes_router = APIRouter(route_class=CommittingRoute, prefix="/v1/notes", tags=["candidates"])
 
 MAX_BULK = 5000
 # Above this, "select all matching" stops being a selection and starts
@@ -79,6 +96,16 @@ def bulk_upsert(
     return BulkUpsertResult(created=result.created, updated=result.updated, ids=result.ids)
 
 
+def _actor_name(db: Session, principal: Principal) -> str:
+    """The byline, snapshotted onto the note so it survives the user."""
+    if not principal.user_id:
+        return ""
+    from ..models import User
+
+    user = db.get(User, principal.user_id)
+    return (user.name or user.email) if user else ""
+
+
 def _validate_grid_params(scope, sort, direction, relationship):
     if scope not in ("all", "crm"):
         raise HTTPException(
@@ -105,11 +132,11 @@ def _validate_grid_params(scope, sort, direction, relationship):
 def _in_crm_scope():
     """The CRM population, as opposed to the whole sourced pool.
 
-    Deliberately the same three conditions as
+    Deliberately the same four conditions as
     ``integrations.matching.build_address_index``: someone in a project, in a
-    sequence, or already in correspondence. When ``crm_tracked`` lands it joins
-    this OR here, in one place, so the grid and the mail privacy guard cannot
-    drift apart.
+    sequence, already in correspondence, or explicitly tracked. Kept in step
+    with that guard on purpose -- a person the grid calls a contact while the
+    mail sync treats them as a stranger is a confusing pair of behaviours.
     """
     return (
         exists(select(Message.id).where(Message.candidate_id == Candidate.id))
@@ -117,6 +144,7 @@ def _in_crm_scope():
             select(ProjectCandidate.id).where(ProjectCandidate.candidate_id == Candidate.id)
         )
         | exists(select(Enrollment.id).where(Enrollment.candidate_id == Candidate.id))
+        | Candidate.crm_tracked.is_(True)
     )
 
 
@@ -132,6 +160,8 @@ def _candidate_query(
     contacted_before=None,
     contacted_after=None,
     created_after=None,
+    crm_status=None,
+    tag=None,
     now=None,
 ):
     """One WHERE clause, shared by the listing and the count.
@@ -160,6 +190,19 @@ def _candidate_query(
         stmt = stmt.where(Candidate.seniority.in_(seniority))
     if scope == "crm":
         stmt = stmt.where(_in_crm_scope())
+    if crm_status:
+        stmt = stmt.where(Candidate.crm_status.in_(crm_status))
+    if tag:
+        # A join table, so this is an indexed EXISTS rather than the
+        # post-paging Python filter that `skill` still suffers from.
+        stmt = stmt.where(
+            exists(
+                select(CandidateTag.id).where(
+                    CandidateTag.candidate_id == Candidate.id,
+                    CandidateTag.tag.in_([t.lower() for t in tag]),
+                )
+            )
+        )
 
     if contacted_before is not None:
         stmt = stmt.where(rollup.c.last_emailed_at < contacted_before)
@@ -241,6 +284,8 @@ def list_candidates(
     contacted_before: datetime | None = Query(default=None),
     contacted_after: datetime | None = Query(default=None),
     created_after: datetime | None = Query(default=None),
+    crm_status: list[str] | None = Query(default=None),
+    tag: list[str] | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_history: bool = Query(
@@ -269,6 +314,8 @@ def list_candidates(
         contacted_before=contacted_before,
         contacted_after=contacted_after,
         created_after=created_after,
+        crm_status=crm_status,
+        tag=tag,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, sort, dir)).limit(limit).offset(offset)
@@ -282,6 +329,10 @@ def list_candidates(
         rows = [r for r in rows if wanted & {s.lower() for s in (r.skills or [])}]
 
     summaries = [CandidateSummary.model_validate(r) for r in rows]
+    if summaries:
+        by_candidate = tags_for(db, candidate_ids=[s.id for s in summaries])
+        for summary in summaries:
+            summary.tags = by_candidate.get(summary.id, [])
     if include_history and summaries:
         stats = candidate_history_stats(
             db, org_id=principal.org_id, candidate_ids=[s.id for s in summaries]
@@ -303,6 +354,8 @@ def count_candidates(
     contacted_before: datetime | None = Query(default=None),
     contacted_after: datetime | None = Query(default=None),
     created_after: datetime | None = Query(default=None),
+    crm_status: list[str] | None = Query(default=None),
+    tag: list[str] | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
@@ -325,6 +378,8 @@ def count_candidates(
         contacted_before=contacted_before,
         contacted_after=contacted_after,
         created_after=created_after,
+        crm_status=crm_status,
+        tag=tag,
     )
     total = db.scalar(
         select(func.count()).select_from(stmt.with_only_columns(Candidate.id).subquery())
@@ -342,6 +397,8 @@ def candidate_ids(
     contacted_before: datetime | None = Query(default=None),
     contacted_after: datetime | None = Query(default=None),
     created_after: datetime | None = Query(default=None),
+    crm_status: list[str] | None = Query(default=None),
+    tag: list[str] | None = Query(default=None),
     limit: int = Query(default=1000, ge=1, le=MAX_SELECT_ALL),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
@@ -368,12 +425,130 @@ def candidate_ids(
         contacted_before=contacted_before,
         contacted_after=contacted_after,
         created_after=created_after,
+        crm_status=crm_status,
+        tag=tag,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, "name", "asc")).limit(limit + 1)
     ).all()
     ids = [row.id for row in rows[:limit]]
     return {"ids": ids, "truncated": len(rows) > limit}
+
+
+def _with_tags(db: Session, candidate: Candidate) -> CandidateOut:
+    """Tags live in a join table, so they are not on the ORM row."""
+    out = CandidateOut.model_validate(candidate)
+    out.tags = tags_for(db, candidate_ids=[candidate.id]).get(candidate.id, [])
+    return out
+
+
+def _load_candidate(db: Session, candidate_id: str, org_id: str) -> Candidate:
+    candidate = db.scalar(
+        select(Candidate).where(Candidate.id == candidate_id, Candidate.org_id == org_id)
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    return candidate
+
+
+@router.patch("/{candidate_id}", response_model=CandidateOut)
+def update_candidate(
+    candidate_id: str,
+    payload: CandidatePatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> CandidateOut:
+    """Edit a person by hand.
+
+    Never routes through ``upsert_candidates``: that path rewrites every scalar
+    from a normalised payload and deletes and recreates experiences and
+    educations. Correcting a job title must not silently rewrite an employment
+    history, so this writes only the fields that were sent.
+    """
+    from ..search.index import invalidate
+
+    candidate = _load_candidate(db, candidate_id, principal.org_id)
+    fields = payload.model_dump(exclude_unset=True)
+
+    tags = fields.pop("tags", None)
+    if "crm_status" in fields and fields["crm_status"] not in CRM_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"crm_status must be one of {list(CRM_STATUSES)}",
+        )
+
+    patch_candidate(db, candidate=candidate, fields=fields, actor_id=principal.user_id)
+    if tags is not None:
+        set_tags(db, candidate=candidate, tags=tags, actor_id=principal.user_id)
+
+    if fields or tags is not None:
+        record_event(
+            db,
+            org_id=principal.org_id,
+            type="candidate.updated",
+            subject_type="candidate",
+            subject_id=candidate.id,
+            actor_id=principal.user_id,
+            payload={"fields": sorted(fields)},
+        )
+        # The search snapshot caches doc_text; a renamed title would otherwise
+        # stay findable only under the old one.
+        invalidate(principal.org_id)
+
+    db.flush()
+    return _with_tags(db, candidate)
+
+
+@router.get("/{candidate_id}/notes", response_model=list[CandidateNoteOut])
+def list_notes(
+    candidate_id: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[CandidateNoteOut]:
+    _load_candidate(db, candidate_id, principal.org_id)
+    rows = db.scalars(
+        select(CandidateNote)
+        .where(
+            CandidateNote.org_id == principal.org_id,
+            CandidateNote.candidate_id == candidate_id,
+        )
+        .order_by(CandidateNote.created_at.desc())
+    ).all()
+    return [CandidateNoteOut.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/{candidate_id}/notes",
+    response_model=CandidateNoteOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_note(
+    candidate_id: str,
+    payload: CandidateNoteIn,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> CandidateNoteOut:
+    candidate = _load_candidate(db, candidate_id, principal.org_id)
+    # Writing a note about someone is a CRM action.
+    track(candidate)
+    note = add_note(
+        db,
+        org_id=principal.org_id,
+        candidate_id=candidate_id,
+        body=payload.body,
+        author_id=principal.user_id,
+        author_name=_actor_name(db, principal),
+    )
+    record_event(
+        db,
+        org_id=principal.org_id,
+        type="note.created",
+        subject_type="candidate",
+        subject_id=candidate_id,
+        actor_id=principal.user_id,
+        payload={},
+    )
+    return CandidateNoteOut.model_validate(note)
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)
@@ -389,7 +564,7 @@ def get_candidate(
     )
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
-    return CandidateOut.model_validate(candidate)
+    return _with_tags(db, candidate)
 
 
 @router.get("/{candidate_id}/timeline", response_model=CandidateTimelineOut)
@@ -469,3 +644,44 @@ def delete_candidate(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
     db.delete(candidate)
     invalidate(principal.org_id)
+
+
+def _load_note(db: Session, note_id: str, principal: Principal) -> CandidateNote:
+    note = db.scalar(
+        select(CandidateNote).where(
+            CandidateNote.id == note_id, CandidateNote.org_id == principal.org_id
+        )
+    )
+    if note is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    # Notes are a record of who thought what: a teammate may read them, but
+    # rewriting someone else's is not an edit, it is a forgery. Owners can
+    # still clean up after a departure.
+    if note.author_id and note.author_id != principal.user_id and principal.role != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the author (or an owner) can change this note",
+        )
+    return note
+
+
+@notes_router.patch("/{note_id}", response_model=CandidateNoteOut)
+def update_note(
+    note_id: str,
+    payload: CandidateNoteIn,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> CandidateNoteOut:
+    note = _load_note(db, note_id, principal)
+    edit_note(db, note=note, body=payload.body)
+    return CandidateNoteOut.model_validate(note)
+
+
+@notes_router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(
+    note_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> None:
+    note = _load_note(db, note_id, principal)
+    db.delete(note)

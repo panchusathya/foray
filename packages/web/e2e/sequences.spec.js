@@ -93,7 +93,12 @@ test.describe('enrolment lives in the sequence editor', () => {
     await expect(row.getByText('no email')).toBeVisible();
 
     await row.locator('input').check();
-    await expect(picker.getByText(/have no email yet/)).toBeVisible();
+    // Assert the consequence, not just the count. This used to say they "wait
+    // until one is found", which was false -- send_step stops such an enrollment
+    // permanently and nothing re-arms it -- so the warning being accurate is the
+    // thing worth guarding.
+    await expect(picker.getByText(/1 of 1 have no email/)).toBeVisible();
+    await expect(picker.getByText(/permanently/)).toBeVisible();
   });
 
   test('a paused sequence says nothing will send and offers Activate', async ({ page, request }) => {

@@ -98,6 +98,9 @@ class Candidate(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("org_id", "source", "source_id", name="uq_candidate_source"),
         Index("ix_candidate_org_updated", "org_id", "updated_at"),
+        # The CRM grid filters on both of these before it does anything else.
+        Index("ix_candidate_org_status", "org_id", "crm_status"),
+        Index("ix_candidate_org_tracked", "org_id", "crm_tracked"),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cand"))
@@ -142,6 +145,24 @@ class Candidate(Base, TimestampMixin):
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- CRM ---------------------------------------------------------------
+    # Per-person status, deliberately distinct from ProjectCandidate.stage:
+    # stage is per-role and partly outreach-driven, this is one hand-set fact
+    # about the relationship itself. A plain string, not a Postgres enum, so
+    # adding a value does not need its own migration.
+    crm_status: Mapped[str] = mapped_column(String(32), default="none")
+    # "Deliberately in the CRM", as opposed to merely sourced. Set only by
+    # explicit CRM actions -- manual add, promoting a discovered contact,
+    # setting a status or tag, and the first add to a project or sequence.
+    # Never by an incidental profile edit: this widens the thread-sync privacy
+    # guard in integrations/matching.py, so it must mean the user asked for
+    # this person to be tracked, not that someone fixed their job title.
+    crm_tracked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Field names a human edited by hand. repository._apply re-applies these
+    # on top of imported data so a nightly Foray refresh cannot silently
+    # overwrite a correction.
+    manual_fields: Mapped[list] = mapped_column(JSON, default=list)
 
     experiences: Mapped[list[Experience]] = relationship(
         back_populates="candidate", cascade="all, delete-orphan", order_by="Experience.position"
@@ -223,6 +244,20 @@ PIPELINE_STAGES = (
 # is still possible via an explicit override.
 OUTREACH_DRIVEN_STAGES = ("contacted", "replied")
 
+# Per-person CRM status. Validated in the router the way stages are, rather
+# than by a database enum, so the vocabulary can grow without a migration.
+# "do_not_contact" is not decorative: setting it writes a Suppression, which
+# the sequencer already honours on every send.
+CRM_STATUSES = (
+    "none",
+    "prospect",
+    "active",
+    "nurture",
+    "placed",
+    "do_not_contact",
+    "archived",
+)
+
 
 class Project(Base, TimestampMixin):
     __tablename__ = "projects"
@@ -262,6 +297,61 @@ class ProjectCandidate(Base, TimestampMixin):
 
     project: Mapped[Project] = relationship(back_populates="members")
     candidate: Mapped[Candidate] = relationship()
+
+
+# --------------------------------------------------------------------------
+# crm
+# --------------------------------------------------------------------------
+
+
+class CandidateNote(Base, TimestampMixin):
+    """A freeform note about a person.
+
+    Distinct from ``ProjectCandidate.notes``, which is a per-role scratch field
+    on a pipeline card: this one belongs to the person, survives them leaving a
+    project, and records who wrote it and when.
+    """
+
+    __tablename__ = "candidate_notes"
+    __table_args__ = (Index("ix_candidate_notes_candidate", "candidate_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("note"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # Unconstrained, like Project.created_by: an API-key principal has no user,
+    # and a deleted user must not take the note with them.
+    author_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Snapshot of the byline, so the note still says who wrote it after that
+    # user is gone.
+    author_name: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CandidateTag(Base, TimestampMixin):
+    """A tag on a person.
+
+    A join table rather than a JSON list on ``candidates``: tag filtering is a
+    grid filter, and the ``skills`` column already demonstrates what happens
+    when a filterable multi-value field is stored as JSON -- it cannot be
+    indexed and ends up filtered in Python after paging.
+    """
+
+    __tablename__ = "candidate_tags"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "tag", name="uq_candidate_tag"),
+        Index("ix_candidate_tags_org_tag", "org_id", "tag"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("tag"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    tag: Mapped[str] = mapped_column(String(60))
+    created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 # --------------------------------------------------------------------------

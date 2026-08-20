@@ -14,7 +14,14 @@ from datetime import timedelta
 import pytest
 
 from juicebox.jobs import KIND_OUTREACH_SEND, enqueue
-from juicebox.models import Enrollment, Job, MailboxConnection, Message, utcnow
+from juicebox.models import (
+    Enrollment,
+    Job,
+    MailboxConnection,
+    Message,
+    SequenceStep,
+    utcnow,
+)
 from juicebox.outreach.rotation import (
     eligible_mailboxes,
     pick_mailbox,
@@ -369,3 +376,109 @@ class TestThreadingHeaders:
         assert captured[0].in_reply_to == ""
         assert captured[1].in_reply_to == "<native-1@test>"
         assert captured[1].references == "<native-1@test>"
+        # And the provider's own id for the parent, which is the only thing
+        # Graph can thread a send on.
+        assert captured[0].thread_native_id == ""
+        assert captured[1].thread_native_id == "native-1"
+
+    def test_the_references_chain_keeps_every_earlier_message(self, session, pool):
+        """References is a chain: a third step that named only its immediate
+        parent would drop out of the thread in any client that missed step 2."""
+        captured: list = []
+
+        class Capturing(PoolSender):
+            def send(self, email):
+                captured.append(email)
+                return super().send(email)
+
+        set_sender_factory("microsoft", lambda db, conn: Capturing(conn, pool["log"]))
+        for connection in pool["connections"]:
+            connection.daily_send_cap = 5
+        session.add(
+            SequenceStep(
+                sequence_id=pool["sequence"].id,
+                step_order=2,
+                delay_days=3,
+                subject_template="Re: {{ role_title }}",
+                body_template="Last note, {{ first_name }}.",
+            )
+        )
+        session.commit()
+        # The sequence already has its steps loaded; without this the run would
+        # still see a two-step sequence and complete after step 2.
+        session.refresh(pool["sequence"])
+
+        candidate = pool["candidates"][0]
+        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
+        session.commit()
+        for _ in range(3):
+            enrollment = session.query(Enrollment).one()
+            enrollment.next_send_at = utcnow() - timedelta(minutes=1)
+            session.flush()
+            run_due(session, org_id=pool["sequence"].org_id)
+            session.commit()
+
+        assert len(captured) == 3
+        assert captured[2].in_reply_to == "<native-2@test>"
+        assert captured[2].references == "<native-1@test> <native-2@test>"
+
+    def test_a_follow_up_keeps_the_threads_subject(self, session, pool):
+        """A changed subject line splits the conversation in Gmail and Outlook
+        even when the headers are right, so a step that renders the same
+        subject as the first email sends as a reply to it.
+
+        The same subject on every step is how the production sequence is
+        written, and how anyone bumping their own email writes it.
+        """
+        candidate = pool["candidates"][0]
+        for connection in pool["connections"]:
+            connection.daily_send_cap = 5
+        steps = sorted(pool["sequence"].steps, key=lambda s: s.step_order)
+        steps[1].subject_template = steps[0].subject_template
+        session.flush()
+        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
+        session.commit()
+        run_due(session, org_id=pool["sequence"].org_id)
+        session.commit()
+
+        enrollment = session.query(Enrollment).one()
+        enrollment.next_send_at = utcnow() - timedelta(minutes=1)
+        session.flush()
+        run_due(session, org_id=pool["sequence"].org_id)
+        session.commit()
+
+        first, second = (
+            session.query(Message)
+            .filter_by(direction="outbound", status="sent")
+            .order_by(Message.sent_at)
+            .all()
+        )
+        assert not first.subject.lower().startswith("re:")
+        assert second.subject == f"Re: {first.subject}"
+
+    def test_a_deliberately_different_subject_is_left_alone(self, session, pool):
+        candidate = pool["candidates"][0]
+        for connection in pool["connections"]:
+            connection.daily_send_cap = 5
+        steps = sorted(pool["sequence"].steps, key=lambda s: s.step_order)
+        steps[1].subject_template = "A different question"
+        session.flush()
+
+        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
+        session.commit()
+        run_due(session, org_id=pool["sequence"].org_id)
+        session.commit()
+        enrollment = session.query(Enrollment).one()
+        enrollment.next_send_at = utcnow() - timedelta(minutes=1)
+        session.flush()
+        run_due(session, org_id=pool["sequence"].org_id)
+        session.commit()
+
+        second = (
+            session.query(Message)
+            .filter_by(direction="outbound", status="sent")
+            .order_by(Message.sent_at)
+            .all()[1]
+        )
+        assert second.subject == "A different question"
+

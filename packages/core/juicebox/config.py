@@ -115,6 +115,13 @@ class Settings:
     llm_timeout_seconds: float = field(default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 120.0))
     # Retries cover 429s and 5xx only; a refusal or bad JSON is not retried.
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
+    # Fast-model calls answer a user who is waiting -- a preview, not a send. The
+    # main 120s budget is right for drafting a whole sequence in a worker and
+    # absurd for a request someone is watching, so those get their own ceiling
+    # and no retries: degrading to the heuristic text beats a spinner.
+    llm_fast_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 20.0)
+    )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)
     )

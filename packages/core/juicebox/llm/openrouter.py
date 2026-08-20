@@ -200,8 +200,14 @@ class OpenRouterTransport:
 
     def complete(self, kwargs: dict[str, Any]) -> LLMResult:
         body = to_openrouter(kwargs)
+        timeout = kwargs.get("timeout")
         try:
-            response = self._sync().post(self._url(), json=body, headers=self._headers)
+            response = self._sync().post(
+                self._url(),
+                json=body,
+                headers=self._headers,
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
         except httpx.TimeoutException as exc:
             raise TimeoutError(f"openrouter request timed out: {exc}") from exc
         except httpx.TransportError as exc:
@@ -210,8 +216,14 @@ class OpenRouterTransport:
 
     async def acomplete(self, kwargs: dict[str, Any]) -> LLMResult:
         body = to_openrouter(kwargs)
+        timeout = kwargs.get("timeout")
         try:
-            response = await self._async().post(self._url(), json=body, headers=self._headers)
+            response = await self._async().post(
+                self._url(),
+                json=body,
+                headers=self._headers,
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
         except httpx.TimeoutException as exc:
             raise TimeoutError(f"openrouter request timed out: {exc}") from exc
         except httpx.TransportError as exc:

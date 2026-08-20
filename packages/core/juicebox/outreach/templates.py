@@ -140,6 +140,21 @@ def render(template: str, context: dict[str, Any]) -> str:
     return _VAR_RE.sub(substitute, template)
 
 
+# The variables personalize() pays a model to write. Everything else in the
+# variable bag is a deterministic profile field. Kept here, next to the parser
+# that finds them, because the whole point is to answer "does this template
+# actually reference any of these" without importing the LLM layer.
+LLM_WRITTEN_VARIABLES = frozenset({"opening_line", "why_relevant", "subject_hint"})
+
+
+def uses_llm_variables(template: str) -> bool:
+    """Whether this template references anything a model has to write."""
+    for match in _VAR_RE.finditer(template or ""):
+        if match.group(1) in LLM_WRITTEN_VARIABLES:
+            return True
+    return False
+
+
 def missing_variables(template: str, context: dict[str, Any]) -> list[str]:
     """Variables with neither a value nor a fallback — worth warning about."""
     missing: list[str] = []

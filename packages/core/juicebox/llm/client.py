@@ -355,6 +355,7 @@ class LLMClient:
         self.fast_model = settings.resolved_llm_fast_model
         self._enabled = settings.llm_enabled if enabled is None else enabled
         self._timeout = settings.llm_timeout_seconds
+        self._fast_timeout = settings.llm_fast_timeout_seconds
         self._semaphore = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
         self._max_retries = max(0, settings.llm_max_retries)
         self._initial_delay = max(0.0, settings.llm_retry_initial_delay)
@@ -430,17 +431,23 @@ class LLMClient:
         schema: dict[str, Any] | None,
         effort: str,
         max_tokens: int,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         output_config: dict[str, Any] = {"effort": effort}
         if schema is not None:
             output_config["format"] = {"type": "json_schema", "schema": schema}
-        return {
+        kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "system": system,
             "output_config": output_config,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if timeout is not None:
+            # Read per-request by the transports. to_openrouter() builds its body
+            # from named keys, so this never reaches the wire as a body field.
+            kwargs["timeout"] = timeout
+        return kwargs
 
     @staticmethod
     def _decode(result: LLMResult) -> LLMResult:
@@ -486,13 +493,14 @@ class LLMClient:
             return exc
         return LLMUnavailable(f"model call failed: {exc}")
 
-    def _call(self, kwargs: dict[str, Any]) -> LLMResult:
+    def _call(self, kwargs: dict[str, Any], *, max_retries: int | None = None) -> LLMResult:
         transport = self._require_transport()
-        for attempt in range(self._max_retries + 1):
+        retries = self._max_retries if max_retries is None else max(0, max_retries)
+        for attempt in range(retries + 1):
             try:
                 return self._finish(transport.complete(kwargs))
             except Exception as exc:  # classified by is_retryable below
-                if attempt >= self._max_retries or not is_retryable(exc):
+                if attempt >= retries or not is_retryable(exc):
                     raise self._fail(exc) from exc
                 self.ledger.record_retry()
                 delay = self._backoff(attempt)
@@ -500,7 +508,7 @@ class LLMClient:
                     "retrying model call after %s (attempt %d/%d, sleeping %.2fs)",
                     exc,
                     attempt + 1,
-                    self._max_retries,
+                    retries,
                     delay,
                 )
                 if delay:
@@ -532,6 +540,32 @@ class LLMClient:
 
     # -- public API ------------------------------------------------------
 
+    def json_fast(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any],
+        effort: str = "low",
+        max_tokens: int = 4000,
+    ) -> LLMResult:
+        """A JSON call for something a person is waiting on.
+
+        The fast model, a short timeout and no retries. LLM_FAST_MODEL unset
+        means fast_model is the main model and only the budget changes, so this
+        is safe to adopt before anyone configures one.
+        """
+        return self.json(
+            system=system,
+            prompt=prompt,
+            schema=schema,
+            effort=effort,
+            max_tokens=max_tokens,
+            model=self.fast_model,
+            timeout=self._fast_timeout,
+            max_retries=0,
+        )
+
     def json(
         self,
         *,
@@ -541,6 +575,8 @@ class LLMClient:
         effort: str = "low",
         max_tokens: int = 8000,
         model: str | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> LLMResult:
         kwargs = self._build_kwargs(
             model=model or self.model,
@@ -549,8 +585,9 @@ class LLMClient:
             schema=schema,
             effort=effort,
             max_tokens=max_tokens,
+            timeout=timeout,
         )
-        return self._decode(self._call(kwargs))
+        return self._decode(self._call(kwargs, max_retries=max_retries))
 
     async def ajson(
         self,

@@ -335,6 +335,11 @@ export function SequenceEditorPage() {
   const [saving, setSaving] = useState(false);
   const [needsPause, setNeedsPause] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  // Monotonic request id and the (candidate, step) the current preview belongs
+  // to -- the same pattern Sourcing.jsx uses for search.
+  const previewRequest = useRef(0);
+  const previewKey = useRef('');
   const [previewCandidate, setPreviewCandidate] = useState('');
   const [picking, setPicking] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
@@ -498,16 +503,28 @@ export function SequenceEditorPage() {
       setError(new Error('No candidates to preview against'));
       return;
     }
+    // Previewing the same candidate and step twice should not re-render, let
+    // alone re-request: the server may have to write copy for it.
+    const key = `${candidateId}:${selected}`;
+    if (previewKey.current === key && preview) return;
+    if (previewing) return;
+
+    const seq = (previewRequest.current += 1);
     setError(null);
+    setPreviewing(true);
     try {
-      setPreview(
-        await api.previewSequence(sequenceId, {
-          candidate_id: candidateId,
-          step_order: selected,
-        }),
-      );
+      const result = await api.previewSequence(sequenceId, {
+        candidate_id: candidateId,
+        step_order: selected,
+      });
+      // A slower earlier request must not overwrite a newer one.
+      if (previewRequest.current !== seq) return;
+      previewKey.current = key;
+      setPreview(result);
     } catch (caught) {
-      setError(caught);
+      if (previewRequest.current === seq) setError(caught);
+    } finally {
+      if (previewRequest.current === seq) setPreviewing(false);
     }
   }
 
@@ -564,6 +581,7 @@ export function SequenceEditorPage() {
               onClick={() => {
                 setSelected(index);
                 setPreview(null);
+                previewKey.current = '';
               }}
             >
               <div className="spread">
@@ -694,8 +712,14 @@ export function SequenceEditorPage() {
                     </option>
                   ))}
                 </select>
-                <button type="button" className="tiny" disabled={dirty} onClick={runPreview}>
-                  Preview
+                <button
+                  type="button"
+                  className="tiny"
+                  data-testid="preview-button"
+                  disabled={dirty || previewing}
+                  onClick={runPreview}
+                >
+                  {previewing ? 'Previewing…' : 'Preview'}
                 </button>
               </div>
             </div>

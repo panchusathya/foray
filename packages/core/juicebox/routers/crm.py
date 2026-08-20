@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..integrations.discovery import dismiss as dismiss_row
 from ..integrations.discovery import promote as promote_row
-from ..models import DISCOVERED_STATUSES, DiscoveredContact, Org, record_event
+from ..models import (
+    DISCOVERED_STATUSES,
+    CandidateTag,
+    DiscoveredContact,
+    Org,
+    record_event,
+)
 from ..schemas import (
     DiscoveredBulkResult,
     DiscoveredDismissRequest,
@@ -57,6 +63,25 @@ def _listing(
         # sometimes the actual counterparty.
         stmt = stmt.where(DiscoveredContact.suggested_status != "cc_only")
     return stmt
+
+
+@router.get("/tags")
+def list_tags(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """The org's tag vocabulary with usage counts, for autocomplete.
+
+    Derived from the join table rather than kept in a dictionary table: a tag
+    nobody uses any more should stop being suggested on its own.
+    """
+    rows = db.execute(
+        select(CandidateTag.tag, func.count(CandidateTag.id))
+        .where(CandidateTag.org_id == principal.org_id)
+        .group_by(CandidateTag.tag)
+        .order_by(func.count(CandidateTag.id).desc(), CandidateTag.tag)
+    ).all()
+    return [{"tag": tag, "count": int(count)} for tag, count in rows]
 
 
 @router.get("/discovered", response_model=list[DiscoveredOut])

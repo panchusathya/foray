@@ -85,11 +85,11 @@ eval: ## Score search quality against the labelled query set
 
 .PHONY: lint
 lint: ## Lint the Python package
-	$(BIN)/python -m ruff check packages/core eval
+	$(BIN)/python -m ruff check packages/core packages/foray eval
 
 .PHONY: format
 format: ## Autoformat the Python package
-	$(BIN)/python -m ruff format packages/core eval
+	$(BIN)/python -m ruff format packages/core packages/foray eval
 
 # ----------------------------------------------------------------- misc ----
 

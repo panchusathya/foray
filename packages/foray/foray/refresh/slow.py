@@ -57,11 +57,10 @@ async def amain(args: argparse.Namespace) -> int:
             log.error("slow.step_failed", step=step, code=code)
 
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with RefreshRun(conn, "slow") as run:
-            run.rows = stale + unembedded
-            run.errors = errors
-            run.notes = f"stale={stale} unembedded={unembedded}"
+    async with pool.acquire() as conn, RefreshRun(conn, "slow") as run:
+        run.rows = stale + unembedded
+        run.errors = errors
+        run.notes = f"stale={stale} unembedded={unembedded}"
     await close_pool()
     print(f"slow refresh complete ({errors} step error(s))")
     return 0

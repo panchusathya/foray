@@ -9,7 +9,7 @@ mining, LinkedIn resolution) goes through the same policy so a fix lands once.
 from __future__ import annotations
 
 import asyncio
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 

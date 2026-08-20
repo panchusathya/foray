@@ -63,8 +63,10 @@ async def validate_gates(conn, archetypes: dict[str, Archetype]) -> None:
     for arch in archetypes.values():
         try:
             await conn.execute(f"explain select 1 from {GATE_FROM} where ({arch.gate})")
-        except Exception as exc:  # noqa: BLE001 - surface the offending gate clearly
-            raise SystemExit(f"archetype {arch.id!r} has an invalid gate: {exc}\n  gate: {arch.gate}")
+        except Exception as exc:
+            raise SystemExit(
+                f"archetype {arch.id!r} has an invalid gate: {exc}\n  gate: {arch.gate}"
+            ) from exc
 
 
 async def sync_archetypes(conn, archetypes: dict[str, Archetype] | None = None) -> dict[str, Archetype]:

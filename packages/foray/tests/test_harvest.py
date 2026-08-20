@@ -4,6 +4,12 @@ import asyncpg
 
 from foray.config import settings
 from foray.db import _asyncpg_dsn
+from foray.harvest.search import (
+    claim_shard,
+    insert_logins,
+    parse_range,
+    split_range,
+)
 from foray.harvest.shards import (
     FOLLOWER_BUCKETS,
     LANGUAGES,
@@ -13,14 +19,7 @@ from foray.harvest.shards import (
     generate_shards,
     load_metros,
 )
-from foray.harvest.search import (
-    claim_shard,
-    insert_logins,
-    parse_range,
-    split_range,
-)
 from tests.dbutil import requires_db
-
 
 # ------------------------------------------------------------------ offline logic --
 

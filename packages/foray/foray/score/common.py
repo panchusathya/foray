@@ -84,7 +84,7 @@ def _mix_summary(language_mix: dict[str, float]) -> str:
 
 def build_user_content(row: Any) -> str:
     language_mix = _as_json(row["language_mix"], {})
-    kind = row["evidence_kind"] if "evidence_kind" in row.keys() else "github"
+    kind = row.get("evidence_kind", "github")
 
     if kind == "linkedin":
         # No code evidence exists for this person. Saying so up front — and
@@ -165,7 +165,7 @@ def _months_since(dt: datetime | None) -> float:
 def heuristic_score(row: Any, arch: Archetype) -> int:
     """A spread-out, spend-free proxy for the real LLM score (demos/tests only)."""
     markers = set(row["domain_markers"])
-    kind = row["evidence_kind"] if "evidence_kind" in row.keys() else "github"
+    kind = row.get("evidence_kind", "github")
     if kind == "linkedin":
         # Career-evidence branch: the GitHub penalties below (stars, commits,
         # push recency, fork count) would zero every LinkedIn row.
@@ -175,7 +175,7 @@ def heuristic_score(row: Any, arch: Archetype) -> int:
         score += min(20.0, float(row["est_experience_years"]))
         if row["experience_confidence"] == "high":
             score += 10
-        title = row["title"] if "title" in row.keys() else None
+        title = row.get("title")
         if title:
             score += 5
         return max(0, min(100, round(score)))

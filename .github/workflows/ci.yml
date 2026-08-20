@@ -31,10 +31,23 @@ jobs:
           cache-dependency-path: packages/core/pyproject.toml
 
       - name: Install
-        run: pip install -e "packages/core[dev]"
+        run: pip install -e "packages/core[dev]" pre-commit
 
       - name: Lint
-        run: ruff check packages/core eval
+        run: ruff check packages/core packages/foray eval
+
+      - name: Pre-commit guardrails
+        run: pre-commit run --all-files
+
+      # The gitleaks pre-commit hook runs `gitleaks git --staged`, which scans
+      # nothing in a clean CI checkout. Scan the whole tree explicitly so the
+      # secret guardrail is real in CI and not only on a developer's machine.
+      - name: Secret scan
+        env:
+          GITLEAKS_VERSION: 8.27.2
+        run: |
+          curl -sSfL             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"             | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks dir . --redact --no-banner
 
       - name: Test
         run: pytest -q
@@ -139,7 +152,8 @@ jobs:
         run: |
           pip install "asyncpg>=0.29" "pydantic>=2.7" "pydantic-settings>=2.3" \
             "fastapi>=0.115" "httpx>=0.27" "pyyaml>=6.0" "tenacity>=8.5" \
-            "structlog>=24.1" "uvicorn>=0.30" "pytest>=8.0" "pytest-asyncio>=0.23"
+            "structlog>=24.1" "uvicorn>=0.30" "pytest>=8.0" "pytest-asyncio>=0.23" \
+            "ruff>=0.11" "mypy>=1.15" "import-linter>=2.3"
           pip install --no-deps -e packages/foray
 
       - name: Migrate foray (twice — second run must be a no-op)
@@ -154,6 +168,18 @@ jobs:
         run: |
           ./scripts/migrate.sh
           ./scripts/migrate.sh
+        working-directory: packages/foray
+
+      - name: Lint
+        run: ruff check .
+        working-directory: packages/foray
+
+      - name: Type-check pure ranking core
+        run: mypy
+        working-directory: packages/foray
+
+      - name: Check ranking import boundary
+        run: lint-imports
         working-directory: packages/foray
 
       - name: Test
@@ -210,6 +236,7 @@ jobs:
           $compose run --rm --no-deps -T foray python scripts/seed_synthetic.py --count 40 --source linkedin
           $compose run --rm --no-deps -T foray python -m foray.enrich.derive
           $compose run --rm --no-deps -T foray python -m foray.embed.run
+          $compose run --rm --no-deps -T foray python -m foray.score.run --offline
 
       - uses: actions/setup-node@v4
         with:

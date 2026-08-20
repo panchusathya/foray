@@ -18,7 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = [
+    "import-linter>=2.3",
+    "mypy>=1.15",
+    "pre-commit>=4.2",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.11",
+]
 
 [project.scripts]
 foray = "foray.cli:main"
@@ -37,3 +44,20 @@ filterwarnings = ["ignore::DeprecationWarning"]
 markers = [
     "model: loads the local sentence-transformers embedding model",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "BLE"]
+ignore = ["B008", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["foray/rank.py"]
+strict = true
+ignore_missing_imports = true

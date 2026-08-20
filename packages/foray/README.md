@@ -15,7 +15,7 @@ GitHub Search API (sharded)   -> candidates            [Phase 1]
 GitHub GraphQL (batched)      -> profile + repo facts  [Phase 2]
 derive + local embeddings     -> signals + vectors     [Phase 3]
 Haiku 4.5 Batch API           -> archetype_scores      [Phase 4]
-FastAPI: SQL filter -> vector rerank -> ORDER BY score [Phase 5]
+FastAPI: SQL filter -> bounded pool -> pure rank -> hydrate [Phase 5]
 on-click: lazy LinkedIn + freshness refresh            [Phase 6]
 tiered cron by field volatility                        [Phase 7]
 ```
@@ -57,6 +57,22 @@ See `migrations/001_init.sql`. The one decision that is expensive to reverse:
 archetype scores live in the normalized `archetype_scores` child table, not wide
 columns on `candidates` (adding an archetype is an INSERT; `rubric_hash` enables
 partial rescoring of stale rows).
+
+## Search ranking and pagination
+
+`foray/rank.py` is the dependency-free ranking core. The API counts candidates
+that pass the structured filters and display floor, retrieves a bounded pool in
+stable archetype-score order, applies the score/vector blend with candidate ID
+as the final tie-breaker, slices absolute ranks, and hydrates only the requested
+page. This is an intentionally bounded retrieval approximation rather than a
+claim that vector similarity was evaluated globally over every eligible row.
+
+`POST /search` and `GET /search/stream` accept `limit` and `offset`; `limit: 0`
+means "the server's own page size", which the response echoes back as
+`page_size` so a client never has to hardcode the stride it pages in.
+`total_matched` is the full filters-plus-floor count; `paginable` is the reachable
+count capped by `FORAY_MAX_PAGINABLE` (1000 by default). The same ceiling,
+filters, and deterministic ordering apply to the pure-vector fallback path.
 
 ## Tests
 

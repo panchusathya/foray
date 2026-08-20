@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_parse_scoring_json_strips_fences_and_clamps():
 
 
 def test_parse_scoring_json_raises_on_garbage():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         parse_scoring_json("not json at all")
 
 
@@ -92,9 +93,9 @@ def test_heuristic_result_has_checkable_evidence_no_hedge_words():
 
 
 def test_heuristic_flags_stale_and_thin():
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = datetime.now(timezone.utc) - timedelta(days=900)
+    old = datetime.now(UTC) - timedelta(days=900)
     result = heuristic_result(
         _row(last_push_at=old, non_fork_repo_count=1, total_stars=2, oss_maintainer=False, top_repos=[]),
         load_archetypes()["founding_ml"],

@@ -20,11 +20,9 @@ import argparse
 import asyncio
 from typing import Any
 
-import httpx
-
 from ..config import settings
 from ..db import close_pool, get_pool
-from ..llm import achat, chat
+from ..llm import AsyncChat, AsyncOpenRouterChat, Chat, OpenRouterChat
 from ..log import get_logger
 from .archetypes import Archetype, load_archetypes, sync_archetypes
 from .common import (
@@ -93,7 +91,13 @@ async def run_offline(conn, arch: Archetype, rows: list[Any]) -> int:
 # --------------------------------------------------------------- openrouter --
 
 
-async def run_openrouter(conn, arch: Archetype, rows: list[Any], concurrency: int) -> int:
+async def run_openrouter(
+    conn,
+    arch: Archetype,
+    rows: list[Any],
+    concurrency: int,
+    chat: AsyncChat | None = None,
+) -> int:
     """Fan out completions with a semaphore; DB writes stay on this task.
 
     Requests run concurrently, but upserts/error rows are applied sequentially
@@ -101,11 +105,10 @@ async def run_openrouter(conn, arch: Archetype, rows: list[Any], concurrency: in
     """
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
-    async def score_one(client: httpx.AsyncClient, row: Any) -> tuple[Any, str, Exception | None]:
+    async def score_one(client: AsyncChat, row: Any) -> tuple[Any, str, Exception | None]:
         async with semaphore:
             try:
-                text = await achat(
-                    client,
+                text = await client.complete(
                     arch.rubric,
                     build_user_content(row),
                     model=settings.scoring_model,
@@ -114,8 +117,11 @@ async def run_openrouter(conn, arch: Archetype, rows: list[Any], concurrency: in
             except Exception as exc:  # noqa: BLE001 - recorded per-row, must not kill the run
                 return row, "", exc
 
-    async with httpx.AsyncClient(base_url=settings.openrouter_base_url, timeout=90.0) as client:
-        results = await asyncio.gather(*(score_one(client, row) for row in rows))
+    if chat is None:
+        async with AsyncOpenRouterChat() as client:
+            results = await asyncio.gather(*(score_one(client, row) for row in rows))
+    else:
+        results = await asyncio.gather(*(score_one(chat, row) for row in rows))
 
     ok = 0
     failures = 0
@@ -139,9 +145,12 @@ async def run_openrouter(conn, arch: Archetype, rows: list[Any], concurrency: in
 # ------------------------------------------------------------------- sample --
 
 
-def run_sample(arch: Archetype, rows: list[Any]) -> None:
+def run_sample(arch: Archetype, rows: list[Any], chat: Chat | None = None) -> None:
+    completion = OpenRouterChat() if chat is None else chat
     for row in rows:
-        text = chat(arch.rubric, build_user_content(row), model=settings.scoring_model)
+        text = completion.complete(
+            arch.rubric, build_user_content(row), model=settings.scoring_model
+        )
         try:
             parsed = parse_scoring_json(text)
             print(f"\n{row['login']}  score={parsed['score']}  flags={parsed['flags']}")

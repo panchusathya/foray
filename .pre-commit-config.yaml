@@ -1,0 +1,17 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep in step with the ruff pinned in packages/foray/uv.lock: a version
+    # skew makes the hook and the CI lint step disagree about the rule set.
+    rev: v0.16.3
+    hooks:
+      - id: ruff
+        name: ruff (core, foray, eval)
+        # No --config: ruff's hierarchical discovery picks each package's own
+        # pyproject.toml, which is what resolves first-party imports and the
+        # per-file-ignores paths correctly. Forcing one config from the repo
+        # root breaks both.
+        files: ^(packages/core|packages/foray|eval)/.*\.py$
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.27.2
+    hooks:
+      - id: gitleaks

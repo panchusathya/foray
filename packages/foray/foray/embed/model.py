@@ -29,13 +29,13 @@ def get_model():
     return SentenceTransformer(settings.embedding_model)
 
 
-def embed_documents(texts: list[str]) -> "np.ndarray":
+def embed_documents(texts: list[str]) -> np.ndarray:
     return get_model().encode(
         texts, normalize_embeddings=True, batch_size=64, show_progress_bar=False
     )
 
 
-def embed_query(text: str) -> "np.ndarray":
+def embed_query(text: str) -> np.ndarray:
     return get_model().encode(
         [QUERY_INSTRUCTION + text], normalize_embeddings=True, show_progress_bar=False
     )[0]

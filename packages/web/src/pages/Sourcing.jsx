@@ -4,6 +4,16 @@ import { Badge, Empty, ErrorBox, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { foray } from '../lib/foray.js';
 import { forayHitToCandidate, partitionByEmail } from '../lib/forayImport.js';
+import {
+  countOnPage,
+  pageWindow,
+  selectAllFrom,
+  toggleOne,
+  togglePage,
+  toggleRange,
+} from '../lib/selection.js';
+
+const PAGE_SIZE = 40;
 
 const EXAMPLES = [
   'founding ML engineer, shipped training infrastructure, 3-8 years',
@@ -29,7 +39,7 @@ function ContactChip({ hit }) {
   return <Badge tone="partial">no email</Badge>;
 }
 
-function ForayHit({ hit, selected, onToggle }) {
+function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
   const [enrich, setEnrich] = useState(null);
   const [enriching, setEnriching] = useState(false);
 
@@ -64,6 +74,7 @@ function ForayHit({ hit, selected, onToggle }) {
         <input
           type="checkbox"
           checked={selected}
+          disabled={selectionDisabled}
           onClick={(event) => {
             event.preventDefault();
             onToggle(event);
@@ -163,68 +174,117 @@ export function SourcingPage() {
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(null);
   const [contactableOnly, setContactableOnly] = useState(false);
+  const [activeQuery, setActiveQuery] = useState(null);
+  const [activeContactable, setActiveContactable] = useState(false);
+  const [page, setPage] = useState(0);
+  const [nonce, setNonce] = useState(0);
+  const [parserLabel, setParserLabel] = useState(null);
+  const [selectingAll, setSelectingAll] = useState(false);
 
   const [selected, setSelected] = useState(new Map()); // login -> hit
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
   const [addState, setAddState] = useState('');
   const lastIndex = useRef(null);
+  const searchRequest = useRef(0);
+  const selectAllRequest = useRef(0);
+  // The server's page stride, learned from the first response. PAGE_SIZE is
+  // only the pre-first-response default; page 0 asks for offset 0 either way.
+  const pageStride = useRef(PAGE_SIZE);
 
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]));
   }, []);
 
+  useEffect(() => {
+    if (!activeQuery) return undefined;
+
+    const controller = new AbortController();
+    const request = ++searchRequest.current;
+    const started = performance.now();
+    setBusy(true);
+    setError(null);
+
+    foray
+      .search(activeQuery, {
+        // limit 0 means "the server's own page size". Sending a hardcoded 40
+        // while the server numbers pages in FORAY_RESULT_LIMIT units would
+        // desynchronise the pager from the rows it is paging through.
+        limit: 0,
+        offset: page * pageStride.current,
+        hasContact: activeContactable,
+        signal: controller.signal,
+      })
+      .then((response) => {
+        if (request !== searchRequest.current) return;
+        pageStride.current = response.page_size || PAGE_SIZE;
+        setResult(response);
+        setElapsed(Math.round(performance.now() - started));
+        if (page === 0) setParserLabel(response.parser);
+        lastIndex.current = null;
+      })
+      .catch((caught) => {
+        if (caught?.name !== 'AbortError' && request === searchRequest.current) {
+          setError(caught);
+        }
+      })
+      .finally(() => {
+        if (request === searchRequest.current) setBusy(false);
+      });
+
+    return () => controller.abort();
+  }, [activeQuery, activeContactable, page, nonce]);
+
   function toggle(hit, index, event) {
     const hits = result?.results ?? [];
     if (event?.shiftKey && lastIndex.current != null && hits.length) {
-      const from = Math.min(lastIndex.current, index);
-      const to = Math.max(lastIndex.current, index);
-      setSelected((previous) => {
-        const next = new Map(previous);
-        for (let i = from; i <= to; i += 1) {
-          const item = hits[i];
-          if (item) next.set(item.login, item);
-        }
-        return next;
-      });
+      setSelected((previous) => toggleRange(previous, hits, lastIndex.current, index));
     } else {
-      setSelected((previous) => {
-        const next = new Map(previous);
-        if (next.has(hit.login)) next.delete(hit.login);
-        else next.set(hit.login, hit);
-        return next;
-      });
+      setSelected((previous) => toggleOne(previous, hit));
       lastIndex.current = index;
     }
   }
 
-  function selectAll() {
+  function selectPage() {
     const hits = result?.results ?? [];
-    if (hits.length && hits.every((hit) => selected.has(hit.login))) {
-      setSelected(new Map());
-    } else {
-      setSelected(new Map(hits.map((hit) => [hit.login, hit])));
-    }
+    setSelected((previous) => togglePage(previous, hits));
   }
 
-  async function runSearch(text) {
+  function runSearch(text) {
     const value = (text ?? query).trim();
     if (!value) return;
-    setBusy(true);
+    searchRequest.current += 1;
+    selectAllRequest.current += 1;
     setError(null);
     setAddState('');
-    const started = performance.now();
+    setSelectingAll(false);
+    setActiveQuery(value);
+    setActiveContactable(contactableOnly);
+    setPage(0);
+    setNonce((value) => value + 1);
+    setSelected(new Map());
+    setParserLabel(null);
+    lastIndex.current = null;
+  }
+
+  async function selectAllMatching() {
+    if (!activeQuery || !result?.paginable) return;
+    const request = ++selectAllRequest.current;
+    setSelectingAll(true);
+    setError(null);
     try {
-      const response = await foray.search(value, 40, contactableOnly);
-      setResult(response);
-      setElapsed(Math.round(performance.now() - started));
-      setSelected(new Map());
-      lastIndex.current = null;
+      const response = await foray.search(activeQuery, {
+        limit: result.paginable,
+        offset: 0,
+        hasContact: activeContactable,
+      });
+      if (request === selectAllRequest.current) {
+        setSelected(selectAllFrom(response.results));
+      }
     } catch (caught) {
-      setError(caught);
-      setResult(null);
+      if (request === selectAllRequest.current) setError(caught);
     } finally {
-      setBusy(false);
+      if (request === selectAllRequest.current) setSelectingAll(false);
     }
   }
 
@@ -267,6 +327,12 @@ export function SourcingPage() {
     );
     importSelected(ok ? withEmail : hits);
   }
+
+  const pageHits = result?.results ?? [];
+  const selectedOnPage = countOnPage(selected, pageHits);
+  const pageIndexes = result?.page_count <= 12
+    ? pageWindow(page, result?.page_count ?? 0, 12)
+    : [];
 
   return (
     <div className="stack">
@@ -318,11 +384,12 @@ export function SourcingPage() {
       <ErrorBox error={error} />
 
       {result ? (
-        <>
+        <div className="stack" style={{ opacity: busy ? 0.55 : 1 }} aria-busy={busy}>
           <div className="card spread">
             <span className="small muted">
               {result.archetype ? result.archetype.label : 'semantic search'} · parser:{' '}
-              {result.parser} · {result.returned} shown of {result.total_matched} matched
+              {parserLabel ?? result.parser} · {result.returned} shown · page {result.page} of{' '}
+              {result.page_count} · {result.total_matched} matched
               {elapsed != null ? ` · ${elapsed}ms` : ''}
             </span>
             <span className="small muted">display floor {result.display_floor}</span>
@@ -340,6 +407,7 @@ export function SourcingPage() {
                       result.results.length > 0 &&
                       result.results.every((hit) => selected.has(hit.login))
                     }
+                    disabled={busy || selectingAll}
                     ref={(node) => {
                       if (node) {
                         const some = result.results.some((hit) => selected.has(hit.login));
@@ -347,13 +415,24 @@ export function SourcingPage() {
                         node.indeterminate = some && !all;
                       }
                     }}
-                    onChange={selectAll}
-                    aria-label="Select all results"
+                    onChange={selectPage}
+                    aria-label="Select all on this page"
                   />
-                  {selected.size
-                    ? `${selected.size} of ${result.results.length} selected`
-                    : `Select all ${result.results.length}`}
+                  Select all {result.results.length} on this page
                 </label>
+                {result.paginable > result.results.length ? (
+                  <button
+                    type="button"
+                    className="tiny ghost"
+                    onClick={selectAllMatching}
+                    disabled={busy || selectingAll}
+                  >
+                    {selectingAll ? 'Selecting…' : `Select all ${result.paginable} matching`}
+                  </button>
+                ) : null}
+                <span className="small muted">
+                  {selected.size} selected ({selectedOnPage} on this page)
+                </span>
                 <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                   <option value="">No project (import only)</option>
                   {projects.map((project) => (
@@ -392,12 +471,57 @@ export function SourcingPage() {
                   key={hit.login}
                   hit={hit}
                   selected={selected.has(hit.login)}
+                  selectionDisabled={busy || selectingAll}
                   onToggle={(event) => toggle(hit, index, event)}
                 />
               ))}
             </div>
           )}
-        </>
+
+          {result.truncated ? (
+            <div className="small muted">
+              {result.total_matched} matched; {result.paginable} ranked candidates are reachable
+              from the bounded retrieval pool. Narrow the query to reach the rest.
+            </div>
+          ) : null}
+
+          {result.page_count > 1 ? (
+            <div className="row" style={{ justifyContent: 'center', gap: 8 }}>
+              <button
+                type="button"
+                disabled={busy || page === 0}
+                onClick={() => setPage((value) => Math.max(0, value - 1))}
+              >
+                Previous
+              </button>
+              {pageIndexes.length ? (
+                pageIndexes.map((pageIndex) => (
+                  <button
+                    type="button"
+                    className={pageIndex === page ? 'primary' : 'ghost'}
+                    key={pageIndex}
+                    disabled={busy || pageIndex === page}
+                    onClick={() => setPage(pageIndex)}
+                    aria-label={`Page ${pageIndex + 1}`}
+                  >
+                    {pageIndex + 1}
+                  </button>
+                ))
+              ) : (
+                <span className="small muted">
+                  Page {result.page} of {result.page_count}
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={busy || !result.has_more}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

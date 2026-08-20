@@ -13,7 +13,9 @@ and every call is logged with the candidate id and reason.
 from __future__ import annotations
 
 import re
-from typing import Any, Awaitable, Callable, Protocol
+from collections.abc import Awaitable, Callable
+from datetime import UTC
+from typing import Any, Protocol
 
 import httpx
 
@@ -115,7 +117,7 @@ async def resolve_and_store(
     for FORAY_LINKEDIN_RECHECK_DAYS so the 3-fetch waterfall isn't re-run on
     every click. allow_apollo bypasses the negative cache: the paid step exists
     precisely for candidates the free steps already missed."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from ..config import settings
 
@@ -136,7 +138,7 @@ async def resolve_and_store(
             "cached": True,
         }
     if not force and not allow_apollo and row["linkedin_checked_at"] is not None:
-        age = datetime.now(timezone.utc) - row["linkedin_checked_at"]
+        age = datetime.now(UTC) - row["linkedin_checked_at"]
         if age < timedelta(days=settings.linkedin_recheck_days):
             return {
                 "login": login,

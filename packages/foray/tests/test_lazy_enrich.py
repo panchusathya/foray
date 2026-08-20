@@ -77,11 +77,11 @@ async def test_apollo_not_called_without_allow_flag():
 
 # --------------------------------------------------------------- freshness --
 
-import asyncpg  # noqa: E402
+import asyncpg
 
-from foray.config import settings  # noqa: E402
-from foray.db import _asyncpg_dsn  # noqa: E402
-from tests.dbutil import requires_db  # noqa: E402
+from foray.config import settings
+from foray.db import _asyncpg_dsn
+from tests.dbutil import requires_db
 
 
 @requires_db

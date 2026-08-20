@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 
 from ..config import settings
 from ..harvest.shards import LANGUAGES, load_metros
+from ..llm import Chat, OpenRouterChat
 from ..log import get_logger
 from ..score.archetypes import load_archetypes
 
@@ -99,11 +100,13 @@ def _llm_schema_prompt() -> str:
     )
 
 
-def llm_parse(query: str) -> ParsedFilter | None:
+def llm_parse(query: str, client: Chat | None = None) -> ParsedFilter | None:
     try:
-        from ..llm import chat
-
-        text = chat(_llm_schema_prompt(), query, model=settings.parse_model) or "{}"
+        completion = OpenRouterChat() if client is None else client
+        text = (
+            completion.complete(_llm_schema_prompt(), query, model=settings.parse_model)
+            or "{}"
+        )
         if text.strip().startswith("```"):
             text = text.strip().split("\n", 1)[1].rsplit("```", 1)[0]
         obj = json.loads(text)
@@ -122,7 +125,13 @@ def llm_parse(query: str) -> ParsedFilter | None:
         return None
 
 
-async def parse_query(conn, query: str, *, use_llm: bool | None = None) -> tuple[ParsedFilter, str]:
+async def parse_query(
+    conn,
+    query: str,
+    *,
+    use_llm: bool | None = None,
+    chat: Chat | None = None,
+) -> tuple[ParsedFilter, str]:
     """Return (filter, parser_name). parser_name in cache|llm|heuristic|vector-fallback."""
     qhash = _query_hash(query)
     cached = await conn.fetchval(
@@ -134,7 +143,7 @@ async def parse_query(conn, query: str, *, use_llm: bool | None = None) -> tuple
         return parsed, ("cache" if parsed.archetype_id else "vector-fallback")
 
     want_llm = bool(settings.openrouter_api_key) if use_llm is None else use_llm
-    parsed = llm_parse(query) if want_llm else None
+    parsed = llm_parse(query, chat) if want_llm else None
     parser_name = "llm"
     if parsed is None:
         parsed = heuristic_parse(query)

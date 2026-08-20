@@ -176,11 +176,21 @@ The template language has no loops, conditionals or expressions — recruiters
 paste into a form, so the renderer must not be able to execute anything.
 
 Sending goes through a provider interface (`console` by default, `smtp` for
-real delivery, `memory` for tests). Connect an Outlook mailbox (Settings →
-Connect Outlook, needs an Azure app registration) and a sequence can send
-through Microsoft Graph as that person — the "send from" picker on the
-sequence form. A sequence bound to a disconnected mailbox fails loudly rather
-than silently falling back to another provider. Each
+real delivery, `memory` for tests). Connect real mailboxes in Settings —
+Outlook via Microsoft Graph (needs an Azure app registration) or Zoho Mail
+(needs an api-console client) — and sequences send as those people rather than
+from a shared address.
+
+Mailboxes are a tenant-wide pool, and sequences rotate across it by default:
+each mailbox carries its own daily cap over a rolling 24 hours, and the
+least-utilised one with room sends next. That is how sourcing volume goes up
+without leaning harder on a single sending reputation. A contact is pinned to
+whichever mailbox emailed it first and never moves, because a follow-up from a
+different address arrives as a second thread from a stranger. The "send from"
+picker on the sequence can override the pool and pin one mailbox instead. When
+every mailbox is at its cap the send **defers** — the job stays queued and
+goes out when room appears — while a sequence pinned to a disconnected mailbox
+fails loudly rather than silently falling back to another provider. Each
 `(enrollment, step)` pair can produce at most one outbound `Message` row — a
 second worker cannot insert a duplicate. Opens and clicks are tracked with
 HMAC-signed URLs so the endpoints can't be walked. Outreach is 1:1 personal
@@ -188,28 +198,39 @@ email from the sender's own account, so messages carry no unsubscribe footer
 or bulk-mail headers. Bounces and reply opt-outs ("please stop contacting me")
 land on a per-org internal do-not-contact list and stop further mail.
 
-Replies are detected automatically: the worker delta-polls each connected
-inbox (every `MAILBOX_SYNC_SECONDS`), matches new email back to the outreach
-that provoked it by Graph conversation id (sender address as fallback), and
-skips everything else. The first sync stores a baseline cursor so mailbox
-history is never read. Replies are classified into eight intents; anything
+Replies are detected automatically: the worker polls each connected inbox
+(every `MAILBOX_SYNC_SECONDS`, one job per mailbox so a slow one cannot starve
+the rest) and matches new email back to the outreach that provoked it — by
+thread id first, then by the reply's `In-Reply-To` against the `Message-ID` we
+stored on send, then by sender address — and skips everything else. Graph
+walks a delta link; Zoho has no delta API or webhooks, so it is polled against
+a per-folder timestamp high-water mark. The first pass over a folder stores a
+baseline cursor so mailbox history is never read. Replies are classified into eight intents; anything
 except an out-of-office stops the sequence, bounces mark the enrollment, and a
 referral outranks a decline because "not for me, but talk to Sam" is a lead,
 not a rejection.
 
-When a human reply lands, a response draft is written onto the actual Outlook
-thread (Graph `createReply`) and waits in the user's Drafts folder — the model
-writes it when configured, a plain per-intent template otherwise — and the
-user gets a "your draft is ready" email from their own mailbox. Opt-outs,
-bounces and out-of-office replies never get a draft. Editing and sending stays
-in Outlook; the app never sends the reply itself.
+When a human reply lands, a response draft is written onto the actual thread
+and waits in that mailbox's own Drafts folder — the model writes it when
+configured, a plain per-intent template otherwise — and the user gets a "your
+draft is ready" email from their own mailbox. Opt-outs, bounces and
+out-of-office replies never get a draft. Editing and sending stays in the
+user's own mail client; the app never sends the reply itself.
 
-Drafts improve with use: the same sync also watches Sent Items, so when the
+Drafts improve with use: the same sync also watches the Sent folder, so when the
 user sends (an edit of) a draft — or discards it and writes their own — the
 final text lands on the `reply_drafts` row, and the most recent drafted→sent
 pairs are fed back into the next draft's prompt as voice examples.
 
-A daily send cap is enforced per org.
+A daily send cap is enforced per org too, lifted automatically to whatever
+the mailbox pool can carry so it stays a spend guard rather than a second,
+lower deliverability limit.
+
+Adding a third mail provider means implementing `MailProvider`
+(`packages/core/juicebox/integrations/providers.py`) and registering it: OAuth,
+sending, and reading raw mailbox traffic as `MailboxEvent`s. Reply matching,
+intent classification, enrollment stops, the CRM privacy guard and reply-draft
+generation are shared and must not be touched.
 
 Background work lives in a `jobs` table. `juicebox work` claims due rows
 (Postgres uses `SKIP LOCKED` so multiple workers don't double-send).
@@ -300,6 +321,8 @@ most:
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
 | `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | *(empty)* | Azure app registration; enables Connect Outlook |
 | `MS_TENANT_ID` | `organizations` | Entra tenant for the OAuth flow |
+| `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` | *(empty)* | Zoho api-console client; enables Connect Zoho Mail |
+| `ZOHO_ACCOUNTS_DOMAIN` | `https://accounts.zoho.com` | Data centre the Zoho mailboxes live in |
 | `MAILBOX_SYNC_SECONDS` | `120` | How often the worker checks inboxes for replies |
 
 ---

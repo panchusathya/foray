@@ -619,6 +619,12 @@ class PreviewResponse(BaseModel):
     subject: str
     body: str
     personalization: dict[str, Any]
+    # Which mailbox this preview was rendered as. Empty means the globally
+    # configured provider, i.e. no mailbox is connected. Surfaced because a
+    # preview signed by the wrong person is otherwise indistinguishable from a
+    # correct one.
+    sender_email: str = ""
+    sender_name: str = ""
     # off: no directives in the step · resolved: model wrote them ·
     # unavailable: directives present but no model — body shows [AI: ...] markers.
     ai_status: Literal["off", "resolved", "unavailable"] = "off"

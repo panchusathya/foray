@@ -19,6 +19,7 @@ from juicebox.outreach.sequencer import (
     SUGGESTED_DATE_BUSINESS_DAYS,
     build_message_content,
     enroll_candidates,
+    preview_step,
     run_due,
     suggested_date_context,
 )
@@ -289,6 +290,201 @@ class TestSignOffDefaults:
         )
         assert ctx["sender_name"] == "Tushar Gupta"
         assert ctx["sender_first_name"] == "Tushar"
+
+
+class TestPreviewMatchesTheSend:
+    """A preview signed by the wrong person is worse than no preview.
+
+    The bug this class exists for: preview_step rendered without a mailbox, so
+    sender_first_name fell through to OUTREACH_FROM_NAME. A sequence pinned to
+    tushar@ previewed as "Sathya" while a real send correctly used "Tushar" --
+    and nothing on screen revealed the difference.
+    """
+
+    def _pin(self, session, account, outreach_fixture, address, display_name):
+        connection = MailboxConnection(
+            org_id=account["org_id"], address=address, display_name=display_name
+        )
+        session.add(connection)
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        sequence.sender_mode = "fixed"
+        sequence.mailbox_id = connection.id
+        for step in sequence.steps:
+            step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
+        session.flush()
+        return connection, sequence
+
+    def test_a_pinned_sequence_previews_as_that_mailbox(
+        self, session, account, outreach_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("OUTREACH_FROM_NAME", "Sathya Panchu")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        _, sequence = self._pin(
+            session, account, outreach_fixture, "tushar@goforay.io", "Tushar Gupta"
+        )
+        _, body, _ = preview_step(
+            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
+        )
+        # The configured default must not win over the mailbox that will send.
+        assert body == "Best," + chr(10) + "Tushar"
+        assert "Sathya" not in body
+
+    def test_the_preview_and_the_send_agree(self, session, account, outreach_fixture):
+        """Rendered twice, once through each path, and compared."""
+        connection, sequence = self._pin(
+            session, account, outreach_fixture, "tushar@goforay.io", "Tushar Gupta"
+        )
+        candidate = outreach_fixture["candidates"][0]
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+
+        _, previewed, _ = preview_step(session, sequence=sequence, candidate=candidate)
+        _, sent, _, _ = build_message_content(
+            session,
+            sequence=sequence,
+            step=step,
+            candidate=candidate,
+            connection=connection,
+        )
+        assert previewed == sent
+
+    def test_a_rotating_sequence_previews_as_a_real_pool_member(
+        self, session, account, outreach_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("OUTREACH_FROM_NAME", "Sathya Panchu")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        for address, name in [("anna@goforay.io", "Anna"), ("vivian@goforay.io", "Vivian")]:
+            session.add(
+                MailboxConnection(
+                    org_id=account["org_id"], address=address, display_name=name
+                )
+            )
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        sequence.sender_mode = "rotate"
+        sequence.mailbox_id = None
+        for step in sequence.steps:
+            step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
+        set_sender_factory("microsoft", lambda db, conn: None)
+
+        _, body, _ = preview_step(
+            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
+        )
+        assert body in ("Best," + chr(10) + "Anna", "Best," + chr(10) + "Vivian")
+        assert "Sathya" not in body
+
+    def test_an_enrollment_pin_beats_the_sequence_in_the_preview(
+        self, session, account, outreach_fixture
+    ):
+        """Previewing a specific enrollment must show the address that already
+        emailed that person, not the sequence's current preference."""
+        pinned = MailboxConnection(
+            org_id=account["org_id"], address="anna@goforay.io", display_name="Anna"
+        )
+        _sequence_pin, sequence = self._pin(
+            session, account, outreach_fixture, "tushar@goforay.io", "Tushar Gupta"
+        )
+        session.add(pinned)
+        session.flush()
+        enrollment = Enrollment(
+            sequence_id=sequence.id,
+            candidate_id=outreach_fixture["candidates"][0].id,
+            mailbox_id=pinned.id,
+        )
+        session.add(enrollment)
+        session.flush()
+
+        _, body, _ = preview_step(
+            session,
+            sequence=sequence,
+            candidate=outreach_fixture["candidates"][0],
+            enrollment=enrollment,
+        )
+        assert body == "Best," + chr(10) + "Anna"
+
+    def test_a_capped_pool_still_previews_a_real_name(
+        self, session, account, outreach_fixture, monkeypatch
+    ):
+        """A cap decides when a send happens, not who it is from. Falling back
+        to the configured default here would show the wrong signature exactly
+        when the pool was busy."""
+        monkeypatch.setenv("OUTREACH_FROM_NAME", "Sathya Panchu")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        session.add(
+            MailboxConnection(
+                org_id=account["org_id"],
+                address="anna@goforay.io",
+                display_name="Anna",
+                daily_send_cap=0,
+            )
+        )
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        sequence.sender_mode = "rotate"
+        sequence.mailbox_id = None
+        for step in sequence.steps:
+            step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
+
+        _, body, _ = preview_step(
+            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
+        )
+        assert body == "Best," + chr(10) + "Anna"
+
+    def test_no_mailbox_at_all_falls_back_to_the_configured_name(
+        self, session, account, outreach_fixture, monkeypatch
+    ):
+        monkeypatch.setenv("OUTREACH_FROM_NAME", "Sathya Panchu")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        sequence = outreach_fixture["sequence"]
+        sequence.sender_mode = "rotate"
+        sequence.mailbox_id = None
+        # The fixture sets from_name, which correctly outranks the configured
+        # default; clear it to reach the last rung of the chain.
+        sequence.from_name = ""
+        for step in sequence.steps:
+            step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
+        _, body, _ = preview_step(
+            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
+        )
+        assert body == "Best," + chr(10) + "Sathya"
+
+
+class TestPreviewApiNamesTheSender:
+    def test_the_endpoint_reports_which_mailbox_it_rendered_as(
+        self, client, session, account, outreach_fixture
+    ):
+        connection = MailboxConnection(
+            org_id=account["org_id"],
+            address="tushar@goforay.io",
+            display_name="Tushar Gupta",
+        )
+        session.add(connection)
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        sequence.sender_mode = "fixed"
+        sequence.mailbox_id = connection.id
+        session.commit()
+
+        response = client.post(
+            f"/v1/sequences/{sequence.id}/preview",
+            json={
+                "candidate_id": outreach_fixture["candidates"][0].id,
+                "step_order": 0,
+            },
+            headers=account["headers"],
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["sender_email"] == "tushar@goforay.io"
+        assert body["sender_name"] == "Tushar Gupta"
 
 
 class TestBothInOneRender:

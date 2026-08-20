@@ -93,6 +93,43 @@ class FolderPage:
 
 
 @dataclass
+class SweepRecord:
+    """One sent message, reduced to what a discovery sweep may keep.
+
+    Deliberately a different DTO from ``MailboxEvent``, and deliberately
+    missing ``subject`` and ``body``. The tray holds evidence about people who
+    have never been reviewed, let alone opted in, so the guarantee is
+    structural rather than a habit: there is no field to put content in, and
+    both providers build these from raw payloads instead of ``to_event`` --
+    which fills ``body`` from a preview and merges Cc into the To list.
+    """
+
+    native_id: str
+    from_address: str
+    to_addresses: tuple[str, ...] = ()
+    # Kept apart from To: a 40-person Cc is not a relationship, and an address
+    # only ever Cc'd is a weaker signal than one written to directly.
+    cc_addresses: tuple[str, ...] = ()
+    thread_id: str = ""
+    sent_at: datetime | None = None
+    is_draft: bool = False
+
+
+@dataclass
+class SweepPage:
+    """One page of a historical sweep.
+
+    ``next_cursor`` is opaque and belongs in ``discovery_state``, never in the
+    live delta columns -- overwriting one of those makes the ongoing sync
+    permanently re-read or permanently skip mail.
+    """
+
+    records: list[SweepRecord] = field(default_factory=list)
+    next_cursor: str = ""
+    has_more: bool = False
+
+
+@dataclass
 class ConnectResult:
     """Everything the callback needs to persist a new connection.
 
@@ -155,6 +192,26 @@ class MailProvider(Protocol):
     def search_participant(
         self, db, connection, address: str
     ) -> Iterable[MailboxEvent]: ...
+
+    def iter_sent_history(
+        self, db, connection, *, since: datetime, cursor: str = ""
+    ) -> SweepPage:
+        """Walk Sent Items backwards to ``since``, for contact discovery.
+
+        Sent Items only, and no folder argument: twelve months of Inbox is
+        typically 10-50x the volume and is mostly newsletters and inbound
+        recruiters, so a sweep that could be pointed at it would eventually be
+        pointed at it. "Everyone we have reached out to" is a Sent premise.
+
+        The cursor is a *separate* history cursor. Implementations must not
+        read or write ``inbox_delta_link``, ``sent_delta_link`` or Zoho's
+        ``sync_state["cursors"]``; the caller keeps this one in
+        ``discovery_state``.
+
+        Metadata only -- see ``SweepRecord``. Bodies must never be fetched,
+        not merely discarded after fetching.
+        """
+        ...
 
 
 _providers: dict[str, MailProvider] = {}

@@ -97,6 +97,20 @@ export const CONTACT_VIEWS = [
     empty: `Nobody added in the last ${RECENTLY_ADDED_DAYS} days.`,
   },
   {
+    id: 'discovered',
+    label: 'Discovered',
+    blurb: 'People you have emailed who are not in Contacts yet.',
+    // Rendered by DiscoveredTray, not the grid: different rows, different
+    // actions. A query param rather than its own route, so /contacts/:id
+    // cannot swallow it and App.jsx stays untouched.
+    tray: true,
+    columns: [],
+    sort: 'name',
+    dir: 'asc',
+    params: {},
+    empty: 'Nothing to review yet.',
+  },
+  {
     id: 'all',
     label: 'Sourced pool',
     blurb: 'Every profile in the workspace, contacted or not.',

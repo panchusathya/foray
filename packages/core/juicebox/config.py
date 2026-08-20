@@ -211,6 +211,17 @@ class Settings:
     mailbox_backfill_days: int = field(
         default_factory=lambda: _env_int("MAILBOX_BACKFILL_DAYS", 365)
     )
+    # --- contact discovery -------------------------------------------------
+    # Provider pages per job before it re-enqueues itself, so one very large
+    # mailbox cannot monopolise a worker.
+    discovery_pages_per_job: int = field(
+        default_factory=lambda: _env_int("DISCOVERY_PAGES_PER_JOB", 5)
+    )
+    # Hard stop. Zoho has no server-side date filter, so a sweep there is
+    # bounded only by how far back the caller is willing to page.
+    discovery_max_pages: int = field(
+        default_factory=lambda: _env_int("DISCOVERY_MAX_PAGES", 500)
+    )
 
     @property
     def resolved_llm_provider(self) -> str:

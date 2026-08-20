@@ -58,6 +58,11 @@ class Org(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200))
     slug: Mapped[str] = mapped_column(String(80), unique=True)
 
+    # Corporate domains that count as "us" during a discovery sweep, on top
+    # of the ones derived from connected mailboxes. Editable because a firm
+    # with several domains would otherwise re-stage its own staff forever.
+    crm_internal_domains: Mapped[list] = mapped_column(JSON, default=list)
+
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
 
@@ -328,6 +333,63 @@ class CandidateNote(Base, TimestampMixin):
     author_name: Mapped[str] = mapped_column(String(200), default="")
     body: Mapped[str] = mapped_column(Text)
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+DISCOVERED_STATUSES = ("new", "already_known", "promoted", "dismissed")
+
+# Why a staged contact looks worth reviving. Assigned from what is actually
+# known -- notably NOT from thread_count, which counts our own follow-ups.
+DISCOVERY_SUGGESTIONS = ("", "revive", "one_touch", "cc_only", "role_account", "suppressed")
+
+
+class DiscoveredContact(Base, TimestampMixin):
+    """Someone we have emailed who is not in Contacts yet.
+
+    Evidence only: an address, a display name, counts and dates. There is no
+    subject column and no body column, and there must never be one -- these are
+    people who have not been reviewed, let alone opted into. "5 messages, last
+    one 14 months ago" is enough to triage on. A test asserts the absence, so
+    adding one fails loudly rather than quietly.
+
+    Two mailboxes can meet the same stranger in the same sweep, so writes go
+    through an upsert on ``(org_id, email)``; select-then-insert races.
+    """
+
+    __tablename__ = "discovered_contacts"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_discovered_org_email"),
+        Index("ix_discovered_org_status_seen", "org_id", "status", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("disc"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+
+    email: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    domain: Mapped[str] = mapped_column(String(255), default="")
+
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    outbound_count: Mapped[int] = mapped_column(Integer, default=0)
+    to_count: Mapped[int] = mapped_column(Integer, default=0)
+    cc_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Distinct conversations. A useful sort key, but NOT evidence of a reply:
+    # sequence follow-ups share a conversation id with no answer at all.
+    thread_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    mailbox_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    suggested_status: Mapped[str] = mapped_column(String(24), default="")
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_reason: Mapped[str] = mapped_column(String(60), default="")
 
 
 class CandidateEmail(Base):
@@ -672,6 +734,12 @@ class MailboxConnection(Base, TimestampMixin):
     # directions) into the CRM timeline. Off by default: connecting a mailbox
     # for sending must not silently start retaining its contents.
     thread_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Sweep progress: {status, scanned, found, cursor, since, started_at,
+    # finished_at, error}. It lives here rather than in the job payload because
+    # the job re-enqueues itself per page, and a counter that resets every page
+    # cannot show progress. The sweep cursor lives here too, and must never be
+    # written to inbox_delta_link / sent_delta_link / sync_state["cursors"].
+    discovery_state: Mapped[dict] = mapped_column(JSON, default=dict)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

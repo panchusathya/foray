@@ -19,6 +19,7 @@ from .routers import (
     analytics,
     auth,
     candidates,
+    crm,
     integrations,
     org,
     outreach,
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(outreach.webhooks_router)
     app.include_router(agents.router)
     app.include_router(analytics.router)
+    app.include_router(crm.router)
     app.include_router(integrations.router)
     app.include_router(track.router)
 

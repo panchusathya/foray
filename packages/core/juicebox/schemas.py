@@ -357,6 +357,48 @@ class CandidateNoteOut(BaseModel):
     edited_at: datetime | None = None
 
 
+class DiscoveredOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    email: str
+    display_name: str = ""
+    domain: str = ""
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    outbound_count: int = 0
+    to_count: int = 0
+    cc_count: int = 0
+    thread_count: int = 0
+    mailbox_ids: list[str] = Field(default_factory=list)
+    status: str = "new"
+    suggested_status: str = ""
+    candidate_id: str | None = None
+
+
+class DiscoveredPromoteRequest(BaseModel):
+    ids: list[str]
+    crm_status: str | None = None
+
+
+class DiscoveredDismissRequest(BaseModel):
+    ids: list[str]
+    reason: str = ""
+
+
+class IgnoreDomainRequest(BaseModel):
+    domain: str
+
+
+class DiscoveredBulkResult(BaseModel):
+    promoted: int = 0
+    dismissed: int = 0
+    candidate_ids: list[str] = Field(default_factory=list)
+    # email -> why it could not be promoted. Reported rather than swallowed:
+    # upsert_candidates silently skips a payload it cannot normalise.
+    failed: dict[str, str] = Field(default_factory=dict)
+
+
 # --------------------------------------------------------------------------
 # search
 # --------------------------------------------------------------------------

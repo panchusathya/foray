@@ -376,6 +376,95 @@ def backfill_history(
     return {"queued": True, "job_id": job.id}
 
 
+@router.post("/discover")
+def start_discovery(
+    mailbox_id: str | None = Query(default=None),
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sweep Sent Items for people who are not in Contacts yet.
+
+    Reads addresses, dates and counts -- never bodies or subjects. Gated on
+    thread sync because that is already the org's "yes, read my mailbox"
+    switch, and because promotion's follow-up import needs it: without it the
+    tray would offer history it can never actually fetch.
+    """
+    from ..jobs import KIND_CRM_DISCOVERY, enqueue
+
+    eligible = db.scalars(
+        select(MailboxConnection).where(
+            MailboxConnection.org_id == principal.org_id,
+            MailboxConnection.status == "active",
+            MailboxConnection.thread_sync_enabled.is_(True),
+        )
+    ).all()
+    if mailbox_id:
+        eligible = [c for c in eligible if c.id == mailbox_id]
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Enable thread sync on a connected mailbox first",
+        )
+
+    now = utcnow()
+    job = enqueue(
+        db,
+        org_id=principal.org_id,
+        kind=KIND_CRM_DISCOVERY,
+        # Timestamped: enqueue returns the existing row for a key forever, so a
+        # fixed key would make every sweep after the first a silent no-op.
+        idempotency_key=f"{KIND_CRM_DISCOVERY}:{principal.org_id}:{int(now.timestamp())}",
+        payload={"org_id": principal.org_id, "mailbox_id": mailbox_id or ""},
+    )
+    return {"queued": True, "job_id": job.id, "mailboxes": len(eligible)}
+
+
+@router.post("/mailboxes/{connection_id}/discover")
+def start_discovery_for_mailbox(
+    connection_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    connection = _connection_or_404(db, connection_id, principal)
+    _require_active(connection)
+    return start_discovery(mailbox_id=connection.id, principal=principal, db=db)
+
+
+@router.get("/discovery-status")
+def discovery_status(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Per-mailbox sweep progress, for the tray to poll.
+
+    Real counters rather than a percentage: the total size of a mailbox is not
+    known up front, so any percentage would be invented.
+    """
+    rows = db.scalars(
+        select(MailboxConnection)
+        .where(MailboxConnection.org_id == principal.org_id)
+        .order_by(MailboxConnection.address)
+    ).all()
+    out = []
+    for connection in rows:
+        state = connection.discovery_state or {}
+        if not state:
+            continue
+        out.append(
+            {
+                "mailbox_id": connection.id,
+                "address": connection.address,
+                "status": state.get("status", ""),
+                "scanned": int(state.get("scanned") or 0),
+                "found": int(state.get("found") or 0),
+                "started_at": state.get("started_at"),
+                "finished_at": state.get("finished_at"),
+                "error": state.get("error", ""),
+            }
+        )
+    return out
+
+
 @router.delete("/mailboxes/{connection_id}")
 def disconnect(
     connection_id: str,

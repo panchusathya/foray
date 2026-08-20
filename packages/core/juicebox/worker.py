@@ -19,6 +19,9 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .jobs import (
     KIND_AGENT_TICK,
+    KIND_CRM_DISCOVERY,
+    KIND_CRM_DISCOVERY_IMPORT,
+    KIND_CRM_DISCOVERY_ONE,
     KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
     KIND_MAILBOX_SYNC_ONE,
@@ -288,7 +291,185 @@ def _handle_mailbox_backfill(db: Session, job: Job, now) -> dict[str, Any]:
     return result
 
 
+def _handle_crm_discovery(db: Session, job: Job, now) -> dict[str, Any]:
+    """Fan a sweep out to one job per mailbox.
+
+    Deliberately not serialized with ``jobs.has_open_job``: that is org-wide
+    with no mailbox dimension, so it would let the first mailbox start and
+    silently block every other one.
+
+    Keys carry the dispatch timestamp because ``enqueue`` returns the existing
+    row for a key forever, including a succeeded one. A fixed key would make
+    the second sweep a no-op that reports success.
+    """
+    from .integrations.discovery import reset_for_rerun, start_state, window_start
+
+    org_id = job.payload.get("org_id") or job.org_id
+    only = job.payload.get("mailbox_id") or ""
+    stamp = int(now.timestamp())
+    since = window_start(now)
+
+    query = select(MailboxConnection).where(
+        MailboxConnection.org_id == org_id,
+        MailboxConnection.status == "active",
+        # The same switch that governs thread sync. Discovery stores no
+        # content, but it does read a year of metadata, and inventing a second
+        # consent surface for that would be worse than reusing the one that
+        # already means "yes, read my mailbox".
+        MailboxConnection.thread_sync_enabled.is_(True),
+    )
+    if only:
+        query = query.where(MailboxConnection.id == only)
+    mailboxes = db.scalars(query.order_by(MailboxConnection.id)).all()
+    if not mailboxes:
+        return {"mailboxes": 0, "reason": "no mailbox with thread sync enabled"}
+
+    # Counters accumulate, so a re-run over the same window would double them.
+    reset_for_rerun(db, org_id=org_id)
+
+    for index, connection in enumerate(mailboxes):
+        connection.discovery_state = start_state(since=since, now=now)
+        run_at = now + timedelta(seconds=10 * index)
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_CRM_DISCOVERY_ONE,
+            idempotency_key=f"{KIND_CRM_DISCOVERY_ONE}:{connection.id}:{stamp}:0",
+            payload={
+                "org_id": org_id,
+                "mailbox_id": connection.id,
+                "sweep": stamp,
+                "page": 0,
+                "since": since.isoformat(),
+            },
+            run_at=run_at,
+        )
+    return {"mailboxes": len(mailboxes), "sweep": stamp}
+
+
+def _handle_crm_discovery_one(db: Session, job: Job, now) -> dict[str, Any]:
+    """A bounded number of Sent-Items pages for one mailbox, then re-enqueue."""
+    from datetime import datetime as _datetime
+
+    from .integrations.discovery import (
+        advance_state,
+        build_context,
+        fail_state,
+        sweep_page,
+    )
+    from .integrations.providers import ProviderError
+
+    settings = get_settings()
+    connection = db.get(MailboxConnection, job.payload.get("mailbox_id", ""))
+    if connection is None or connection.status != "active":
+        return {"skipped": "mailbox gone or inactive"}
+    if not connection.thread_sync_enabled:
+        return {"skipped": "thread sync disabled"}
+
+    raw_since = job.payload.get("since")
+    # Frozen at dispatch: a sweep that takes hours must not have a lower bound
+    # that creeps forward underneath it.
+    since = _datetime.fromisoformat(raw_since) if raw_since else None
+    if since is None:
+        from .integrations.discovery import window_start
+
+        since = window_start(now)
+
+    page = int(job.payload.get("page") or 0)
+    cursor = (connection.discovery_state or {}).get("cursor") or ""
+    # One whole-table read per job, not per page.
+    context = build_context(db, org_id=connection.org_id, now=now)
+
+    scanned = found = 0
+    pages_done = 0
+    for _ in range(max(settings.discovery_pages_per_job, 1)):
+        try:
+            result = sweep_page(
+                db, connection, context=context, since=since, cursor=cursor
+            )
+        except ProviderError as exc:
+            # A revoked token must not retry until the job parks. Record it,
+            # leave the cursor alone, and stop.
+            logger.warning("discovery failed for %s: %s", connection.address, exc)
+            connection.error = str(exc)
+            fail_state(connection, str(exc))
+            return {"error": str(exc)}
+
+        # Counters and cursor advance together, after the page is recorded, so
+        # a crash replays that page rather than skipping it.
+        advance_state(connection, result)
+        scanned += result["scanned"]
+        found += result["found"]
+        pages_done += 1
+        cursor = result["next_cursor"]
+        if not cursor:
+            break
+
+    if cursor and page + pages_done < settings.discovery_max_pages:
+        enqueue(
+            db,
+            org_id=connection.org_id,
+            kind=KIND_CRM_DISCOVERY_ONE,
+            idempotency_key=(
+                f"{KIND_CRM_DISCOVERY_ONE}:{connection.id}:"
+                f"{job.payload.get('sweep')}:{page + pages_done}"
+            ),
+            payload={**job.payload, "page": page + pages_done},
+            run_at=now + timedelta(seconds=30),
+        )
+    elif cursor:
+        logger.warning(
+            "discovery hit the page cap for %s after %s pages",
+            connection.address,
+            page + pages_done,
+        )
+        advance_state(connection, {"scanned": 0, "found": 0, "next_cursor": ""})
+
+    return {"scanned": scanned, "found": found, "pages": pages_done}
+
+
+def _handle_crm_discovery_import(db: Session, job: Job, now) -> dict[str, Any]:
+    """Pull real history for people who were just promoted.
+
+    Not ``mailbox.backfill``: that job's key is fixed per offset, so after one
+    import has ever run, enqueuing it again returns the succeeded row and does
+    nothing at all. It also walks the whole org address index, which would mean
+    one provider search per address to import two people.
+    """
+    from .integrations.backfill import backfill_mailbox_history
+    from .integrations.providers import ProviderError
+
+    addresses = [a for a in (job.payload.get("addresses") or []) if a]
+    if not addresses:
+        return {"ingested": 0, "reason": "nothing to import"}
+
+    org_id = job.payload.get("org_id") or job.org_id
+    mailboxes = db.scalars(
+        select(MailboxConnection).where(
+            MailboxConnection.org_id == org_id,
+            MailboxConnection.status == "active",
+            MailboxConnection.thread_sync_enabled.is_(True),
+        )
+    ).all()
+
+    ingested = 0
+    for connection in mailboxes:
+        try:
+            result = backfill_mailbox_history(
+                db, connection, addresses=addresses, now=now
+            )
+        except ProviderError as exc:
+            logger.warning("promote import failed for %s: %s", connection.address, exc)
+            connection.error = str(exc)
+            continue
+        ingested += int(result.get("ingested") or 0)
+    return {"ingested": ingested, "addresses": len(addresses)}
+
+
 HANDLERS = {
+    KIND_CRM_DISCOVERY: _handle_crm_discovery,
+    KIND_CRM_DISCOVERY_ONE: _handle_crm_discovery_one,
+    KIND_CRM_DISCOVERY_IMPORT: _handle_crm_discovery_import,
     KIND_OUTREACH_TICK: _handle_outreach_tick,
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_AGENT_TICK: _handle_agent_tick,

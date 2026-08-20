@@ -77,12 +77,18 @@ test.describe('contact history', () => {
     await expect(page).toHaveURL(new RegExp(`/contacts/${ids[0]}`));
   });
 
-  test('contacts rows badge the last-emailed date', async ({ page, request }) => {
+  test('the contacts grid surfaces the last-emailed date', async ({ page, request }) => {
+    // Was a badge on a card list; the same fact is now a Last-contacted
+    // column. The intent is unchanged: the list shows when we last wrote.
     const { org } = await contacted(request, 'hist-badge');
 
     await login(page, org.email);
     await page.goto('/contacts');
 
-    await expect(page.getByText(/emailed \d/).first()).toBeVisible();
+    const row = page.getByTestId('contact-row').first();
+    await expect(row).toBeVisible();
+    // Column 4 is Last contacted; a contacted person renders a relative age,
+    // never the em dash used for "no contact on file".
+    await expect(row.locator('td').nth(3)).not.toHaveText('—');
   });
 });

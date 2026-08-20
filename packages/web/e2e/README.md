@@ -53,3 +53,4 @@ npx playwright install chromium
 | `pipeline.spec.js` | duplicate adds collapse, one candidate across projects, the board stays a tracker, outreach-driven stages need an explicit override |
 | `sequences.spec.js` | the enrol picker, already-enrolled exclusion, enrol idempotency, the no-email warning, the paused banner, step editing blocked mid-flight, unsaved edits surviving a pause |
 | `sourcing.spec.js` | contactable filter, and that a guessed address never reaches the UI |
+| `contacts-grid.spec.js` | the CRM grid renders and sorts, the preset views select the right population (going cold, sourced pool vs CRM), and view state survives reload and the back button |

@@ -273,6 +273,9 @@ class Project(Base, TimestampMixin):
     role_title: Mapped[str] = mapped_column(String(200), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     location: Mapped[str] = mapped_column(String(200), default="")
+    # Client / hiring company. Copied onto the linked JobPosting so warm-path
+    # matching can fire on our own mandates (Project otherwise has no company).
+    company: Mapped[str] = mapped_column(String(240), default="")
     status: Mapped[str] = mapped_column(String(32), default="open")
     created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
@@ -888,3 +891,135 @@ def record_event(
     )
     session.add(evt)
     return evt
+
+
+# --------------------------------------------------------------------------
+# jobs database (postings + candidate↔job matches)
+# --------------------------------------------------------------------------
+
+
+class JobPosting(Base, TimestampMixin):
+    """An open-market or mandate-backed role, scored against CRM contacts.
+
+    Separate from ``Job`` (the durable work queue) and from ``Project`` (our
+    pipeline for a mandate). A Project upserts one of these with
+    ``source="project"``; Exa/CSV/manual rows are the rest of the market.
+    """
+
+    __tablename__ = "job_postings"
+    __table_args__ = (
+        UniqueConstraint("org_id", "source_id", name="uq_job_posting_source_id"),
+        Index("ix_job_posting_org_status", "org_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jpost"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    # Provenance of first sight: project | exa | manual | csv
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    # sha1 of a normalised URL, or of company|title|location, or "project:{id}".
+    # Hashed so a URL longer than String(200) still fits the unique key.
+    source_id: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str] = mapped_column(Text, default="")
+
+    company: Mapped[str] = mapped_column(String(240), default="")
+    company_normalized: Mapped[str] = mapped_column(String(240), default="")
+    company_domain: Mapped[str] = mapped_column(String(240), default="")
+    title: Mapped[str] = mapped_column(String(240), default="")
+    title_normalized: Mapped[str] = mapped_column(String(240), default="")
+    location: Mapped[str] = mapped_column(String(200), default="")
+    open_to_remote: Mapped[bool] = mapped_column(Boolean, default=False)
+    seniority: Mapped[str] = mapped_column(String(40), default="")
+    jd_text: Mapped[str] = mapped_column(Text, default="")
+
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # pending_parse | open | stale | closed | archived
+    status: Mapped[str] = mapped_column(String(32), default="pending_parse")
+
+    parsed_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    spec_version: Mapped[str] = mapped_column(String(64), default="")
+    parser: Mapped[str] = mapped_column(String(32), default="")
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    embedding: Mapped[list | None] = mapped_column(EmbeddingVector, nullable=True)
+    embedding_model: Mapped[str] = mapped_column(String(80), default="")
+
+    fee_bearing: Mapped[bool] = mapped_column(Boolean, default=False)
+    fee_terms: Mapped[str] = mapped_column(String(240), default="")
+    fee_evidence: Mapped[str] = mapped_column(Text, default="")
+    # Cache of [{candidate_id, name, company, basis}]; repaired on the match sweep.
+    referral_paths: Mapped[list] = mapped_column(JSON, default=list)
+    has_warm_path: Mapped[bool] = mapped_column(Boolean, default=False)
+    match_count: Mapped[int] = mapped_column(Integer, default=0)
+    matched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    matched_spec_version: Mapped[str] = mapped_column(String(64), default="")
+
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class JobMatch(Base, TimestampMixin):
+    """One candidate scored against one posting. Human status is sticky."""
+
+    __tablename__ = "job_matches"
+    __table_args__ = (
+        UniqueConstraint("job_posting_id", "candidate_id", name="uq_job_match"),
+        Index("ix_job_match_candidate_score", "org_id", "candidate_id", "score"),
+        Index("ix_job_match_posting_score", "job_posting_id", "score"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jmatch"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    job_posting_id: Mapped[str] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), index=True
+    )
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    heuristic_score: Mapped[float] = mapped_column(Float, default=0.0)
+    vector_score: Mapped[float] = mapped_column(Float, default=0.0)
+    criteria: Mapped[list] = mapped_column(JSON, default=list)
+    # new | shortlisted | dismissed
+    status: Mapped[str] = mapped_column(String(32), default="new")
+    dismissed_reason: Mapped[str] = mapped_column(String(120), default="")
+    spec_version: Mapped[str] = mapped_column(String(64), default="")
+    computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JobMatchWatermark(Base):
+    """When this candidate was last scored, even if nothing cleared the floor.
+
+    Lives off Candidate so the CRM workstream can keep owning that table.
+    Distinguishes "scored and matched nothing" from "never scored".
+    """
+
+    __tablename__ = "job_match_watermarks"
+    __table_args__ = (
+        UniqueConstraint("org_id", "candidate_id", name="uq_job_match_watermark"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jmw"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class JobScrapeQuery(Base, TimestampMixin):
+    """A saved Exa query that pulls job postings on a cadence."""
+
+    __tablename__ = "job_scrape_queries"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jscr"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    query: Mapped[str] = mapped_column(Text)
+    cadence_minutes: Mapped[int] = mapped_column(Integer, default=1440)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    total_found: Mapped[int] = mapped_column(Integer, default=0)
+    # explicit | auto (title-family similar-jobs)
+    origin: Mapped[str] = mapped_column(String(32), default="explicit")

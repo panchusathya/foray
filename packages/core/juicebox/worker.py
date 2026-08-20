@@ -22,6 +22,11 @@ from .jobs import (
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
+    KIND_JOBS_MATCH,
+    KIND_JOBS_MATCH_ONE,
+    KIND_JOBS_PARSE,
+    KIND_JOBS_SCRAPE,
+    KIND_JOBS_SCRAPE_ONE,
     KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
     KIND_MAILBOX_SYNC_ONE,
@@ -77,6 +82,26 @@ def ensure_ticks(db: Session, *, now=None) -> int:
                 org_id=org.id,
                 kind=KIND_MAILBOX_SYNC,
                 idempotency_key=f"{KIND_MAILBOX_SYNC}:{org.id}:{int(now.timestamp())}",
+                payload={"org_id": org.id},
+                run_at=now,
+            )
+            created += 1
+        if not has_open_job(db, org_id=org.id, kind=KIND_JOBS_MATCH):
+            enqueue(
+                db,
+                org_id=org.id,
+                kind=KIND_JOBS_MATCH,
+                idempotency_key=f"{KIND_JOBS_MATCH}:{org.id}:{int(now.timestamp())}",
+                payload={"org_id": org.id},
+                run_at=now,
+            )
+            created += 1
+        if not has_open_job(db, org_id=org.id, kind=KIND_JOBS_SCRAPE):
+            enqueue(
+                db,
+                org_id=org.id,
+                kind=KIND_JOBS_SCRAPE,
+                idempotency_key=f"{KIND_JOBS_SCRAPE}:{org.id}:{int(now.timestamp())}",
                 payload={"org_id": org.id},
                 run_at=now,
             )
@@ -328,6 +353,42 @@ def _handle_mailbox_backfill(db: Session, job: Job, now) -> dict[str, Any]:
     return result
 
 
+def _handle_jobs_parse(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.parse import handle_parse
+
+    return handle_parse(db, job, now)
+
+
+def _handle_jobs_match(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.engine import dispatch_match_tick
+
+    org_id = job.payload.get("org_id") or job.org_id
+    result = dispatch_match_tick(db, org_id, now=now)
+    _schedule_next_tick(db, org_id=org_id, kind=KIND_JOBS_MATCH, now=now)
+    return result
+
+
+def _handle_jobs_match_one(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.engine import handle_match_one
+
+    return handle_match_one(db, job, now)
+
+
+def _handle_jobs_scrape(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.scrape import dispatch_scrape_tick
+
+    org_id = job.payload.get("org_id") or job.org_id
+    result = dispatch_scrape_tick(db, org_id, now=now)
+    _schedule_next_tick(db, org_id=org_id, kind=KIND_JOBS_SCRAPE, now=now)
+    return result
+
+
+def _handle_jobs_scrape_one(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.scrape import handle_scrape_one
+
+    return handle_scrape_one(db, job, now)
+
+
 def _handle_crm_discovery(db: Session, job: Job, now) -> dict[str, Any]:
     """Fan a sweep out to one job per mailbox.
 
@@ -514,6 +575,11 @@ HANDLERS = {
     KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,
     KIND_MAILBOX_BACKFILL: _handle_mailbox_backfill,
     KIND_REPLY_DRAFT: _handle_reply_draft,
+    KIND_JOBS_PARSE: _handle_jobs_parse,
+    KIND_JOBS_MATCH: _handle_jobs_match,
+    KIND_JOBS_MATCH_ONE: _handle_jobs_match_one,
+    KIND_JOBS_SCRAPE: _handle_jobs_scrape,
+    KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
 }
 
 

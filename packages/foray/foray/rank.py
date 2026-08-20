@@ -166,10 +166,14 @@ def blend_one(
     return ce
 
 
-def sort_key(blend: float, key: int, *, band: int = 1, cos_sim: float = 0.0) -> tuple[int, float, float, int]:
+def sort_key(blend: float, key: int, *, band: int = 1, cos_sim=0.0) -> tuple:
     """A total order: band 0 (reranked) first, then band 1 (unreranked), then
-    band 2 (CE-rejected); within a band, higher blends, cosine, id."""
-    return (band, -blend, -cos_sim, key)
+    band 2 (CE-rejected); within a band, higher blends, then the tiebreak,
+    then id. ``cos_sim`` is the descending tiebreak — a float, or a tuple
+    compared elementwise (rank_page passes (retrieval_blend, cos_sim) so a
+    flat-lined CE falls back to the scored blend before cosine)."""
+    values = cos_sim if isinstance(cos_sim, tuple) else (cos_sim,)
+    return (band, -blend, tuple(-value for value in values), key)
 
 
 def clamp_window(offset: int, limit: int, policy: RankPolicy) -> Window:
@@ -383,7 +387,7 @@ def rank_page(
         # ``score is not None and score >= floor``.
         if row.score is not None and row.score < policy.display_floor:
             continue
-        blend = blend_one(
+        retrieval = blend_one(
             row.score,
             row.cos_sim,
             policy.weights,
@@ -391,16 +395,27 @@ def rank_page(
             unscored_score=policy.unscored_score,
             rrf_k=policy.rrf_k,
             n_arms=policy.n_arms,
-            # Only band 0 orders by ce. A band-2 (CE-rejected) row keeps its ce
-            # for diagnostics, but every sub-floor probability is ~0, so within
-            # band 2 the retrieval blend is the only meaningful order.
-            ce=row.ce if row.band == 0 else None,
         )
-        blended.append((blend, row))
+        # Only band 0 orders by ce. A band-2 (CE-rejected) row keeps its ce
+        # for diagnostics, but that far under the head max it is noise, so
+        # band 2 orders by the retrieval blend like band 1.
+        blend = row.ce if (row.band == 0 and row.ce is not None) else retrieval
+        blended.append((blend, retrieval, row))
 
+    # Band 0 breaks ce ties on the RETRIEVAL BLEND, not cosine. logistic_ce
+    # rounds to 4dp, and on this corpus (profile blobs, not the passages
+    # ms-marco was trained on) most of a head ties at 0.0000 — a cosine
+    # tiebreak then buried rubric-scored rows under semantically-adjacent
+    # unscored ones. Where the CE genuinely discriminates it still leads;
+    # where it flatlines, the scored blend decides. Bands 1/2 sort by the
+    # retrieval blend itself, so the same tiebreak is a no-op for them and
+    # cosine still settles exact blend ties via sort_key.
     blended.sort(
         key=lambda item: sort_key(
-            item[0], item[1].key, band=item[1].band, cos_sim=item[1].cos_sim
+            item[0],
+            item[2].key,
+            band=item[2].band,
+            cos_sim=(item[1], item[2].cos_sim),
         )
     )
 
@@ -414,7 +429,9 @@ def rank_page(
     stop = min(window.offset + window.limit, paginable)
     items = [
         Ranked(key=row.key, blend=blend, rank=index + 1, band=row.band)
-        for index, (blend, row) in enumerate(blended[window.offset : stop], start=window.offset)
+        for index, (blend, _retrieval, row) in enumerate(
+            blended[window.offset : stop], start=window.offset
+        )
     ]
     return _envelope(
         items,

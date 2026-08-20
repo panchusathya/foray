@@ -401,3 +401,36 @@ def test_ce_gap_uniform_junk_head_demotes_nothing(policy: RankPolicy) -> None:
     reranked = apply_ce_scores(pool, {1: -12.0, 2: -12.5}, policy=gapped)
     assert [row.band for row in reranked] == [0, 0]
 
+
+
+def test_band_0_ce_ties_break_on_retrieval_blend_not_cosine(policy: RankPolicy) -> None:
+    """The prod flatline case: logistic_ce rounds to 4dp, so a head of tiny
+    CE probabilities all ties at 0.0000. The tie must fall to the retrieval
+    blend (rubric-scored rows first), not to cosine — cosine buried a
+    score-72 candidate under an unscored semantically-adjacent one."""
+    gapped = replace(policy, ce_logit_gap=5.0, unscored_score=20)
+    pool = [
+        PoolRow(1, 72, 0.55, rrf=0.01),   # rubric-scored, lower cosine
+        PoolRow(2, None, 0.80, rrf=0.01),  # unscored, higher cosine
+    ]
+    # -10.0 and -10.1 both round to ce=0.0 and sit within the gap of each
+    # other (max is -10.0, gap 5), so both stay band 0 and tie on ce.
+    reranked = apply_ce_scores(pool, {1: -10.1, 2: -10.0}, policy=gapped)
+    assert all(row.band == 0 for row in reranked)
+    assert {row.ce for row in reranked} == {0.0}
+    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=gapped)
+    assert [item.key for item in page.items] == [1, 2]
+
+
+def test_band_0_ce_still_leads_when_it_discriminates(policy: RankPolicy) -> None:
+    """When rounded ce values actually differ, ce outranks the retrieval
+    blend inside band 0 — the tiebreak only decides genuine ties."""
+    gapped = replace(policy, ce_logit_gap=5.0)
+    pool = [
+        PoolRow(1, 90, 0.9, rrf=0.02),   # best retrieval
+        PoolRow(2, 30, 0.2, rrf=0.001),  # best ce
+    ]
+    reranked = apply_ce_scores(pool, {1: -1.0, 2: 1.0}, policy=gapped)
+    assert all(row.band == 0 for row in reranked)
+    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=gapped)
+    assert [item.key for item in page.items] == [2, 1]

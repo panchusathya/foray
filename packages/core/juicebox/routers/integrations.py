@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..integrations import microsoft
 from ..integrations.crypto import encrypt_json
 from ..models import MailboxConnection, record_event
@@ -23,7 +23,9 @@ from ..security import TokenError, create_access_token, decode_access_token
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v1/integrations/microsoft", tags=["integrations"])
+router = APIRouter(
+    route_class=CommittingRoute, prefix="/v1/integrations/microsoft", tags=["integrations"]
+)
 
 _STATE_ROLE = "msconnect"
 _STATE_TTL_SECONDS = 600

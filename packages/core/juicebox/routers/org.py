@@ -6,12 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..models import Org, Suppression
 from ..outreach.suppressions import suppress, unsuppress
 from ..schemas import OrgOut, OrgPatch, SuppressionIn, SuppressionOut
 
-router = APIRouter(prefix="/v1/org", tags=["org"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/org", tags=["org"])
 
 
 def _org(db: Session, org_id: str) -> Org:
@@ -41,7 +41,9 @@ def patch_org(
     return OrgOut.model_validate(org)
 
 
-suppressions_router = APIRouter(prefix="/v1/suppressions", tags=["org"])
+suppressions_router = APIRouter(
+    route_class=CommittingRoute, prefix="/v1/suppressions", tags=["org"]
+)
 
 
 @suppressions_router.get("", response_model=list[SuppressionOut])

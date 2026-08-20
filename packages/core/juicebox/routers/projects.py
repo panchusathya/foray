@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..models import (
     OUTREACH_DRIVEN_STAGES,
     PIPELINE_STAGES,
@@ -26,7 +26,7 @@ from ..schemas import (
     StageUpdate,
 )
 
-router = APIRouter(prefix="/v1/projects", tags=["projects"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/projects", tags=["projects"])
 
 
 def _load_project(db: Session, project_id: str, org_id: str) -> Project:

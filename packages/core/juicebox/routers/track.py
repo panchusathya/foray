@@ -13,11 +13,13 @@ from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..deps import get_db
+from ..deps import CommittingRoute, get_db
 from ..models import Message, record_event, utcnow
 from ..security import verify_tracking_token
 
-router = APIRouter(prefix="/t", tags=["tracking"], include_in_schema=False)
+router = APIRouter(
+    route_class=CommittingRoute, prefix="/t", tags=["tracking"], include_in_schema=False
+)
 
 # 1x1 transparent GIF.
 _PIXEL = base64.b64decode(

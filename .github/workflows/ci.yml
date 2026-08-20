@@ -215,6 +215,11 @@ jobs:
     # juicebox_staging/foray_staging and drives the browser suite end to end.
     name: staging smoke + browser suite
     runs-on: ubuntu-latest
+    # This job shells into a booted stack, so a wedged container hangs a step
+    # rather than failing it. Without a ceiling it sits on the runner until the
+    # 6-hour default: runs #79, #80 and #83 burned 1h35m, 4h19m and 1h50m on
+    # the same deadlocked seed step.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -225,6 +230,13 @@ jobs:
 
       - name: Health
         run: curl -sf http://127.0.0.1:18080/health
+
+      # TEMPORARY diagnostic -- remove with the script once the cause is fixed.
+      # Discriminates between a late write and a lost one; see the script's
+      # docstring. Writes its verdict to the run summary, because the step-log
+      # viewer lazy-loads and buries output. Never gates the job.
+      - name: Signup durability probe (temporary)
+        run: python3 deploy/tests/signup_durability_probe.py --iterations 40
 
       # Both evidence kinds, then derive + embed so search actually returns
       # hits. Without this the Sourcing specs self-skip and every LinkedIn
@@ -264,9 +276,58 @@ jobs:
           path: packages/web/playwright-report
           retention-days: 7
 
-      - name: Staging logs (on failure)
-        if: failure()
-        run: docker compose -f docker-compose.staging.yml --env-file deploy/ci.env logs --no-color
+      # A single undifferentiated `compose logs` dump is what this step used to
+      # be, and it is unreadable: GitHub lazy-loads long step output, so the one
+      # traceback that explains the failure cannot be found in the browser and
+      # is not downloadable either. Print a bounded per-service tail inline
+      # (api first -- it is what fails), and upload the full logs as an artifact.
+      # always(), not failure(): the e2e failures here are usually rescued by
+      # Playwright's retry, so the job goes green and a failure()-gated capture
+      # would never fire on the very runs worth reading. The inline dump below
+      # still only prints when something actually failed.
+      - name: Staging logs
+        if: always()
+        env:
+          JOB_FAILED: ${{ job.status == 'failure' }}
+        run: |
+          compose="docker compose -f docker-compose.staging.yml --env-file deploy/ci.env"
+          mkdir -p staging-logs
+          for svc in api worker db web foray; do
+            $compose logs --no-color --timestamps "$svc" > "staging-logs/$svc.log" 2>&1 || true
+          done
+          $compose logs --no-color --timestamps > staging-logs/all-services.log 2>&1 || true
+          $compose ps > staging-logs/ps.txt 2>&1 || true
+
+          if [ "${JOB_FAILED}" = "true" ]; then
+            for svc in api worker; do
+              echo "::group::$svc -- last 120 lines"
+              tail -n 120 "staging-logs/$svc.log" || true
+              echo "::endgroup::"
+            done
+          fi
+
+          # Two groups, because they want different shapes: a status anomaly
+          # reads best as one compact line, while a traceback is useless without
+          # the frames between "Traceback" and the exception, so that one takes
+          # context. Both assign before printing -- grep's exit status is lost
+          # through a pipeline, so `| tail || echo` can never report a miss.
+          echo "::group::api -- request failures (4xx/5xx)"
+          codes=$(grep -nE '" (5[0-9][0-9]|4(0[13]|09|22)) ' staging-logs/api.log 2>/dev/null || true)
+          if [ -n "$codes" ]; then echo "$codes" | tail -n 60; else echo "(none)"; fi
+          echo "::endgroup::"
+
+          echo "::group::api -- full tracebacks"
+          traces=$(grep -A 30 -E 'Traceback|Exception in ASGI application' staging-logs/api.log 2>/dev/null || true)
+          if [ -n "$traces" ]; then echo "$traces" | tail -n 200; else echo "(none)"; fi
+          echo "::endgroup::"
+
+      - name: Staging logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-logs
+          path: staging-logs
+          retention-days: 7
 
       - name: Teardown
         if: always()

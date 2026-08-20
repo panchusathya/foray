@@ -390,12 +390,17 @@ async def _print_sample(conn, n: int) -> None:
 async def amain(args: argparse.Namespace) -> int:
     pool = await get_pool()
     processed = 0
-    async with pool.acquire() as conn:
-        if args.histogram and not args.derive:
-            await _print_histogram(conn)
-            await close_pool()
-            return 0
 
+    # Its own acquire, so close_pool() runs after the connection is released.
+    # Awaiting close_pool() inside the block below would wait forever for a
+    # connection that only the block's exit can return.
+    if args.histogram and not args.derive:
+        async with pool.acquire() as conn:
+            await _print_histogram(conn)
+        await close_pool()
+        return 0
+
+    async with pool.acquire() as conn:
         # Fetch ids first (small), then pull the heavy JSONB in chunks. The old
         # "select candidate_id, data from raw_profiles" loaded every ~30 KB node
         # into memory at once and OOMed the 4 GB VM around 40-50k profiles;

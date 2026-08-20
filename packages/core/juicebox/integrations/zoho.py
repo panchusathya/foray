@@ -210,9 +210,12 @@ def _addresses(raw) -> list[str]:
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     out = []
     for part in parts:
-        address = (part or "").strip().strip("<>").lower()
+        address = (part or "").strip()
+        # Pull the address out of "Display Name <a@b>" before stripping the
+        # brackets, or the display name survives as part of the address.
         if "<" in address and ">" in address:
             address = address[address.index("<") + 1 : address.index(">")]
+        address = address.strip().strip("<>").lower()
         if address:
             out.append(address)
     return out

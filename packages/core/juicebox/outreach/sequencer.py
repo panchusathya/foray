@@ -484,6 +484,10 @@ def send_step(
             subject_id=message.id,
             payload={"error": result.error},
         )
+    # Sessions are autoflush=False, so without this the row this send just
+    # produced is invisible to the next enrollment's cap query in the same pass
+    # -- every daily cap would be overshot by the size of the batch.
+    db.flush()
     return message
 
 

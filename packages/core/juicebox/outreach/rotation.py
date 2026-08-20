@@ -51,23 +51,40 @@ def _can_send_via(provider_name: str) -> bool:
         return False
 
 
+def active_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
+    """Every live connection, regardless of whether it currently has room.
+
+    The distinction from ``eligible_mailboxes`` decides what happens when
+    nothing can send right now. No live connection at all means this org never
+    connected a mailbox (or revoked the last one), so sends fall through to the
+    globally configured provider exactly as they did before the pool existed. A
+    live connection that is merely switched off or capped out is a pause, and
+    falling back there would send from the wrong identity -- so that defers
+    instead.
+    """
+    return list(
+        db.scalars(
+            select(MailboxConnection)
+            .where(
+                MailboxConnection.org_id == org_id,
+                MailboxConnection.status == "active",
+            )
+            .order_by(MailboxConnection.id)
+        ).all()
+    )
+
+
 def eligible_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
     """Mailboxes that could send, ignoring how much they have sent already.
 
     Ordered by id so the pick is deterministic when utilisation ties, which is
     what makes the rotation testable.
     """
-    rows = db.scalars(
-        select(MailboxConnection)
-        .where(
-            MailboxConnection.org_id == org_id,
-            MailboxConnection.status == "active",
-            MailboxConnection.send_enabled.is_(True),
-            MailboxConnection.daily_send_cap > 0,
-        )
-        .order_by(MailboxConnection.id)
-    ).all()
-    return [row for row in rows if _can_send_via(row.provider)]
+    return [
+        row
+        for row in active_mailboxes(db, org_id=org_id)
+        if row.send_enabled and row.daily_send_cap > 0 and _can_send_via(row.provider)
+    ]
 
 
 def sent_in_window(db: Session, *, mailbox_id: str, now: datetime) -> int:
@@ -116,9 +133,9 @@ def pick_mailbox(
     """The least-utilised mailbox with room left, or None when all are full.
 
     None does not distinguish "no mailboxes" from "every mailbox is capped";
-    callers that need to tell those apart ask ``eligible_mailboxes`` first, and
-    they mean different things: the first falls through to the globally
-    configured provider, the second defers.
+    callers that need to tell those apart ask ``active_mailboxes`` first, and
+    they mean different things: no live connection falls through to the globally
+    configured provider, a capped-out pool defers.
     """
     best: MailboxConnection | None = None
     best_load = 1.0

@@ -291,15 +291,20 @@ def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender
             return ResolvedSender(get_sender())
         return _bind(db, org_id, sequence.mailbox_id, now=now)
 
-    from .rotation import eligible_mailboxes, pick_mailbox
+    from .rotation import active_mailboxes, pick_mailbox
 
-    if not eligible_mailboxes(db, org_id=org_id):
+    if not active_mailboxes(db, org_id=org_id):
+        # This org has no mailbox connected at all, so there is no identity to
+        # be wrong about: fall through to the globally configured provider.
         return ResolvedSender(get_sender())
 
     connection = pick_mailbox(db, org_id=org_id, now=now)
     if connection is None:
+        # Mailboxes exist but none has room (or they are all switched off).
+        # Deferring holds the send until one does; falling back to the global
+        # provider would quietly send from the wrong address instead.
         return ResolvedSender(
-            FailingSender("every connected mailbox is at its daily cap"),
+            FailingSender("no connected mailbox has capacity right now"),
             deferred=True,
             reason="mailbox_cap",
         )

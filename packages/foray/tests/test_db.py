@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from tests.dbutil import requires_db
 from foray.db import close_pool, fetchval, get_pool
+from tests.dbutil import requires_db
 
 
 @requires_db

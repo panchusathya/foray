@@ -91,7 +91,7 @@ def build_linkedin_blob(
         company = (entry.get("company") or "").strip()
         if not role_title and not company:
             continue
-        span = " – ".join(
+        span = " - ".join(
             part for part in ((entry.get("start_date") or "").strip(), (entry.get("end_date") or "").strip())
             if part
         )

@@ -22,12 +22,12 @@ def postgres_available() -> bool:
             conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
             await conn.close()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - any connection failure means unavailable
             return False
 
     try:
         return asyncio.run(_check())
-    except Exception:
+    except Exception:  # noqa: BLE001 - event-loop setup can also make it unavailable
         return False
 
 
@@ -42,12 +42,12 @@ def scored_db_available() -> bool:
             finally:
                 await conn.close()
             return bool(n)
-        except Exception:
+        except Exception:  # noqa: BLE001 - schema/connection failures mean unavailable
             return False
 
     try:
         return asyncio.run(_check())
-    except Exception:
+    except Exception:  # noqa: BLE001 - event-loop setup can also make it unavailable
         return False
 
 

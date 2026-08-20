@@ -1,0 +1,20 @@
+[importlinter]
+root_package = foray
+include_external_packages = True
+
+[importlinter:contract:pure-rank]
+name = The pure ranking core does not import query-path infrastructure
+type = forbidden
+source_modules =
+    foray.rank
+forbidden_modules =
+    asyncpg
+    httpx
+    pydantic
+    sentence_transformers
+    foray.api
+    foray.config
+    foray.db
+    foray.embed
+    foray.llm
+    foray.score

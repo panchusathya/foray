@@ -72,11 +72,11 @@ async def _run_phase(conn, phase: Phase, remaining_s: float) -> None:
         proc = await asyncio.create_subprocess_exec(sys.executable, "-m", *phase.argv)
         try:
             code = await asyncio.wait_for(proc.wait(), timeout=budget)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.terminate()
             try:
                 code = await asyncio.wait_for(proc.wait(), timeout=30)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 code = await proc.wait()
             run.notes = f"deadline {budget // 60}m hit"

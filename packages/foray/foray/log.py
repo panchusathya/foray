@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 import structlog
@@ -59,24 +60,22 @@ class Heartbeat:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def start(self) -> "Heartbeat":
+    def start(self) -> Heartbeat:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
-            try:
+            with suppress(Exception):  # a heartbeat must never crash the job
                 self._log.info("heartbeat", **self._counts())
-            except Exception:  # noqa: BLE001 - a heartbeat must never crash the job
-                pass
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
 
-    def __enter__(self) -> "Heartbeat":
+    def __enter__(self) -> Heartbeat:
         return self.start()
 
     def __exit__(self, *exc: object) -> None:

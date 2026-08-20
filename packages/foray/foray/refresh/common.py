@@ -4,8 +4,6 @@ later is debuggable.
 
 from __future__ import annotations
 
-from typing import Any
-
 
 class RefreshRun:
     """Context manager that logs one row into refresh_runs (start/end/counts)."""
@@ -19,7 +17,7 @@ class RefreshRun:
         self.errors = 0
         self.notes: str | None = None
 
-    async def __aenter__(self) -> "RefreshRun":
+    async def __aenter__(self) -> RefreshRun:
         self.id = await self.conn.fetchval(
             "insert into refresh_runs (job) values ($1) returning id", self.job
         )

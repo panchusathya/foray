@@ -7,7 +7,8 @@ second. If the employer changed, we update the row and surface a badge.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ..config import settings
 from ..log import get_logger
@@ -90,7 +91,7 @@ async def freshness_check(
     badge = None
     if changed:
         badge = (
-            f"employer updated just now"
+            "employer updated just now"
             + (f", previously {previous}" if previous else "")
         )
     return {

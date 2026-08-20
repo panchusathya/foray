@@ -177,7 +177,7 @@ async def _fetch_with_singles_fallback(
     except Exception as exc:  # noqa: BLE001
         log.info("enrich.batch_failed", size=len(chunk), error=str(exc)[:120])
         nodes = {login: None for login in chunk}
-    for login in [l for l, n in nodes.items() if not _complete(n)]:
+    for login in [login_key for login_key, node in nodes.items() if not _complete(node)]:
         try:
             single = await gh.fetch_batch([login])
             nodes[login] = single.get(login)

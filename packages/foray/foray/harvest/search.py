@@ -126,10 +126,10 @@ class GitHubSearch:
 
 # ------------------------------------------------------------------- DB helpers --
 
-CLAIM_SQL = """
+CLAIM_SQL = f"""
 update harvest_shards
 set status = 'running',
-    lease_expires_at = now() + interval '{lease}',
+    lease_expires_at = now() + interval '{LEASE}',
     updated_at = now()
 where id = (
     select id from harvest_shards
@@ -140,7 +140,7 @@ where id = (
     limit 1
 )
 returning id, location, language, followers, created_range, query
-""".format(lease=LEASE)
+"""
 
 
 async def claim_shard(conn: asyncpg.Connection) -> asyncpg.Record | None:

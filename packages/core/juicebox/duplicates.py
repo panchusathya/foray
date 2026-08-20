@@ -205,10 +205,13 @@ _FILLABLE = (
 def _move_unique(db: Session, model, *, primary_id: str, other_id: str, key) -> int:
     """Move child rows, dropping any the survivor already has.
 
-    ``project_candidates``, ``candidate_tags`` and ``enrollments`` are unique
-    per (parent, candidate). Reassigning blindly trips the constraint and takes
-    the whole merge down, so the overlap is dropped instead -- the survivor's
-    own row already says the same thing.
+    ``project_candidates`` and ``candidate_tags`` are unique per (parent,
+    candidate). Reassigning blindly trips the constraint and takes the whole
+    merge down, so the overlap is dropped instead -- the survivor's own row
+    already says the same thing.
+
+    ``enrollments`` is unique the same way but cannot use this: dropping one
+    cascades to its mail. See :func:`_merge_enrollments`.
     """
     taken = {
         key(row)
@@ -223,6 +226,65 @@ def _move_unique(db: Session, model, *, primary_id: str, other_id: str, key) -> 
             continue
         row.candidate_id = primary_id
         moved += 1
+    return moved
+
+
+def _merge_enrollments(db: Session, *, primary_id: str, other_id: str) -> int:
+    """Move enrolments, rehoming their mail before dropping an overlap.
+
+    ``enrollments`` is unique per (sequence, candidate), so an overlap has to
+    be dropped like any other -- but ``messages.enrollment_id`` is ON DELETE
+    CASCADE, and the delete would take the duplicate's sent mail with it even
+    though it had just been re-pointed at the survivor. So the mail moves onto
+    the survivor's own enrolment first.
+
+    ``uq_messages_enrollment_step_outbound`` allows one outbound row per
+    (enrolment, step). Where both people were sent the same step, the survivor
+    already has that row, so the duplicate's copy is detached from the
+    enrolment rather than dropped: the mail stays on the person's timeline,
+    which is what a merge is for.
+    """
+    survivor_by_sequence = {
+        row.sequence_id: row
+        for row in db.scalars(
+            select(Enrollment).where(Enrollment.candidate_id == primary_id)
+        ).all()
+    }
+    moved = 0
+    for row in db.scalars(
+        select(Enrollment).where(Enrollment.candidate_id == other_id)
+    ).all():
+        kept = survivor_by_sequence.get(row.sequence_id)
+        if kept is None:
+            row.candidate_id = primary_id
+            survivor_by_sequence[row.sequence_id] = row
+            moved += 1
+            continue
+
+        taken = {
+            message.step_id
+            for message in db.scalars(
+                select(Message).where(
+                    Message.enrollment_id == kept.id,
+                    Message.direction == "outbound",
+                )
+            ).all()
+            if message.step_id is not None
+        }
+        for message in db.scalars(
+            select(Message).where(Message.enrollment_id == row.id)
+        ).all():
+            collides = (
+                message.direction == "outbound"
+                and message.step_id is not None
+                and message.step_id in taken
+            )
+            message.enrollment_id = None if collides else kept.id
+            if not collides and message.step_id is not None:
+                taken.add(message.step_id)
+        # The rehomed rows must be written before the cascade can see them.
+        db.flush()
+        db.delete(row)
     return moved
 
 
@@ -284,9 +346,8 @@ def merge(
             db, ProjectCandidate, primary_id=primary.id, other_id=other.id,
             key=lambda row: row.project_id,
         )
-        moved["enrollments"] += _move_unique(
-            db, Enrollment, primary_id=primary.id, other_id=other.id,
-            key=lambda row: row.sequence_id,
+        moved["enrollments"] += _merge_enrollments(
+            db, primary_id=primary.id, other_id=other.id
         )
         _move_unique(
             db, CandidateTag, primary_id=primary.id, other_id=other.id,

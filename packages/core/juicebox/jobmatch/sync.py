@@ -41,12 +41,21 @@ def upsert_project_posting(db: Session, project: Project) -> JobPosting:
         db.add(existing)
 
     existing.project_id = project.id
-    existing.title = title
-    existing.title_normalized = tx.normalize_title(title)
-    existing.location = project.location or ""
-    existing.company = project.company or ""
-    existing.company_normalized = tx.normalize_company(project.company or "")
-    existing.jd_text = project.description or ""
+    # A borrowed posting keeps what it came with. "Create project from this
+    # posting" links a pre-existing exa/csv row, and a Project carries no
+    # description at all unless someone typed one -- so mirroring a blank over
+    # the top would delete the scraped JD, the company and the location that
+    # the match scoring runs on. Only write what the project actually has.
+    if title:
+        existing.title = title
+        existing.title_normalized = tx.normalize_title(title)
+    if project.location:
+        existing.location = project.location
+    if project.company:
+        existing.company = project.company
+        existing.company_normalized = tx.normalize_company(project.company)
+    if project.description:
+        existing.jd_text = project.description
     existing.last_seen_at = now
     if existing.status == "archived":
         existing.status = "pending_parse"
@@ -56,11 +65,20 @@ def upsert_project_posting(db: Session, project: Project) -> JobPosting:
 
 
 def archive_project_posting(db: Session, project_id: str) -> None:
+    """Detach the posting a deleted project owned.
+
+    Only a posting the project *created* is archived. A market posting the
+    project merely borrowed (source exa/csv/manual, linked by create-project)
+    outlives the mandate: it is still a real open role, still scored against
+    everyone, and archiving it would retire it from the market view because a
+    client went quiet.
+    """
     posting = db.scalar(select(JobPosting).where(JobPosting.project_id == project_id))
     if posting is None:
         return
-    posting.status = "archived"
     posting.project_id = None
+    if posting.source == "project":
+        posting.status = "archived"
 
 
 def backfill_project_postings(db: Session, org_id: str | None = None) -> int:

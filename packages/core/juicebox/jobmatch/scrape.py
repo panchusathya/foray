@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -11,9 +12,11 @@ from ..config import get_settings
 from ..enrich import taxonomy as tx
 from ..jobs import KIND_JOBS_SCRAPE_ONE, enqueue
 from ..models import Job, JobPosting, JobScrapeQuery, Project, utcnow
-from .exa import ExaUnavailable, get_exa
+from .exa import ExaRequestFailed, ExaUnavailable, get_exa
 from .ids import source_id_for
 from .sync import enqueue_parse
+
+logger = logging.getLogger(__name__)
 
 
 def is_due(query: JobScrapeQuery, now=None) -> bool:
@@ -40,6 +43,11 @@ def mark_stale_postings(db: Session, org_id: str, *, now=None) -> int:
             JobPosting.org_id == org_id,
             JobPosting.status == "open",
             JobPosting.source == "exa",
+            # A posting attached to a live mandate is not market noise. Linking
+            # via create-project leaves source="exa", so without this the sweep
+            # retires the recruiter's own open role and drops it out of
+            # matching.
+            JobPosting.project_id.is_(None),
         )
     ).all()
     for posting in rows:
@@ -58,6 +66,19 @@ def mark_stale_postings(db: Session, org_id: str, *, now=None) -> int:
     return stale
 
 
+#: ``job_postings.title``/``company`` are String(240), ``location`` String(200).
+#: Exa returns whatever the page's <title> and byline happen to be, and Postgres
+#: rejects an over-length value rather than truncating it, so an unusually long
+#: title would fail the whole ingest -- invisibly on SQLite, where the tests run.
+TITLE_MAX = 240
+LOCATION_MAX = 200
+
+
+def _fit(value: str, limit: int) -> str:
+    value = (value or "").strip()
+    return value if len(value) <= limit else value[:limit].rstrip()
+
+
 def ingest_exa_results(
     db: Session, org_id: str, results: list[dict], *, now=None
 ) -> dict:
@@ -66,7 +87,7 @@ def ingest_exa_results(
     updated = 0
     for raw in results:
         url = (raw.get("url") or "").strip()
-        title = (raw.get("title") or "").strip()
+        title = _fit(raw.get("title") or "", TITLE_MAX)
         text = (raw.get("text") or raw.get("summary") or "").strip()
         if not title and not text:
             continue
@@ -87,11 +108,17 @@ def ingest_exa_results(
         else:
             updated += 1
         posting.source_url = url
-        posting.title = title or posting.title
-        posting.title_normalized = tx.normalize_title(posting.title)
-        posting.jd_text = text or posting.jd_text
-        posting.company = posting.company or (raw.get("author") or "")
-        posting.company_normalized = tx.normalize_company(posting.company)
+        # A posting linked to a project is the mandate's own record: whatever a
+        # recruiter typed there outranks what the scraper reads off the page, so
+        # a re-scrape refreshes liveness and provenance but not the content.
+        if posting.project_id is None:
+            posting.title = title or posting.title
+            posting.title_normalized = tx.normalize_title(posting.title)
+            posting.jd_text = text or posting.jd_text
+        posting.company = posting.company or _fit(raw.get("author") or "", TITLE_MAX)
+        posting.company_normalized = _fit(
+            tx.normalize_company(posting.company), TITLE_MAX
+        )
         posting.last_seen_at = now
         posting.raw = raw
         if posting.status == "stale":
@@ -131,6 +158,11 @@ def ensure_auto_queries(db: Session, org_id: str) -> int:
     have = {q.query for q in auto}
     created = 0
     for family in families:
+        # Tested before the insert, not after: checking afterwards lets an org
+        # already at the cap add one more every tick, so the ceiling never
+        # actually holds and each extra query is a recurring billed search.
+        if len(auto) + created >= cap:
+            break
         query_text = f"{family} job posting"
         if query_text in have:
             continue
@@ -144,8 +176,6 @@ def ensure_auto_queries(db: Session, org_id: str) -> int:
             )
         )
         created += 1
-        if len(auto) + created >= cap:
-            break
     if created:
         db.flush()
     return created
@@ -157,11 +187,22 @@ def run_scrape_query(db: Session, query: JobScrapeQuery, *, now=None) -> dict:
     if not client.available:
         query.last_run_at = now
         return {"skipped": "no_exa_key"}
+    # last_run_at is stamped on every outcome, success or not. is_due() treats
+    # a null as "never ran, run now", so leaving it unset after a failed call
+    # makes the 60s tick re-enqueue the query forever -- and every attempt is a
+    # billed Exa search, retried five times by the job runner. An attempt that
+    # failed still counts as an attempt; the cadence backs off and the next run
+    # tries again on schedule.
     try:
         results = client.search_job_postings(query.query)
     except ExaUnavailable:
         query.last_run_at = now
         return {"skipped": "no_exa_key"}
+    except ExaRequestFailed as exc:
+        query.last_run_at = now
+        db.flush()
+        logger.warning("exa search failed for query %s: %s", query.id, exc)
+        return {"skipped": "exa_request_failed", "error": str(exc)}
     ingested = ingest_exa_results(db, query.org_id, results, now=now)
     query.last_run_at = now
     query.total_found = int(query.total_found or 0) + ingested["created"]

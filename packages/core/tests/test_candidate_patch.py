@@ -250,6 +250,78 @@ class TestDoNotContact:
 
         assert session.scalars(select(Suppression)).all() == []
 
+    def test_a_new_address_on_a_suppressed_person_is_suppressed_too(
+        self, client, session, account
+    ):
+        """Suppression is keyed on the address, so adding one re-opens a door.
+
+        ``send_step`` only asks ``is_suppressed(email=to_address)``; it never
+        reads ``crm_status``. An address added after the status was set has no
+        Suppression row, so the person becomes mailable again on the new
+        address -- which is exactly the promise do_not_contact makes.
+        """
+        candidate = _seed(session, account["org_id"])
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={"crm_status": "do_not_contact"},
+            headers=account["headers"],
+        )
+
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={"emails": ["ada@personal.example.com", "ada@analytical.example.com"]},
+            headers=account["headers"],
+        )
+        session.expire_all()
+
+        suppressed = {r.email for r in session.scalars(select(Suppression)).all()}
+        assert suppressed == {
+            "ada@analytical.example.com",
+            "ada@personal.example.com",
+        }, "every address a suppressed person owns must be suppressed"
+
+    def test_status_and_emails_in_one_patch_suppress_the_final_list(
+        self, client, session, account
+    ):
+        """Order inside one payload must not decide who is reachable."""
+        candidate = _seed(session, account["org_id"])
+
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={
+                "crm_status": "do_not_contact",
+                "emails": ["ada@new.example.com"],
+            },
+            headers=account["headers"],
+        )
+        session.expire_all()
+
+        suppressed = {r.email for r in session.scalars(select(Suppression)).all()}
+        assert "ada@new.example.com" in suppressed
+
+    def test_moving_off_it_lifts_addresses_added_while_suppressed(
+        self, client, session, account
+    ):
+        candidate = _seed(session, account["org_id"])
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={"crm_status": "do_not_contact"},
+            headers=account["headers"],
+        )
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={"emails": ["ada@personal.example.com", "ada@analytical.example.com"]},
+            headers=account["headers"],
+        )
+        client.patch(
+            f"/v1/candidates/{candidate.id}",
+            json={"crm_status": "active"},
+            headers=account["headers"],
+        )
+        session.expire_all()
+
+        assert session.scalars(select(Suppression)).all() == []
+
     def test_an_unknown_status_is_rejected(self, client, session, account):
         candidate = _seed(session, account["org_id"])
         response = client.patch(

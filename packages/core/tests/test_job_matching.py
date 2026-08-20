@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from sqlalchemy import select
+
 from juicebox.enrich import taxonomy as tx
 from juicebox.jobmatch.engine import (
     dispatch_match_tick,
@@ -312,3 +314,138 @@ class TestRematchQueue:
         session.commit()
         rows = rematch_queue(session, account["org_id"])
         assert any(r["candidate"].id == ada.id for r in rows)
+
+
+class TestHumanDecisionsOutliveTheHeuristics:
+    """A shortlist or a dismissal has a reason attached; a score does not."""
+
+    def _posting(self, session, org, **extra):
+        posting = JobPosting(
+            org_id=org, source="exa", source_id=extra.pop("source_id", "sid-human"),
+            status="open", title="Staff ML Engineer",
+            title_normalized="staff ml engineer", company="Acme",
+            company_normalized="acme", **extra,
+        )
+        session.add(posting)
+        session.flush()
+        return posting
+
+    def test_a_dismissed_match_is_not_deleted_by_the_incumbency_sweep(
+        self, session, account
+    ):
+        from juicebox.jobmatch.engine import _drop_match
+
+        org = account["org_id"]
+        posting = self._posting(session, org)
+        candidate = Candidate(
+            org_id=org, source="manual", source_id="ada-human", full_name="Ada Lovelace",
+        )
+        session.add(candidate)
+        session.flush()
+        match = JobMatch(
+            org_id=org, job_posting_id=posting.id, candidate_id=candidate.id,
+            status="dismissed", dismissed_reason="not a fit", score=0.4,
+        )
+        session.add(match)
+        session.flush()
+
+        _drop_match(session, posting.id, candidate.id)
+        session.flush()
+
+        rows = session.scalars(select(JobMatch)).all()
+        assert len(rows) == 1, "a human dismissal must not be erased by a rescore"
+        assert rows[0].status == "dismissed"
+
+    def test_a_new_match_is_still_dropped(self, session, account):
+        from juicebox.jobmatch.engine import _drop_match
+
+        org = account["org_id"]
+        posting = self._posting(session, org, source_id="sid-human-2")
+        candidate = Candidate(
+            org_id=org, source="manual", source_id="cleo-human", full_name="Cleo Park",
+        )
+        session.add(candidate)
+        session.flush()
+        session.add(
+            JobMatch(
+                org_id=org, job_posting_id=posting.id, candidate_id=candidate.id,
+                status="new", score=0.4,
+            )
+        )
+        session.flush()
+
+        _drop_match(session, posting.id, candidate.id)
+        session.flush()
+
+        assert session.scalars(select(JobMatch)).all() == []
+
+
+class TestABorrowedPostingOutlivesTheMandate:
+    def test_deleting_a_project_does_not_archive_a_market_posting(
+        self, session, account
+    ):
+        from juicebox.jobmatch.sync import archive_project_posting
+
+        org = account["org_id"]
+        project = Project(org_id=org, name="Staff ML (Acme)", status="active")
+        session.add(project)
+        session.flush()
+        posting = JobPosting(
+            org_id=org, source="exa", source_id="sid-borrowed", status="open",
+            title="Staff ML Engineer", title_normalized="staff ml engineer",
+            project_id=project.id,
+        )
+        session.add(posting)
+        session.flush()
+
+        archive_project_posting(session, project.id)
+        session.flush()
+
+        assert posting.project_id is None
+        assert posting.status == "open", "the open role outlives the client going quiet"
+
+    def test_the_projects_own_posting_is_archived(self, session, account):
+        from juicebox.jobmatch.sync import archive_project_posting
+
+        org = account["org_id"]
+        project = Project(org_id=org, name="Own Mandate", status="active")
+        session.add(project)
+        session.flush()
+        posting = JobPosting(
+            org_id=org, source="project", source_id=f"project:{project.id}",
+            status="open", title="Own Mandate", project_id=project.id,
+        )
+        session.add(posting)
+        session.flush()
+
+        archive_project_posting(session, project.id)
+        session.flush()
+
+        assert posting.status == "archived"
+
+    def test_a_project_edit_does_not_blank_the_scraped_description(
+        self, session, account
+    ):
+        from juicebox.jobmatch.sync import upsert_project_posting
+
+        org = account["org_id"]
+        project = Project(org_id=org, name="Staff ML (Acme)", status="active")
+        session.add(project)
+        session.flush()
+        posting = JobPosting(
+            org_id=org, source="exa", source_id="sid-mirror", status="open",
+            title="Staff ML Engineer", title_normalized="staff ml engineer",
+            jd_text="Six kilobytes of real JD.", company="Acme",
+            company_normalized="acme", location="Remote", project_id=project.id,
+        )
+        session.add(posting)
+        session.flush()
+
+        # A Project carries no description unless someone typed one, so the
+        # mirror must not write its blank over the scraped JD.
+        upsert_project_posting(session, project)
+        session.flush()
+
+        assert posting.jd_text == "Six kilobytes of real JD."
+        assert posting.company == "Acme"
+        assert posting.location == "Remote"

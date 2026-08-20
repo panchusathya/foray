@@ -243,8 +243,12 @@ function CandidatePicker({ projectId, enrolledIds, busy, firstSendLabel, onCance
 
       <div className="row spread">
         <span className="small muted">
+          {/* Not "they wait until one is found", which is what this said and is
+              not true: send_step stops such an enrollment permanently, and
+              nothing re-arms it. Find the address first, on Sourcing. */}
           {withoutEmail.length
-            ? `${withoutEmail.length} of ${chosen.length} have no email yet — they wait until one is found.`
+            ? `${withoutEmail.length} of ${chosen.length} have no email — enrolling them stops ` +
+              `on the first send, permanently. Find their addresses on Sourcing first.`
             : ''}
         </span>
         <div className="row">

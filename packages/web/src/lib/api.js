@@ -60,6 +60,10 @@ export const api = {
 
   candidateCount: () => request('/v1/candidates/count'),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
+  // Buys contact details for sourced candidates. Goes through /v1 rather than
+  // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends
+  // money, so it needs a principal and a reason attached.
+  findEmails: (payload) => request('/v1/sourcing/find-emails', { method: 'POST', body: payload }),
   listCandidates: (params = {}) => {
     // Backwards-compatible: accepts a bare query string or {q, limit, offset}.
     const { q = '', limit, offset } = typeof params === 'string' ? { q: params } : params;

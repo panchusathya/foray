@@ -283,3 +283,41 @@ class TestUnchangedContract:
         rows = _ids(_grid(client, account["headers"]))
         assert len(rows) == 1
         assert _count(client, account["headers"]) == 1
+
+
+class TestSelectAllIds:
+    def test_ids_match_the_listing_for_the_same_filters(self, client, session, account):
+        people = _population(client, session, account)
+        response = client.get(
+            "/v1/candidates/ids",
+            params={"relationship": "stale"},
+            headers=account["headers"],
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert sorted(body["ids"]) == sorted([people["cold"], people["quiet"]])
+        assert body["truncated"] is False
+
+    def test_truncated_is_true_when_the_cap_bites(self, client, session, account):
+        """The UI must not claim it selected everything when it selected a
+        thousand of them."""
+        _population(client, session, account)
+        response = client.get(
+            "/v1/candidates/ids", params={"limit": 2}, headers=account["headers"]
+        )
+        body = response.json()
+        assert len(body["ids"]) == 2
+        assert body["truncated"] is True
+
+    def test_ids_is_not_swallowed_by_the_candidate_id_route(self, client, account):
+        """/ids is declared above /{candidate_id}; if that ever flips, this
+        returns a 404 for a candidate literally named "ids"."""
+        response = client.get("/v1/candidates/ids", headers=account["headers"])
+        assert response.status_code == 200
+        assert "ids" in response.json()
+
+    def test_the_cap_is_enforced_server_side(self, client, account):
+        response = client.get(
+            "/v1/candidates/ids", params={"limit": 5000}, headers=account["headers"]
+        )
+        assert response.status_code == 422

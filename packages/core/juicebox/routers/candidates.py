@@ -32,6 +32,9 @@ from ..schemas import (
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/candidates", tags=["candidates"])
 
 MAX_BULK = 5000
+# Above this, "select all matching" stops being a selection and starts
+# being a bulk job the client has no way to show progress for.
+MAX_SELECT_ALL = 1000
 
 SORT_KEYS = ("name", "last_contacted", "last_reply", "touches", "created")
 RELATIONSHIPS = ("stale", "one_touch", "never_replied", "replied")
@@ -327,6 +330,50 @@ def count_candidates(
         select(func.count()).select_from(stmt.with_only_columns(Candidate.id).subquery())
     )
     return {"count": int(total or 0)}
+
+
+@router.get("/ids")
+def candidate_ids(
+    q: str | None = Query(default=None),
+    seniority: list[str] | None = Query(default=None),
+    scope: str = Query(default="all"),
+    relationship: str | None = Query(default=None),
+    stale_days: int = Query(default=DEFAULT_STALE_DAYS, ge=1, le=3650),
+    contacted_before: datetime | None = Query(default=None),
+    contacted_after: datetime | None = Query(default=None),
+    created_after: datetime | None = Query(default=None),
+    limit: int = Query(default=1000, ge=1, le=MAX_SELECT_ALL),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Ids for "select everything matching", capped.
+
+    Ids only, deliberately: the caller is building a selection, not a table,
+    and returning full rows would tempt a client into exporting from here --
+    which would quietly export a different column set than the grid shows.
+
+    ``truncated`` is what stops the UI claiming it selected everything when it
+    selected the first thousand.
+    """
+    _validate_grid_params(scope, "name", "asc", relationship)
+    rollup = contact_rollup_subquery(principal.org_id)
+    stmt = _candidate_query(
+        org_id=principal.org_id,
+        rollup=rollup,
+        q=q,
+        seniority=seniority,
+        scope=scope,
+        relationship=relationship,
+        stale_days=stale_days,
+        contacted_before=contacted_before,
+        contacted_after=contacted_after,
+        created_after=created_after,
+    )
+    rows = db.scalars(
+        stmt.order_by(*_ordering(rollup, "name", "asc")).limit(limit + 1)
+    ).all()
+    ids = [row.id for row in rows[:limit]]
+    return {"ids": ids, "truncated": len(rows) > limit}
 
 
 @router.get("/{candidate_id}", response_model=CandidateOut)

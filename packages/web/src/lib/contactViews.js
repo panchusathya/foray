@@ -17,6 +17,9 @@ export const NO_REPLY_GRACE_DAYS = 7;
 export const RECENTLY_ADDED_DAYS = 14;
 
 export const PAGE_SIZE = 100;
+// Mirrors MAX_SELECT_ALL on the API. Above this, "select all matching"
+// stops being a selection and becomes a bulk job with no progress to show.
+export const MAX_SELECT_ALL = 1000;
 
 /** Column definitions, so each view can show a different subset. */
 export const CONTACT_COLUMNS = {

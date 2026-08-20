@@ -9,27 +9,43 @@
  * Sorting and paging are entirely server-side. At 200k rows the only client
  * that stays honest is one that asks for a hundred rows and renders a hundred
  * rows.
+ *
+ * Selection is *not* in the URL: it survives paging within a visit but is not
+ * something you would want to send to someone, and a thousand ids in a query
+ * string is not a link.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { BulkBar } from '../components/BulkBar.jsx';
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import {
   CONTACT_COLUMNS,
   CONTACT_VIEWS,
   DEFAULT_VIEW_ID,
+  MAX_SELECT_ALL,
   PAGE_SIZE,
   countParams,
   resolveParams,
   viewById,
 } from '../lib/contactViews.js';
-import { pageWindow } from '../lib/selection.js';
+import { useCurrentProject } from '../lib/project.jsx';
+import {
+  countOnPage,
+  pageWindow,
+  toggleOne,
+  togglePage,
+  toggleRange,
+} from '../lib/selection.js';
 import { useAsync } from '../lib/useAsync.js';
 
 const MINUTE = 60000;
 const DAY = 86400000;
+
+/** Contacts key selection by candidate id; Sourcing keys by GitHub login. */
+const byId = (row) => row.id;
 
 /** "3d", "6w", "14mo" — dense enough for a grid cell, with the full stamp on hover. */
 function relativeDate(value) {
@@ -115,6 +131,9 @@ function ViewTabs({ activeId }) {
 
 export function ContactsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  // The project list is already in context for the sidebar switcher; a
+  // second fetch here would just be the same rows again.
+  const { project, projects } = useCurrentProject();
 
   const viewId = searchParams.get('view') ?? DEFAULT_VIEW_ID;
   const view = viewById(viewId);
@@ -127,6 +146,15 @@ export function ContactsPage() {
   // a param write per keystroke would push a history entry per keystroke.
   const [typed, setTyped] = useState(urlQuery);
   useEffect(() => setTyped(urlQuery), [urlQuery]);
+
+  const [selected, setSelected] = useState(new Map());
+  // Select-all-matching returns ids with no row bodies. Anything that needs
+  // columns (export) has to know the difference.
+  const [selectionIsIdsOnly, setSelectionIsIdsOnly] = useState(false);
+  // Outcome of the last bulk action. Lives here rather than in BulkBar,
+  // which unmounts the moment the selection clears.
+  const [bulkNote, setBulkNote] = useState('');
+  const lastIndex = useRef(null);
 
   function patchParams(changes, { resetPage = true } = {}) {
     const next = new URLSearchParams(searchParams);
@@ -160,14 +188,49 @@ export function ContactsPage() {
     [listKey],
   );
   const total = useAsync(() => api.contactsCount(totalParams), [totalKey]);
+  const sequences = useAsync(() => api.listSequences(), []);
 
   const data = rows.data ?? [];
   const count = total.data?.count;
   const lastPage = count != null ? Math.max(0, Math.ceil(count / PAGE_SIZE) - 1) : null;
+  const pageSelectedCount = countOnPage(selected, data, byId);
+
+  // Changing what you are looking at should not silently keep acting on rows
+  // you can no longer see.
+  useEffect(() => {
+    setSelected(new Map());
+    setSelectionIsIdsOnly(false);
+    setBulkNote('');
+    lastIndex.current = null;
+  }, [viewId, urlQuery]);
 
   function toggleSort(key) {
     if (sort !== key) return patchParams({ sort: key, dir: 'asc' });
     return patchParams({ sort: key, dir: dir === 'asc' ? 'desc' : 'asc' });
+  }
+
+  function onRowToggle(row, index, event) {
+    if (event.shiftKey && lastIndex.current != null) {
+      setSelected(toggleRange(selected, data, lastIndex.current, index, byId));
+    } else {
+      setSelected(toggleOne(selected, row, byId));
+    }
+    lastIndex.current = index;
+    setSelectionIsIdsOnly(false);
+  }
+
+  async function selectAllMatching() {
+    const { ids } = await api.contactIds({ ...totalParams, limit: MAX_SELECT_ALL });
+    // Value is null: these came back as bare ids, with no row to export.
+    setSelected(new Map(ids.map((id) => [id, null])));
+    setSelectionIsIdsOnly(true);
+  }
+
+  function clearSelection(note = '') {
+    setSelected(new Map());
+    setSelectionIsIdsOnly(false);
+    setBulkNote(typeof note === 'string' ? note : '');
+    lastIndex.current = null;
   }
 
   return (
@@ -192,6 +255,30 @@ export function ContactsPage() {
           onChange={(event) => setTyped(event.target.value)}
         />
 
+        <BulkBar
+          selected={selected}
+          pageRows={data}
+          pageSelectedCount={pageSelectedCount}
+          onClear={clearSelection}
+          onSelectAllMatching={selectAllMatching}
+          matchingTotal={count}
+          selectionIsIdsOnly={selectionIsIdsOnly}
+          projects={projects ?? []}
+          sequences={sequences.data ?? []}
+          currentProjectId={project?.id ?? ''}
+          onDone={(note) => {
+            clearSelection(note);
+            rows.reload();
+            total.reload();
+          }}
+        />
+
+        {bulkNote ? (
+          <div className="card small" data-testid="bulk-result">
+            {bulkNote}
+          </div>
+        ) : null}
+
         <ErrorBox error={rows.error} />
 
         {rows.loading ? (
@@ -200,12 +287,25 @@ export function ContactsPage() {
           <div className="card dgrid-wrap">
             <table className="dgrid" data-testid="contacts-grid">
               <colgroup>
+                <col style={{ width: 34 }} />
                 {view.columns.map((key) => (
                   <col key={key} style={{ width: CONTACT_COLUMNS[key].width }} />
                 ))}
               </colgroup>
               <thead>
                 <tr>
+                  <th className="pick">
+                    <input
+                      type="checkbox"
+                      aria-label="Select page"
+                      data-testid="select-page"
+                      checked={data.length > 0 && pageSelectedCount === data.length}
+                      onChange={() => {
+                        setSelected(togglePage(selected, data, byId));
+                        setSelectionIsIdsOnly(false);
+                      }}
+                    />
+                  </th>
                   {view.columns.map((key) => {
                     const column = CONTACT_COLUMNS[key];
                     const active = column.sort && column.sort === sort;
@@ -236,15 +336,37 @@ export function ContactsPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row) => (
-                  <tr key={row.id} data-testid="contact-row" data-id={row.id}>
-                    {view.columns.map((key) => (
-                      <td key={key} className={CONTACT_COLUMNS[key].numeric ? 'num' : undefined}>
-                        <Cell column={key} row={row} />
+                {data.map((row, index) => {
+                  const isSelected = selected.has(row.id);
+                  return (
+                    <tr
+                      key={row.id}
+                      data-testid="contact-row"
+                      data-id={row.id}
+                      className={isSelected ? 'selected' : undefined}
+                    >
+                      <td className="pick">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${row.full_name}`}
+                          checked={isSelected}
+                          // Shift-click is swallowed by the label unless the
+                          // click is handled directly; onChange stays a noop.
+                          onClick={(event) => onRowToggle(row, index, event)}
+                          onChange={() => {}}
+                        />
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      {view.columns.map((key) => (
+                        <td
+                          key={key}
+                          className={CONTACT_COLUMNS[key].numeric ? 'num' : undefined}
+                        >
+                          <Cell column={key} row={row} />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

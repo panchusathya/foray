@@ -461,3 +461,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 .viewtabs a:hover { color: var(--text); background: var(--surface-2); }
 .viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+.dgrid .pick { width: 34px; text-align: center; }
+.dgrid .pick input { margin: 0; cursor: pointer; }
+.dgrid tbody tr.selected { background: var(--accent-soft); }
+.dgrid tbody tr.selected:hover { background: var(--accent-soft); }

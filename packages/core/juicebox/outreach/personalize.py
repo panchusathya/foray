@@ -65,6 +65,11 @@ def sender_context(
     derived from its address, the sequence's from_name, then the configured
     default. Never returns an empty sender_name: an empty signature is worse
     than a slightly wrong one.
+
+    ``sender_first_name`` is what the templates and the drafting prompt
+    actually sign off with -- "Best, Tushar" rather than "Best, Tushar Gupta",
+    which reads like a contract. ``sender_name`` stays available for anywhere a
+    full name genuinely belongs.
     """
     address = getattr(connection, "address", "") or ""
     candidates = [

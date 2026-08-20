@@ -236,6 +236,61 @@ class TestSuggestedDate:
         assert ctx["suggested_day"] == "Thursday"
 
 
+class TestSignOffDefaults:
+    """The shipped defaults sign off with a first name, not a full name.
+
+    Three places have to agree or a sequence signs differently depending on
+    where it came from: the drafting prompt, the offline template arc, and the
+    seeded starter steps.
+    """
+
+    def test_the_offline_template_arc_signs_off_with_the_first_name(self):
+        from juicebox.outreach.drafts import _TEMPLATE_STEPS
+
+        bodies = [step["body_template"] for step in _TEMPLATE_STEPS]
+        assert all("{{sender_first_name}}" in b for b in bodies)
+        assert not any("{{sender_name}}" in b for b in bodies)
+
+    def test_the_prompt_tells_the_model_to_use_the_first_name(self):
+        from juicebox.llm.prompts import DRAFT_SEQUENCE_SYSTEM, SEQUENCE_TEMPLATE_VARIABLES
+
+        assert "{{ sender_first_name }}" in DRAFT_SEQUENCE_SYSTEM
+        assert "sender_first_name" in SEQUENCE_TEMPLATE_VARIABLES
+        # A model told about the full name will reach for it in a signature.
+        assert "sender_name" not in SEQUENCE_TEMPLATE_VARIABLES
+
+    def test_a_full_name_mailbox_still_signs_with_one_word(
+        self, session, account, outreach_fixture
+    ):
+        """The case that prompted this: an Outlook mailbox whose display name is
+        "Tushar Gupta" should sign "Best, Tushar"."""
+        connection = MailboxConnection(
+            org_id=account["org_id"],
+            address="tushar@goforay.io",
+            display_name="Tushar Gupta",
+        )
+        session.add(connection)
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+        step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
+        _, body, _, _ = build_message_content(
+            session,
+            sequence=sequence,
+            step=step,
+            candidate=outreach_fixture["candidates"][0],
+            connection=connection,
+        )
+        assert body == "Best," + chr(10) + "Tushar"
+
+    def test_the_full_name_is_still_available_for_anyone_who_wants_it(self):
+        ctx = sender_context(
+            MailboxConnection(address="t@x.io", display_name="Tushar Gupta")
+        )
+        assert ctx["sender_name"] == "Tushar Gupta"
+        assert ctx["sender_first_name"] == "Tushar"
+
+
 class TestBothInOneRender:
     def test_a_template_can_use_every_new_variable(
         self, session, account, outreach_fixture

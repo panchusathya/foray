@@ -34,7 +34,7 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
             "Hi {{first_name|there}},\n\n"
             "{{opening_line}}\n\n"
             "{{why_relevant}} If you're open to it, I'd like to share more.\n\n"
-            "Worth a short call this week?\n\nBest,\n{{sender_name}}"
+            "Worth a short call this week?\n\nBest,\n{{sender_first_name}}"
         ),
         "delay_days": 0,
         "delay_unit": "business_days",
@@ -47,7 +47,7 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
             "still open and your {{top_skill|background}} experience is why I reached "
             "out specifically.\n\n"
             "Happy to send details over email if that's easier than a call."
-            "\n\nBest,\n{{sender_name}}"
+            "\n\nBest,\n{{sender_first_name}}"
         ),
         "delay_days": 3,
         "delay_unit": "business_days",
@@ -58,7 +58,7 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
             "Hi {{first_name|there}},\n\n"
             "Last note from me. If the timing is wrong or this isn't interesting, no "
             "response needed — I won't follow up again.\n\n"
-            "If it is interesting later, my inbox is open.\n\nBest,\n{{sender_name}}"
+            "If it is interesting later, my inbox is open.\n\nBest,\n{{sender_first_name}}"
         ),
         "delay_days": 4,
         "delay_unit": "business_days",

@@ -26,8 +26,9 @@ const VARIABLES = [
   ['why_relevant', '{{ why_relevant }}'],
   ['subject_hint', '{{ subject_hint | A quick note }}'],
   // Resolves to whichever mailbox actually sends this step, so one sequence
-  // rotating over a pool still signs each email correctly.
-  ['sender_name', '{{ sender_name }}'],
+  // rotating over a pool still signs each email correctly. First name is the
+  // sign-off; sender_name (full) is there for the rare formal case.
+  ['sender_first_name', '{{ sender_first_name }}'],
   // Two clear business days after the FIRST email in the thread, so every
   // follow-up proposes the same day rather than sliding forward.
   ['suggested_day', '{{ suggested_day }}'],

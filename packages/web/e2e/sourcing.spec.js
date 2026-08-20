@@ -78,4 +78,68 @@ test.describe('sourcing', () => {
     const githubLink = page.locator('.hit a[href*="github.com/"]').first();
     await expect(githubLink).toBeVisible({ timeout: 25_000 });
   });
+
+  test('paging preserves selection and page deselection is page-local', async ({
+    page,
+    request,
+  }) => {
+    const org = await createOrg(request, 'sourcing-pages');
+    await login(page, org.email);
+    await page.route('**/foray/search', async (route) => {
+      const body = route.request().postDataJSON();
+      const offset = body.offset ?? 0;
+      // limit 0 is the wire encoding for "the server's own page size".
+      const requested = body.limit || 40;
+      const pageSize = Math.min(requested, 45 - offset);
+      const results = Array.from({ length: Math.max(0, pageSize) }, (_, index) => {
+        const rank = offset + index + 1;
+        return {
+          rank,
+          login: `paging-${rank}`,
+          name: `Paging Candidate ${rank}`,
+          source: 'github',
+          github_url: `https://github.com/paging-${rank}`,
+          emails: [],
+          highlights: ['paging evidence'],
+          flags: [],
+          domain_markers: [],
+          topics: [],
+          inferred: {},
+        };
+      });
+      await route.fulfill({
+        json: {
+          query: body.query,
+          parser: 'heuristic',
+          archetype: { id: 'senior_backend', label: 'Senior Backend Engineer' },
+          total_matched: 45,
+          returned: results.length,
+          display_floor: 20,
+          message: '45 candidates cleared the bar for Senior Backend Engineer.',
+          limit: body.limit,
+          offset,
+          page: Math.floor(offset / 40) + 1,
+          page_count: 2,
+          page_size: 40,
+          paginable: 45,
+          has_more: offset + results.length < 45,
+          truncated: false,
+          max_paginable: 1000,
+          results,
+        },
+      });
+    });
+
+    await page.goto('/sourcing');
+    await page.getByRole('button', { name: 'Search' }).click();
+    await page.getByRole('checkbox', { name: 'Select all on this page' }).check();
+    await expect(page.getByText('40 selected (40 on this page)')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Next' }).click();
+    await expect(page.getByText('Paging Candidate 41')).toBeVisible();
+    await page.getByRole('checkbox', { name: 'Select all on this page' }).check();
+    await expect(page.getByText('45 selected (5 on this page)')).toBeVisible();
+    await page.getByRole('checkbox', { name: 'Select all on this page' }).uncheck();
+    await expect(page.getByText('40 selected (0 on this page)')).toBeVisible();
+  });
 });

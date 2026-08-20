@@ -72,9 +72,12 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
   (explicit spend-free heuristic) to exercise derive -> embed -> score -> search
   end to end.
 - **Search API:** `uv run uvicorn foray.api.app:app --port 8100` (standalone UI at
-  `/`, `POST /search`, SSE `GET /search/stream`). The archetype **score is in the
-  JSON payload but must never be rendered**; results are shown by rank + evidence
-  only, and lists are never padded below the display floor.
+  `/`, `POST /search`, SSE `GET /search/stream`). Both endpoints accept `limit`
+  and `offset`; `total_matched` means filters + display floor, while `paginable`
+  is capped by `FORAY_MAX_PAGINABLE` (default 1000). Ranking is deterministic
+  within the bounded archetype-score retrieval pool. The archetype **score is in
+  the JSON payload but must never be rendered**; results are shown by rank +
+  evidence only, and lists are never padded below the display floor.
 - **Web integration:** the Juicebox React app (`packages/web`) has a **Sourcing**
   page (`src/pages/Sourcing.jsx`) that calls the Foray API via a Vite dev proxy
   (`/foray/*` -> `http://localhost:8100`, `FORAY_API_URL` to override). To use it,

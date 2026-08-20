@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,8 @@ app = FastAPI(title="Foray", version="0.1.0")
 
 class SearchBody(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
-    limit: int = Field(default=0, ge=0, le=200)
+    limit: int = Field(default=0, ge=0, le=5000)
+    offset: int = Field(default=0, ge=0, le=100_000)
     # Only candidates with an observed email or a resolved LinkedIn. Applied in
     # the SQL filters, so total_matched reflects the real contactable pool.
     has_contact: bool = False
@@ -61,17 +62,28 @@ async def search(body: SearchBody) -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await run_search(
-            conn, body.query, body.limit or None, has_contact=body.has_contact
+            conn,
+            body.query,
+            body.limit,
+            offset=body.offset,
+            has_contact=body.has_contact,
         )
     return result.to_dict()
 
 
 @app.get("/search/stream")
-async def search_stream(q: str, limit: int = 0, has_contact: bool = False) -> StreamingResponse:
+async def search_stream(
+    q: str,
+    limit: int = Query(default=0, ge=0, le=5000),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    has_contact: bool = False,
+) -> StreamingResponse:
     async def events():
         pool = await get_pool()
         async with pool.acquire() as conn:
-            result = await run_search(conn, q, limit or None, has_contact=has_contact)
+            result = await run_search(
+                conn, q, limit, offset=offset, has_contact=has_contact
+            )
         # First event: the ranked meta + list (this is the sub-second first byte).
         meta = result.to_dict()
         candidates = meta.pop("results")

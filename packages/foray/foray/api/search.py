@@ -3,9 +3,9 @@ cache: the archetype scores + highlights are precomputed, and query embedding is
 a local model.
 
     1. parse -> structured filter (cached)
-    2. SQL filter + ORDER BY archetype score DESC, take top rerank_pool
-    3. pgvector rerank on the free-text part, blend
-    4. drop below the display floor, return up to `limit` (never padded)
+    2. SQL filter + display floor, take a bounded archetype-score pool
+    3. pgvector similarity + a deterministic blend in ``foray.rank``
+    4. page the blended pool, then hydrate only the requested rows
 """
 
 from __future__ import annotations
@@ -16,6 +16,17 @@ from typing import Any
 
 from ..config import settings
 from ..embed.model import embed_query, to_halfvec_literal
+from ..rank import (
+    BlendWeights,
+    Page,
+    PoolRow,
+    RankPolicy,
+    Window,
+    clamp_window,
+    page_presorted,
+    rank_page,
+    widen_message,
+)
 from ..score.archetypes import load_archetypes
 from .parse import ParsedFilter, parse_query
 
@@ -43,6 +54,16 @@ EMAILS_LATERAL = """
 
 @dataclass
 class SearchResult:
+    """The `/search` wire contract.
+
+    ``total_matched`` counts rows that pass the structured filters *and* clear
+    the display floor. It used to ignore the floor, so it advertised people the
+    UI would never render; the honest number reads lower for the same query.
+    ``paginable`` is the subset actually reachable by ``offset``, capped by
+    ``FORAY_MAX_PAGINABLE``, and ``truncated`` says the two disagree. ``rank``
+    inside ``results`` is absolute across pages, so page 2 starts at 41.
+    """
+
     query: str
     parser: str
     archetype_id: str | None
@@ -51,6 +72,15 @@ class SearchResult:
     returned: int
     display_floor: int
     message: str | None
+    limit: int
+    offset: int
+    page: int
+    page_count: int
+    page_size: int
+    paginable: int
+    has_more: bool
+    truncated: bool
+    max_paginable: int
     results: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -66,8 +96,66 @@ class SearchResult:
             "returned": self.returned,
             "display_floor": self.display_floor,
             "message": self.message,
+            "limit": self.limit,
+            "offset": self.offset,
+            "page": self.page,
+            "page_count": self.page_count,
+            "page_size": self.page_size,
+            "paginable": self.paginable,
+            "has_more": self.has_more,
+            "truncated": self.truncated,
+            "max_paginable": self.max_paginable,
             "results": self.results,
         }
+
+
+def _policy() -> RankPolicy:
+    return RankPolicy(
+        weights=BlendWeights(
+            score_weight=settings.score_weight,
+            vector_weight=settings.vector_weight,
+        ),
+        display_floor=settings.display_floor,
+        page_size=settings.result_limit,
+        max_paginable=settings.max_paginable,
+        retrieval_pool=settings.rerank_pool,
+        min_results_before_widen=settings.min_results_before_widen,
+    )
+
+
+def _result(
+    *,
+    query: str,
+    parser: str,
+    archetype_id: str | None,
+    archetype_label: str | None,
+    page: Page,
+    message: str | None,
+    results: list[dict],
+    policy: RankPolicy,
+) -> SearchResult:
+    return SearchResult(
+        query=query,
+        parser=parser,
+        archetype_id=archetype_id,
+        archetype_label=archetype_label,
+        total_matched=page.total_matched,
+        returned=len(results),
+        display_floor=policy.display_floor,
+        message=message,
+        limit=page.limit,
+        offset=page.offset,
+        page=page.page,
+        page_count=page.page_count,
+        # The client must page in the server's stride, not a hardcoded one, or
+        # FORAY_RESULT_LIMIT would desynchronise the pager from the rows.
+        page_size=policy.page_size,
+        paginable=page.paginable,
+        has_more=page.has_more,
+        truncated=page.truncated,
+        max_paginable=policy.max_paginable,
+        results=results,
+    )
 
 
 def _build_filters(
@@ -107,9 +195,9 @@ def _build_filters(
 
 
 def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
-    emails = _as_json(row["emails"], []) if "emails" in row.keys() else []
+    emails = _as_json(row["emails"], []) if "emails" in row else []
     emails = emails or []
-    source = row["source"] if "source" in row.keys() else "github"
+    source = row.get("source", "github")
     return {
         "rank": rank,
         "login": row["login"],
@@ -128,7 +216,7 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "has_contact": bool(emails) or bool(row["linkedin_url"]),
         "employer": row["employer"],
         "employer_source": row["employer_source"],
-        "employer_domain": row["employer_domain"] if "employer_domain" in row.keys() else None,
+        "employer_domain": row.get("employer_domain"),
         "est_experience_years": (
             round(float(row["est_experience_years"]), 1)
             if row["est_experience_years"] is not None
@@ -138,7 +226,7 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "primary_language": row["primary_language"],
         "location": row["location_raw"],
         "top_repos": _as_json(row["top_repos"], []),
-        "topics": list(row["topics"])[:12] if "topics" in row.keys() and row["topics"] else [],
+        "topics": list(row["topics"])[:12] if row.get("topics") else [],
         "last_push_at": row["last_push_at"].isoformat() if row["last_push_at"] else None,
         "highlights": _as_json(row["highlights"], []) if has_score else [],
         "flags": _as_json(row["flags"], []) if has_score else [],
@@ -156,38 +244,92 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
     }
 
 
-async def _vector_fallback(conn, query: str, qvec: str, parser: str, limit: int) -> SearchResult:
-    rows = await conn.fetch(
-        f"""
-        select c.id, c.login, c.name, c.source, c.location_raw, c.linkedin_url, c.linkedin_source,
-               s.employer, s.employer_source, s.employer_domain, s.primary_language,
-               s.est_experience_years, s.experience_confidence, s.last_push_at,
-               s.top_repos, s.domain_markers, s.topics,
-               null::smallint as score, '[]'::jsonb as highlights, '[]'::jsonb as flags,
-               em.emails,
-               (1 - (c.embedding <=> $1::halfvec)) as cos_sim
-        from candidates c
-        join candidate_signals s on s.candidate_id = c.id
-        {EMAILS_LATERAL}
-        where c.embedding is not null and c.merged_into is null
-        order by c.embedding <=> $1::halfvec
-        limit $2
-        """,
-        qvec,
-        limit,
+async def _vector_fallback(
+    conn,
+    query: str,
+    qvec: str,
+    parser: str,
+    parsed: ParsedFilter,
+    window: Window,
+    policy: RankPolicy,
+    *,
+    has_contact: bool,
+) -> SearchResult:
+    where_count, count_params, _ = _build_filters(parsed, start=1, has_contact=has_contact)
+    total_matched = int(
+        await conn.fetchval(
+            f"""
+            select count(*)
+            from candidates c
+            join candidate_signals s on s.candidate_id = c.id
+            where c.merged_into is null and {where_count}
+            """,
+            *count_params,
+        )
+        or 0
     )
-    results = [_payload(r, i + 1, float(r["cos_sim"] or 0.0), has_score=False) for i, r in enumerate(rows)]
-    return SearchResult(
+
+    rows = []
+    if window.limit:
+        # The vector distance remains the leading ORDER BY expression so a
+        # pgvector KNN index can serve it. Candidate id makes exact distance
+        # ties deterministic for offset pagination; retain it even if a future
+        # EXPLAIN shows an incremental sort above the index scan.
+        where_main, filter_params, _ = _build_filters(
+            parsed, start=4, has_contact=has_contact
+        )
+        rows = await conn.fetch(
+            f"""
+            select c.id, c.login, c.name, c.source, c.location_raw,
+                   c.linkedin_url, c.linkedin_source,
+                   s.employer, s.employer_source, s.employer_domain, s.primary_language,
+                   s.est_experience_years, s.experience_confidence, s.last_push_at,
+                   s.top_repos, s.domain_markers, s.topics,
+                   null::smallint as score, '[]'::jsonb as highlights,
+                   '[]'::jsonb as flags, em.emails,
+                   (1 - (c.embedding <=> $1::halfvec)) as cos_sim
+            from candidates c
+            join candidate_signals s on s.candidate_id = c.id
+            {EMAILS_LATERAL}
+            where c.merged_into is null and {where_main}
+            order by c.embedding <=> $1::halfvec, c.id
+            limit $2 offset $3
+            """,
+            qvec,
+            window.limit,
+            window.offset,
+            *filter_params,
+        )
+
+    page = page_presorted(
+        [
+            PoolRow(key=int(row["id"]), score=None, cos_sim=float(row["cos_sim"] or 0.0))
+            for row in rows
+        ],
+        total_matched=total_matched,
+        window=window,
+        policy=policy,
+    )
+    ranked_by_id = {item.key: item for item in page.items}
+    results = [
+        _payload(
+            row,
+            ranked_by_id[int(row["id"])].rank,
+            ranked_by_id[int(row["id"])].blend,
+            has_score=False,
+        )
+        for row in rows
+    ]
+    return _result(
         query=query,
         parser=parser,
         archetype_id=None,
         archetype_label=None,
-        total_matched=len(results),
-        returned=len(results),
-        display_floor=settings.display_floor,
+        page=page,
         message="No archetype matched, so this is a pure semantic search. Name a role "
         "(e.g. 'senior backend', 'ML platform') to get scored, evidence-backed results.",
         results=results,
+        policy=policy,
     )
 
 
@@ -196,90 +338,130 @@ async def run_search(
     query: str,
     limit: int | None = None,
     *,
+    offset: int = 0,
     use_llm: bool | None = None,
     has_contact: bool = False,
 ) -> SearchResult:
-    limit = limit or settings.result_limit
+    policy = _policy()
+    window = clamp_window(offset, limit or 0, policy)
     parsed, parser = await parse_query(conn, query, use_llm=use_llm)
     qvec = to_halfvec_literal(embed_query(parsed.free_text or query))
 
     arch = load_archetypes().get(parsed.archetype_id) if parsed.archetype_id else None
     if arch is None:
-        return await _vector_fallback(conn, query, qvec, parser, limit)
+        return await _vector_fallback(
+            conn,
+            query,
+            qvec,
+            parser,
+            parsed,
+            window,
+            policy,
+            has_contact=has_contact,
+        )
 
-    # Count query: $1 = archetype, filter params start at $2. has_contact is in
-    # the filters so total_matched reflects the real contactable pool.
-    where_count, filter_params, _ = _build_filters(parsed, start=2, has_contact=has_contact)
-    total_matched = await conn.fetchval(
+    # Count query: $1 = archetype, $2 = floor, filter params start at $3.
+    # total_matched is the honest eligible set: filters + display floor.
+    where_count, filter_params, _ = _build_filters(parsed, start=3, has_contact=has_contact)
+    total_matched = int(
+        await conn.fetchval(
         f"""
         select count(*) from candidate_signals s
         join candidates c on c.id = s.candidate_id
         join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-        where c.merged_into is null and {where_count}
+        where c.merged_into is null and a.score >= $2::smallint and {where_count}
         """,
         arch.id,
+        policy.display_floor,
         *filter_params,
+        )
+        or 0
     )
 
-    # Main query: $1 = archetype, $2 = pool limit, filter params start at $3, qvec last.
-    where_main, filter_params, qvec_i = _build_filters(parsed, start=3, has_contact=has_contact)
+    # Narrow rank query: no lateral email aggregation or JSON payload hydration.
+    # The retrieval cutoff is by archetype score; rank.py documents that the
+    # final blend is therefore an approximation within this bounded pool.
+    where_main, filter_params, qvec_i = _build_filters(
+        parsed, start=4, has_contact=has_contact
+    )
     rows = await conn.fetch(
         f"""
         with pool as (
-            select c.id
+            select c.id, a.score
             from candidate_signals s
             join candidates c on c.id = s.candidate_id
             join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-            where c.merged_into is null and {where_main}
-            order by a.score desc
-            limit $2
+            where c.merged_into is null and a.score >= $2::smallint and {where_main}
+            order by a.score desc, a.candidate_id
+            limit $3
         )
-        select c.id, c.login, c.name, c.source, c.location_raw, c.linkedin_url, c.linkedin_source,
-               s.employer, s.employer_source, s.employer_domain, s.primary_language,
-               s.est_experience_years, s.experience_confidence, s.last_push_at,
-               s.top_repos, s.domain_markers, s.topics,
-               a.score, a.highlights, a.flags,
-               em.emails,
+        select p.id, p.score,
                (1 - (c.embedding <=> ${qvec_i}::halfvec)) as cos_sim
         from pool p
         join candidates c on c.id = p.id
-        join candidate_signals s on s.candidate_id = c.id
-        join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-        {EMAILS_LATERAL}
+        order by p.score desc, p.id
         """,
         arch.id,
-        settings.rerank_pool,
+        policy.display_floor,
+        policy.pool_size,
         *filter_params,
         qvec,
     )
 
-    blended = []
-    for r in rows:
-        cos = float(r["cos_sim"] or 0.0)
-        final = settings.score_weight * (r["score"] / 100.0) + settings.vector_weight * cos
-        blended.append((final, r))
-    blended.sort(key=lambda x: x[0], reverse=True)
+    page = rank_page(
+        [
+            PoolRow(
+                key=int(row["id"]),
+                score=int(row["score"]),
+                cos_sim=float(row["cos_sim"] or 0.0),
+            )
+            for row in rows
+        ],
+        total_matched=total_matched,
+        window=window,
+        policy=policy,
+    )
 
-    above = [(f, r) for f, r in blended if r["score"] >= settings.display_floor]
-    chosen = above[:limit]
-    results = [_payload(r, i + 1, f, has_score=True) for i, (f, r) in enumerate(chosen)]
-
-    if len(above) < settings.min_results_before_widen:
-        message = (
-            f"Only {len(above)} candidate(s) cleared the bar for {arch.label}. "
-            f"Widen the search (drop a filter or lower the experience floor) to see more."
+    hydrated = []
+    if page.items:
+        hydrated = await conn.fetch(
+            f"""
+            select c.id, c.login, c.name, c.source, c.location_raw,
+                   c.linkedin_url, c.linkedin_source,
+                   s.employer, s.employer_source, s.employer_domain, s.primary_language,
+                   s.est_experience_years, s.experience_confidence, s.last_push_at,
+                   s.top_repos, s.domain_markers, s.topics,
+                   a.score, a.highlights, a.flags, em.emails
+            from candidates c
+            join candidate_signals s on s.candidate_id = c.id
+            join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $2
+            {EMAILS_LATERAL}
+            where c.id = any($1::bigint[])
+            """,
+            [item.key for item in page.items],
+            arch.id,
         )
-    else:
-        message = f"{len(above)} candidates cleared the bar for {arch.label}."
 
-    return SearchResult(
+    hydrated_by_id = {int(row["id"]): row for row in hydrated}
+    results = [
+        _payload(hydrated_by_id[item.key], item.rank, item.blend, has_score=True)
+        for item in page.items
+        if item.key in hydrated_by_id
+    ]
+    message = widen_message(
+        total_matched=page.total_matched,
+        paginable=page.paginable,
+        archetype_label=arch.label,
+        policy=policy,
+    )
+
+    return _result(
         query=query,
         parser=parser,
         archetype_id=arch.id,
         archetype_label=arch.label,
-        total_matched=total_matched,
-        returned=len(results),
-        display_floor=settings.display_floor,
+        page=page,
         message=message,
         results=results,
+        policy=policy,
     )

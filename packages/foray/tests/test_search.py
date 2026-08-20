@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import asyncpg
 
@@ -8,8 +9,7 @@ from foray.api.parse import ParsedFilter, heuristic_parse
 from foray.api.search import _build_filters, run_search
 from foray.config import settings
 from foray.db import _asyncpg_dsn
-from tests.dbutil import requires_scored_db
-
+from tests.dbutil import requires_db, requires_scored_db
 
 # ------------------------------------------------------------------- offline --
 
@@ -68,7 +68,7 @@ async def test_never_pads_below_floor():
         )
         # No matter what, we never return anyone below the display floor.
         assert all(r["score"] >= result.display_floor for r in result.results)
-        if result.returned < settings.min_results_before_widen:
+        if result.total_matched < settings.min_results_before_widen:
             assert "Widen" in (result.message or "")
     finally:
         await conn.close()
@@ -107,4 +107,86 @@ async def test_no_external_api_in_request_path(monkeypatch):
         result = await run_search(conn, "infrastructure platform engineer kubernetes", 20)
         assert result.returned >= 0  # completed with zero external calls
     finally:
+        await conn.close()
+
+
+@requires_db
+async def test_pagination_is_stable_and_uses_absolute_ranks(monkeypatch):
+    """Seed a scored corpus in a rollback-only transaction so CI cannot skip paging."""
+    import foray.api.search as search_module
+    from foray.score.archetypes import load_archetypes
+
+    monkeypatch.setattr(search_module, "embed_query", lambda _text: [1.0] + [0.0] * 383)
+    vector = "[1," + ",".join(["0"] * 383) + "]"
+    arch = load_archetypes()["senior_backend"]
+    prefix = f"paging-{uuid4().hex}-"
+
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        await conn.execute(
+            """
+            insert into archetypes (id, label, gate, rubric, rubric_hash)
+            values ($1, $2, $3, $4, $5)
+            on conflict (id) do nothing
+            """,
+            arch.id,
+            arch.label,
+            arch.gate,
+            arch.rubric,
+            arch.rubric_hash,
+        )
+        candidate_rows = await conn.fetch(
+            """
+            insert into candidates (login, name, embedding, embedding_model)
+            select $1 || n::text, 'Paging Candidate ' || n::text,
+                   $2::halfvec, 'paging-test'
+            from generate_series(1, 90) n
+            returning id
+            """,
+            prefix,
+            vector,
+        )
+        candidate_ids = [int(row["id"]) for row in candidate_rows]
+        await conn.execute(
+            """
+            insert into candidate_signals (
+                candidate_id, primary_language, est_experience_years,
+                activity_at, last_push_at
+            )
+            select id, 'haskell', 47, now(), now()
+            from unnest($1::bigint[]) id
+            """,
+            candidate_ids,
+        )
+        await conn.execute(
+            """
+            insert into archetype_scores (
+                candidate_id, archetype_id, score, highlights, rationale,
+                flags, rubric_hash, model
+            )
+            select id, $2, 60, '["paging evidence"]'::jsonb, 'paging test',
+                   '[]'::jsonb, $3, 'paging-test'
+            from unnest($1::bigint[]) id
+            """,
+            candidate_ids,
+            arch.id,
+            arch.rubric_hash,
+        )
+
+        query = f"senior backend engineer in Haskell with 47-48 years {prefix}"
+        first = await run_search(conn, query, 40, offset=0, use_llm=False)
+        second = await run_search(conn, query, 40, offset=40, use_llm=False)
+        repeated = await run_search(conn, query, 40, offset=0, use_llm=False)
+
+        first_logins = [row["login"] for row in first.results]
+        second_logins = [row["login"] for row in second.results]
+        assert first.total_matched == first.paginable == 90
+        assert first.page_count == 3 and first.has_more is True
+        assert second.results[0]["rank"] == 41
+        assert not set(first_logins) & set(second_logins)
+        assert first_logins == [row["login"] for row in repeated.results]
+    finally:
+        await transaction.rollback()
         await conn.close()

@@ -1,27 +1,91 @@
 /**
- * The candidate detail page: profile on the left, contact history on the
- * right. First real consumer of api.getCandidate — every people surface
- * (Contacts, search hits, pipeline cards, Sourcing) links here.
+ * The person record: profile and quick actions on the left, their history on
+ * the right.
+ *
+ * The Emails tab is the default and is always mounted. Lazy-mounting it would
+ * be the obvious optimisation and would break the contract that landing on
+ * /contacts/:id shows you the correspondence — which is the whole reason
+ * anyone opens this page.
  */
 
-import { Link, useParams } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ContactHistory } from '../components/ContactHistory.jsx';
+import { EmailEditor } from '../components/EmailEditor.jsx';
+import { InlineField } from '../components/InlineField.jsx';
+import { NotesPanel } from '../components/NotesPanel.jsx';
+import { TagEditor } from '../components/TagEditor.jsx';
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
-import { api } from '../lib/api.js';
+import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
+
+const EDITABLE = [
+  ['current_title', 'Title'],
+  ['current_company', 'Company'],
+  ['location_city', 'City'],
+  ['location_region', 'Region'],
+  ['location_country', 'Country'],
+  ['linkedin_url', 'LinkedIn'],
+  ['github_url', 'GitHub'],
+  ['website_url', 'Website'],
+];
 
 export function CandidateDetailPage() {
   const { candidateId } = useParams();
   const candidate = useAsync(() => api.getCandidate(candidateId), [candidateId]);
+  const [tab, setTab] = useState('emails');
+  const [saveError, setSaveError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const navigate = useNavigate();
 
   if (candidate.loading) return <Loading label="Loading candidate…" />;
   if (candidate.error) return <ErrorBox error={candidate.error} />;
   const person = candidate.data;
 
-  const location = [person.location_city, person.location_region, person.location_country]
-    .filter(Boolean)
-    .join(', ');
+  async function save(field, value) {
+    setSaveError(null);
+    try {
+      await api.updateCandidate(candidateId, { [field]: value });
+      candidate.reload();
+    } catch (caught) {
+      setSaveError(caught);
+      throw caught;
+    }
+  }
+
+  async function remove() {
+    // Spelling out what goes with them: the API cascades to notes, tags, the
+    // address projection, project memberships and enrollments, and there is no
+    // undo. A count is more use here than the word "permanently".
+    const owned = [
+      (person.emails ?? []).length && `${person.emails.length} address(es)`,
+      (person.tags ?? []).length && `${person.tags.length} tag(s)`,
+    ].filter(Boolean);
+    if (
+      !window.confirm(
+        `Delete ${person.full_name}?\n\n` +
+          `This removes the person and everything attached to them` +
+          `${owned.length ? ` — including ${owned.join(' and ')}` : ''}` +
+          `, plus any notes, project memberships and sequence enrolments.\n\n` +
+          `There is no undo. To fix a bad address instead, edit the ` +
+          `Email addresses list.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setSaveError(null);
+    try {
+      await api.deleteCandidate(candidateId);
+      navigate('/contacts');
+    } catch (caught) {
+      setSaveError(caught);
+      setDeleting(false);
+    }
+  }
+
+  const status = person.crm_status || 'none';
 
   return (
     <div className="stack">
@@ -33,17 +97,66 @@ export function CandidateDetailPage() {
           ''
         }
         actions={
-          <Link className="badge" to="/contacts">
-            ← Contacts
-          </Link>
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="tiny ghost"
+              data-testid="delete-candidate"
+              disabled={deleting}
+              onClick={remove}
+            >
+              {deleting ? 'Deleting…' : 'Delete contact'}
+            </button>
+            <Link className="badge" to="/contacts">
+              ← Contacts
+            </Link>
+          </div>
         }
       />
 
+      <ErrorBox error={saveError} />
+
       <div className="grid two" style={{ alignItems: 'start' }}>
         <div className="stack">
+          <div className="card row wrap" data-testid="candidate-actions" style={{ gap: 10 }}>
+            <label className="row small" style={{ gap: 6 }}>
+              Status
+              <select
+                value={status}
+                data-testid="crm-status"
+                onChange={(event) => save('crm_status', event.target.value)}
+              >
+                {CRM_STATUSES.map((value) => (
+                  <option key={value} value={value}>
+                    {CRM_STATUS_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {status === 'do_not_contact' ? (
+              /* Badge does not forward props, and this needs a testid. */
+              <span className="badge miss" data-testid="dnc-badge">
+                suppressed — sequences will skip them
+              </span>
+            ) : null}
+          </div>
+
           <div className="card stack" data-testid="candidate-profile">
             <strong className="small">Profile</strong>
-            {location ? <div className="small muted">{location}</div> : null}
+            {EDITABLE.map(([field, label]) => (
+              <InlineField
+                key={field}
+                label={label}
+                value={person[field] ?? ''}
+                testId={`field-${field}`}
+                onSave={(value) => save(field, value)}
+              />
+            ))}
+            <TagEditor
+              candidateId={candidateId}
+              tags={person.tags}
+              onChanged={candidate.reload}
+            />
             {person.years_experience ? (
               <div className="small muted">{person.years_experience} years of experience</div>
             ) : null}
@@ -52,29 +165,13 @@ export function CandidateDetailPage() {
                 <Badge key={skill}>{skill}</Badge>
               ))}
             </div>
-            <div className="row wrap small">
-              {(person.emails ?? []).map((email) => (
-                <span key={email} className="mono muted">
-                  {email}
-                </span>
-              ))}
-            </div>
-            <div className="row wrap small">
-              {person.linkedin_url ? (
-                <a href={person.linkedin_url} target="_blank" rel="noreferrer">
-                  LinkedIn
-                </a>
-              ) : null}
-              {person.github_url ? (
-                <a href={person.github_url} target="_blank" rel="noreferrer">
-                  GitHub
-                </a>
-              ) : null}
-              {person.website_url ? (
-                <a href={person.website_url} target="_blank" rel="noreferrer">
-                  Website
-                </a>
-              ) : null}
+            <div className="stack small">
+              <strong className="small">Email addresses</strong>
+              <EmailEditor
+                candidateId={candidateId}
+                emails={person.emails}
+                onChanged={candidate.reload}
+              />
             </div>
           </div>
 
@@ -88,7 +185,10 @@ export function CandidateDetailPage() {
                     {experience.company ? ` · ${experience.company}` : ''}
                   </div>
                   <div className="muted">
-                    {[experience.start_date, experience.end_date || (experience.is_current ? 'now' : '')]
+                    {[
+                      experience.start_date,
+                      experience.end_date || (experience.is_current ? 'now' : ''),
+                    ]
                       .filter(Boolean)
                       .join(' → ')}
                   </div>
@@ -99,8 +199,34 @@ export function CandidateDetailPage() {
         </div>
 
         <div className="stack">
-          <strong className="small">Contact history</strong>
-          <ContactHistory candidateId={candidateId} />
+          <div className="record-tabs" data-testid="record-tabs">
+            <button
+              type="button"
+              className={tab === 'emails' ? 'active' : ''}
+              data-testid="tab-emails"
+              onClick={() => setTab('emails')}
+            >
+              Emails
+            </button>
+            <button
+              type="button"
+              className={tab === 'notes' ? 'active' : ''}
+              data-testid="tab-notes"
+              onClick={() => setTab('notes')}
+            >
+              Notes
+            </button>
+          </div>
+
+          {/* Both stay mounted: the Emails tab must be present on first render
+              (see the file header), and hiding rather than unmounting keeps a
+              half-typed note alive when you glance at the thread. */}
+          <div hidden={tab !== 'emails'}>
+            <ContactHistory candidateId={candidateId} />
+          </div>
+          <div hidden={tab !== 'notes'}>
+            <NotesPanel candidateId={candidateId} />
+          </div>
         </div>
       </div>
     </div>

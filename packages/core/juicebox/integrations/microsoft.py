@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 import httpx
@@ -27,6 +27,8 @@ from .providers import (
     FolderPage,
     MailboxEvent,
     ProviderError,
+    SweepPage,
+    SweepRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,6 +257,36 @@ class GraphClient:
     # Same walker; the name keeps call sites honest about which cursor they hold.
     sent_delta = inbox_delta
 
+    # No body, no bodyPreview, and no subject: the discovery tray has nowhere
+    # to put them, so they are never requested. Enforced at the wire rather
+    # than by remembering to drop them later.
+    _SWEEP_SELECT = (
+        "$select=id,conversationId,from,toRecipients,ccRecipients,isDraft,sentDateTime"
+    )
+
+    def sent_history(self, since: datetime, *, cursor: str = "", top: int = 100):
+        """One page of Sent Items back to ``since``, newest first.
+
+        ``$filter`` and ``$orderby`` must both be on ``sentDateTime`` or Graph
+        answers InefficientFilter. ``$top`` above 100 is unreliable on
+        /messages. Paging follows ``@odata.nextLink``, which carries its own
+        skiptoken and is what the caller persists.
+        """
+        if cursor:
+            url = cursor
+        else:
+            stamp = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            url = (
+                "/me/mailFolders/sentitems/messages"
+                f"?$filter=sentDateTime ge {stamp}"
+                "&$orderby=sentDateTime desc"
+                f"&$top={min(top, 100)}&{self._SWEEP_SELECT}"
+            )
+        page = self._request(
+            "GET", url, headers={"Prefer": 'IdType="ImmutableId"'}
+        ).json()
+        return page.get("value", []), page.get("@odata.nextLink", "")
+
     def search_participant(self, address: str, *, top: int = 25) -> list[dict]:
         """Messages exchanged with one address, for the bounded history backfill.
 
@@ -324,6 +356,34 @@ def _stamp(raw: str) -> datetime | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _recipients(payload: dict, key: str) -> tuple[str, ...]:
+    out = []
+    for entry in payload.get(key) or []:
+        address = ((entry or {}).get("emailAddress") or {}).get("address", "")
+        if address:
+            out.append(address.lower())
+    return tuple(out)
+
+
+def to_sweep_record(payload: dict) -> SweepRecord:
+    """A raw Graph message as a discovery record.
+
+    Not routed through ``to_event``: that merges toRecipients and ccRecipients
+    into one list and fills ``body`` from ``bodyPreview``. Discovery needs To
+    and Cc kept apart, and must never hold a body.
+    """
+    sender = ((payload.get("from") or {}).get("emailAddress") or {}).get("address", "") or ""
+    return SweepRecord(
+        native_id=payload.get("id", "") or "",
+        from_address=sender.lower(),
+        to_addresses=_recipients(payload, "toRecipients"),
+        cc_addresses=_recipients(payload, "ccRecipients"),
+        thread_id=payload.get("conversationId", "") or "",
+        sent_at=_stamp(payload.get("sentDateTime", "") or ""),
+        is_draft=bool(payload.get("isDraft")),
+    )
 
 
 def to_event(payload: dict) -> MailboxEvent:
@@ -444,6 +504,19 @@ class MicrosoftProvider:
         )
         return DraftResult(
             provider_draft_id=draft.get("id", ""), web_link=draft.get("webLink", "")
+        )
+
+    def iter_sent_history(
+        self, db, connection: MailboxConnection, *, since, cursor: str = ""
+    ) -> SweepPage:
+        payloads, next_link = self._client(db, connection).sent_history(since, cursor=cursor)
+        records = [to_sweep_record(payload) for payload in payloads]
+        # Graph orders newest-first and $filter already bounds the window, but
+        # a stale nextLink can still hand back older mail; drop it here so the
+        # caller's window is the one that counts.
+        records = [r for r in records if r.sent_at is None or r.sent_at >= since]
+        return SweepPage(
+            records=records, next_cursor=next_link, has_more=bool(next_link)
         )
 
     def search_participant(self, db, connection: MailboxConnection, address: str):

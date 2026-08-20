@@ -29,8 +29,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://juicebox:juicebox@db:5432/juicebox
       BASE_URL: http://localhost:8000
+      FORAY_BASE_URL: ${FORAY_BASE_URL:-http://foray:8100}
+      FORAY_INTERNAL_TOKEN: ${FORAY_INTERNAL_TOKEN:-}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      JUICEBOX_LLM_FAST_MODEL: ${JUICEBOX_LLM_FAST_MODEL:-}
+      LLM_FAST_TIMEOUT_SECONDS: ${LLM_FAST_TIMEOUT_SECONDS:-20}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
       MS_CLIENT_ID: ${MS_CLIENT_ID:-}
@@ -62,6 +66,8 @@ services:
       BASE_URL: http://api:8000
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-me-in-production}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      JUICEBOX_LLM_FAST_MODEL: ${JUICEBOX_LLM_FAST_MODEL:-}
+      LLM_FAST_TIMEOUT_SECONDS: ${LLM_FAST_TIMEOUT_SECONDS:-20}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
       MS_CLIENT_ID: ${MS_CLIENT_ID:-}
       MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
@@ -109,6 +115,8 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+      CONTACTOUT_API_KEY: ${CONTACTOUT_API_KEY:-}
+      FORAY_INTERNAL_TOKEN: ${FORAY_INTERNAL_TOKEN:-}
     ports:
       - "8100:8100"
     depends_on:

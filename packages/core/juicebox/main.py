@@ -19,6 +19,7 @@ from .routers import (
     analytics,
     auth,
     candidates,
+    crm,
     integrations,
     job_matches,
     job_postings,
@@ -26,6 +27,7 @@ from .routers import (
     outreach,
     projects,
     search,
+    sourcing,
     track,
 )
 
@@ -82,7 +84,9 @@ def create_app() -> FastAPI:
     app.include_router(org.router)
     app.include_router(org.suppressions_router)
     app.include_router(candidates.router)
+    app.include_router(candidates.notes_router)
     app.include_router(search.router)
+    app.include_router(sourcing.router)
     app.include_router(projects.router)
     app.include_router(job_postings.router)
     app.include_router(job_matches.router)
@@ -92,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(outreach.webhooks_router)
     app.include_router(agents.router)
     app.include_router(analytics.router)
+    app.include_router(crm.router)
     app.include_router(integrations.router)
     app.include_router(track.router)
 

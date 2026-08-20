@@ -42,6 +42,14 @@ KIND_JOBS_MATCH_ONE = "jobs.match.one"
 KIND_JOBS_SCRAPE = "jobs.scrape"
 KIND_JOBS_SCRAPE_ONE = "jobs.scrape.one"
 
+# Contact discovery mirrors the sync split: a per-org dispatcher fans out
+# one job per mailbox. It is never added to ensure_ticks -- reading a year
+# of mail metadata is a deliberate, consent-shaped action, like
+# mailbox.backfill, not something a worker should start on its own.
+KIND_CRM_DISCOVERY = "crm.discovery"
+KIND_CRM_DISCOVERY_ONE = "crm.discovery.one"
+KIND_CRM_DISCOVERY_IMPORT = "crm.discovery.import"
+
 OPEN_STATUSES = ("queued", "running")
 
 

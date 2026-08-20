@@ -8,6 +8,7 @@ from the model when one is configured and from a template otherwise.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from ..llm.client import get_llm
@@ -128,6 +129,42 @@ def _role_context(project: Project | None) -> str:
     return "\n".join(parts)
 
 
+# Written fragments, keyed by (candidate, project). A preview has no
+# enrollment, so enrollment.personalization -- the only cache that existed --
+# was unreachable from it, and previewing the same person twice paid the full
+# model latency twice. Deliberately in-process and small: it exists to make a
+# second click instant, not to be a durable store, and the send path still
+# persists its own copy on the enrollment.
+_FRAGMENT_TTL_SECONDS = 900.0
+_FRAGMENT_CACHE_MAX = 256
+_fragment_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def reset_fragment_cache() -> None:
+    """Tests reset between cases; nothing in production needs to call this."""
+    _fragment_cache.clear()
+
+
+def _cached_fragments(key: tuple[str, str]) -> dict[str, Any] | None:
+    entry = _fragment_cache.get(key)
+    if entry is None:
+        return None
+    stored_at, fragments = entry
+    if (time.monotonic() - stored_at) > _FRAGMENT_TTL_SECONDS:
+        _fragment_cache.pop(key, None)
+        return None
+    return dict(fragments)
+
+
+def _store_fragments(key: tuple[str, str], fragments: dict[str, Any]) -> None:
+    if len(_fragment_cache) >= _FRAGMENT_CACHE_MAX:
+        # Cheapest sufficient eviction: drop the oldest entry. This is a latency
+        # cache for one recruiter clicking around, not a hot path.
+        oldest = min(_fragment_cache, key=lambda k: _fragment_cache[k][0])
+        _fragment_cache.pop(oldest, None)
+    _fragment_cache[key] = (time.monotonic(), dict(fragments))
+
+
 def personalize(
     candidate: Candidate, project: Project | None = None, *, use_llm: bool | None = None
 ) -> dict[str, Any]:
@@ -136,11 +173,23 @@ def personalize(
     llm = get_llm()
     want_llm = llm.available if use_llm is None else (use_llm and llm.available)
 
+    cache_key = (candidate.id or "", (project.id if project else "") or "")
     fragments: dict[str, Any] | None = None
+    if want_llm and candidate.id:
+        fragments = _cached_fragments(cache_key)
+        if fragments is not None:
+            context.update(fragments)
+            return context
+
     if want_llm:
         try:
             doc = candidate_to_doc(candidate)
-            result = llm.json(
+            # json_fast: the fast model, a short timeout, no retries. This
+            # writes two short sentences from a profile already in the prompt --
+            # it needs no reasoning, and a reasoning model spends 10-60s on it
+            # while a recruiter waits for a preview. LLM_FAST_MODEL is the knob;
+            # unset, the model is unchanged and only the budget tightens.
+            result = llm.json_fast(
                 system=PERSONALIZE_SYSTEM,
                 prompt=personalize_prompt(
                     profile=doc.profile_text(), role_context=_role_context(project)
@@ -158,6 +207,8 @@ def personalize(
                     "hooks": [str(h) for h in (data.get("hooks") or [])],
                     "personalized_by": "llm",
                 }
+                if candidate.id:
+                    _store_fragments(cache_key, fragments)
         except Exception as exc:  # noqa: BLE001 - fall back rather than block a send
             logger.warning("personalisation failed for %s: %s", candidate.id, exc)
 

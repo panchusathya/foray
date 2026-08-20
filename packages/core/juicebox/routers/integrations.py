@@ -26,7 +26,7 @@ from ..integrations.providers import (
     get_provider,
     provider_names,
 )
-from ..models import MailboxConnection, record_event, utcnow
+from ..models import MailboxConnection, new_id, record_event, utcnow
 from ..outreach.rotation import sent_in_window
 from ..schemas import (
     MailboxConnectionOut,
@@ -349,6 +349,18 @@ def set_sending(
     return out
 
 
+def _import_scope(db: Session, *, org_id: str) -> int:
+    """How many people the import will look mail up for.
+
+    Shown up front so "imported 0" can be told apart from "there was nobody to
+    import for" -- the second is a normal state with a normal explanation, and
+    looked identical to a broken button.
+    """
+    from ..integrations.matching import build_address_index
+
+    return len(build_address_index(db, org_id=org_id))
+
+
 @router.post("/mailboxes/{connection_id}/backfill")
 def backfill_history(
     connection_id: str,
@@ -357,7 +369,8 @@ def backfill_history(
 ) -> dict:
     """Queue the bounded historical import (last MAILBOX_BACKFILL_DAYS days,
     known candidates only). Explicit button, never automatic."""
-    from ..jobs import KIND_MAILBOX_BACKFILL, enqueue
+    from ..jobs import KIND_MAILBOX_BACKFILL, OPEN_STATUSES, enqueue
+    from ..models import Job
 
     connection = _connection_or_404(db, connection_id, principal)
     _require_active(connection)
@@ -366,14 +379,165 @@ def backfill_history(
             status_code=status.HTTP_409_CONFLICT,
             detail="Enable thread sync first — backfill stores mailbox content",
         )
+    # Refuse only when a job genuinely exists, rather than trusting the state
+    # flag: a worker that died mid-run leaves the flag on "running" forever,
+    # and a stuck flag that can never be cleared is worse than a double run.
+    in_flight = db.scalar(
+        select(Job.id).where(
+            Job.org_id == principal.org_id,
+            Job.kind == KIND_MAILBOX_BACKFILL,
+            Job.idempotency_key.like(f"{KIND_MAILBOX_BACKFILL}:{connection.id}:%"),
+            Job.status.in_(OPEN_STATUSES),
+        )
+    )
+    if in_flight:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An import is already running for this mailbox",
+        )
+
+    now = utcnow()
+    # A unique id per run, not a timestamp: two runs inside the same second
+    # would mint the same stamp and collide on the idempotency key, which is
+    # the very bug this replaces. A fixed key made every import after the
+    # first a silent no-op, because enqueue returns the existing row for a key
+    # forever -- including one that has already succeeded.
+    run = new_id("run")
+    scope = _import_scope(db, org_id=principal.org_id)
+    connection.backfill_state = {
+        "status": "queued",
+        "run": run,
+        "done": 0,
+        "total": scope,
+        "imported": 0,
+        "note": "" if scope else "no contacts in scope to import for",
+        "started_at": now.isoformat(),
+        "finished_at": None,
+        "error": "",
+    }
     job = enqueue(
         db,
         org_id=principal.org_id,
         kind=KIND_MAILBOX_BACKFILL,
-        idempotency_key=f"{KIND_MAILBOX_BACKFILL}:{connection.id}:0",
-        payload={"org_id": principal.org_id, "mailbox_id": connection.id, "offset": 0},
+        idempotency_key=f"{KIND_MAILBOX_BACKFILL}:{connection.id}:{run}:0",
+        payload={
+            "org_id": principal.org_id,
+            "mailbox_id": connection.id,
+            "offset": 0,
+            "run": run,
+        },
     )
-    return {"queued": True, "job_id": job.id}
+    return {"queued": True, "job_id": job.id, "contacts": scope}
+
+
+@router.post("/discover")
+def start_discovery(
+    mailbox_id: str | None = Query(default=None),
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sweep Sent Items for people who are not in Contacts yet.
+
+    Reads addresses, dates and counts -- never bodies or subjects. Gated on
+    thread sync because that is already the org's "yes, read my mailbox"
+    switch, and because promotion's follow-up import needs it: without it the
+    tray would offer history it can never actually fetch.
+    """
+    from ..jobs import KIND_CRM_DISCOVERY, enqueue
+
+    eligible = db.scalars(
+        select(MailboxConnection).where(
+            MailboxConnection.org_id == principal.org_id,
+            MailboxConnection.status == "active",
+            MailboxConnection.thread_sync_enabled.is_(True),
+        )
+    ).all()
+    if mailbox_id:
+        eligible = [c for c in eligible if c.id == mailbox_id]
+    if not eligible:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Enable thread sync on a connected mailbox first",
+        )
+
+    now = utcnow()
+    job = enqueue(
+        db,
+        org_id=principal.org_id,
+        kind=KIND_CRM_DISCOVERY,
+        # Timestamped: enqueue returns the existing row for a key forever, so a
+        # fixed key would make every sweep after the first a silent no-op.
+        idempotency_key=f"{KIND_CRM_DISCOVERY}:{principal.org_id}:{int(now.timestamp())}",
+        payload={"org_id": principal.org_id, "mailbox_id": mailbox_id or ""},
+    )
+    return {"queued": True, "job_id": job.id, "mailboxes": len(eligible)}
+
+
+@router.post("/mailboxes/{connection_id}/discover")
+def start_discovery_for_mailbox(
+    connection_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    connection = _connection_or_404(db, connection_id, principal)
+    _require_active(connection)
+    return start_discovery(mailbox_id=connection.id, principal=principal, db=db)
+
+
+@router.get("/mailbox-activity")
+def mailbox_activity(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """What each mailbox is doing: the history import and the contact sweep.
+
+    Every connected mailbox is listed even when idle, so the UI can say "not
+    started" rather than rendering nothing and leaving the user guessing.
+
+    Real counters rather than a percentage for the sweep: the total size of a
+    mailbox is not known up front, so a percentage would be invented. The
+    import does know its denominator -- the address book it walks -- so that
+    one is reported as done/total.
+    """
+    rows = db.scalars(
+        select(MailboxConnection)
+        .where(
+            MailboxConnection.org_id == principal.org_id,
+            MailboxConnection.status != "revoked",
+        )
+        .order_by(MailboxConnection.address)
+    ).all()
+
+    out = []
+    for connection in rows:
+        sweep = connection.discovery_state or {}
+        imported = connection.backfill_state or {}
+        out.append(
+            {
+                "mailbox_id": connection.id,
+                "address": connection.address,
+                "thread_sync_enabled": connection.thread_sync_enabled,
+                "discovery": {
+                    "status": sweep.get("status", "idle"),
+                    "scanned": int(sweep.get("scanned") or 0),
+                    "found": int(sweep.get("found") or 0),
+                    "started_at": sweep.get("started_at"),
+                    "finished_at": sweep.get("finished_at"),
+                    "error": sweep.get("error", ""),
+                },
+                "backfill": {
+                    "status": imported.get("status", "idle"),
+                    "done": int(imported.get("done") or 0),
+                    "total": int(imported.get("total") or 0),
+                    "imported": int(imported.get("imported") or 0),
+                    "note": imported.get("note", ""),
+                    "started_at": imported.get("started_at"),
+                    "finished_at": imported.get("finished_at"),
+                    "error": imported.get("error", ""),
+                },
+            }
+        )
+    return out
 
 
 @router.delete("/mailboxes/{connection_id}")

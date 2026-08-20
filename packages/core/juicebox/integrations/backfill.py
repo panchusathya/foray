@@ -35,20 +35,50 @@ def backfill_mailbox_history(
     connection: MailboxConnection,
     *,
     offset: int = 0,
+    addresses: list[str] | None = None,
     provider=None,
     now: datetime | None = None,
 ) -> dict:
-    """One batch of addresses. Returns counters plus next_offset (None = done)."""
+    """One batch of addresses. Returns counters plus next_offset (None = done).
+
+    ``addresses`` narrows the pass to exactly those people and skips the index
+    walk. Promotion uses it: re-running the offset walk after promoting two
+    contacts would ``$search`` every address in the org, one HTTP call each,
+    to import two inboxes' worth of history. When it is None the original
+    whole-index behaviour is unchanged.
+    """
     now = now or utcnow()
     if not connection.thread_sync_enabled:
-        return {"ingested": 0, "skipped": 0, "next_offset": None, "reason": "disabled"}
+        return {
+            "ingested": 0,
+            "skipped": 0,
+            "next_offset": None,
+            "total": 0,
+            "note": "thread sync is off for this mailbox",
+        }
 
+    _explicit = addresses is not None
     provider = provider or get_provider(connection.provider)
     since = now - timedelta(days=get_settings().mailbox_backfill_days)
     index = build_address_index(db, org_id=connection.org_id)
-    addresses = sorted(index)[offset : offset + BATCH_ADDRESSES]
+    if addresses is not None:
+        # Still filtered through the index: an address the guard does not
+        # admit has no business being ingested just because a caller asked.
+        targets = [a for a in (a.strip().lower() for a in addresses) if a in index]
+    else:
+        targets = sorted(index)[offset : offset + BATCH_ADDRESSES]
+    addresses = targets
     if not addresses:
-        return {"ingested": 0, "skipped": 0, "next_offset": None}
+        # Distinguish "nobody to import for" from "imported nothing": an org
+        # whose people are not yet in scope is a normal state with a normal
+        # explanation, not a failure and not a success.
+        return {
+            "ingested": 0,
+            "skipped": 0,
+            "next_offset": None,
+            "total": len(index),
+            "note": "no contacts in scope to import for" if not index else "",
+        }
 
     mailbox_address = connection.address.lower()
     ingested = 0
@@ -92,9 +122,22 @@ def backfill_mailbox_history(
             )
             ingested += 1
 
+    if _explicit:
+        # An explicit address list is one pass, not a walk.
+        return {
+            "ingested": ingested,
+            "skipped": skipped,
+            "next_offset": None,
+            "total": len(addresses),
+            "note": "",
+        }
     next_offset = offset + BATCH_ADDRESSES
     return {
         "ingested": ingested,
         "skipped": skipped,
         "next_offset": next_offset if next_offset < len(index) else None,
+        # How many people the whole walk covers, so progress can be shown as
+        # "40 of 380" rather than as an unanchored number that means nothing.
+        "total": len(index),
+        "note": "",
     }

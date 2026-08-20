@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
+from ..crm import track_all
 from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
@@ -182,6 +183,11 @@ def enroll_candidates(
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     first_due = now if (send_now or not steps) else schedule_step_at(steps[0], base=now)
 
+    # Choosing to email someone is a CRM action: it is what makes their replies
+    # worth keeping, and without it a contact could drop out of the CRM the
+    # moment they leave their last project.
+    track_all(db, org_id=sequence.org_id, candidate_ids=candidate_ids)
+
     existing = {
         row.candidate_id: row
         for row in db.scalars(
@@ -227,6 +233,29 @@ def enroll_candidates(
 # --------------------------------------------------------------------------
 
 
+def _needs_written_variables(step: SequenceStep) -> bool:
+    """Whether rendering this step actually consumes model-written text.
+
+    personalize() costs a live model call -- 10s+ on a reasoning model -- and is
+    gated only on sequence.personalize, never on whether the template refers to
+    anything it produces. Four of six steps in production referenced none of
+    them, so every preview and every send paid for output that was discarded.
+
+    An empty subject template counts as a use: build_message_content falls back
+    to context["subject_hint"] to title the email, so the value is consumed even
+    though no {{ }} names it.
+
+    AI directives deliberately do NOT count. They make their own model call, and
+    the deterministic profile fields are all their prompt needs as context -- so
+    a step with directives and no written variables gets one call, not two.
+    """
+    if not (step.subject_template or "").strip():
+        return True
+    return templates.uses_llm_variables(
+        f"{step.subject_template or ''}\n{step.body_template or ''}"
+    )
+
+
 def build_message_content(
     db: Session,
     *,
@@ -250,7 +279,10 @@ def build_message_content(
     """
     project = db.get(Project, sequence.project_id) if sequence.project_id else None
     if context is None:
-        context = personalize(candidate, project, use_llm=sequence.personalize)
+        # sequence.personalize stays the operator's off switch; this only ever
+        # skips work whose result nothing reads.
+        use_llm = sequence.personalize and _needs_written_variables(step)
+        context = personalize(candidate, project, use_llm=use_llm)
 
     # Merged on top of the personalize() result rather than baked into it: both
     # depend on the sending mailbox and the thread, not on the candidate, and

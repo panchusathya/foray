@@ -88,6 +88,18 @@ class Settings:
         )
     )
 
+    # --- foray (the sourcing engine, a separate service) -----------------
+    # The browser reaches Foray's free routes through the nginx /foray/ proxy.
+    # This is the server-to-server path, used only for the routes that spend
+    # money and therefore need a principal in front of them.
+    foray_base_url: str = field(default_factory=lambda: _env("FORAY_BASE_URL", "http://localhost:8100"))
+    foray_internal_token: str = field(default_factory=lambda: _env("FORAY_INTERNAL_TOKEN", ""))
+    # A 100-candidate batch at 8-way concurrency is a few seconds; the ceiling
+    # is here so a hung vendor cannot pin a request for minutes.
+    foray_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("FORAY_TIMEOUT_SECONDS", 120.0)
+    )
+
     # --- llm -------------------------------------------------------------
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY", ""))
     openrouter_api_key: str = field(default_factory=lambda: _env("OPENROUTER_API_KEY", ""))
@@ -115,6 +127,13 @@ class Settings:
     llm_timeout_seconds: float = field(default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 120.0))
     # Retries cover 429s and 5xx only; a refusal or bad JSON is not retried.
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 2))
+    # Fast-model calls answer a user who is waiting -- a preview, not a send. The
+    # main 120s budget is right for drafting a whole sequence in a worker and
+    # absurd for a request someone is watching, so those get their own ceiling
+    # and no retries: degrading to the heuristic text beats a spinner.
+    llm_fast_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 20.0)
+    )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)
     )
@@ -203,6 +222,17 @@ class Settings:
     # How far back the one-off Outlook history import reaches (candidates only).
     mailbox_backfill_days: int = field(
         default_factory=lambda: _env_int("MAILBOX_BACKFILL_DAYS", 365)
+    )
+    # --- contact discovery -------------------------------------------------
+    # Provider pages per job before it re-enqueues itself, so one very large
+    # mailbox cannot monopolise a worker.
+    discovery_pages_per_job: int = field(
+        default_factory=lambda: _env_int("DISCOVERY_PAGES_PER_JOB", 5)
+    )
+    # Hard stop. Zoho has no server-side date filter, so a sweep there is
+    # bounded only by how far back the caller is willing to page.
+    discovery_max_pages: int = field(
+        default_factory=lambda: _env_int("DISCOVERY_MAX_PAGES", 500)
     )
 
     # --- job matching ----------------------------------------------------

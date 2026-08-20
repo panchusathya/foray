@@ -51,6 +51,19 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return payload;
 }
 
+/**
+ * Query string for the Contacts grid. Only keys the caller actually set are
+ * sent, so the API's own defaults stay authoritative.
+ */
+function contactParams(params = {}) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    search.set(key, String(value));
+  }
+  return search.toString();
+}
+
 export const api = {
   health: () => request('/health', { auth: false }),
 
@@ -59,7 +72,40 @@ export const api = {
   me: () => request('/v1/auth/me'),
 
   candidateCount: () => request('/v1/candidates/count'),
+
+  // The CRM grid reads through its own pair of methods. listCandidates keeps
+  // its exact shape and defaults because the sequence editor's enrol picker
+  // consumes it as a bare array of the whole org.
+  contactsGrid: (params = {}) => request(`/v1/candidates?${contactParams(params)}`),
+  contactsCount: (params = {}) => request(`/v1/candidates/count?${contactParams(params)}`),
+  // Ids only, capped: feeds "select all matching" without pulling rows.
+  contactIds: (params = {}) => request(`/v1/candidates/ids?${contactParams(params)}`),
+
+  listDiscovered: (params = {}) => request(`/v1/crm/discovered?${contactParams(params)}`),
+  discoveredCount: (params = {}) =>
+    request(`/v1/crm/discovered/count?${contactParams(params)}`),
+  promoteDiscovered: (payload) =>
+    request('/v1/crm/discovered/promote', { method: 'POST', body: payload }),
+  dismissDiscovered: (payload) =>
+    request('/v1/crm/discovered/dismiss', { method: 'POST', body: payload }),
+  ignoreDomain: (payload) =>
+    request('/v1/crm/discovered/ignore-domain', { method: 'POST', body: payload }),
+  listTags: () => request('/v1/crm/tags'),
+  // Both long-running mailbox jobs report here: the contact sweep and the
+  // history import.
+  mailboxActivity: () => request('/v1/integrations/mailbox-activity'),
+  startDiscovery: (connectionId) =>
+    request(
+      connectionId
+        ? `/v1/integrations/mailboxes/${connectionId}/discover`
+        : '/v1/integrations/discover',
+      { method: 'POST' },
+    ),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
+  // Buys contact details for sourced candidates. Goes through /v1 rather than
+  // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends
+  // money, so it needs a principal and a reason attached.
+  findEmails: (payload) => request('/v1/sourcing/find-emails', { method: 'POST', body: payload }),
   listCandidates: (params = {}) => {
     // Backwards-compatible: accepts a bare query string or {q, limit, offset}.
     const { q = '', limit, offset } = typeof params === 'string' ? { q: params } : params;
@@ -72,6 +118,21 @@ export const api = {
     return request(`/v1/candidates${suffix ? `?${suffix}` : ''}`);
   },
   getCandidate: (id) => request(`/v1/candidates/${id}`),
+  createCandidate: (payload) => request('/v1/candidates', { method: 'POST', body: payload }),
+  updateCandidate: (id, payload) =>
+    request(`/v1/candidates/${id}`, { method: 'PATCH', body: payload }),
+  // Cascades: notes, tags, the address projection, project memberships and
+  // enrollments all go with the person.
+  deleteCandidate: (id) => request(`/v1/candidates/${id}`, { method: 'DELETE' }),
+
+  listNotes: (candidateId) => request(`/v1/candidates/${candidateId}/notes`),
+  createNote: (candidateId, payload) =>
+    request(`/v1/candidates/${candidateId}/notes`, { method: 'POST', body: payload }),
+  // Keyed by the note, not the person: the candidate in the path would be
+  // a second thing to keep consistent for no gain.
+  updateNote: (noteId, payload) =>
+    request(`/v1/notes/${noteId}`, { method: 'PATCH', body: payload }),
+  deleteNote: (noteId) => request(`/v1/notes/${noteId}`, { method: 'DELETE' }),
   candidateTimeline: (id, limit = 200) =>
     request(`/v1/candidates/${id}/timeline?limit=${limit}`),
   listMessages: ({ candidate_id, direction, limit = 50 } = {}) => {
@@ -163,6 +224,28 @@ export const MAIL_PROVIDERS = {
 export function providerLabel(provider) {
   return MAIL_PROVIDERS[provider]?.label ?? provider;
 }
+
+// Mirrors CRM_STATUSES in models.py. do_not_contact writes a real
+// suppression, which the sequencer honours on every send.
+export const CRM_STATUSES = [
+  'none',
+  'prospect',
+  'active',
+  'nurture',
+  'placed',
+  'do_not_contact',
+  'archived',
+];
+
+export const CRM_STATUS_LABELS = {
+  none: 'No status',
+  prospect: 'Prospect',
+  active: 'Active',
+  nurture: 'Nurture',
+  placed: 'Placed',
+  do_not_contact: 'Do not contact',
+  archived: 'Archived',
+};
 
 export const PIPELINE_STAGES = [
   'sourced',

@@ -35,8 +35,26 @@ FORAY_DATABASE_URL=postgresql://foray:foray@localhost:5432/foray ./scripts/migra
 Secrets live in the repo-root `.env` (see `.env.example`): `GITHUB_TOKEN`
 (harvest/enrich), `OPENROUTER_API_KEY` (scoring + query parse via OpenRouter;
 model slugs in `FORAY_SCORING_MODEL`/`FORAY_PARSE_MODEL`), `APOLLO_API_KEY`
-(Phase 6 only), and `FORAY_DATABASE_URL`. Every command that needs a key fails
-fast with a clear message if it is missing.
+(Phase 6 only), `CONTACTOUT_API_KEY` (personal-email enrichment),
+`FORAY_INTERNAL_TOKEN` (see below) and `FORAY_DATABASE_URL`. Every command that
+needs a key fails fast with a clear message if it is missing.
+
+## The two kinds of route
+
+Everything under `/search`, `/candidate/{login}/enrich` and `/health` is free and
+read-only, and nginx proxies it straight to the browser at `/foray/*` with **no
+authentication anywhere in the chain**. There is nothing to authenticate against:
+this database has no `org_id`.
+
+Anything that spends money therefore lives under `/internal/`, gated by
+`FORAY_INTERNAL_TOKEN`, and is triggered through Juicebox -- which does have
+principals and can decide whether the caller may run up a bill. nginx also
+returns 404 for `/foray/internal/`, so the token is the second line rather than
+the only one. `POST /internal/candidates/find-emails` is the first such route.
+
+Adding a paid route next to `/search` would make it payable by strangers. That is
+already true of `POST /candidate/{login}/apollo`, which predates the split and is
+only harmless because nothing calls it.
 
 ## Commands
 

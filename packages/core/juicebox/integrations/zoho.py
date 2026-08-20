@@ -49,6 +49,8 @@ from .providers import (
     FolderPage,
     MailboxEvent,
     ProviderError,
+    SweepPage,
+    SweepRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -587,6 +589,60 @@ class ZohoProvider:
         cursors[folder] = cursor
         state["cursors"] = cursors
         connection.sync_state = state
+
+    def iter_sent_history(
+        self, db, connection: MailboxConnection, *, since, cursor: str = ""
+    ) -> SweepPage:
+        """One page of Sent Items back to ``since``, for contact discovery.
+
+        Zoho has no date filter on ``/messages/view``, so the window is applied
+        here: the listing is newest-first, and the walk stops at the first
+        message older than ``since``.
+
+        Built from the raw rows, never ``to_event`` -- that copies ``summary``
+        into ``body`` (a content snippet the tray must not hold) and merges
+        ``ccAddress`` into the To list. ``_hydrate`` is skipped entirely; it
+        costs one or two extra HTTP calls per message and only fetches content
+        we are not allowed to keep.
+
+        The cursor is ``{"start": N}`` and lives in ``discovery_state``. Zoho's
+        ``start`` is 1-based; a 0 here silently re-reads the first page.
+        """
+        client = self._client(db, connection)
+        folder_id = self._folder_id(connection, FOLDER_SENT)
+        try:
+            start = int(json.loads(cursor or "{}").get("start") or 1)
+        except (ValueError, TypeError):
+            start = 1
+        start = max(1, start)
+
+        rows = client.list_folder(folder_id, start=start, limit=_PAGE_LIMIT)
+        records: list[SweepRecord] = []
+        reached_window_end = len(rows) < _PAGE_LIMIT
+        for payload in rows:
+            when = _epoch_ms(payload.get("sentDateInGMT") or payload.get("receivedTime"))
+            if when is not None and when < since:
+                reached_window_end = True
+                break
+            records.append(
+                SweepRecord(
+                    native_id=str(payload.get("messageId") or ""),
+                    from_address=_one_address(payload.get("fromAddress")),
+                    to_addresses=tuple(_addresses(payload.get("toAddress"))),
+                    cc_addresses=tuple(_addresses(payload.get("ccAddress"))),
+                    thread_id=str(payload.get("threadId") or ""),
+                    sent_at=when,
+                    is_draft=str(payload.get("mode") or "").lower() == "draft"
+                    or str(payload.get("isDraft") or "").lower() in {"true", "1"},
+                )
+            )
+
+        has_more = not reached_window_end
+        return SweepPage(
+            records=records,
+            next_cursor=json.dumps({"start": start + _PAGE_LIMIT}) if has_more else "",
+            has_more=has_more,
+        )
 
     def iter_folder(
         self, db, connection: MailboxConnection, folder: str, *, cursor: str

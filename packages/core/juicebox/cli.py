@@ -11,6 +11,7 @@
     juicebox backfill-jobs [--org]
     juicebox reembed --org <org_id>
     juicebox export-seed <file.jsonl> [--count 120]
+    juicebox purge-placeholder-emails [--apply]
     juicebox serve [--port 8000]
 """
 
@@ -205,6 +206,58 @@ def cmd_export_seed(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_purge_placeholder_emails(args: argparse.Namespace) -> int:
+    """Strip filler addresses out of candidates that already have them.
+
+    Cleanup for a provider incident: ContactOut answered HTTP 200 with a sample
+    profile once its quota ran out, so email1@example.com / email2@gmail.com
+    reached real candidate records. Goes through patch_candidate rather than
+    writing the column directly, so the candidate_emails projection and the
+    search index stay consistent -- the projection is a subset of the JSON and
+    drifts silently otherwise.
+
+    Defaults to a dry run. Nothing is written without --apply.
+    """
+    from .enrich.normalize import strip_placeholders
+    from .models import Candidate
+    from .repository import sync_candidate_emails
+    from .search.index import invalidate
+
+    changed = 0
+    removed = 0
+    with session_scope() as db:
+        candidates = db.scalars(select(Candidate)).all()
+        touched_orgs = set()
+        for candidate in candidates:
+            keep, drop = strip_placeholders(candidate.emails)
+            if not drop:
+                continue
+            changed += 1
+            removed += len(drop)
+            print(
+                f"{'apply' if args.apply else 'would drop'}  {candidate.id}  "
+                f"{candidate.full_name}: {', '.join(drop)}"
+                + (f"  (keeping {', '.join(keep)})" if keep else "  (leaving no address)")
+            )
+            if args.apply:
+                candidate.emails = keep
+                # The projection is a strict subset of this column and drifts
+                # silently if it is not rebuilt. Deliberately NOT going through
+                # patch_candidate: that records the field as a manual edit, which
+                # would block a later real enrichment from filling the gap.
+                sync_candidate_emails(db, candidate)
+                touched_orgs.add(candidate.org_id)
+        if args.apply:
+            for org_id in touched_orgs:
+                invalidate(org_id)
+
+    verb = "removed" if args.apply else "would remove"
+    print(f"\n{verb} {removed} address(es) from {changed} candidate(s)")
+    if not args.apply and changed:
+        print("re-run with --apply to write the change")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -286,6 +339,15 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("file")
     export.add_argument("--count", type=int, default=120)
     export.set_defaults(func=cmd_export_seed)
+
+    purge = sub.add_parser(
+        "purge-placeholder-emails",
+        help="strip filler addresses (email1@example.com and friends) from candidates",
+    )
+    purge.add_argument(
+        "--apply", action="store_true", help="write the change (default is a dry run)"
+    )
+    purge.set_defaults(func=cmd_purge_placeholder_emails)
 
     serve = sub.add_parser("serve", help="run the API server")
     serve.add_argument("--host", default="0.0.0.0")

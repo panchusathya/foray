@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from ..crm import track_all
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..jobmatch.sync import archive_project_posting, upsert_project_posting
 from ..models import (
@@ -122,6 +123,10 @@ def add_candidates(
             detail=f"stage must be one of {list(PIPELINE_STAGES)}",
         )
     project = _load_project(db, project_id, principal.org_id)
+
+    # Shortlisting someone is a CRM action -- see crm.track. Without this they
+    # would vanish from the CRM views the moment they leave their last project.
+    track_all(db, org_id=principal.org_id, candidate_ids=payload.candidate_ids)
 
     # Carry the search rationale across so the pipeline card shows *why*.
     rationales: dict[str, dict] = {}

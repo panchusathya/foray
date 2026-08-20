@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     github_token: str = Field(default="", validation_alias="GITHUB_TOKEN")
     openrouter_api_key: str = Field(default="", validation_alias="OPENROUTER_API_KEY")
     apollo_api_key: str = Field(default="", validation_alias="APOLLO_API_KEY")
+    contactout_api_key: str = Field(default="", validation_alias="CONTACTOUT_API_KEY")
+    # Shared with the Juicebox API container only. It gates /internal/*,
+    # which spends money -- see api/internal.py for why that cannot rely on
+    # the nginx proxy being private, because it is not.
+    foray_internal_token: str = Field(default="", validation_alias="FORAY_INTERNAL_TOKEN")
 
     # --- models (any OpenRouter slug; defaults are cheap open-weight models) ---
     openrouter_base_url: str = Field(
@@ -156,6 +161,8 @@ class Settings(BaseSettings):
     linkedin_recheck_days: int = Field(default=90, validation_alias="FORAY_LINKEDIN_RECHECK_DAYS")
     # Outbound politeness cap for the bulk waterfall (raw.githubusercontent +
     # personal websites), independent of concurrency.
+    # ContactOut documents 1000 req/min for enrichment; stay well under it.
+    contactout_rpm: int = Field(default=300, validation_alias="CONTACTOUT_RPM")
     linkedin_rpm: int = Field(default=120, validation_alias="FORAY_LINKEDIN_RPM")
 
     # --- scoring spend guard ---
@@ -182,6 +189,8 @@ _ENV_NAMES = {
     "github_token": "GITHUB_TOKEN",
     "openrouter_api_key": "OPENROUTER_API_KEY",
     "apollo_api_key": "APOLLO_API_KEY",
+    "foray_internal_token": "FORAY_INTERNAL_TOKEN",
+    "contactout_api_key": "CONTACTOUT_API_KEY",
     "database_url": "FORAY_DATABASE_URL",
 }
 

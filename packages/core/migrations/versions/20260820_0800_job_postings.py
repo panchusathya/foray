@@ -1,7 +1,7 @@
 """Jobs database: postings, matches, watermarks, scrape queries, project.company.
 
 Revision ID: b8c2e91f04d7
-Revises: d1e4f70b93ac
+Revises: e2b6d4c17f90
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b8c2e91f04d7"
-down_revision: str | None = "d1e4f70b93ac"
+down_revision: str | None = "e2b6d4c17f90"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -3,7 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge, Empty, ErrorBox, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { foray } from '../lib/foray.js';
-import { forayHitToCandidate, partitionByEmail } from '../lib/forayImport.js';
+import {
+  describeFindEmails,
+  forayHitToCandidate,
+  mergeFoundEmails,
+  partitionByEmail,
+} from '../lib/forayImport.js';
 import {
   countOnPage,
   pageWindow,
@@ -15,6 +20,11 @@ import {
 
 const PAGE_SIZE = 40;
 
+// Matches the server's ceiling on /v1/sourcing/find-emails. A selection larger
+// than this is looked up in batches rather than silently trimmed -- a truncated
+// lookup reads as "nobody else had an address", which is worse than slower.
+const FIND_EMAILS_CAP = 100;
+
 const EXAMPLES = [
   'founding ML engineer, shipped training infrastructure, 3-8 years',
   'senior backend engineer in Go with 5+ years',
@@ -22,6 +32,15 @@ const EXAMPLES = [
   'data engineer with spark and airflow',
   'gpu systems engineer writing cuda kernels',
 ];
+
+// A reason is required server-side and is the only record of why a credit was
+// spent, so pre-fill it with the search that produced the shortlist. Trimmed
+// well inside the server's 200-character limit.
+function defaultReason(query) {
+  const text = (query ?? '').trim().replace(/\s+/g, ' ');
+  if (!text) return 'sourcing shortlist';
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+}
 
 /**
  * One sourced candidate. The archetype score is intentionally NOT rendered —
@@ -193,6 +212,7 @@ export function SourcingPage() {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
   const [addState, setAddState] = useState('');
+  const [findingEmails, setFindingEmails] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(false);
   const lastIndex = useRef(null);
   const searchRequest = useRef(0);
@@ -327,6 +347,56 @@ export function SourcingPage() {
     }
   }
 
+  async function findEmailsForSelected() {
+    const missing = partitionByEmail([...selected.values()]).withoutEmail;
+    if (!missing.length) return;
+    // The reason is stored against every candidate looked up, and is the only
+    // record afterwards of why a credit was spent. Required, not optional.
+    const reason = window.prompt(
+      `Look up personal email addresses for ${missing.length} candidate` +
+        `${missing.length === 1 ? '' : 's'} without one.\n\n` +
+        'Candidates already checked, or who already have a personal address, are ' +
+        'skipped and cost nothing.\n\nWhat is this for?',
+      defaultReason(activeQuery),
+    );
+    if (!reason || reason.trim().length < 3) return;
+
+    setFindingEmails(true);
+    setError(null);
+    setAddState('');
+    try {
+      // The server caps one call at 100, so a bigger selection goes in batches.
+      // Slicing to the first 100 instead would report "nothing found" for the
+      // rest, which is indistinguishable from having looked and failed.
+      const logins = missing.map((hit) => hit.login);
+      const merged = { summary: {}, results: {} };
+      for (let start = 0; start < logins.length; start += FIND_EMAILS_CAP) {
+        const response = await api.findEmails({
+          logins: logins.slice(start, start + FIND_EMAILS_CAP),
+          reason: reason.trim(),
+        });
+        Object.assign(merged.results, response.results ?? {});
+        for (const [key, value] of Object.entries(response.summary ?? {})) {
+          merged.summary[key] = (merged.summary[key] ?? 0) + value;
+        }
+      }
+      // Patch the selection from the response rather than waiting for the
+      // refetch, so the Add button's "(N without email)" count is not stale the
+      // moment the lookup finishes.
+      setSelected((previous) => {
+        const patched = mergeFoundEmails([...previous.values()], merged.results);
+        return new Map(patched.map((hit) => [hit.login, hit]));
+      });
+      setAddState(describeFindEmails(merged.summary, merged.results));
+      // Refresh the visible page so the contact chips agree with the selection.
+      setNonce((value) => value + 1);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setFindingEmails(false);
+    }
+  }
+
   function onAddClick() {
     const hits = [...selected.values()];
     if (!hits.length) return;
@@ -341,7 +411,9 @@ export function SourcingPage() {
       `${withoutEmail.length} of ${hits.length} selected have no email. If you enroll them in ` +
         `a sequence, that step fails permanently — even after you find their address later.\n\n` +
         `OK = import only the ${withEmail.length} with an email.\n` +
-        `Cancel = import all ${hits.length} anyway (they'll sit in the project uncontactable).`,
+        `Cancel = import all ${hits.length} anyway (they'll sit in the project uncontactable).\n\n` +
+        `Or cancel and use "Find emails" first — most LinkedIn-sourced candidates ` +
+        `have a personal address available.`,
     );
     importSelected(ok ? withEmail : hits);
   }
@@ -469,11 +541,26 @@ export function SourcingPage() {
                     </option>
                   ))}
                 </select>
+                {(() => {
+                  const missing = partitionByEmail([...selected.values()]).withoutEmail.length;
+                  if (!missing) return null;
+                  return (
+                    <button
+                      type="button"
+                      className="tiny"
+                      data-testid="find-emails-button"
+                      onClick={findEmailsForSelected}
+                      disabled={findingEmails || addState === 'saving'}
+                    >
+                      {findingEmails ? 'Finding emails…' : `Find emails (${missing})`}
+                    </button>
+                  );
+                })()}
                 <button
                   type="button"
                   className="primary"
                   onClick={onAddClick}
-                  disabled={selected.size === 0 || addState === 'saving'}
+                  disabled={selected.size === 0 || addState === 'saving' || findingEmails}
                 >
                   {addState === 'saving'
                     ? 'Importing…'

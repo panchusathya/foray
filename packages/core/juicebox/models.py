@@ -58,6 +58,11 @@ class Org(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200))
     slug: Mapped[str] = mapped_column(String(80), unique=True)
 
+    # Corporate domains that count as "us" during a discovery sweep, on top
+    # of the ones derived from connected mailboxes. Editable because a firm
+    # with several domains would otherwise re-stage its own staff forever.
+    crm_internal_domains: Mapped[list] = mapped_column(JSON, default=list)
+
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
 
@@ -98,6 +103,9 @@ class Candidate(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("org_id", "source", "source_id", name="uq_candidate_source"),
         Index("ix_candidate_org_updated", "org_id", "updated_at"),
+        # The CRM grid filters on both of these before it does anything else.
+        Index("ix_candidate_org_status", "org_id", "crm_status"),
+        Index("ix_candidate_org_tracked", "org_id", "crm_tracked"),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cand"))
@@ -142,6 +150,24 @@ class Candidate(Base, TimestampMixin):
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
     enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- CRM ---------------------------------------------------------------
+    # Per-person status, deliberately distinct from ProjectCandidate.stage:
+    # stage is per-role and partly outreach-driven, this is one hand-set fact
+    # about the relationship itself. A plain string, not a Postgres enum, so
+    # adding a value does not need its own migration.
+    crm_status: Mapped[str] = mapped_column(String(32), default="none")
+    # "Deliberately in the CRM", as opposed to merely sourced. Set only by
+    # explicit CRM actions -- manual add, promoting a discovered contact,
+    # setting a status or tag, and the first add to a project or sequence.
+    # Never by an incidental profile edit: this widens the thread-sync privacy
+    # guard in integrations/matching.py, so it must mean the user asked for
+    # this person to be tracked, not that someone fixed their job title.
+    crm_tracked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Field names a human edited by hand. repository._apply re-applies these
+    # on top of imported data so a nightly Foray refresh cannot silently
+    # overwrite a correction.
+    manual_fields: Mapped[list] = mapped_column(JSON, default=list)
 
     experiences: Mapped[list[Experience]] = relationship(
         back_populates="candidate", cascade="all, delete-orphan", order_by="Experience.position"
@@ -223,6 +249,20 @@ PIPELINE_STAGES = (
 # is still possible via an explicit override.
 OUTREACH_DRIVEN_STAGES = ("contacted", "replied")
 
+# Per-person CRM status. Validated in the router the way stages are, rather
+# than by a database enum, so the vocabulary can grow without a migration.
+# "do_not_contact" is not decorative: setting it writes a Suppression, which
+# the sequencer already honours on every send.
+CRM_STATUSES = (
+    "none",
+    "prospect",
+    "active",
+    "nurture",
+    "placed",
+    "do_not_contact",
+    "archived",
+)
+
 
 class Project(Base, TimestampMixin):
     __tablename__ = "projects"
@@ -265,6 +305,154 @@ class ProjectCandidate(Base, TimestampMixin):
 
     project: Mapped[Project] = relationship(back_populates="members")
     candidate: Mapped[Candidate] = relationship()
+
+
+# --------------------------------------------------------------------------
+# crm
+# --------------------------------------------------------------------------
+
+
+class CandidateNote(Base, TimestampMixin):
+    """A freeform note about a person.
+
+    Distinct from ``ProjectCandidate.notes``, which is a per-role scratch field
+    on a pipeline card: this one belongs to the person, survives them leaving a
+    project, and records who wrote it and when.
+    """
+
+    __tablename__ = "candidate_notes"
+    __table_args__ = (Index("ix_candidate_notes_candidate", "candidate_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("note"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # Unconstrained, like Project.created_by: an API-key principal has no user,
+    # and a deleted user must not take the note with them.
+    author_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Snapshot of the byline, so the note still says who wrote it after that
+    # user is gone.
+    author_name: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+DISCOVERED_STATUSES = ("new", "already_known", "promoted", "dismissed")
+
+# Why a staged contact looks worth reviving. Assigned from what is actually
+# known -- notably NOT from thread_count, which counts our own follow-ups.
+DISCOVERY_SUGGESTIONS = ("", "revive", "one_touch", "cc_only", "role_account", "suppressed")
+
+
+class DiscoveredContact(Base, TimestampMixin):
+    """Someone we have emailed who is not in Contacts yet.
+
+    Evidence only: an address, a display name, counts and dates. There is no
+    subject column and no body column, and there must never be one -- these are
+    people who have not been reviewed, let alone opted into. "5 messages, last
+    one 14 months ago" is enough to triage on. A test asserts the absence, so
+    adding one fails loudly rather than quietly.
+
+    Two mailboxes can meet the same stranger in the same sweep, so writes go
+    through an upsert on ``(org_id, email)``; select-then-insert races.
+    """
+
+    __tablename__ = "discovered_contacts"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_discovered_org_email"),
+        Index("ix_discovered_org_status_seen", "org_id", "status", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("disc"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+
+    email: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    domain: Mapped[str] = mapped_column(String(255), default="")
+
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    outbound_count: Mapped[int] = mapped_column(Integer, default=0)
+    to_count: Mapped[int] = mapped_column(Integer, default=0)
+    cc_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Distinct conversations. A useful sort key, but NOT evidence of a reply:
+    # sequence follow-ups share a conversation id with no answer at all.
+    thread_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    mailbox_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    suggested_status: Mapped[str] = mapped_column(String(24), default="")
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_reason: Mapped[str] = mapped_column(String(60), default="")
+
+
+class CandidateEmail(Base):
+    """One row per address a candidate owns: a projection of ``Candidate.emails``.
+
+    ``emails`` is a JSON list, so "who owns this address?" cannot be a join --
+    which is why ``build_address_index`` loads every in-scope candidate into a
+    Python dict. That is tolerable once per sync job; it is not tolerable
+    inside a single HTTP request, which is what the manual-add duplicate check
+    and discovery's already-known test both need.
+
+    ``UniqueConstraint(org_id, email)`` makes explicit the rule
+    ``build_address_index`` currently only implies by iteration order: one
+    address belongs to one person. Existing data can violate it -- nothing has
+    ever stopped the same address landing in two JSON lists -- so the backfill
+    is first-writer-wins and the loser keeps their JSON copy with no row here.
+    The projection is therefore a subset of the JSON, never a mirror of it.
+
+    Never a second source of truth: ``repository.sync_candidate_emails`` is the
+    only writer, and it is called wherever ``emails`` changes.
+    """
+
+    __tablename__ = "candidate_emails"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_candidate_email_org"),
+        Index("ix_candidate_emails_candidate", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cem"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    email: Mapped[str] = mapped_column(String(255))
+    # 0 is the primary address, matching Candidate.primary_email.
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CandidateTag(Base, TimestampMixin):
+    """A tag on a person.
+
+    A join table rather than a JSON list on ``candidates``: tag filtering is a
+    grid filter, and the ``skills`` column already demonstrates what happens
+    when a filterable multi-value field is stored as JSON -- it cannot be
+    indexed and ends up filtered in Python after paging.
+    """
+
+    __tablename__ = "candidate_tags"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "tag", name="uq_candidate_tag"),
+        Index("ix_candidate_tags_org_tag", "org_id", "tag"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("tag"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    tag: Mapped[str] = mapped_column(String(60))
+    created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 # --------------------------------------------------------------------------
@@ -549,6 +737,17 @@ class MailboxConnection(Base, TimestampMixin):
     # directions) into the CRM timeline. Off by default: connecting a mailbox
     # for sending must not silently start retaining its contents.
     thread_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Sweep progress: {status, scanned, found, cursor, since, started_at,
+    # finished_at, error}. It lives here rather than in the job payload because
+    # the job re-enqueues itself per page, and a counter that resets every page
+    # cannot show progress. The sweep cursor lives here too, and must never be
+    # written to inbox_delta_link / sent_delta_link / sync_state["cursors"].
+    discovery_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Progress of the per-candidate history import, same shape and same reason:
+    # the job re-enqueues itself per batch, so a counter in the job payload
+    # cannot survive to be shown. {status, done, total, imported, run, note,
+    # started_at, finished_at, error}.
+    backfill_state: Mapped[dict] = mapped_column(JSON, default=dict)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

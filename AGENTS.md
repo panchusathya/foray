@@ -66,6 +66,12 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   address outreach uses is decided by the ordering in `api/search.py`, which
   prefers personal over work regardless of confidence -- a recruiting pitch must
   not land in somebody's work inbox.
+- **Anything on Foray that spends money goes under `/internal/` behind
+  `FORAY_INTERNAL_TOKEN`, and is triggered through Juicebox.** `/foray/*` is
+  proxied to the browser with no authentication anywhere in the chain, and
+  Foray has no `org_id` to scope a request to. Only Juicebox has principals,
+  so only Juicebox can decide whether the caller may run up a bill. Adding a
+  paid route next to `/search` would make it payable by strangers.
 - **Stamp the negative cache on a miss, not just a hit.** `shortlist_events` has
   no uniqueness and is never read as an already-attempted check, so a
   `<provider>_checked_at` column is the only thing stopping a second click from

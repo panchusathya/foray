@@ -9,17 +9,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..db import close_pool, get_pool
+from .internal import router as internal_router
 from .search import probe_pgvector_version, run_search
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="Foray", version="0.1.0")
+
+# Paid routes, behind a shared secret. Everything else on this app is free
+# and unauthenticated, which is why the split exists.
+app.include_router(internal_router)
 
 
 class SearchBody(BaseModel):
@@ -142,7 +147,12 @@ async def apollo_resolve(login: str, body: ApolloBody) -> dict:
     from ..enrich.apollo import match_and_store
     from ..enrich.linkedin import resolve_and_store
 
-    settings.require("apollo_api_key")
+    if not settings.apollo_api_key:
+        # settings.require() raises SystemExit, which inside a request
+        # handler kills the worker rather than answering the caller.
+        raise HTTPException(
+            status_code=503, detail="APOLLO_API_KEY is not configured on this deployment"
+        )
     pool = await get_pool()
     async with pool.acquire() as conn:
         candidate_id = await conn.fetchval(

@@ -274,8 +274,14 @@ jobs:
       # traceback that explains the failure cannot be found in the browser and
       # is not downloadable either. Print a bounded per-service tail inline
       # (api first -- it is what fails), and upload the full logs as an artifact.
-      - name: Staging logs (on failure)
-        if: failure()
+      # always(), not failure(): the e2e failures here are usually rescued by
+      # Playwright's retry, so the job goes green and a failure()-gated capture
+      # would never fire on the very runs worth reading. The inline dump below
+      # still only prints when something actually failed.
+      - name: Staging logs
+        if: always()
+        env:
+          JOB_FAILED: ${{ job.status == 'failure' }}
         run: |
           compose="docker compose -f docker-compose.staging.yml --env-file deploy/ci.env"
           mkdir -p staging-logs
@@ -285,11 +291,13 @@ jobs:
           $compose logs --no-color --timestamps > staging-logs/all-services.log 2>&1 || true
           $compose ps > staging-logs/ps.txt 2>&1 || true
 
-          for svc in api worker; do
-            echo "::group::$svc -- last 120 lines"
-            tail -n 120 "staging-logs/$svc.log" || true
-            echo "::endgroup::"
-          done
+          if [ "${JOB_FAILED}" = "true" ]; then
+            for svc in api worker; do
+              echo "::group::$svc -- last 120 lines"
+              tail -n 120 "staging-logs/$svc.log" || true
+              echo "::endgroup::"
+            done
+          fi
 
           # Two groups, because they want different shapes: a status anomaly
           # reads best as one compact line, while a traceback is useless without
@@ -306,8 +314,8 @@ jobs:
           if [ -n "$traces" ]; then echo "$traces" | tail -n 200; else echo "(none)"; fi
           echo "::endgroup::"
 
-      - name: Staging logs artifact (on failure)
-        if: failure()
+      - name: Staging logs artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: staging-logs

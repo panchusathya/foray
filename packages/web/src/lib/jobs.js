@@ -60,6 +60,23 @@ export const jobsApi = {
   rematchQueue: () => request('/v1/job-matches/rematch-queue'),
 };
 
+export const JOB_SOURCE_LABELS = {
+  exa: 'Exa',
+  project: 'Mandate',
+  manual: 'Manual',
+  csv: 'CSV',
+};
+
+export function sourceLabel(source) {
+  return JOB_SOURCE_LABELS[source] || source || 'Unknown';
+}
+
+export function sourceTone(source) {
+  if (source === 'exa') return 'partial';
+  if (source === 'project') return 'accent';
+  return '';
+}
+
 export function parseCsv(text) {
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (!lines.length) return [];

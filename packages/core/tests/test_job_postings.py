@@ -42,6 +42,34 @@ class TestJobPostingCrud:
         )
         assert patched.json()["status"] == "closed"
 
+    def test_list_filters_by_source(self, client, account):
+        _posting(client, account, title="Manual Backend")
+        imported = client.post(
+            "/v1/job-postings/import",
+            json={
+                "source": "exa",
+                "postings": [
+                    {
+                        "title": "Staff Platform Engineer",
+                        "company": "Datadog",
+                        "location": "New York",
+                        "jd_text": "Own the control plane.",
+                    }
+                ],
+            },
+            headers=account["headers"],
+        )
+        assert imported.status_code == 200, imported.text
+        exa = client.get("/v1/job-postings?source=exa", headers=account["headers"]).json()
+        assert exa["total"] == 1
+        assert exa["items"][0]["source"] == "exa"
+        assert exa["items"][0]["title"] == "Staff Platform Engineer"
+        manual = client.get("/v1/job-postings?source=manual", headers=account["headers"]).json()
+        assert manual["total"] == 1
+        assert manual["items"][0]["source"] == "manual"
+        bad = client.get("/v1/job-postings?source=linkedin", headers=account["headers"])
+        assert bad.status_code == 422
+
     def test_org_scoping(self, client, account):
         created = _posting(client, account)
         other = client.post(

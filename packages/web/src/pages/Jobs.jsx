@@ -4,10 +4,17 @@ import { Link } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { jobsApi, parseCsv } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
+import { PitchButton, SourceBadge } from './JobPitch.jsx';
 import './jobs.css';
 
 export function JobsPage() {
-  const [filters, setFilters] = useState({ q: '', status: '', fee_bearing: '', has_warm_path: '' });
+  const [filters, setFilters] = useState({
+    q: '',
+    status: '',
+    source: '',
+    fee_bearing: '',
+    has_warm_path: '',
+  });
   const [form, setForm] = useState({
     title: '',
     company: '',
@@ -23,10 +30,11 @@ export function JobsPage() {
       jobsApi.list({
         q: filters.q,
         status: filters.status || undefined,
+        source: filters.source || undefined,
         fee_bearing: filters.fee_bearing === '' ? undefined : filters.fee_bearing === 'true',
         has_warm_path: filters.has_warm_path === '' ? undefined : filters.has_warm_path === 'true',
       }),
-    [filters.q, filters.status, filters.fee_bearing, filters.has_warm_path],
+    [filters.q, filters.status, filters.source, filters.fee_bearing, filters.has_warm_path],
   );
 
   async function create(event) {
@@ -70,7 +78,7 @@ export function JobsPage() {
     <div className="stack">
       <PageHeader
         title="Jobs"
-        subtitle="Open-market and mandate roles, ranked against everyone in the CRM."
+        subtitle="Find roles to pitch. Exa rows are the open market; Create project to pitch opens Sequences with that role selected. Nothing auto-sends."
       />
       <ErrorBox error={error} />
 
@@ -133,6 +141,17 @@ export function JobsPage() {
           onChange={(event) => setFilters({ ...filters, q: event.target.value })}
         />
         <select
+          value={filters.source}
+          onChange={(event) => setFilters({ ...filters, source: event.target.value })}
+          data-testid="jobs-source-filter"
+        >
+          <option value="">Any source</option>
+          <option value="exa">Exa (market)</option>
+          <option value="project">Our mandates</option>
+          <option value="manual">Manual</option>
+          <option value="csv">CSV</option>
+        </select>
+        <select
           value={filters.status}
           onChange={(event) => setFilters({ ...filters, status: event.target.value })}
         >
@@ -172,6 +191,7 @@ export function JobsPage() {
                 <th>Company</th>
                 <th>Title</th>
                 <th>Location</th>
+                <th>Source</th>
                 <th>Status</th>
                 <th>Matches</th>
                 <th></th>
@@ -188,10 +208,14 @@ export function JobsPage() {
                   </td>
                   <td>{posting.location || '—'}</td>
                   <td>
+                    <SourceBadge source={posting.source} />
+                  </td>
+                  <td>
                     <Badge>{posting.status}</Badge>
                   </td>
                   <td>{posting.match_count}</td>
-                  <td className="row wrap">
+                  <td className="jobs-row-actions">
+                    <PitchButton posting={posting} onError={setError} />
                     {posting.has_warm_path ? <Badge tone="accent">warm path</Badge> : null}
                     {posting.fee_bearing ? <Badge tone="strong">fee</Badge> : null}
                   </td>

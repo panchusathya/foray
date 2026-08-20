@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import { CandidateHit } from '../components/CandidateHit.jsx';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
+import { PitchButton, ProjectLink, SourceBadge } from './JobPitch.jsx';
 import './jobs.css';
 
 function specChips(spec) {
@@ -21,7 +22,6 @@ function specChips(spec) {
 
 export function JobDetailPage() {
   const { postingId } = useParams();
-  const navigate = useNavigate();
   const posting = useAsync(() => jobsApi.get(postingId), [postingId]);
   const matches = useAsync(() => jobsApi.matches(postingId), [postingId]);
   const [error, setError] = useState(null);
@@ -34,19 +34,6 @@ export function JobDetailPage() {
       await jobsApi.rematch(postingId);
       posting.reload();
       matches.reload();
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function createProject() {
-    setBusy(true);
-    setError(null);
-    try {
-      const project = await jobsApi.createProject(postingId);
-      navigate(`/projects/${project.id}`);
     } catch (caught) {
       setError(caught);
     } finally {
@@ -74,22 +61,28 @@ export function JobDetailPage() {
         subtitle={[row.company, row.location].filter(Boolean).join(' · ') || 'Job posting'}
       />
       <ErrorBox error={error} />
+      <div className="jobs-detail-cta card">
+        <div>
+          <strong>{row.project_id ? 'This posting is linked to a project.' : 'Pitch this role.'}</strong>
+          <p className="small muted" style={{ margin: '4px 0 0' }}>
+            {row.project_id
+              ? 'Open Sequences to start outreach. Shortlist here does not enrol anyone.'
+              : 'Create a project from this posting, then Sequences to send. Nothing auto-enrols.'}
+          </p>
+        </div>
+        <div className="row wrap">
+          <PitchButton posting={row} onError={setError} className="primary" />
+          <ProjectLink posting={row} />
+        </div>
+      </div>
       <div className="row wrap">
+        <SourceBadge source={row.source} />
         <Badge>{row.status}</Badge>
         {row.has_warm_path ? <Badge tone="accent">warm path</Badge> : null}
         {row.fee_bearing ? <Badge tone="strong">{row.fee_terms || 'fee'}</Badge> : null}
         <button type="button" className="tiny ghost" onClick={rematch} disabled={busy}>
           Recompute matches
         </button>
-        {row.project_id ? (
-          <Link to={`/projects/${row.project_id}`} className="badge">
-            Open project
-          </Link>
-        ) : (
-          <button type="button" className="tiny" onClick={createProject} disabled={busy}>
-            Create project from this posting
-          </button>
-        )}
       </div>
 
       {row.parsed_at ? (

@@ -27,6 +27,7 @@ from ..schemas import (
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/job-postings", tags=["job-postings"])
 
 ALLOWED_STATUS = {"pending_parse", "open", "stale", "closed", "archived"}
+ALLOWED_SOURCE = {"exa", "project", "manual", "csv"}
 
 
 def _load_posting(db: Session, posting_id: str, org_id: str) -> JobPosting:
@@ -142,6 +143,7 @@ def import_postings(
 def list_postings(
     q: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    source: str | None = Query(default=None),
     fee_bearing: bool | None = Query(default=None),
     has_warm_path: bool | None = Query(default=None),
     company: str | None = Query(default=None),
@@ -162,6 +164,13 @@ def list_postings(
         )
     if status_filter:
         stmt = stmt.where(JobPosting.status == status_filter)
+    if source:
+        if source not in ALLOWED_SOURCE:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"source must be one of {sorted(ALLOWED_SOURCE)}",
+            )
+        stmt = stmt.where(JobPosting.source == source)
     if fee_bearing is not None:
         stmt = stmt.where(JobPosting.fee_bearing.is_(fee_bearing))
     if has_warm_path is not None:

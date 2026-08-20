@@ -1,0 +1,185 @@
+"""Canonical lexical-search document: one tsvector config, one weighted
+expression, one query builder.
+
+``to_tsvector`` and ``websearch_to_tsquery`` MUST use the same configuration.
+A mismatch does not error; it silently returns zero rows. This module is the
+single source so derive, backfill, and the query path cannot drift.
+
+The two-argument ``to_tsvector(regconfig, text)`` form is required: the
+one-argument form reads a GUC and is only STABLE, not IMMUTABLE.
+"""
+
+from __future__ import annotations
+
+import re
+
+TS_CONFIG = "english"
+
+# ts_rank_cd weight array is {D, C, B, A}. A = structured facts recruiters
+# search on; B = curated vocabularies; C = repo evidence; D = free prose.
+# Default Postgres weights already match this; we pass them explicitly so a
+# future retune is a Python constant, not a hunt through SQL.
+RANK_WEIGHTS = "{0.1,0.2,0.4,1.0}"
+
+# Normalisation 32: bound the rank to 0..1, no length division. Length-
+# normalising systematically favours thin profiles over rich ones.
+RANK_NORMALIZATION = 32
+
+# SQL aliases: s = candidate_signals, c = candidates, gh/li = raw_profiles
+# rows (nullable). Class D prose is optional: the fast backfill omits the
+# raw_profiles joins and still produces a usable document.
+SEARCH_TSV_SQL = f"""(
+    setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.title, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.employer, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.employer_domain, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(array_to_string(s.topics, ' '), '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(array_to_string(s.domain_markers, ' '), '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.primary_language, '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.secondary_language, '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce((
+         select string_agg(coalesce(elem->>'name', '') || ' ' || coalesce(elem->>'description', ''), ' ')
+         from jsonb_array_elements(coalesce(s.top_repos, '[]'::jsonb)) elem
+       ), '')), 'C')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(c.name, '')), 'D')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(gh.data->>'bio', '')), 'D')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(li.data->>'about', '') || ' ' || coalesce(li.data->>'position', '')), 'D')
+)"""
+
+# Fast pass: A/B/C + c.name. No TOAST of raw_profiles JSONB.
+SEARCH_TSV_SQL_FAST = f"""(
+    setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.title, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.employer, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.employer_domain, '')), 'A')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(array_to_string(s.topics, ' '), '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig,
+         coalesce(array_to_string(s.domain_markers, ' '), '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.primary_language, '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(s.secondary_language, '')), 'B')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce((
+         select string_agg(coalesce(elem->>'name', '') || ' ' || coalesce(elem->>'description', ''), ' ')
+         from jsonb_array_elements(coalesce(s.top_repos, '[]'::jsonb)) elem
+       ), '')), 'C')
+    || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(c.name, '')), 'D')
+)"""
+
+UPDATE_SEARCH_TSV_SQL = f"""
+update candidate_signals s
+   set search_tsv = {SEARCH_TSV_SQL}
+  from candidates c
+  left join raw_profiles gh on gh.candidate_id = c.id and gh.source = 'github'
+  left join raw_profiles li on li.candidate_id = c.id and li.source = 'linkedin'
+ where s.candidate_id = c.id
+   and s.candidate_id = any($1::bigint[])
+"""
+
+UPDATE_SEARCH_TSV_FAST_SQL = f"""
+update candidate_signals s
+   set search_tsv = {SEARCH_TSV_SQL_FAST}
+  from candidates c
+ where s.candidate_id = c.id
+   and s.search_tsv is null
+   and s.candidate_id = any($1::bigint[])
+"""
+
+# Function words and recruiter-generic tokens that match nearly every document
+# in this corpus. Years/counts are already structured filters.
+_NOISE = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "candidate",
+    "candidates",
+    "engineer",
+    "engineering",
+    "engineers",
+    "experience",
+    "experienced",
+    "for",
+    "from",
+    "has",
+    "have",
+    "in",
+    "job",
+    "jobs",
+    "looking",
+    "of",
+    "or",
+    "people",
+    "role",
+    "roles",
+    "senior",
+    "someone",
+    "staff",
+    "that",
+    "the",
+    "this",
+    "to",
+    "who",
+    "with",
+    "year",
+    "years",
+}
+
+# Tokens that keep intra-token punctuation meaningful in this vocabulary.
+_TERM = re.compile(r"[a-z0-9][a-z0-9+.#/-]*")
+_QUOTED = re.compile(r'"([^"]*)"')
+# websearch_to_tsquery treats these as operators; never pass them through bare.
+_OPERATORISH = re.compile(r"^[&|!():*<>]+$")
+
+
+def build_websearch_or(text: str, *, max_terms: int = 12) -> str | None:
+    """Build an OR websearch string, or None when nothing usable remains.
+
+    None means "run the vector arm alone", never "empty result set".
+    ``--prefixed`` tokens are stripped rather than applied: a negation on only
+    the lexical arm is incoherent while the vector arm still retrieves the
+    excluded candidate.
+
+    Tokens containing ``+`` (c++) are quoted so websearch_to_tsquery does not
+    split them into a bare ``c``.
+    """
+    if not text or not str(text).strip():
+        return None
+    raw = str(text).lower()
+    # Strip --negation / -bare-token prefixes rather than mis-applying them.
+    raw = re.sub(r"(^|\s)--?\S+", " ", raw)
+
+    phrases: list[str] = []
+
+    def _keep_quote(match: re.Match[str]) -> str:
+        phrase = match.group(1).strip()
+        if phrase:
+            phrases.append(phrase)
+        return " "
+
+    remainder = _QUOTED.sub(_keep_quote, raw)
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in _TERM.findall(remainder):
+        if token.isdigit() or token in _NOISE or _OPERATORISH.fullmatch(token):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+
+    parts: list[str] = []
+    for phrase in phrases:
+        parts.append(f'"{phrase}"')
+        if len(parts) >= max_terms:
+            break
+    if len(parts) < max_terms:
+        for token in terms:
+            parts.append(f'"{token}"' if any(ch in token for ch in "+#") else token)
+            if len(parts) >= max_terms:
+                break
+    if not parts:
+        return None
+    return " or ".join(parts)

@@ -24,9 +24,19 @@ COPY pyproject.toml /app/pyproject.toml
 COPY foray/__init__.py /app/foray/__init__.py
 RUN pip install /app
 
-# Bake the embedding model into the image: the query path embeds locally and
-# must not depend on Hugging Face being reachable at runtime.
+# Bake bge-small always (query embedding). MiniLM is optional: production
+# must bake it so the first search never hits Hugging Face. Staging CI skips
+# it (FORAY_BAKE_RERANKER=false) — rerank is off there and the extra fetch
+# blows the 25-minute staging job ceiling.
+ENV OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
+    TOKENIZERS_PARALLELISM=false
+ARG FORAY_BAKE_RERANKER=true
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
+RUN if [ "$FORAY_BAKE_RERANKER" = "true" ]; then \
+      python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"; \
+    fi
 
 COPY . /app
 RUN pip install --no-deps -e /app

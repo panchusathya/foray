@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..db import close_pool, get_pool
-from .search import run_search
+from .search import probe_pgvector_version, run_search
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -35,14 +35,28 @@ class SearchBody(BaseModel):
 async def health() -> dict:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        candidates = await conn.fetchval("select count(*) from candidates where embedding is not null")
+        candidates = await conn.fetchval(
+            "select count(*) from candidates where embedding is not null"
+        )
         scored = await conn.fetchval("select count(distinct candidate_id) from archetype_scores")
+        lexical = await conn.fetchval(
+            "select count(*) from candidate_signals where search_tsv is not null"
+        )
+        pgvector_version = await probe_pgvector_version(conn)
+    status = "ok"
+    if "lexical" in (settings.retrieval_arms or "") and not lexical:
+        status = "degraded"
     return {
-        "status": "ok",
+        "status": status,
         "version": app.version,
         "embedded_candidates": candidates,
         "scored_candidates": scored,
+        "lexical_indexed": lexical,
         "embedding_model": settings.embedding_model,
+        "retrieval_arms": settings.retrieval_arms,
+        "pgvector_version": pgvector_version,
+        "rerank_enabled": settings.rerank_enabled,
+        "rerank_model": settings.rerank_model if settings.rerank_enabled else None,
     }
 
 
@@ -84,7 +98,9 @@ async def search_stream(
             result = await run_search(
                 conn, q, limit, offset=offset, has_contact=has_contact
             )
-        # First event: the ranked meta + list (this is the sub-second first byte).
+        # First event: the ranked meta + list. Cross-encoder rerank (when
+        # enabled) runs before this byte, so first-byte is no longer sub-second
+        # on a cold CE cache; page 2+ is.
         meta = result.to_dict()
         candidates = meta.pop("results")
         yield _sse("meta", meta)
@@ -155,6 +171,30 @@ async def index() -> FileResponse:
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    from ..log import get_logger
+
+    log = get_logger("api.app")
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            lexical = await conn.fetchval(
+                "select count(*) from candidate_signals where search_tsv is not null"
+            )
+        if "lexical" in (settings.retrieval_arms or "") and not lexical:
+            log.warning("search.lexical_unindexed", arms=settings.retrieval_arms)
+    except Exception as exc:  # noqa: BLE001 - never fail startup for a count
+        log.warning("search.health_probe_failed", error=str(exc))
+    if settings.rerank_enabled and settings.rerank_warmup:
+        try:
+            from ..rerank.model import get_cross_encoder
+
+            get_cross_encoder()
+        except Exception as exc:  # noqa: BLE001 - never fail startup for a missing model
+            log.warning("rerank.warmup_failed", error=str(exc))
 
 
 @app.on_event("shutdown")

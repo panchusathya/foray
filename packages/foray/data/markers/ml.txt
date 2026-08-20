@@ -1,4 +1,6 @@
-# Machine learning. Gated additionally on python fraction > 0.2 (see markers.py).
+# Machine learning. Weak terms still require python fraction > 0.2
+# (see markers.py). Strong terms (llm, vlm, megatron, vllm, ...) bypass
+# that gate so a CUDA/C++ ML-systems engineer still earns `ml`.
 torch
 pytorch
 jax
@@ -14,3 +16,31 @@ xgboost
 lightgbm
 llama
 stable-diffusion
+llm
+vlm
+multimodal
+vision-language
+rlhf
+dpo
+lora
+peft
+fsdp
+deepspeed
+megatron
+vit
+clip
+whisper
+finetune
+fine-tuning
+pretraining
+rag
+embeddings
+mistral
+qwen
+llama.cpp
+tokenizer
+diffusion
+vllm
+sglang
+tensorrt
+triton

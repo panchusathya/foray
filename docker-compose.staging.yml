@@ -117,6 +117,10 @@ services:
     build:
       context: packages/foray
       dockerfile: Dockerfile
+      args:
+        # Staging does not enable the CE; skip the MiniLM bake so this job
+        # stays inside timeout-minutes: 25.
+        FORAY_BAKE_RERANKER: "false"
     image: juicebox-staging-foray
     profiles: ["foray"]
     restart: unless-stopped
@@ -137,6 +141,8 @@ services:
     build:
       context: packages/foray
       dockerfile: Dockerfile
+      args:
+        FORAY_BAKE_RERANKER: "false"
     image: juicebox-staging-foray
     profiles: ["jobs"]
     restart: "no"

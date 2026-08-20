@@ -7,14 +7,19 @@ name = The pure ranking core does not import query-path infrastructure
 type = forbidden
 source_modules =
     foray.rank
+    foray.search_doc
+    foray.evidence
 forbidden_modules =
     asyncpg
     httpx
     pydantic
     sentence_transformers
+    torch
     foray.api
     foray.config
     foray.db
     foray.embed
     foray.llm
     foray.score
+    foray.rerank
+    foray.enrich

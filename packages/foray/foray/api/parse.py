@@ -21,12 +21,24 @@ from ..score.archetypes import load_archetypes
 
 log = get_logger("api.parse")
 
+# Bumped when ARCHETYPE_KEYWORDS or heuristic extraction changes. Folded into
+# the cache key so parse_query cannot serve a row that was written under an
+# older vocabulary. Orphan rows in query_parse_cache are harmless.
+PARSER_VERSION = 2
+
 # Keyword -> archetype id (first match wins, order matters: specific before broad).
 ARCHETYPE_KEYWORDS: list[tuple[str, str]] = [
     (r"\bfounding\b.*\bml\b|\bfounding\b.*machine learning", "founding_ml"),
     (r"\bml research|research engineer|research scientist", "ml_research"),
     (r"\bmlops|ml platform|ml infra", "ml_platform"),
     (r"\bgpu|cuda|kernel|inference runtime|triton|vllm", "gpu_systems"),
+    # Specific ML vocab before the broad \bml\b rule so "VLM engineer" maps
+    # here rather than falling through to vector-fallback, but AFTER research /
+    # mlops / gpu so "VLM research scientist" stays ml_research.
+    (
+        r"\bvlm\b|multimodal|vision-language|\brlhf\b|pretraining|pre-training|\bdiffusion\b",
+        "founding_ml",
+    ),
     (r"\bml\b|machine learning|deep learning|\bnlp\b|\bllm\b", "founding_ml"),
     (r"\bsre\b|site reliability|observability|on-call|oncall", "site_reliability"),
     (r"\binfra|infrastructure|platform|kubernetes|devops", "infra_platform"),
@@ -58,7 +70,8 @@ class ParsedFilter:
 
 
 def _query_hash(query: str) -> str:
-    return hashlib.sha256(query.strip().lower().encode()).hexdigest()
+    payload = f"{PARSER_VERSION}\n{query.strip().lower()}".encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def heuristic_parse(query: str) -> ParsedFilter:

@@ -43,7 +43,7 @@ archetypes:
   - id: founding_ml
     label: Founding ML Engineer
     gate: >-
-      s.domain_markers @> array['ml'] and s.est_experience_years between 3 and 12
+      s.domain_markers @> array['ml'] and s.est_experience_years >= 2
       and s.activity_at > now() - interval '18 months'
     rubric: |
       Score fit for a FOUNDING machine learning engineer at an early-stage startup:

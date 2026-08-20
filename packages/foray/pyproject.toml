@@ -58,6 +58,6 @@ ignore = ["B008", "E501"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["foray/rank.py"]
+files = ["foray/rank.py", "foray/search_doc.py", "foray/evidence.py"]
 strict = true
 ignore_missing_imports = true

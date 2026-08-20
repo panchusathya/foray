@@ -1,46 +1,60 @@
 """The query-path funnel. NO external API call happens here on a warm parse
-cache: the archetype scores + highlights are precomputed, and query embedding is
-a local model.
+cache: the archetype scores + highlights are precomputed, query embedding is
+a local model, and the optional cross-encoder is local too.
 
-    1. parse -> structured filter (cached)
-    2. SQL filter + display floor, take a bounded archetype-score pool
-    3. pgvector similarity + a deterministic blend in ``foray.rank``
-    4. page the blended pool, then hydrate only the requested rows
+    1. parse -> structured filter (cached). Writes; stays outside the snapshot.
+    2. one read-only repeatable-read transaction:
+         Q1 counts, Q2 vector arm, Q3 lexical arm, optional score arm, Q4 enrich
+    3. RRF fusion + 3-term blend in ``foray.rank``; optional local CE on the head
+    4. page the fused pool, then hydrate only the requested rows
+
+``parse_query`` writes to ``query_parse_cache``, so it MUST run before the
+read-only transaction. That ordering is load-bearing.
 """
 
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import asyncpg
+
 from ..config import settings
 from ..embed.model import embed_query, to_halfvec_literal
+from ..evidence import Evidence, build_evidence
 from ..llm import Chat
+from ..log import get_logger
 from ..rank import (
     BlendWeights,
     Page,
     PoolRow,
+    Ranked,
     RankPolicy,
-    Window,
+    apply_ce_scores,
+    blend_one,
+    build_pool,
     clamp_window,
-    page_presorted,
+    needs_rerank,
     rank_page,
+    sort_key,
     widen_message,
 )
 from ..score.archetypes import load_archetypes
+from ..search_doc import RANK_NORMALIZATION, RANK_WEIGHTS, TS_CONFIG, build_websearch_or
 from .parse import ParsedFilter, parse_query
 
+log = get_logger("api.search")
 
-def _as_json(value: Any, default):
-    if value is None:
-        return default
-    return json.loads(value) if isinstance(value, str) else value
+EmbedFn = Callable[[str], Any]
 
 
-# Bounded to the result set (rerank_pool at most), never the count query. The
-# source <> 'guess' predicate lives HERE, in SQL, so a guessed address cannot
-# reach any consumer of the search payload.
+# Bounded to the result set, never the count query. The source <> 'guess'
+# predicate lives HERE, in SQL, so a guessed address cannot reach any consumer
+# of the search payload.
 EMAILS_LATERAL = """
         left join lateral (
             select jsonb_agg(jsonb_build_object(
@@ -52,17 +66,40 @@ EMAILS_LATERAL = """
         ) em on true
 """
 
+_ALLOWED_ARMS = frozenset({"vector", "lexical", "score"})
+_pgvector_version: str | None = None
+_pgvector_probed = False
+
+
+@dataclass
+class Params:
+    """Positional-parameter accumulator. Numbering derives from insertion order."""
+
+    values: list = field(default_factory=list)
+
+    def add(self, value: Any) -> str:
+        self.values.append(value)
+        return f"${len(self.values)}"
+
+
+def parse_arms(raw: str | None = None) -> tuple[str, ...]:
+    text = (raw if raw is not None else settings.retrieval_arms) or "vector,lexical"
+    parts = tuple(dict.fromkeys(p.strip().lower() for p in text.split(",") if p.strip()))
+    unknown = [p for p in parts if p not in _ALLOWED_ARMS]
+    if unknown:
+        log.warning("search.unknown_arms", unknown=unknown)
+    kept = tuple(p for p in parts if p in _ALLOWED_ARMS)
+    return kept or ("vector", "lexical")
+
 
 @dataclass
 class SearchResult:
     """The `/search` wire contract.
 
-    ``total_matched`` counts rows that pass the structured filters *and* clear
-    the display floor. It used to ignore the floor, so it advertised people the
-    UI would never render; the honest number reads lower for the same query.
-    ``paginable`` is the subset actually reachable by ``offset``, capped by
-    ``FORAY_MAX_PAGINABLE``, and ``truncated`` says the two disagree. ``rank``
-    inside ``results`` is absolute across pages, so page 2 starts at 41.
+    ``total_matched`` counts rows that pass the structured filters (the
+    retrievable universe). ``paginable`` is the fused pool after the floor /
+    min-evidence vetoes, capped by ``FORAY_MAX_PAGINABLE``. ``rank`` inside
+    ``results`` is absolute across pages, so page 2 starts at 41.
     """
 
     query: str
@@ -82,6 +119,14 @@ class SearchResult:
     has_more: bool
     truncated: bool
     max_paginable: int
+    min_evidence: int = 2
+    reranked: bool = False
+    rerank_depth: int = 0
+    rerank_model: str | None = None
+    rerank_reason: str = "disabled"
+    lexical_indexed: int = 0
+    pgvector_version: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     results: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -96,6 +141,7 @@ class SearchResult:
             "total_matched": self.total_matched,
             "returned": self.returned,
             "display_floor": self.display_floor,
+            "min_evidence": self.min_evidence,
             "message": self.message,
             "limit": self.limit,
             "offset": self.offset,
@@ -106,21 +152,33 @@ class SearchResult:
             "has_more": self.has_more,
             "truncated": self.truncated,
             "max_paginable": self.max_paginable,
+            "reranked": self.reranked,
+            "rerank_depth": self.rerank_depth,
+            "rerank_model": self.rerank_model,
+            "rerank_reason": self.rerank_reason,
+            "lexical_indexed": self.lexical_indexed,
+            "pgvector_version": self.pgvector_version,
+            "diagnostics": self.diagnostics,
             "results": self.results,
         }
 
 
-def _policy() -> RankPolicy:
+def _policy(*, n_arms: int = 2) -> RankPolicy:
     return RankPolicy(
         weights=BlendWeights(
-            score_weight=settings.score_weight,
-            vector_weight=settings.vector_weight,
+            rrf_weight=settings.w_rrf,
+            score_weight=settings.w_score,
+            vector_weight=settings.w_vector,
         ),
         display_floor=settings.display_floor,
         page_size=settings.result_limit,
         max_paginable=settings.max_paginable,
-        retrieval_pool=settings.rerank_pool,
         min_results_before_widen=settings.min_results_before_widen,
+        unscored_score=settings.unscored_score,
+        min_evidence=settings.min_evidence,
+        rerank_depth=settings.rerank_depth,
+        rrf_k=settings.rrf_k,
+        n_arms=max(1, n_arms),
     )
 
 
@@ -134,6 +192,11 @@ def _result(
     message: str | None,
     results: list[dict],
     policy: RankPolicy,
+    reranked: bool = False,
+    rerank_reason: str = "disabled",
+    lexical_indexed: int = 0,
+    pgvector_version: str | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> SearchResult:
     return SearchResult(
         query=query,
@@ -143,76 +206,78 @@ def _result(
         total_matched=page.total_matched,
         returned=len(results),
         display_floor=policy.display_floor,
+        min_evidence=policy.min_evidence,
         message=message,
         limit=page.limit,
         offset=page.offset,
         page=page.page,
         page_count=page.page_count,
-        # The client must page in the server's stride, not a hardcoded one, or
-        # FORAY_RESULT_LIMIT would desynchronise the pager from the rows.
         page_size=policy.page_size,
         paginable=page.paginable,
         has_more=page.has_more,
         truncated=page.truncated,
         max_paginable=policy.max_paginable,
+        reranked=reranked,
+        rerank_depth=policy.rerank_depth,
+        rerank_model=settings.rerank_model if settings.rerank_enabled else None,
+        rerank_reason=rerank_reason,
+        lexical_indexed=lexical_indexed,
+        pgvector_version=pgvector_version,
+        diagnostics=diagnostics or {},
         results=results,
     )
 
 
-def _build_filters(
-    parsed: ParsedFilter, start: int, *, has_contact: bool = False
-) -> tuple[str, list, int]:
+def _filter_clauses(
+    parsed: ParsedFilter, params: Params, *, has_contact: bool = False
+) -> str:
     clauses = [
+        "c.merged_into is null",
         f"s.activity_at > now() - interval '{int(settings.activity_floor_months)} months'",
         "c.embedding is not null",
     ]
     if has_contact:
-        # Parameterless on purpose so the $i arithmetic below is untouched.
-        # Guesses are excluded here too: a guess is never "contactable".
         clauses.append(
             "(c.linkedin_url is not null or exists ("
             " select 1 from candidate_emails e"
             " where e.candidate_id = c.id and e.source <> 'guess'))"
         )
-    params: list = []
-    i = start
     if parsed.metros:
-        clauses.append(f"c.location_raw ilike any(${i}::text[])")
-        params.append([f"%{m}%" for m in parsed.metros])
-        i += 1
+        placeholder = params.add([f"%{m}%" for m in parsed.metros])
+        clauses.append(f"c.location_raw ilike any({placeholder}::text[])")
     if parsed.languages:
-        clauses.append(f"s.primary_language = any(${i}::text[])")
-        params.append([lang.lower() for lang in parsed.languages])
-        i += 1
+        placeholder = params.add([lang.lower() for lang in parsed.languages])
+        clauses.append(f"s.primary_language = any({placeholder}::text[])")
     if parsed.experience_min is not None:
-        clauses.append(f"s.est_experience_years >= ${i}")
-        params.append(float(parsed.experience_min))
-        i += 1
+        placeholder = params.add(float(parsed.experience_min))
+        clauses.append(f"s.est_experience_years >= {placeholder}")
     if parsed.experience_max is not None:
-        clauses.append(f"s.est_experience_years <= ${i}")
-        params.append(float(parsed.experience_max))
-        i += 1
-    return " and ".join(clauses), params, i
+        placeholder = params.add(float(parsed.experience_max))
+        clauses.append(f"s.est_experience_years <= {placeholder}")
+    return " and ".join(clauses)
 
 
-def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
+def _payload(
+    row: Any,
+    ranked: Ranked,
+    evidence: Evidence,
+    *,
+    has_score: bool,
+) -> dict:
     emails = _as_json(row["emails"], []) if "emails" in row else []
     emails = emails or []
     source = row.get("source", "github")
+    score = row["score"] if has_score else None
     return {
-        "rank": rank,
+        "rank": ranked.rank,
         "login": row["login"],
         "name": row["name"],
-        # A LinkedIn-only person has a synthetic 'li:' login; a github.com link
-        # built from it would be a dead 404.
         "source": source,
         "github_url": (
             f"https://github.com/{row['login']}" if source != "linkedin" else None
         ),
         "linkedin_url": row["linkedin_url"],
         "linkedin_source": row["linkedin_source"],
-        # Observed addresses only: guesses are filtered in SQL and can never
-        # appear here (and therefore never become a send-to address downstream).
         "emails": emails,
         "has_contact": bool(emails) or bool(row["linkedin_url"]),
         "employer": row["employer"],
@@ -229,109 +294,123 @@ def _payload(row: Any, rank: int, blend: float, has_score: bool) -> dict:
         "top_repos": _as_json(row["top_repos"], []),
         "topics": list(row["topics"])[:12] if row.get("topics") else [],
         "last_push_at": row["last_push_at"].isoformat() if row["last_push_at"] else None,
-        "highlights": _as_json(row["highlights"], []) if has_score else [],
-        "flags": _as_json(row["flags"], []) if has_score else [],
-        "domain_markers": list(row["domain_markers"]),
-        # score is kept in the payload but must never be rendered (see static/index.html).
-        "score": row["score"] if has_score else None,
-        "blend": round(blend, 4),
-        # every inferred field is labeled so a recruiter never mistakes it for fact.
+        "highlights": evidence.highlights,
+        "flags": evidence.flags,
+        "highlight_source": evidence.highlight_source,
+        "evidence": {
+            "highlights": evidence.highlights,
+            "flags": evidence.flags,
+            "highlight_source": evidence.highlight_source,
+        },
+        "domain_markers": list(row["domain_markers"] or []),
+        # score is kept in the payload but must never be rendered.
+        "score": int(score) if score is not None else None,
+        "blend": round(ranked.blend, 4),
+        "band": ranked.band,
         "inferred": {
             "employer": row["employer"] is not None,
             "est_experience_years": True,
             "linkedin_url": False,
-            "emails": False,  # guesses excluded upstream; everything here is observed
+            "emails": False,
         },
     }
 
 
-async def _vector_fallback(
-    conn,
-    query: str,
-    qvec: str,
-    parser: str,
-    parsed: ParsedFilter,
-    window: Window,
-    policy: RankPolicy,
-    *,
-    has_contact: bool,
-) -> SearchResult:
-    where_count, count_params, _ = _build_filters(parsed, start=1, has_contact=has_contact)
-    total_matched = int(
-        await conn.fetchval(
-            f"""
-            select count(*)
-            from candidates c
-            join candidate_signals s on s.candidate_id = c.id
-            where c.merged_into is null and {where_count}
-            """,
-            *count_params,
-        )
-        or 0
-    )
+def _as_json(value: Any, default):
+    if value is None:
+        return default
+    return json.loads(value) if isinstance(value, str) else value
 
-    rows = []
-    if window.limit:
-        # The vector distance remains the leading ORDER BY expression so a
-        # pgvector KNN index can serve it. Candidate id makes exact distance
-        # ties deterministic for offset pagination; retain it even if a future
-        # EXPLAIN shows an incremental sort above the index scan.
-        where_main, filter_params, _ = _build_filters(
-            parsed, start=4, has_contact=has_contact
-        )
-        rows = await conn.fetch(
-            f"""
-            select c.id, c.login, c.name, c.source, c.location_raw,
-                   c.linkedin_url, c.linkedin_source,
-                   s.employer, s.employer_source, s.employer_domain, s.primary_language,
-                   s.est_experience_years, s.experience_confidence, s.last_push_at,
-                   s.top_repos, s.domain_markers, s.topics,
-                   null::smallint as score, '[]'::jsonb as highlights,
-                   '[]'::jsonb as flags, em.emails,
-                   (1 - (c.embedding <=> $1::halfvec)) as cos_sim
-            from candidates c
-            join candidate_signals s on s.candidate_id = c.id
-            {EMAILS_LATERAL}
-            where c.merged_into is null and {where_main}
-            order by c.embedding <=> $1::halfvec, c.id
-            limit $2 offset $3
-            """,
-            qvec,
-            window.limit,
-            window.offset,
-            *filter_params,
-        )
 
-    page = page_presorted(
-        [
-            PoolRow(key=int(row["id"]), score=None, cos_sim=float(row["cos_sim"] or 0.0))
-            for row in rows
-        ],
-        total_matched=total_matched,
-        window=window,
-        policy=policy,
-    )
-    ranked_by_id = {item.key: item for item in page.items}
-    results = [
-        _payload(
-            row,
-            ranked_by_id[int(row["id"])].rank,
-            ranked_by_id[int(row["id"])].blend,
-            has_score=False,
-        )
-        for row in rows
-    ]
-    return _result(
+def _version_tuple(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for chunk in version.split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+async def probe_pgvector_version(conn) -> str | None:
+    global _pgvector_version, _pgvector_probed
+    if _pgvector_probed:
+        return _pgvector_version
+    row = await conn.fetchrow("select extversion from pg_extension where extname = 'vector'")
+    _pgvector_version = row["extversion"] if row else None
+    _pgvector_probed = True
+    return _pgvector_version
+
+
+@asynccontextmanager
+async def _snapshot(conn):
+    """Repeatable-read snapshot when we own the connection; a passthrough when
+    the caller already has a transaction open (tests). Isolation cannot change
+    mid-transaction, so SET LOCAL still applies to the outer transaction."""
+    if conn.is_in_transaction():
+        yield
+        return
+    async with conn.transaction(isolation="repeatable_read", readonly=True):
+        yield
+
+
+async def _ensure_pgvector_loaded(conn) -> None:
+    """Load pgvector's .so so ``hnsw.*`` GUCs exist in this session.
+
+    Those GUCs are registered when the library loads, not at connect.
+    ``set_config('hnsw.ef_search', ...)`` before that creates a dummy custom
+    GUC that HNSW never reads — and ``SHOW`` raises UndefinedObjectError.
+    Touching a vector type forces the load.
+    """
+    await conn.execute("select null::vector")
+
+
+async def apply_hnsw_gucs(conn, vector_k: int) -> str | None:
+    """SET LOCAL so a pooled connection cannot leak ef_search to the next request."""
+    version = await probe_pgvector_version(conn)
+    try:
+        await _ensure_pgvector_loaded(conn)
+    except asyncpg.UndefinedObjectError:
+        return version
+    try:
+        if version and _version_tuple(version) >= (0, 8):
+            await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true)")
+            await conn.execute(
+                "select set_config('hnsw.ef_search', $1, true)", str(settings.hnsw_ef_search)
+            )
+        else:
+            # Pre-0.8 has no iterative scan; ef_search must cover the arm LIMIT or
+            # post-filtering yields a handful of rows regardless of LIMIT.
+            ef = max(settings.hnsw_ef_search, int(vector_k * 1.6), 40)
+            await conn.execute("select set_config('hnsw.ef_search', $1, true)", str(ef))
+    except asyncpg.UndefinedObjectError:
+        log.warning("search.hnsw_guc_missing", pgvector_version=version)
+    return version
+
+
+def _build_evidence_for(row: Any, query: str, policy: RankPolicy) -> Evidence:
+    score = row.get("score")
+    score_int = int(score) if score is not None else None
+    return build_evidence(
+        row,
         query=query,
-        parser=parser,
-        archetype_id=None,
-        archetype_label=None,
-        page=page,
-        message="No archetype matched, so this is a pure semantic search. Name a role "
-        "(e.g. 'senior backend', 'ML platform') to get scored, evidence-backed results.",
-        results=results,
-        policy=policy,
+        stored_highlights=row.get("highlights"),
+        stored_flags=row.get("flags"),
+        score=score_int,
+        display_floor=policy.display_floor,
+        min_evidence=policy.min_evidence,
     )
+
+
+class _StageClock:
+    """Per-stage elapsed ms so a latency regression is attributable."""
+
+    def __init__(self) -> None:
+        self.marks: dict[str, float] = {}
+        self._t = time.perf_counter()
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.marks[name] = round((now - self._t) * 1000.0, 2)
+        self._t = now
 
 
 async def run_search(
@@ -343,88 +422,251 @@ async def run_search(
     use_llm: bool | None = None,
     has_contact: bool = False,
     chat: Chat | None = None,
+    embed: EmbedFn | None = None,
+    rerank_scorer=None,
 ) -> SearchResult:
-    policy = _policy()
-    window = clamp_window(offset, limit or 0, policy)
+    clock = _StageClock()
+    arms = parse_arms()
+    # parse_query writes to query_parse_cache. It must stay outside the
+    # read-only snapshot transaction below.
     parsed, parser = await parse_query(conn, query, use_llm=use_llm, chat=chat)
-    qvec = to_halfvec_literal(embed_query(parsed.free_text or query))
-
+    clock.mark("parse")
+    embed_fn = embed or embed_query
+    text = parsed.free_text or query
+    qvec = to_halfvec_literal(embed_fn(text))
+    tsq = build_websearch_or(text)
+    clock.mark("embed")
     arch = load_archetypes().get(parsed.archetype_id) if parsed.archetype_id else None
     if arch is None:
-        return await _vector_fallback(
-            conn,
-            query,
-            qvec,
-            parser,
-            parsed,
-            window,
-            policy,
-            has_contact=has_contact,
+        arms = tuple(a for a in arms if a != "score") or ("vector",)
+    live_arms = []
+    if "vector" in arms:
+        live_arms.append("vector")
+    if "lexical" in arms and tsq:
+        live_arms.append("lexical")
+    if "score" in arms and arch is not None:
+        live_arms.append("score")
+    if not live_arms:
+        live_arms = ["vector"]
+    policy = _policy(n_arms=len(live_arms))
+    window = clamp_window(offset, limit or 0, policy)
+
+    vector_ids: list[int] = []
+    lexical_ids: list[int] = []
+    score_ids: list[int] = []
+    enrich_rows: list[Any] = []
+    n_matched = 0
+    n_lexical = 0
+    n_scored = 0
+    pg_ver: str | None = None
+
+    async with _snapshot(conn):
+        pg_ver = await apply_hnsw_gucs(conn, settings.vector_k)
+        clock.mark("gucs")
+        params = Params()
+        where = _filter_clauses(parsed, params, has_contact=has_contact)
+        arch_ph = params.add(arch.id) if arch is not None else None
+        arch_join = (
+            f"left join archetype_scores a on a.candidate_id = c.id "
+            f"and a.archetype_id = {arch_ph}"
+            if arch_ph
+            else "left join archetype_scores a on false"
+        )
+        count_sql = f"""
+            select
+              count(*)::int as n_matched,
+              count(*) filter (where s.search_tsv is not null)::int as n_lexical_indexed,
+              count(*) filter (where a.score is not null)::int as n_scored
+            from candidates c
+            join candidate_signals s on s.candidate_id = c.id
+            {arch_join}
+            where {where}
+        """
+        counts = await conn.fetchrow(count_sql, *params.values)
+        n_matched = int(counts["n_matched"] or 0) if counts else 0
+        n_lexical = int(counts["n_lexical_indexed"] or 0) if counts else 0
+        n_scored = int(counts["n_scored"] or 0) if counts else 0
+        clock.mark("count")
+
+        if n_matched and "vector" in live_arms:
+            vparams = Params()
+            vwhere = _filter_clauses(parsed, vparams, has_contact=has_contact)
+            qph = vparams.add(qvec)
+            lim = vparams.add(settings.vector_k)
+            vector_ids = [
+                int(r["id"])
+                for r in await conn.fetch(
+                    f"""
+                    select c.id
+                    from candidates c
+                    join candidate_signals s on s.candidate_id = c.id
+                    where {vwhere}
+                    order by c.embedding <=> {qph}::halfvec, c.id
+                    limit {lim}
+                    """,
+                    *vparams.values,
+                )
+            ]
+        clock.mark("vector")
+
+        if n_matched and "lexical" in live_arms and tsq:
+            lparams = Params()
+            lwhere = _filter_clauses(parsed, lparams, has_contact=has_contact)
+            tph = lparams.add(tsq)
+            lim = lparams.add(settings.lexical_k)
+            lexical_ids = [
+                int(r["id"])
+                for r in await conn.fetch(
+                    f"""
+                    select c.id
+                    from candidates c
+                    join candidate_signals s on s.candidate_id = c.id
+                    where {lwhere}
+                      and s.search_tsv @@ websearch_to_tsquery('{TS_CONFIG}'::regconfig, {tph})
+                    order by ts_rank_cd('{RANK_WEIGHTS}'::real[], s.search_tsv,
+                              websearch_to_tsquery('{TS_CONFIG}'::regconfig, {tph}),
+                              {RANK_NORMALIZATION}) desc, c.id
+                    limit {lim}
+                    """,
+                    *lparams.values,
+                )
+            ]
+        clock.mark("lexical")
+
+        if n_matched and "score" in live_arms and arch is not None:
+            sparams = Params()
+            swhere = _filter_clauses(parsed, sparams, has_contact=has_contact)
+            aph = sparams.add(arch.id)
+            floor_ph = sparams.add(policy.display_floor)
+            lim = sparams.add(settings.score_k)
+            score_ids = [
+                int(r["id"])
+                for r in await conn.fetch(
+                    f"""
+                    select c.id
+                    from candidates c
+                    join candidate_signals s on s.candidate_id = c.id
+                    join archetype_scores a
+                      on a.candidate_id = c.id and a.archetype_id = {aph}
+                    where {swhere} and a.score >= {floor_ph}::smallint
+                    order by a.score desc, c.id
+                    limit {lim}
+                    """,
+                    *sparams.values,
+                )
+            ]
+        clock.mark("score")
+
+        pool_ids = list(dict.fromkeys([*vector_ids, *lexical_ids, *score_ids]))
+        if pool_ids:
+            eparams = Params()
+            ids_ph = eparams.add(pool_ids)
+            qph = eparams.add(qvec)
+            aph = eparams.add(arch.id) if arch is not None else None
+            arch_join = (
+                f"left join archetype_scores a on a.candidate_id = c.id "
+                f"and a.archetype_id = {aph}"
+                if aph
+                else "left join archetype_scores a on false"
+            )
+            enrich_rows = await conn.fetch(
+                f"""
+                select c.id, c.embed_blob,
+                       (1 - (c.embedding <=> {qph}::halfvec)) as cos_sim,
+                       a.score, a.highlights, a.flags,
+                       s.employer, s.employer_source, s.employer_domain, s.title,
+                       s.primary_language, s.non_fork_repo_count, s.total_stars,
+                       s.max_repo_stars, s.commits_last_year, s.prs_last_year,
+                       s.last_push_at, s.est_experience_years, s.experience_confidence,
+                       s.domain_markers, s.topics, s.top_repos, s.evidence_kind,
+                       s.tenure_months, s.activity_at
+                from candidates c
+                join candidate_signals s on s.candidate_id = c.id
+                {arch_join}
+                where c.id = any({ids_ph}::bigint[])
+                """,
+                *eparams.values,
+            )
+        clock.mark("enrich")
+
+    if (
+        "lexical" in parse_arms()
+        and n_matched
+        and n_lexical == 0
+        and tsq is not None
+    ):
+        log.warning("search.lexical_arm_empty", matched=n_matched)
+
+    evidence_by_id: dict[int, Evidence] = {}
+    enrich_by_id: dict[int, PoolRow] = {}
+    raw_by_id: dict[int, Any] = {}
+    for row in enrich_rows:
+        cid = int(row["id"])
+        raw_by_id[cid] = row
+        ev = _build_evidence_for(row, text, policy)
+        evidence_by_id[cid] = ev
+        score = int(row["score"]) if row["score"] is not None else None
+        enrich_by_id[cid] = PoolRow(
+            key=cid,
+            score=score,
+            cos_sim=float(row["cos_sim"] or 0.0),
+            highlight_count=ev.highlight_count,
         )
 
-    # Count query: $1 = archetype, $2 = floor, filter params start at $3.
-    # total_matched is the honest eligible set: filters + display floor.
-    where_count, filter_params, _ = _build_filters(parsed, start=3, has_contact=has_contact)
-    total_matched = int(
-        await conn.fetchval(
-        f"""
-        select count(*) from candidate_signals s
-        join candidates c on c.id = s.candidate_id
-        join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-        where c.merged_into is null and a.score >= $2::smallint and {where_count}
-        """,
-        arch.id,
-        policy.display_floor,
-        *filter_params,
-        )
-        or 0
+    pool = build_pool(
+        vector_ids=vector_ids,
+        lexical_ids=lexical_ids,
+        score_ids=score_ids,
+        enrich=enrich_by_id,
+        rrf_k=policy.rrf_k,
     )
 
-    # Narrow rank query: no lateral email aggregation or JSON payload hydration.
-    # The retrieval cutoff is by archetype score; rank.py documents that the
-    # final blend is therefore an approximation within this bounded pool.
-    where_main, filter_params, qvec_i = _build_filters(
-        parsed, start=4, has_contact=has_contact
-    )
-    rows = await conn.fetch(
-        f"""
-        with pool as (
-            select c.id, a.score
-            from candidate_signals s
-            join candidates c on c.id = s.candidate_id
-            join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $1
-            where c.merged_into is null and a.score >= $2::smallint and {where_main}
-            order by a.score desc, a.candidate_id
-            limit $3
+    rerank_reason = "disabled"
+    reranked = False
+    if settings.rerank_enabled and needs_rerank(window, policy) and pool:
+        from ..rerank.document import build_document
+        from ..rerank.runner import rerank as run_rerank
+
+        retrieval_head = sorted(
+            pool,
+            key=lambda row: sort_key(
+                blend_one(
+                    row.score,
+                    row.cos_sim,
+                    policy.weights,
+                    rrf=row.rrf,
+                    unscored_score=policy.unscored_score,
+                    rrf_k=policy.rrf_k,
+                    n_arms=policy.n_arms,
+                ),
+                row.key,
+                band=1,
+                cos_sim=row.cos_sim,
+            ),
+        )[: policy.rerank_depth]
+        documents = {
+            row.key: build_document(
+                raw_by_id[row.key], max_chars=settings.rerank_doc_chars
+            )
+            for row in retrieval_head
+            if row.key in raw_by_id
+        }
+        outcome = await run_rerank(
+            text, documents, scorer=rerank_scorer, ids=list(documents)
         )
-        select p.id, p.score,
-               (1 - (c.embedding <=> ${qvec_i}::halfvec)) as cos_sim
-        from pool p
-        join candidates c on c.id = p.id
-        order by p.score desc, p.id
-        """,
-        arch.id,
-        policy.display_floor,
-        policy.pool_size,
-        *filter_params,
-        qvec,
-    )
+        rerank_reason = outcome.reason
+        if outcome.reason == "ok" and outcome.logits:
+            pool = apply_ce_scores(pool, outcome.logits, policy=policy)
+            reranked = True
+    elif settings.rerank_enabled and not needs_rerank(window, policy):
+        rerank_reason = "below_head"
 
     page = rank_page(
-        [
-            PoolRow(
-                key=int(row["id"]),
-                score=int(row["score"]),
-                cos_sim=float(row["cos_sim"] or 0.0),
-            )
-            for row in rows
-        ],
-        total_matched=total_matched,
-        window=window,
-        policy=policy,
+        pool, total_matched=n_matched, window=window, policy=policy
     )
+    clock.mark("rank")
 
-    hydrated = []
+    hydrated: list[Any] = []
     if page.items:
         hydrated = await conn.fetch(
             f"""
@@ -432,38 +674,74 @@ async def run_search(
                    c.linkedin_url, c.linkedin_source,
                    s.employer, s.employer_source, s.employer_domain, s.primary_language,
                    s.est_experience_years, s.experience_confidence, s.last_push_at,
-                   s.top_repos, s.domain_markers, s.topics,
+                   s.top_repos, s.domain_markers, s.topics, s.evidence_kind,
+                   s.title, s.tenure_months,
                    a.score, a.highlights, a.flags, em.emails
             from candidates c
             join candidate_signals s on s.candidate_id = c.id
-            join archetype_scores a on a.candidate_id = c.id and a.archetype_id = $2
+            left join archetype_scores a
+                   on a.candidate_id = c.id
+                  and ($2::text is not null and a.archetype_id = $2)
             {EMAILS_LATERAL}
             where c.id = any($1::bigint[])
             """,
             [item.key for item in page.items],
-            arch.id,
+            arch.id if arch is not None else None,
         )
 
     hydrated_by_id = {int(row["id"]): row for row in hydrated}
-    results = [
-        _payload(hydrated_by_id[item.key], item.rank, item.blend, has_score=True)
-        for item in page.items
-        if item.key in hydrated_by_id
-    ]
+    results = []
+    for item in page.items:
+        row = hydrated_by_id.get(item.key)
+        if row is None:
+            continue
+        ev = evidence_by_id.get(item.key) or _build_evidence_for(row, text, policy)
+        has_score = row["score"] is not None
+        results.append(_payload(row, item, ev, has_score=has_score))
+    clock.mark("hydrate")
+
+    vector_set = set(vector_ids)
+    lexical_set = set(lexical_ids)
+    top_keys = [item.key for item in page.items[:10]]
+    lex_only = lexical_set - vector_set
+    diagnostics = {
+        "vector_hits": len(vector_ids),
+        "lexical_hits": len(lexical_ids),
+        "overlap": len(vector_set & lexical_set),
+        "empty_lexical_query": tsq is None,
+        "rrf_only_from_lexical_at_10": sum(1 for key in top_keys if key in lex_only),
+        "unscored_in_top_10": sum(1 for hit in results[:10] if hit.get("score") is None),
+        "timings_ms": clock.marks,
+        "arms": list(live_arms),
+    }
+
     message = widen_message(
         total_matched=page.total_matched,
         paginable=page.paginable,
-        archetype_label=arch.label,
+        archetype_label=arch.label if arch is not None else None,
         policy=policy,
+        scored_matched=n_scored,
+        fused=len(pool),
     )
+    if arch is None and page.total_matched:
+        message = (
+            "No archetype matched, so this is hybrid semantic + keyword search. "
+            "Name a role (e.g. 'senior backend', 'ML platform') to use precomputed "
+            "archetype scores as a ranking signal. " + (message or "")
+        )
 
     return _result(
         query=query,
         parser=parser,
-        archetype_id=arch.id,
-        archetype_label=arch.label,
+        archetype_id=arch.id if arch is not None else None,
+        archetype_label=arch.label if arch is not None else None,
         page=page,
-        message=message,
+        message=message.strip() or None,
         results=results,
         policy=policy,
+        reranked=reranked,
+        rerank_reason=rerank_reason,
+        lexical_indexed=n_lexical,
+        pgvector_version=pg_ver,
+        diagnostics=diagnostics,
     )

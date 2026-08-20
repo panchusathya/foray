@@ -33,6 +33,24 @@ x-foray-env: &foray_env
   APOLLO_API_KEY: ${APOLLO_API_KEY:-}
   FORAY_DISPLAY_FLOOR: ${FORAY_DISPLAY_FLOOR:-20}
   FORAY_MAX_PAGINABLE: ${FORAY_MAX_PAGINABLE:-1000}
+  FORAY_RETRIEVAL_ARMS: ${FORAY_RETRIEVAL_ARMS:-vector,lexical}
+  FORAY_VECTOR_K: ${FORAY_VECTOR_K:-500}
+  FORAY_LEXICAL_K: ${FORAY_LEXICAL_K:-500}
+  FORAY_RRF_K: ${FORAY_RRF_K:-60}
+  FORAY_W_RRF: ${FORAY_W_RRF:-0.5}
+  FORAY_W_SCORE: ${FORAY_W_SCORE:-0.3}
+  FORAY_W_VECTOR: ${FORAY_W_VECTOR:-0.2}
+  # MiniLM + unscored=20 are a pair. Raising unscored without the CE lets
+  # ungated rows flood page 1; enabling the CE with unscored=0 wastes it on a
+  # pool where those rows still sink. The image bakes the weights.
+  FORAY_UNSCORED_SCORE: ${FORAY_UNSCORED_SCORE:-20}
+  FORAY_MIN_EVIDENCE: ${FORAY_MIN_EVIDENCE:-2}
+  FORAY_HNSW_EF_SEARCH: ${FORAY_HNSW_EF_SEARCH:-100}
+  FORAY_RERANK_ENABLED: ${FORAY_RERANK_ENABLED:-true}
+  FORAY_RERANK_DEPTH: ${FORAY_RERANK_DEPTH:-48}
+  OMP_NUM_THREADS: "2"
+  MKL_NUM_THREADS: "2"
+  OPENBLAS_NUM_THREADS: "2"
   FORAY_ENRICH_REPOS: ${FORAY_ENRICH_REPOS:-18}
   FORAY_ENRICH_BATCH_SIZE: ${FORAY_ENRICH_BATCH_SIZE:-16}
   FORAY_SCORING_CONCURRENCY: ${FORAY_SCORING_CONCURRENCY:-10}
@@ -159,8 +177,11 @@ services:
     build:
       context: packages/foray
       dockerfile: Dockerfile
+      args:
+        FORAY_BAKE_RERANKER: "true"
     restart: unless-stopped
     logging: *default_logging
+    cpus: 1.5
     environment: *foray_env
     depends_on:
       db:

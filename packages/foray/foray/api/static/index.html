@@ -50,7 +50,7 @@
   <header>
     <div class="wrap">
       <h1>for<span>ay</span></h1>
-      <div class="sub">GitHub-sourced engineers, ranked by archetype fit. No score shown &mdash; rank and evidence only.</div>
+      <div class="sub">GitHub-sourced engineers, ranked by hybrid retrieval and evidence. No score shown &mdash; rank and evidence only.</div>
     </div>
   </header>
   <div class="wrap">
@@ -99,7 +99,11 @@
         ? `~${Number(c.est_experience_years).toFixed(1)}y experience (est., ${c.experience_confidence})`
         : '';
 
-      const hl = (c.highlights || []).map((h) => `<li>${escapeHtml(h)}</li>`).join('');
+      const hlSource = c.evidence?.highlights || c.highlights || [];
+      const hl = hlSource.map((h) => `<li>${escapeHtml(h)}</li>`).join('');
+      const provenance = c.highlight_source || c.evidence?.highlight_source
+        ? `<span class="chip">${escapeHtml(c.highlight_source || c.evidence.highlight_source)}</span>`
+        : '';
       const markerChips = (c.domain_markers || []).map((m) => `<span class="chip">${escapeHtml(m)}</span>`).join('');
       const flagChips = (c.flags || []).map((fl) => `<span class="chip flag">${escapeHtml(fl)}</span>`).join('');
       const repos = (c.top_repos || []).slice(0, 3)
@@ -113,7 +117,7 @@
         <div class="meta">${emp} · ${exp} · ${escapeHtml(c.primary_language || '')} · ${escapeHtml(c.location || '')}</div>
         <ul class="hl">${hl}</ul>
         ${repos ? `<div class="repos">${repos}</div>` : ''}
-        <div class="chips">${markerChips}${flagChips}</div>
+        <div class="chips">${provenance}${markerChips}${flagChips}</div>
         <div class="links">
           <a href="${c.github_url}" target="_blank" rel="noopener">GitHub</a>${linkedin}
         </div>`;

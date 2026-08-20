@@ -4,9 +4,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import asyncpg
+import pytest
 
 from foray.api.parse import ParsedFilter, heuristic_parse
-from foray.api.search import _build_filters, run_search
+from foray.api.search import Params, _filter_clauses, run_search
 from foray.config import settings
 from foray.db import _asyncpg_dsn
 from tests.dbutil import requires_db, requires_scored_db
@@ -22,12 +23,23 @@ def test_heuristic_parse_picks_archetype_and_extracts_filters():
     assert parsed.experience_min == 3 and parsed.experience_max == 8
 
 
+def test_heuristic_parse_picks_vlm_vocabulary():
+    parsed = heuristic_parse("founding ML engineer who has trained LLMs and VLMs")
+    assert parsed.archetype_id == "founding_ml"
+    vlm = heuristic_parse("multimodal VLM engineer, vision-language models")
+    assert vlm.archetype_id == "founding_ml"
+    research = heuristic_parse("VLM research scientist")
+    assert research.archetype_id == "ml_research"
+
+
 def test_build_filters_placeholder_numbering():
     parsed = ParsedFilter(metros=["SF"], languages=["go"], experience_min=5)
-    where, params, next_i = _build_filters(parsed, start=3)
-    assert "$3" in where and "$4" in where and "$5" in where
-    assert next_i == 6
-    assert len(params) == 3
+    params = Params()
+    where = _filter_clauses(parsed, params)
+    assert params.add is not None
+    assert len(params.values) == 3
+    assert "$1" in where and "$2" in where and "$3" in where
+    assert where.index("$1") < where.index("$2") < where.index("$3")
 
 
 def test_frontend_never_renders_score():
@@ -50,9 +62,11 @@ async def test_search_returns_scored_results_above_floor():
         assert result.returned == len(result.results)
         assert result.returned <= 40
         for r in result.results:
-            assert r["score"] >= result.display_floor  # nothing below the floor
-            assert r["highlights"]  # precomputed, nothing to wait for
-            assert r["github_url"] == f"https://github.com/{r['login']}"
+            if r["score"] is not None:
+                assert r["score"] >= result.display_floor  # scored rows stay above the floor
+            assert r["highlights"]  # evidence templates or stored phrases
+            if r["source"] != "linkedin":
+                assert r["github_url"] == f"https://github.com/{r['login']}"
             assert r["inferred"]["est_experience_years"] is True
     finally:
         await conn.close()
@@ -66,8 +80,11 @@ async def test_never_pads_below_floor():
         result = await run_search(
             conn, "senior backend engineer with 40-60 years experience", 40
         )
-        # No matter what, we never return anyone below the display floor.
-        assert all(r["score"] >= result.display_floor for r in result.results)
+        # Scored rows never fall below the display floor. Unscored rows may
+        # appear (score is None) once retrieval is no longer gated on score.
+        assert all(
+            r["score"] is None or r["score"] >= result.display_floor for r in result.results
+        )
         if result.total_matched < settings.min_results_before_widen:
             assert "Widen" in (result.message or "")
     finally:
@@ -90,11 +107,6 @@ async def test_vector_fallback_when_no_archetype():
 @requires_scored_db
 async def test_no_external_api_in_request_path(monkeypatch):
     import httpx
-
-    from foray.embed.model import embed_query
-
-    # Warm the local embedding model BEFORE blocking httpx (model load is local).
-    embed_query("warm up")
 
     def boom(*args, **kwargs):
         raise RuntimeError("no external API calls allowed in the request path")
@@ -190,3 +202,239 @@ async def test_pagination_is_stable_and_uses_absolute_ranks(monkeypatch):
     finally:
         await transaction.rollback()
         await conn.close()
+
+
+@requires_db
+async def test_lexical_arm_finds_a_term_the_vector_arm_misses(monkeypatch):
+    """Acceptance: a rare literal in search_tsv surfaces on page 1 even when
+    decoys have a closer embedding. If this fails, the lexical arm is dead."""
+    import foray.api.search as search_module
+    from foray.embed.hashing import hashing_embed
+    from foray.search_doc import TS_CONFIG
+
+    far = hashing_embed("unrelated decoy document about rust web servers")
+    close = hashing_embed("founding ml engineer trained models")
+    monkeypatch.setattr(search_module, "embed_query", lambda _text: close)
+
+    prefix = f"lex-{uuid4().hex}-"
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        decoy_vec = "[" + ",".join(f"{x:.6f}" for x in close) + "]"
+        rare_vec = "[" + ",".join(f"{x:.6f}" for x in far) + "]"
+        rare_id = await conn.fetchval(
+            """
+            insert into candidates (login, name, embedding, embedding_model)
+            values ($1, 'Rare VLLM', $2::halfvec, 'lex-test')
+            returning id
+            """,
+            prefix + "rare",
+            rare_vec,
+        )
+        decoy_ids = await conn.fetch(
+            """
+            insert into candidates (login, name, embedding, embedding_model)
+            select $1 || n::text, 'Decoy ' || n::text, $2::halfvec, 'lex-test'
+            from generate_series(1, 8) n
+            returning id
+            """,
+            prefix + "decoy",
+            decoy_vec,
+        )
+        await conn.execute(
+            """
+            insert into candidate_signals (
+                candidate_id, primary_language, est_experience_years,
+                activity_at, last_push_at, domain_markers
+            )
+            select $1, 'python', 6, now(), now(), array['ml']::text[]
+            """,
+            rare_id,
+        )
+        await conn.execute(
+            f"""
+            update candidate_signals
+               set search_tsv = to_tsvector('{TS_CONFIG}'::regconfig, 'vllm inference runtime')
+             where candidate_id = $1
+            """,
+            rare_id,
+        )
+        await conn.execute(
+            """
+            insert into candidate_signals (
+                candidate_id, primary_language, est_experience_years,
+                activity_at, last_push_at, domain_markers
+            )
+            select id, 'python', 6, now(), now(), array['ml']::text[]
+            from unnest($1::bigint[]) id
+            """,
+            [int(r["id"]) for r in decoy_ids],
+        )
+        result = await run_search(
+            conn, "founding ML engineer vllm", 10, use_llm=False
+        )
+        logins = [row["login"] for row in result.results]
+        assert prefix + "rare" in logins
+        assert result.results[0]["login"] == prefix + "rare" or prefix + "rare" in logins[:3]
+    finally:
+        await transaction.rollback()
+        await conn.close()
+
+
+@requires_db
+async def test_search_never_raises_on_adversarial_query():
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    try:
+        for raw in ("&|!:*", "(unbalanced", '""', "a" * 4000, "🚀", ""):
+            if not raw:
+                continue
+            result = await run_search(conn, raw, 5, use_llm=False)
+            assert result.returned >= 0
+    finally:
+        await conn.close()
+
+
+@requires_db
+async def test_ef_search_does_not_leak_from_the_pool():
+    """SET LOCAL on a pooled connection must not survive the request.
+
+    pgvector registers ``hnsw.ef_search`` when its library loads, not at
+    connect. Touch a vector type first; skip if this build has no GUC.
+    """
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    try:
+        try:
+            await conn.execute("select null::vector")
+            before = await conn.fetchval("show hnsw.ef_search")
+        except asyncpg.UndefinedObjectError:
+            pytest.skip("hnsw.ef_search is not a GUC in this pgvector build")
+        await run_search(conn, "backend engineer rust", 5, use_llm=False)
+        after = await conn.fetchval("show hnsw.ef_search")
+        assert after == before
+    finally:
+        await conn.close()
+
+
+@requires_db
+async def test_search_tsv_is_written_by_derive():
+    from foray.enrich.derive import derive_signals
+
+    prefix = f"tsv-{uuid4().hex}-"
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        cid = await conn.fetchval(
+            """
+            insert into candidates (login, name, source)
+            values ($1, 'Tsv Person', 'github')
+            returning id
+            """,
+            prefix,
+        )
+        node = {
+            "name": "Tsv Person",
+            "login": prefix,
+            "bio": "vllm inference",
+            "createdAt": "2018-01-01T00:00:00Z",
+            "repositories": {"nodes": []},
+            "contributionsCollection": {
+                "totalCommitContributions": 1,
+                "totalPullRequestContributions": 0,
+                "restrictedContributionsCount": 0,
+            },
+        }
+        await conn.execute(
+            """
+            insert into raw_profiles (candidate_id, source, login, data)
+            values ($1, 'github', $2, $3::jsonb)
+            """,
+            cid,
+            prefix,
+            __import__("json").dumps(node),
+        )
+        from foray.enrich.derive import _upsert_signals
+        from foray.search_doc import UPDATE_SEARCH_TSV_SQL
+
+        signals = derive_signals(node)
+        await _upsert_signals(conn, cid, node, signals)
+        await conn.execute(UPDATE_SEARCH_TSV_SQL, [cid])
+        tsv = await conn.fetchval(
+            "select search_tsv is not null from candidate_signals where candidate_id = $1",
+            cid,
+        )
+        assert tsv is True
+    finally:
+        await transaction.rollback()
+        await conn.close()
+
+
+@requires_db
+async def test_vector_arm_uses_hnsw_index():
+    """If this fails, read the plan; do not delete the test.
+
+    Silently losing the HNSW scan to a sequential scan is the classic pgvector
+    regression — it does not show up as a wrong answer, and a p95 number will
+    not localise it. ``enable_seqscan=off`` makes the assertion about index
+    usability rather than planner cost estimates on a tiny fixture table.
+    """
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    try:
+        exists = await conn.fetchval(
+            "select 1 from pg_indexes where indexname = 'ix_candidates_embedding'"
+        )
+        if not exists:
+            pytest.skip("ix_candidates_embedding is created by embed/run.py, not migrate")
+        dummy = "[" + ",".join(["0"] * 384) + "]"
+        async with conn.transaction():
+            await conn.execute("select set_config('enable_seqscan', 'off', true)")
+            plan = await conn.fetch(
+                """
+                explain
+                select c.id
+                  from candidates c
+                  join candidate_signals s on s.candidate_id = c.id
+                 where c.merged_into is null and c.embedding is not null
+                 order by c.embedding <=> $1::halfvec, c.id
+                 limit 50
+                """,
+                dummy,
+            )
+        blob = "\n".join(row[0] for row in plan)
+        assert "ix_candidates_embedding" in blob
+    finally:
+        await conn.close()
+
+
+@requires_db
+async def test_lexical_arm_uses_gin_index():
+    """If this fails, read the plan; do not delete the test."""
+    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
+    try:
+        exists = await conn.fetchval(
+            "select 1 from pg_indexes where indexname = 'ix_signals_search_tsv'"
+        )
+        if not exists:
+            pytest.skip("ix_signals_search_tsv missing — run migrations/006")
+        async with conn.transaction():
+            await conn.execute("select set_config('enable_seqscan', 'off', true)")
+            plan = await conn.fetch(
+                """
+                explain
+                select c.id
+                  from candidates c
+                  join candidate_signals s on s.candidate_id = c.id
+                 where c.merged_into is null
+                   and c.embedding is not null
+                   and s.search_tsv @@ websearch_to_tsquery('english'::regconfig, 'vllm')
+                 order by ts_rank_cd('{0.1,0.2,0.4,1.0}'::real[], s.search_tsv,
+                           websearch_to_tsquery('english'::regconfig, 'vllm'), 32) desc, c.id
+                 limit 50
+                """
+            )
+        blob = "\n".join(row[0] for row in plan)
+        assert "ix_signals_search_tsv" in blob
+    finally:
+        await conn.close()
+

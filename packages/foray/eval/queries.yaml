@@ -1,0 +1,26 @@
+# Foray-native relevance queries. Ground truth is a rule over the synthetic
+# THEMES corpus (scripts/seed_synthetic.py), not a frozen id list.
+#
+# theme          the seed theme that must be present on the candidate
+# terms_any      at least one of these tokens in the bio/repo description
+
+queries:
+  - id: founding-ml-vlm
+    query: founding ML engineer who has trained LLMs and VLMs
+    relevant:
+      theme_any: [ml, gpu]
+      terms_any: [pytorch, transformers, vllm, triton, cuda]
+  - id: backend-go
+    query: senior backend engineer in Go
+    relevant:
+      theme_any: [backend]
+  - id: infra-k8s
+    query: infrastructure platform engineer with kubernetes and terraform
+    relevant:
+      theme_any: [infra]
+      terms_any: [kubernetes, terraform]
+  - id: gpu-cuda
+    query: gpu systems engineer writing cuda kernels
+    relevant:
+      theme_any: [gpu]
+      terms_any: [cuda, triton, vllm]

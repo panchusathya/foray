@@ -27,7 +27,7 @@ from ..models import (
 from ..security import signed_tracking_token
 from . import templates
 from .ai_directives import resolve_directives
-from .personalize import personalize
+from .personalize import personalize, sender_context
 from .replies import ReplyVerdict, classify_reply
 from .sender import OutboundEmail, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
@@ -67,6 +67,67 @@ def _add_delay(base: datetime, days: int, unit: str) -> datetime:
                 remaining -= 1
         return result
     return base + timedelta(days=max(days, 0))
+
+
+# How far after the FIRST email in a thread `suggested_date` lands. Three,
+# because the spec is "two clear business days": send on Monday and the date is
+# Thursday, leaving Tuesday and Wednesday free in between. Change this one
+# number to shift the whole convention.
+SUGGESTED_DATE_BUSINESS_DAYS = 3
+
+
+def _outreach_anchor(db: Session, enrollment_id: str | None, now: datetime) -> datetime:
+    """When outreach to this person actually started.
+
+    Deliberately the first send on the enrollment, not this step's send time. A
+    follow-up that recomputed from its own send date would propose a different
+    day than the email before it, so the thread would contradict itself -- ask
+    about Thursday on Monday, then about Tuesday on Thursday. Before the first
+    send there is nothing to anchor to, so `now` is the start.
+    """
+    if not enrollment_id:
+        return now
+    first = db.scalar(
+        select(Message.sent_at)
+        .where(
+            Message.enrollment_id == enrollment_id,
+            Message.direction == "outbound",
+            Message.status == "sent",
+            Message.sent_at.is_not(None),
+        )
+        .order_by(Message.sent_at.asc())
+        .limit(1)
+    )
+    return _aware(first) or now
+
+
+def suggested_date_context(
+    db: Session,
+    *,
+    enrollment: Enrollment | None,
+    step: SequenceStep | None,
+    now: datetime,
+) -> dict[str, str]:
+    """A date to propose, stable across every step of one conversation.
+
+    Rendered in the step's own timezone when it has one: the weekday is the
+    whole point of the variable, and a UTC date flips a day either side of
+    midnight for anyone outside Europe.
+    """
+    anchor = _outreach_anchor(db, getattr(enrollment, "id", None), now)
+    zone = UTC
+    name = getattr(step, "send_timezone", "") or ""
+    if name:
+        try:
+            zone = ZoneInfo(name)
+        except Exception:  # noqa: BLE001 - an unknown tz must not stop a send
+            zone = UTC
+    target = _add_delay(anchor.astimezone(zone), SUGGESTED_DATE_BUSINESS_DAYS, "business_days")
+    # Built by hand rather than strftime: %-d is glibc-only and %#d is Windows.
+    return {
+        "suggested_date": f"{target.strftime('%A')} {target.day} {target.strftime('%B')}",
+        "suggested_day": target.strftime("%A"),
+    }
 
 
 def schedule_step_at(step: SequenceStep, *, base: datetime) -> datetime:
@@ -175,6 +236,8 @@ def build_message_content(
     context: dict | None = None,
     enrollment: Enrollment | None = None,
     prior_fragments: dict[str, str] | None = None,
+    connection=None,
+    now: datetime | None = None,
 ) -> tuple[str, str, dict, dict[str, str]]:
     """Render one step. Raises ``LLMUnavailable`` when the step contains
     ``{{ai: ...}}`` directives and no model can resolve them — deliberately not
@@ -188,6 +251,19 @@ def build_message_content(
     project = db.get(Project, sequence.project_id) if sequence.project_id else None
     if context is None:
         context = personalize(candidate, project, use_llm=sequence.personalize)
+
+    # Merged on top of the personalize() result rather than baked into it: both
+    # depend on the sending mailbox and the thread, not on the candidate, and
+    # the personalize cache is keyed per candidate.
+    context = {
+        **context,
+        **sender_context(
+            connection, sequence, fallback_name=get_settings().outreach_from_name
+        ),
+        **suggested_date_context(
+            db, enrollment=enrollment, step=step, now=now or utcnow()
+        ),
+    }
 
     fragments = resolve_directives(
         db,
@@ -343,6 +419,11 @@ def send_step(
         _finish_enrollment(enrollment, "stopped", "suppressed")
         return message
 
+    # Resolved before rendering, not after: the signature is now a variable
+    # that depends on which mailbox is sending, so the body cannot be built
+    # until that is known.
+    resolved = resolved or resolve_sender(db, sequence, enrollment, now=now)
+
     context = enrollment.personalization or None
     try:
         subject, body, context, fragments = build_message_content(
@@ -353,6 +434,8 @@ def send_step(
             context=context,
             enrollment=enrollment,
             prior_fragments=(existing.ai_fragments or None) if existing else None,
+            connection=getattr(resolved, "connection", None),
+            now=now,
         )
     except LLMUnavailable as exc:
         # Fail closed: a step with {{ai: ...}} directives must never send the
@@ -418,7 +501,6 @@ def send_step(
         _finish_enrollment(enrollment, "stopped", "missing_email")
         return message
 
-    resolved = resolved or resolve_sender(db, sequence, enrollment, now=now)
     sender = resolved.sender
     token = signed_tracking_token(message.id)
     html_body = templates.add_tracking(

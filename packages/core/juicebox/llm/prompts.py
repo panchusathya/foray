@@ -280,6 +280,10 @@ SEQUENCE_TEMPLATE_VARIABLES = (
     "opening_line",
     "why_relevant",
     "subject_hint",
+    "sender_name",
+    "sender_first_name",
+    "suggested_date",
+    "suggested_day",
 )
 
 DRAFT_SEQUENCE_SYSTEM = f"""\
@@ -298,7 +302,13 @@ Style — plain, normal prose:
 - State the role and why you're writing in the first two sentences.
 - Never invent facts about the candidate, the company, or the role beyond the brief.
 - Every body ends exactly with "Best,
-Tushar" — no other sign-off, no other name, never a placeholder in the signature.
+{{ sender_name }}" — no other sign-off, and never a literal name. The sequence
+  sends from a pool of mailboxes, so the signature has to resolve to whoever is
+  actually sending; a hardcoded name signs half the outreach as the wrong person.
+- `suggested_date` and `suggested_day` are a date two clear business days after
+  the FIRST email in the thread, so every follow-up proposes the same day. Use
+  them when suggesting a time ("does {{ suggested_day }} work?") and never
+  invent a date of your own.
 
 Structure:
 - The first step has delay_days 0. Follow-ups wait 2-4 business days.

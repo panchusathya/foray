@@ -43,6 +43,44 @@ def base_context(candidate: Candidate, project: Project | None = None) -> dict[s
     }
 
 
+def _name_from_address(address: str) -> str:
+    """A usable human name from an email address, for a mailbox with no display
+    name set: "tushar.gupta@x.io" -> "Tushar Gupta"."""
+    local = (address or "").split("@")[0]
+    parts = [p for p in local.replace("_", ".").replace("-", ".").split(".") if p]
+    return " ".join(part.capitalize() for part in parts)
+
+
+def sender_context(
+    connection: Any | None, sequence: Any | None = None, *, fallback_name: str = ""
+) -> dict[str, str]:
+    """Who this email is from, for the signature.
+
+    A sequence used to sign off with one hardcoded name. Now that a sequence
+    rotates across a pool of mailboxes, the name in "Best, ..." has to follow
+    whichever mailbox actually sends, or half the outreach is signed by someone
+    who did not write it -- and a reply lands on a stranger.
+
+    Resolution order, most specific first: the mailbox's display name, a name
+    derived from its address, the sequence's from_name, then the configured
+    default. Never returns an empty sender_name: an empty signature is worse
+    than a slightly wrong one.
+    """
+    address = getattr(connection, "address", "") or ""
+    candidates = [
+        getattr(connection, "display_name", "") or "",
+        _name_from_address(address),
+        getattr(sequence, "from_name", "") or "",
+        fallback_name,
+    ]
+    name = next((c.strip() for c in candidates if c and c.strip()), "the team")
+    return {
+        "sender_name": name,
+        "sender_first_name": name.split(" ")[0],
+        "sender_email": address or (getattr(sequence, "from_email", "") or ""),
+    }
+
+
 def heuristic_fragments(candidate: Candidate, project: Project | None) -> dict[str, Any]:
     """Specific-but-safe copy built purely from profile fields."""
     doc = candidate_to_doc(candidate)

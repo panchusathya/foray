@@ -25,6 +25,13 @@ const VARIABLES = [
   ['opening_line', '{{ opening_line }}'],
   ['why_relevant', '{{ why_relevant }}'],
   ['subject_hint', '{{ subject_hint | A quick note }}'],
+  // Resolves to whichever mailbox actually sends this step, so one sequence
+  // rotating over a pool still signs each email correctly.
+  ['sender_name', '{{ sender_name }}'],
+  // Two clear business days after the FIRST email in the thread, so every
+  // follow-up proposes the same day rather than sliding forward.
+  ['suggested_day', '{{ suggested_day }}'],
+  ['suggested_date', '{{ suggested_date }}'],
   // Not a variable: an inline instruction the model resolves per candidate at
   // send time, with the earlier emails of the thread as context.
   ['ai: …', '{{ai: say why this role is a fit}}'],

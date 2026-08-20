@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..crm import add_note, edit_note, patch_candidate, set_tags, tags_for, track
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..enrich.email import guess_emails
+from ..enrich.normalize import clean_emails
 from ..models import (
     CRM_STATUSES,
     Candidate,
@@ -19,6 +20,7 @@ from ..models import (
     Enrollment,
     Message,
     ProjectCandidate,
+    new_id,
     record_event,
     utcnow,
 )
@@ -27,7 +29,7 @@ from ..outreach.history import (
     candidate_timeline,
     contact_rollup_subquery,
 )
-from ..repository import upsert_candidates
+from ..repository import owner_of_email, upsert_candidates
 from ..schemas import (
     BulkCandidateIn,
     BulkUpsertResult,
@@ -66,15 +68,54 @@ def create_candidate(
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> CandidateOut:
-    result = upsert_candidates(
-        db, org_id=principal.org_id, payloads=[payload.model_dump(exclude_none=True)]
-    )
+    """Create one person, refusing to duplicate an address.
+
+    The duplicate check lives here and not in ``/bulk``: an importer pushing
+    5000 rows wants them merged and counted, not rejected one at a time, and
+    ``upsert_candidates`` already dedupes those on ``(source, source_id)``.
+    A human typing one contact is the case where a second row for the same
+    address is a mistake worth interrupting -- and where "open the record you
+    already have" is a better outcome than an error.
+    """
+    fields = payload.model_dump(exclude_none=True)
+
+    for address in clean_emails(fields.get("emails")):
+        owner_id = owner_of_email(db, org_id=principal.org_id, email=address)
+        if owner_id:
+            owner = db.get(Candidate, owner_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                # A dict detail: ApiError surfaces it on `.detail`, so the UI
+                # can offer the existing record instead of a dead-end message.
+                detail={
+                    "message": f"{owner.full_name} already has {address}",
+                    "candidate_id": owner_id,
+                    "full_name": owner.full_name,
+                    "email": address,
+                },
+            )
+
+    # A hand-added person with no email and no linkedin falls back to a
+    # name-derived source_id in normalize_candidate, so two people called John
+    # Smith would silently become one row. Give them a real id instead.
+    if (
+        fields.get("source", "manual") == "manual"
+        and not fields.get("source_id")
+        and not fields.get("emails")
+        and not fields.get("linkedin_url")
+    ):
+        fields["source_id"] = new_id("man")
+
+    result = upsert_candidates(db, org_id=principal.org_id, payloads=[fields])
     if not result.ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Candidate could not be parsed"
         )
     candidate = db.get(Candidate, result.ids[0])
-    return CandidateOut.model_validate(candidate)
+    # Creating someone by hand is the most explicit CRM action there is.
+    track(candidate)
+    db.flush()
+    return _with_tags(db, candidate)
 
 
 @router.post("/bulk", response_model=BulkUpsertResult)

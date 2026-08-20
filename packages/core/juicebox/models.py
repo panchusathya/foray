@@ -330,6 +330,42 @@ class CandidateNote(Base, TimestampMixin):
     edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CandidateEmail(Base):
+    """One row per address a candidate owns: a projection of ``Candidate.emails``.
+
+    ``emails`` is a JSON list, so "who owns this address?" cannot be a join --
+    which is why ``build_address_index`` loads every in-scope candidate into a
+    Python dict. That is tolerable once per sync job; it is not tolerable
+    inside a single HTTP request, which is what the manual-add duplicate check
+    and discovery's already-known test both need.
+
+    ``UniqueConstraint(org_id, email)`` makes explicit the rule
+    ``build_address_index`` currently only implies by iteration order: one
+    address belongs to one person. Existing data can violate it -- nothing has
+    ever stopped the same address landing in two JSON lists -- so the backfill
+    is first-writer-wins and the loser keeps their JSON copy with no row here.
+    The projection is therefore a subset of the JSON, never a mirror of it.
+
+    Never a second source of truth: ``repository.sync_candidate_emails`` is the
+    only writer, and it is called wherever ``emails`` changes.
+    """
+
+    __tablename__ = "candidate_emails"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_candidate_email_org"),
+        Index("ix_candidate_emails_candidate", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cem"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    email: Mapped[str] = mapped_column(String(255))
+    # 0 is the primary address, matching Candidate.primary_email.
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class CandidateTag(Base, TimestampMixin):
     """A tag on a person.
 

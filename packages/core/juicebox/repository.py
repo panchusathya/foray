@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .enrich.normalize import NormalizedCandidate, build_doc_text, normalize_candidate
 from .enrich.taxonomy import normalize_seniority, normalize_title
 from .llm.embeddings import get_embedder
-from .models import Candidate, Education, Experience, utcnow
+from .models import Candidate, CandidateEmail, Education, Experience, utcnow
 from .search.index import invalidate
 
 
@@ -29,6 +29,64 @@ class UpsertResult:
 # Hand-edited values are merged with imported ones rather than replacing them:
 # correcting an address should not stop enrichment ever finding another.
 _UNION_FIELDS = ("emails", "phones")
+
+
+def sync_candidate_emails(db: Session, candidate: Candidate) -> None:
+    """Rebuild a candidate's rows in the address projection.
+
+    The only writer. Call it wherever ``Candidate.emails`` changes, or the
+    projection quietly drifts from the column it projects.
+
+    An address already claimed by someone else is skipped rather than stolen:
+    first writer wins, matching ``build_address_index``. That is also why the
+    projection can be a strict subset of the JSON, and why the test asserting
+    they agree only runs in one direction.
+    """
+    existing = {
+        row.email: row
+        for row in db.scalars(
+            select(CandidateEmail).where(CandidateEmail.candidate_id == candidate.id)
+        ).all()
+    }
+    wanted = list(candidate.emails or [])
+
+    for email, row in existing.items():
+        if email not in wanted:
+            db.delete(row)
+
+    for position, email in enumerate(wanted):
+        row = existing.get(email)
+        if row is not None:
+            row.position = position
+            continue
+        claimed = db.scalar(
+            select(CandidateEmail).where(
+                CandidateEmail.org_id == candidate.org_id, CandidateEmail.email == email
+            )
+        )
+        if claimed is not None:
+            continue
+        db.add(
+            CandidateEmail(
+                org_id=candidate.org_id,
+                candidate_id=candidate.id,
+                email=email,
+                position=position,
+            )
+        )
+    db.flush()
+
+
+def owner_of_email(db: Session, *, org_id: str, email: str) -> str | None:
+    """Which candidate owns this address, in one indexed lookup."""
+    address = (email or "").strip().lower()
+    if not address:
+        return None
+    return db.scalar(
+        select(CandidateEmail.candidate_id).where(
+            CandidateEmail.org_id == org_id, CandidateEmail.email == address
+        )
+    )
 
 
 def _respect_manual_edits(
@@ -180,6 +238,7 @@ def upsert_candidates(
             _apply(candidate, data)
             result.updated += 1
         _replace_children(db, candidate, data)
+        sync_candidate_emails(db, candidate)
         touched.append(candidate)
         result.ids.append(candidate.id)
 

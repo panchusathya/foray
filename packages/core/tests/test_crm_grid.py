@@ -14,10 +14,18 @@ from juicebox.models import Message, utcnow
 
 
 def _candidate(client, headers, name, **extra):
+    """Seed through the bulk import path, which is how sourced people arrive.
+
+    Not POST /v1/candidates: adding someone by hand is an explicit CRM action
+    and marks them crm_tracked, which would put every fixture in CRM scope and
+    leave this file unable to test the pool/CRM distinction at all.
+    """
     payload = {"full_name": name, "source": "test", "source_id": name.lower(), **extra}
-    response = client.post("/v1/candidates", json=payload, headers=headers)
-    assert response.status_code == 201, response.text
-    return response.json()["id"]
+    response = client.post(
+        "/v1/candidates/bulk", json={"candidates": [payload]}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["ids"][0]
 
 
 def _mail(session, org_id, candidate_id, *, direction, days_ago, status=None):

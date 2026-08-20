@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 from sqlalchemy import func, select
@@ -261,10 +261,13 @@ def _suppression_set(db: Session, org_id: str) -> set[str]:
 def _is_suppressed_candidate(candidate: Candidate, suppressed: set[str]) -> bool:
     if not suppressed:
         return False
-    for email in candidate.emails or []:
-        if normalize_email(str(email)) in suppressed:
-            return True
-    return False
+    return any(normalize_email(str(email)) in suppressed for email in candidate.emails or [])
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def enqueue_match_for_posting(db: Session, posting: JobPosting, *, now=None) -> None:
@@ -306,7 +309,8 @@ def dispatch_match_tick(db: Session, org_id: str, *, now=None) -> dict:
     for posting in postings:
         stale_spec = (posting.matched_spec_version or "") != (posting.spec_version or "")
         never = posting.matched_at is None
-        aged = posting.matched_at is not None and posting.matched_at < refresh_after
+        matched_at = _aware(posting.matched_at)
+        aged = matched_at is not None and matched_at < refresh_after
         if stale_spec or never or aged:
             enqueue_match_for_posting(db, posting, now=now)
             queued += 1
@@ -319,8 +323,9 @@ def dispatch_match_tick(db: Session, org_id: str, *, now=None) -> dict:
     }
     candidates = db.scalars(select(Candidate).where(Candidate.org_id == org_id)).all()
     for candidate in candidates:
-        mark = watermarks.get(candidate.id)
-        if mark is None or (candidate.updated_at and candidate.updated_at > mark):
+        mark = _aware(watermarks.get(candidate.id))
+        updated = _aware(candidate.updated_at)
+        if mark is None or (updated is not None and updated > mark):
             enqueue_match_for_candidate(db, candidate, now=now)
             queued += 1
     return {"queued": queued}

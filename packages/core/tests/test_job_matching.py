@@ -258,7 +258,7 @@ class TestRematchQueue:
     def test_not_interested_appears_without_declined_role(
         self, session, account, sample_candidates
     ):
-        ada, posting, declined, project = self._setup_decline(
+        ada, posting, declined, _project = self._setup_decline(
             session, account, sample_candidates, intent="not_interested"
         )
         rows = rematch_queue(session, account["org_id"])

@@ -38,6 +38,7 @@ def warm_paths(db: Session, org_id: str, posting: JobPosting) -> list[dict]:
         select(Candidate)
         .where(Candidate.org_id == org_id)
         .options(selectinload(Candidate.experiences))
+        .execution_options(populate_existing=True)
     ).all()
     paths: list[dict] = []
     seen: set[str] = set()

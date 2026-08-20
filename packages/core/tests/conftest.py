@@ -63,9 +63,9 @@ def isolated_environment(tmp_path, monkeypatch):
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
     from juicebox.integrations.providers import reset_providers
+    from juicebox.jobmatch.exa import reset_exa
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
-    from juicebox.jobmatch.exa import reset_exa
     from juicebox.outreach.sender import reset_sender_factories, set_sender
     from juicebox.search.engine import reset_engine
     from juicebox.search.index import invalidate

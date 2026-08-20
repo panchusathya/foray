@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -72,7 +72,7 @@ def rematch_queue(db: Session, org_id: str, *, now=None, limit: int = 50) -> lis
         if candidate.id in active:
             continue
         if message.reply_intent == "not_now":
-            sent = message.sent_at or message.created_at
+            sent = _aware(message.sent_at or message.created_at)
             if sent is not None and now - sent < gate:
                 continue
         declined_project_id, declined_label, declined_on = _declined_role(db, message)
@@ -98,6 +98,12 @@ def rematch_queue(db: Session, org_id: str, *, now=None, limit: int = 50) -> lis
         if len(out) >= limit:
             break
     return out
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _declined_role(db: Session, message: Message) -> tuple[str | None, str, object]:

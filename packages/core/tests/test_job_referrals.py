@@ -19,7 +19,7 @@ class TestFeeSignals:
         assert evidence
 
     def test_no_agencies_is_not_a_fee(self):
-        bearing, terms, evidence = fee_signals(NO_AGENCY_JD)
+        bearing, _terms, evidence = fee_signals(NO_AGENCY_JD)
         assert bearing is False
         assert "no agencies" in evidence.lower()
 
@@ -66,6 +66,7 @@ class TestWarmPaths:
             )
         )
         session.flush()
+        session.expire(cleo, ["experiences"])
         paths = warm_paths(session, account["org_id"], posting)
         by_id = {p["candidate_id"]: p for p in paths}
         assert by_id[cleo.id]["basis"] == "alumni"

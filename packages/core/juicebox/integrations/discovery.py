@@ -67,12 +67,47 @@ def _suppressed(db: Session, *, org_id: str) -> set[str]:
 
 
 def display_name_from(email: str) -> str:
-    """Best effort from the local part: "ada.lovelace" -> "Ada Lovelace"."""
+    """Last-resort guess from the local part: "ada.lovelace" -> "Ada Lovelace".
+
+    Only used when the header carried no name. Requires a separator, so a
+    single blob is left alone: "jsmith" becomes nothing rather than "Jsmith",
+    and "hr" becomes nothing rather than "Hr". A wrong name is worse than a
+    missing one -- it looks authoritative, it is what gets used in outreach,
+    and nobody goes looking for it to correct it.
+    """
     local = (email or "").partition("@")[0]
     parts = [p for p in local.replace("_", ".").replace("-", ".").split(".") if p]
-    if not parts or any(any(ch.isdigit() for ch in p) for p in parts):
+    if len(parts) < 2:
+        return ""
+    if any(any(ch.isdigit() for ch in p) for p in parts):
         return ""
     return " ".join(p.capitalize() for p in parts)
+
+
+def better_name(current: str, candidate: str) -> str:
+    """Pick the better of two display names seen for one person.
+
+    Someone appears across a dozen messages and the headers disagree -- "adia",
+    "Adia", "Adia Chenumbay", "Adia Chenumbay (Northwind)". Prefer a full name
+    over a single token, then the longer one, so a later terse header cannot
+    overwrite a good name already captured.
+    """
+    candidate = (candidate or "").strip()
+    current = (current or "").strip()
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    # An address is not a name; anything real beats it.
+    if "@" in current and "@" not in candidate:
+        return candidate
+    if "@" in candidate and "@" not in current:
+        return current
+    current_full = " " in current
+    candidate_full = " " in candidate
+    if candidate_full != current_full:
+        return candidate if candidate_full else current
+    return candidate if len(candidate) > len(current) else current
 
 
 def build_context(db: Session, *, org_id: str, now: datetime) -> dict:
@@ -147,13 +182,16 @@ def stage_record(
                 DiscoveredContact.email == address,
             )
         )
+        header_name = (record.names or {}).get(address, "")
         if row is None:
             owner = context["known"].get(address)
             row = DiscoveredContact(
                 org_id=connection.org_id,
                 email=address,
                 domain=domain_of(address),
-                display_name=display_name_from(address),
+                # The header first; the local part only as a guess of last
+                # resort, and only when it actually looks like a name.
+                display_name=header_name or display_name_from(address),
                 # Already in Contacts but never in a project, sequence or
                 # thread, so their mail has never been ingested. Kept so the
                 # tray can offer to import it.
@@ -166,6 +204,9 @@ def stage_record(
             # A human decided about this person already. Re-running a sweep
             # must not resurrect a vendor somebody dismissed.
             continue
+        else:
+            # Later sightings can carry a better name than the first one did.
+            row.display_name = better_name(row.display_name, header_name)
 
         row.outbound_count += 1
         if on_to_line:

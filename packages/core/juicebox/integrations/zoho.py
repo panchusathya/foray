@@ -225,6 +225,57 @@ def _addresses(raw) -> list[str]:
     return out
 
 
+def _split_recipients(raw: str) -> list[str]:
+    """Split on commas that separate recipients, not ones inside a name.
+
+    ``"Smith, John" <js@x.com>`` is one recipient. A naive split makes it two,
+    and the half carrying the address keeps only "John" as the name.
+    ``_addresses`` splits naively and gets away with it because it only ever
+    reads the part inside the angle brackets; a name parser cannot.
+    """
+    out: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    in_angles = False
+    for char in raw:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif char == "<":
+            in_angles = True
+        elif char == ">":
+            in_angles = False
+        if char == "," and not in_quotes and not in_angles:
+            out.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    out.append("".join(current))
+    return out
+
+
+def _named_addresses(raw) -> list[tuple[str, str]]:
+    """(address, display name) pairs from Zoho's joined recipient string.
+
+    ``_addresses`` deliberately strips the display name -- correct for
+    matching, where only the address means anything -- so discovery needs its
+    own parse rather than losing the name the header carried.
+    """
+    if not raw:
+        return []
+    parts = raw if isinstance(raw, list) else _split_recipients(str(raw))
+    out: list[tuple[str, str]] = []
+    for part in parts:
+        chunk = (part or "").strip()
+        name = ""
+        if "<" in chunk and ">" in chunk:
+            name = chunk[: chunk.index("<")].strip().strip('"').strip()
+            chunk = chunk[chunk.index("<") + 1 : chunk.index(">")]
+        address = chunk.strip().strip("<>").lower()
+        if address:
+            out.append((address, name))
+    return out
+
+
 def _one_address(raw) -> str:
     found = _addresses(raw)
     return found[0] if found else ""
@@ -624,12 +675,15 @@ class ZohoProvider:
             if when is not None and when < since:
                 reached_window_end = True
                 break
+            to = _named_addresses(payload.get("toAddress"))
+            cc = _named_addresses(payload.get("ccAddress"))
             records.append(
                 SweepRecord(
                     native_id=str(payload.get("messageId") or ""),
                     from_address=_one_address(payload.get("fromAddress")),
-                    to_addresses=tuple(_addresses(payload.get("toAddress"))),
-                    cc_addresses=tuple(_addresses(payload.get("ccAddress"))),
+                    to_addresses=tuple(address for address, _ in to),
+                    cc_addresses=tuple(address for address, _ in cc),
+                    names={address: name for address, name in (*to, *cc) if name},
                     thread_id=str(payload.get("threadId") or ""),
                     sent_at=when,
                     is_draft=str(payload.get("mode") or "").lower() == "draft"

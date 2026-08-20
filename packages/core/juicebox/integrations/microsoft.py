@@ -358,12 +358,15 @@ def _stamp(raw: str) -> datetime | None:
         return None
 
 
-def _recipients(payload: dict, key: str) -> tuple[str, ...]:
+def _recipients(payload: dict, key: str) -> tuple[tuple[str, str], ...]:
+    """(address, display name) pairs. Graph supplies both; keeping only the
+    address is what left discovery guessing names from local parts."""
     out = []
     for entry in payload.get(key) or []:
-        address = ((entry or {}).get("emailAddress") or {}).get("address", "")
+        contact = (entry or {}).get("emailAddress") or {}
+        address = contact.get("address", "")
         if address:
-            out.append(address.lower())
+            out.append((address.lower(), (contact.get("name") or "").strip()))
     return tuple(out)
 
 
@@ -375,11 +378,14 @@ def to_sweep_record(payload: dict) -> SweepRecord:
     and Cc kept apart, and must never hold a body.
     """
     sender = ((payload.get("from") or {}).get("emailAddress") or {}).get("address", "") or ""
+    to = _recipients(payload, "toRecipients")
+    cc = _recipients(payload, "ccRecipients")
     return SweepRecord(
         native_id=payload.get("id", "") or "",
         from_address=sender.lower(),
-        to_addresses=_recipients(payload, "toRecipients"),
-        cc_addresses=_recipients(payload, "ccRecipients"),
+        to_addresses=tuple(address for address, _ in to),
+        cc_addresses=tuple(address for address, _ in cc),
+        names={address: name for address, name in (*to, *cc) if name},
         thread_id=payload.get("conversationId", "") or "",
         sent_at=_stamp(payload.get("sentDateTime", "") or ""),
         is_draft=bool(payload.get("isDraft")),

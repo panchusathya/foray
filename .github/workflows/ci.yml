@@ -231,6 +231,13 @@ jobs:
       - name: Health
         run: curl -sf http://127.0.0.1:18080/health
 
+      # TEMPORARY diagnostic -- remove with the script once the cause is fixed.
+      # Discriminates between a late write and a lost one; see the script's
+      # docstring. Writes its verdict to the run summary, because the step-log
+      # viewer lazy-loads and buries output. Never gates the job.
+      - name: Signup durability probe (temporary)
+        run: python3 deploy/tests/signup_durability_probe.py --iterations 40
+
       # Both evidence kinds, then derive + embed so search actually returns
       # hits. Without this the Sourcing specs self-skip and every LinkedIn
       # rendering change ships untested.

@@ -49,6 +49,28 @@ Default storage is SQLite; nothing extra is needed. To use Postgres, install the
 extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
 `DATABASE_URL`, or use `docker compose up --build`.
 
+## Email enrichment providers (`packages/foray/foray/enrich`)
+
+- **A paid email provider implements `EmailProvider` in `contacts.py`.** It returns
+  a `ProviderResult` and never touches the database; `store_result` owns
+  persistence, the confidence ladder and the employer-domain guard.
+- **Never bolt one onto `resolve_linkedin`'s waterfall.** That waterfall's
+  currency is `linkedin_url` and it stops at the first hit, so a provider
+  returning addresses but no URL is recorded as a *miss* -- stamping
+  `linkedin_checked_at` and reporting `found: false` after the credit was spent.
+- **Every source string needs a place on the ladder** (the table in
+  `emails.py`'s docstring) *and* in `candidate_emails`' check constraint.
+  `store_result` raises if the two disagree, because the alternative is an
+  opaque IntegrityError at write time.
+- **Confidence is not send-preference.** It answers "is this really them". Which
+  address outreach uses is decided by the ordering in `api/search.py`, which
+  prefers personal over work regardless of confidence -- a recruiting pitch must
+  not land in somebody's work inbox.
+- **Stamp the negative cache on a miss, not just a hit.** `shortlist_events` has
+  no uniqueness and is never read as an already-attempted check, so a
+  `<provider>_checked_at` column is the only thing stopping a second click from
+  paying twice.
+
 ## Mail providers (`packages/core/juicebox/integrations`)
 
 - **Adding a provider** means implementing `MailProvider` in `providers.py` and

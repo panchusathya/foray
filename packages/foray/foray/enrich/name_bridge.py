@@ -224,7 +224,7 @@ async def ensure_github_candidate(conn, user: dict) -> tuple[int, bool]:
         """
         insert into candidates
             (login, github_id, name, location_raw, source, discovery_shard)
-        values ($1, $2, $3, $4, 'github', 'name_bridge')
+        values ($1, $2::bigint, $3::text, $4::text, 'github', 'name_bridge')
         on conflict (login) do nothing
         returning id
         """,
@@ -239,12 +239,16 @@ async def ensure_github_candidate(conn, user: dict) -> tuple[int, bool]:
         )
         return int(cid), False
     cid = int(row["id"])
+    # Compute the source in Python: a SQL `case when $2 is null` leaves
+    # asyncpg unable to type a NULL parameter (AmbiguousParameterError).
+    company = (user.get("company") or "").strip().lstrip("@") or None
     await conn.execute(
         "insert into candidate_signals (candidate_id, employer, employer_source) "
-        "values ($1, $2, case when $2 is null then null else 'company' end) "
+        "values ($1, $2::text, $3::text) "
         "on conflict (candidate_id) do nothing",
         cid,
-        (user.get("company") or "").strip().lstrip("@") or None,
+        company,
+        "company" if company else None,
     )
     return cid, True
 

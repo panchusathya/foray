@@ -11,8 +11,8 @@ test.describe('jobs tab', () => {
     await page.goto('/jobs');
     await expect(page.getByTestId('job-create-form')).toBeVisible();
 
-    await page.getByPlaceholder('Title').fill('Senior Machine Learning Engineer');
-    await page.getByPlaceholder('Company').fill('Acme');
+    await page.getByPlaceholder('Title', { exact: true }).fill('Senior Machine Learning Engineer');
+    await page.getByPlaceholder('Company', { exact: true }).fill('Acme');
     await page.getByPlaceholder('Location').fill('San Francisco');
     await page.getByPlaceholder('Job description').fill('Python and ranking in production.');
     await page.getByRole('button', { name: 'Add posting' }).click();

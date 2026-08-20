@@ -37,6 +37,14 @@ KIND_MAILBOX_SYNC_ONE = "mailbox.sync.one"
 KIND_MAILBOX_BACKFILL = "mailbox.backfill"
 KIND_REPLY_DRAFT = "reply.draft"
 
+# Contact discovery mirrors the sync split: a per-org dispatcher fans out
+# one job per mailbox. It is never added to ensure_ticks -- reading a year
+# of mail metadata is a deliberate, consent-shaped action, like
+# mailbox.backfill, not something a worker should start on its own.
+KIND_CRM_DISCOVERY = "crm.discovery"
+KIND_CRM_DISCOVERY_ONE = "crm.discovery.one"
+KIND_CRM_DISCOVERY_IMPORT = "crm.discovery.import"
+
 OPEN_STATUSES = ("queued", "running")
 
 

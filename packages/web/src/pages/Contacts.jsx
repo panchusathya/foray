@@ -20,6 +20,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { AddContactModal } from '../components/AddContactModal.jsx';
 import { BulkBar } from '../components/BulkBar.jsx';
+import { DiscoveredTray } from '../components/DiscoveredTray.jsx';
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import {
@@ -186,11 +187,20 @@ export function ContactsPage() {
   const listKey = JSON.stringify(listParams);
   const totalKey = JSON.stringify(totalParams);
 
+  // Hooks cannot be conditional, so the tray view short-circuits the loader
+  // rather than skipping it: otherwise opening Discovered would also fetch a
+  // page of candidates nobody is going to look at.
   const rows = useAsync(
-    () => api.contactsGrid({ ...listParams, include_history: true }),
-    [listKey],
+    () =>
+      view.tray
+        ? Promise.resolve([])
+        : api.contactsGrid({ ...listParams, include_history: true }),
+    [listKey, view.tray],
   );
-  const total = useAsync(() => api.contactsCount(totalParams), [totalKey]);
+  const total = useAsync(
+    () => (view.tray ? Promise.resolve(null) : api.contactsCount(totalParams)),
+    [totalKey, view.tray],
+  );
   const sequences = useAsync(() => api.listSequences(), []);
 
   const data = rows.data ?? [];
@@ -265,6 +275,9 @@ export function ContactsPage() {
 
       <ViewTabs activeId={view.id} />
 
+      {view.tray ? (
+        <DiscoveredTray />
+      ) : (
       <div className="stack">
         <input
           type="text"
@@ -425,6 +438,7 @@ export function ContactsPage() {
           </div>
         )}
       </div>
+      )}
     </>
   );
 }

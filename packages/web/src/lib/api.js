@@ -80,6 +80,24 @@ export const api = {
   contactsCount: (params = {}) => request(`/v1/candidates/count?${contactParams(params)}`),
   // Ids only, capped: feeds "select all matching" without pulling rows.
   contactIds: (params = {}) => request(`/v1/candidates/ids?${contactParams(params)}`),
+
+  listDiscovered: (params = {}) => request(`/v1/crm/discovered?${contactParams(params)}`),
+  discoveredCount: (params = {}) =>
+    request(`/v1/crm/discovered/count?${contactParams(params)}`),
+  promoteDiscovered: (payload) =>
+    request('/v1/crm/discovered/promote', { method: 'POST', body: payload }),
+  dismissDiscovered: (payload) =>
+    request('/v1/crm/discovered/dismiss', { method: 'POST', body: payload }),
+  ignoreDomain: (payload) =>
+    request('/v1/crm/discovered/ignore-domain', { method: 'POST', body: payload }),
+  discoveryStatus: () => request('/v1/integrations/discovery-status'),
+  startDiscovery: (connectionId) =>
+    request(
+      connectionId
+        ? `/v1/integrations/mailboxes/${connectionId}/discover`
+        : '/v1/integrations/discover',
+      { method: 'POST' },
+    ),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
   // Buys contact details for sourced candidates. Goes through /v1 rather than
   // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends

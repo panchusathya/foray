@@ -138,6 +138,28 @@ export function SettingsPage() {
     }
   }
 
+  async function discover(connection) {
+    // Says what it actually does. Thread sync's own description talks about
+    // "known candidates", which is no longer the whole story once a sweep can
+    // surface people who are in no project and no sequence.
+    if (
+      !window.confirm(
+        `Scan ${connection.address} for people you have emailed who are not in ` +
+          'Contacts yet? It reads addresses, dates and message counts — never ' +
+          'message content — and stages them for you to review.',
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await api.startDiscovery(connection.id);
+      setSyncNote('Sweep queued — watch progress in Contacts → Discovered.');
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   const data = status.data;
   const providers = data?.providers ?? [];
   const connections = data?.connections ?? [];
@@ -248,7 +270,7 @@ export function SettingsPage() {
                             type="button"
                             className="tiny"
                             data-testid="thread-sync-toggle"
-                            title="Copy emails with known candidates into their CRM timelines"
+                            title="Store email with people in the CRM, and allow sweeping this mailbox for contacts you have not added yet"
                             onClick={() => toggleThreadSync(connection)}
                           >
                             {connection.thread_sync_enabled
@@ -263,6 +285,17 @@ export function SettingsPage() {
                             onClick={() => backfill(connection)}
                           >
                             Import history
+                          </button>
+                        ) : null}
+                        {connection.status === 'active' && connection.thread_sync_enabled ? (
+                          <button
+                            type="button"
+                            className="tiny ghost"
+                            data-testid="discover-sweep"
+                            title="Find people you have emailed who are not in Contacts yet"
+                            onClick={() => discover(connection)}
+                          >
+                            Find contacts
                           </button>
                         ) : null}
                         {connection.status !== 'revoked' ? (

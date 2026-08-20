@@ -90,6 +90,7 @@ export const api = {
     request('/v1/crm/discovered/dismiss', { method: 'POST', body: payload }),
   ignoreDomain: (payload) =>
     request('/v1/crm/discovered/ignore-domain', { method: 'POST', body: payload }),
+  listTags: () => request('/v1/crm/tags'),
   discoveryStatus: () => request('/v1/integrations/discovery-status'),
   startDiscovery: (connectionId) =>
     request(

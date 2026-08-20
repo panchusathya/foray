@@ -14,6 +14,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ContactHistory } from '../components/ContactHistory.jsx';
 import { InlineField } from '../components/InlineField.jsx';
 import { NotesPanel } from '../components/NotesPanel.jsx';
+import { TagEditor } from '../components/TagEditor.jsx';
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
@@ -106,6 +107,11 @@ export function CandidateDetailPage() {
                 onSave={(value) => save(field, value)}
               />
             ))}
+            <TagEditor
+              candidateId={candidateId}
+              tags={person.tags}
+              onChanged={candidate.reload}
+            />
             {person.years_experience ? (
               <div className="small muted">{person.years_experience} years of experience</div>
             ) : null}

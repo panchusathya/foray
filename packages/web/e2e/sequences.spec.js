@@ -297,8 +297,11 @@ test.describe('sequence email rich text', () => {
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
     await page.reload();
-    await expect(
-      page.getByTestId('email-body-editor').locator('strong a[href="https://jobs.example.com/role"]'),
-    ).toContainText('Hello world');
+    // TipTap wraps the link around the bold mark (`<a><strong>`), not the reverse.
+    const reloaded = page.getByTestId('email-body-editor');
+    await expect(reloaded.locator('strong')).toContainText('Hello world');
+    await expect(reloaded.locator('a[href="https://jobs.example.com/role"]')).toContainText(
+      'Hello world',
+    );
   });
 });

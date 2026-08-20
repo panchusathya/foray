@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..deps import Principal, get_db, get_principal
+from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..models import PIPELINE_STAGES, Event, Message, Project, ProjectCandidate
 
-router = APIRouter(prefix="/v1/analytics", tags=["analytics"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/analytics", tags=["analytics"])
 
 POSITIVE_INTENTS = {"interested", "question", "referral"}
 

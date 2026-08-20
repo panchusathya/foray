@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ..deps import Principal, get_db, get_principal
+from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..models import Candidate, Search
 from ..schemas import (
     CandidateSummary,
@@ -19,7 +19,7 @@ from ..schemas import (
 from ..search.engine import ScoredCandidate, get_engine
 from ..search.index import CandidateDoc, get_index
 
-router = APIRouter(prefix="/v1", tags=["search"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1", tags=["search"])
 
 
 def _summary_from_doc(doc: CandidateDoc) -> CandidateSummary:

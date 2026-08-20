@@ -7,13 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..agents.sourcing import run_agent, run_due_agents
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..models import Project, SourcingAgent
 from ..routers.search import _summary_from_doc
 from ..schemas import AgentRunResult, SourcingAgentIn, SourcingAgentOut
 from ..search.index import candidate_to_doc
 
-router = APIRouter(prefix="/v1/agents", tags=["agents"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/agents", tags=["agents"])
 
 
 def _load_agent(db: Session, agent_id: str, org_id: str) -> SourcingAgent:

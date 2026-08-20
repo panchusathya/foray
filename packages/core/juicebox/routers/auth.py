@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..deps import Principal, get_db, get_principal
+from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..models import ApiKey, Org, User
 from ..schemas import ApiKeyOut, LoginRequest, SignupRequest, TokenResponse, UserOut
 from ..security import (
@@ -19,7 +19,7 @@ from ..security import (
     verify_password,
 )
 
-router = APIRouter(prefix="/v1/auth", tags=["auth"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/auth", tags=["auth"])
 
 
 def _slugify(value: str) -> str:

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..enrich.email import guess_emails
 from ..models import Candidate
 from ..outreach.history import candidate_history_stats, candidate_timeline
@@ -23,7 +23,7 @@ from ..schemas import (
     ThreadOut,
 )
 
-router = APIRouter(prefix="/v1/candidates", tags=["candidates"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/candidates", tags=["candidates"])
 
 MAX_BULK = 5000
 

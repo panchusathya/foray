@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from ..deps import Principal, get_db, get_principal, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
@@ -47,7 +47,7 @@ from ..schemas import (
     SequenceUpdate,
 )
 
-router = APIRouter(prefix="/v1/sequences", tags=["outreach"])
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/sequences", tags=["outreach"])
 
 # Upper bound on synchronous sends inside one enroll request. Anything past
 # this is due-now anyway, and the worker tick delivers it within a minute —
@@ -446,7 +446,7 @@ def run_sequence(
 # messages + inbound
 # --------------------------------------------------------------------------
 
-messages_router = APIRouter(prefix="/v1/messages", tags=["outreach"])
+messages_router = APIRouter(route_class=CommittingRoute, prefix="/v1/messages", tags=["outreach"])
 
 
 @messages_router.get("", response_model=list[MessageOut])
@@ -466,7 +466,9 @@ def list_messages(
     return [MessageOut.model_validate(row) for row in rows]
 
 
-reply_drafts_router = APIRouter(prefix="/v1/reply-drafts", tags=["outreach"])
+reply_drafts_router = APIRouter(
+    route_class=CommittingRoute, prefix="/v1/reply-drafts", tags=["outreach"]
+)
 
 
 @reply_drafts_router.get("", response_model=list[ReplyDraftOut])
@@ -483,7 +485,7 @@ def list_reply_drafts(
     return [ReplyDraftOut.model_validate(row) for row in rows]
 
 
-webhooks_router = APIRouter(prefix="/v1/webhooks", tags=["outreach"])
+webhooks_router = APIRouter(route_class=CommittingRoute, prefix="/v1/webhooks", tags=["outreach"])
 
 
 @webhooks_router.post("/inbound-email")

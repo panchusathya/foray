@@ -96,6 +96,9 @@ export async function createProject(request, org, name = 'E2E Role') {
     headers: org.headers,
     data: { name, role_title: 'Machine Learning Engineer', location: 'San Francisco' },
   });
+  if (!response.ok()) {
+    throw new Error(`create project failed (${response.status()}): ${await response.text()}`);
+  }
   return response.json();
 }
 
@@ -104,6 +107,9 @@ export async function addToProject(request, org, projectId, candidateIds) {
     headers: org.headers,
     data: { candidate_ids: candidateIds },
   });
+  if (!response.ok()) {
+    throw new Error(`add to project failed (${response.status()}): ${await response.text()}`);
+  }
   return response.json();
 }
 

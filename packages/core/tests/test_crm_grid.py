@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from sqlalchemy import select
+
 from juicebox.models import Message, utcnow
 
 
@@ -151,10 +153,13 @@ class TestRelationships:
 
         assert sorted(rows) == sorted([people["quiet"], people["alive"]])
 
-    def test_an_active_enrolment_is_never_offered_for_revival(
+    def test_an_active_enrolment_is_only_excluded_when_asked(
         self, client, session, account
     ):
-        """They are already being chased. Reviving them would double-touch."""
+        """This used to be unconditional, and it emptied the view in
+        production: an enrollment is ``active`` until the last step sends or
+        the person answers, so on a multi-step sequence the people who have
+        not replied yet are exactly the ones still active."""
         from juicebox.models import Enrollment, Sequence
 
         people = _population(client, session, account)
@@ -170,8 +175,21 @@ class TestRelationships:
         )
         session.commit()
 
-        rows = _ids(_grid(client, account["headers"], relationship="stale", limit=100))
-        assert people["cold"] not in rows
+        # Visible by default: being mid-sequence is context, not a reason to
+        # disappear from a view whose whole job is finding people.
+        assert people["cold"] in _ids(
+            _grid(client, account["headers"], relationship="stale", limit=100)
+        )
+        # ...and still filterable for anyone who wants only the unattended.
+        assert people["cold"] not in _ids(
+            _grid(
+                client,
+                account["headers"],
+                relationship="stale",
+                exclude_in_sequence="true",
+                limit=100,
+            )
+        )
 
     def test_an_unknown_relationship_is_rejected(self, client, account):
         response = _grid(client, account["headers"], relationship="lukewarm")
@@ -329,3 +347,64 @@ class TestSelectAllIds:
             "/v1/candidates/ids", params={"limit": 5000}, headers=account["headers"]
         )
         assert response.status_code == 422
+
+
+class TestMidSequencePeopleAreNotHidden:
+    """Reported from production: "No reply" claimed everyone had replied.
+
+    An enrollment stays ``active`` from the moment someone is enrolled until
+    the last step sends or they answer, so on any multi-step sequence the
+    people who have not replied *yet* are exactly the ones still active. Hiding
+    them emptied the view that exists to find them.
+    """
+
+    def _mid_sequence(self, client, session, account, *, days_ago, name):
+        from juicebox.models import Enrollment, Sequence
+
+        candidate = _candidate(client, account["headers"], name)
+        _mail(session, account["org_id"], candidate, direction="outbound", days_ago=days_ago)
+        sequence = session.scalar(select(Sequence)) or Sequence(
+            org_id=account["org_id"], name="Outreach", status="active"
+        )
+        session.add(sequence)
+        session.flush()
+        session.add(
+            Enrollment(
+                sequence_id=sequence.id, candidate_id=candidate, status="active"
+            )
+        )
+        session.commit()
+        return candidate
+
+    def test_no_reply_shows_someone_still_mid_sequence(
+        self, client, session, account
+    ):
+        candidate = self._mid_sequence(
+            client, session, account, days_ago=30, name="Waiting Wren"
+        )
+
+        rows = _ids(
+            _grid(client, account["headers"], relationship="never_replied", limit=100)
+        )
+        assert candidate in rows
+
+    def test_going_cold_shows_a_stalled_sequence(self, client, session, account):
+        """An enrollment that has been active and silent for 200 days is a
+        stalled sequence, which is precisely worth seeing."""
+        candidate = self._mid_sequence(
+            client, session, account, days_ago=200, name="Stalled Sam"
+        )
+
+        rows = _ids(_grid(client, account["headers"], relationship="stale", limit=100))
+        assert candidate in rows
+
+    def test_the_grace_period_still_applies(self, client, session, account):
+        """Fixing the enrolment bug must not also drop the 7-day floor."""
+        candidate = self._mid_sequence(
+            client, session, account, days_ago=2, name="Fresh Fern"
+        )
+
+        rows = _ids(
+            _grid(client, account["headers"], relationship="never_replied", limit=100)
+        )
+        assert candidate not in rows

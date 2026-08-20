@@ -62,7 +62,9 @@ export const CONTACT_VIEWS = [
     sort: 'last_contacted',
     dir: 'asc',
     params: { scope: 'crm', relationship: 'stale', stale_days: DEFAULT_STALE_DAYS },
-    empty: 'Nothing has gone cold. Every contacted relationship has recent activity.',
+    empty:
+      'Nobody here has been quiet for 90 days. Contacts with a reply or a recent ' +
+      'send are not counted as cold.',
   },
   {
     id: 'no_reply',
@@ -72,7 +74,9 @@ export const CONTACT_VIEWS = [
     sort: 'last_contacted',
     dir: 'asc',
     params: { scope: 'crm', relationship: 'never_replied' },
-    empty: 'Everyone you have emailed has replied.',
+    empty:
+      'Nobody is waiting on a reply. People emailed in the last 7 days are held ' +
+      'back here until they have had a chance to answer.',
   },
   {
     id: 'replied',
@@ -82,7 +86,7 @@ export const CONTACT_VIEWS = [
     sort: 'last_reply',
     dir: 'desc',
     params: { scope: 'crm', relationship: 'replied' },
-    empty: 'No replies yet.',
+    empty: 'Nobody has replied yet.',
   },
   {
     id: 'recent',

@@ -28,6 +28,66 @@ _MONTHS = {
 # position values that are noise, not titles (lowercased comparison).
 _JUNK_TITLES = {"", "--", "-", "set at linkedin", "retired", "n/a", "none"}
 
+# current_company names that are placeholders, not employers (lowercased
+# comparison). Deliberately minimal: "stealth" / "stealth startup",
+# "self-employed" and "freelance" are NOT junk -- they carry real signal (a
+# founding-engineer search wants exactly the stealth people), whereas
+# LinkedIn's "Confidential Company" and punctuation filler say nothing and
+# would pollute candidate_signals.employer, the weight-A tsvector and the
+# embedding blob.
+_JUNK_EMPLOYERS = {"confidential", "confidential company", "n/a", "none", "-", "--", "."}
+
+# Legal-entity suffixes and org-shaped tokens that mark a "person" row as a
+# company page. Whole-word, case-insensitive, anywhere in the name.
+# False-positive analysis behind the borderline entries:
+#   * "co." keeps its dot -- bare "co" is a real surname (e.g. "Jose Co"),
+#     while "Co." mid-name is unambiguously corporate.
+#   * "group" is included: "Group" as a surname is vanishingly rare in this
+#     corpus, while "<Something> Group" company pages are common.
+#   * "labs" is included: it appears in company names constantly and in
+#     person names essentially never.
+#   * "ltd"/"limited" catch sole traders like "Mary-Jane O'Brien Ltd" -- a
+#     person trading as a company IS a company page here; accepted trade-off.
+#   * "s.a" only matches at the END of the name: corporate "S.A." is a
+#     trailing suffix ("Banco Santander S.A."), while the same letters at the
+#     front are a real person's initials ("S.A. Khan").
+# Dotted tokens ("l.l.c", "s.a", "s.r.l", "co.") escape their dots; the
+# lookarounds below replace \b so a trailing dot still terminates a match
+# (\b after "\." would require a following word char and miss end-of-name).
+_COMPANY_SUFFIXES = (
+    "inc", "llc", r"l\.l\.c", "ltd", "limited", "corp", "corporation", "plc",
+    "gmbh", r"s\.a\.?(?=\s*$)", r"s\.r\.l", "pvt", "pty", r"co\.", "holdings", "ventures",
+    "capital", "partners", "staffing", "recruiting", "agency", "consultancy",
+    "logistics", "solutions", "technologies", "labs", "group",
+)
+
+_COMPANY_SUFFIX_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(_COMPANY_SUFFIXES) + r")(?!\w)", re.IGNORECASE
+)
+
+# A trailing parenthesised initialism -- "Infrastructure United Inc. (IU)".
+# People do not append their own initials in caps-parens; org pages do.
+_COMPANY_INITIALISM_RE = re.compile(r"\([A-Z]{2,5}\)\s*$")
+
+
+def looks_like_company(name: str) -> bool:
+    """True when a Bright Data "person" name is actually a company page.
+
+    Conservative by construction: every heuristic is a pattern real people's
+    names essentially never carry (see _COMPANY_SUFFIXES for the analysis).
+    """
+    if not name or not name.strip():
+        return False
+    if _COMPANY_SUFFIX_RE.search(name):
+        return True
+    if _COMPANY_INITIALISM_RE.search(name):
+        return True
+    # "A & B" duo-names of real people exist ("Tom & Jerry" profiles do occur),
+    # but three-plus words around an ampersand is org-shaped ("Smith & Wesson
+    # Holdings"). Count words excluding the "&" itself so a bare duo stays a
+    # person.
+    return "&" in name and len([w for w in name.split() if w != "&"]) >= 3
+
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _SLUG_RE = re.compile(r"/in/([^/?#]+)")
 
@@ -135,6 +195,10 @@ def employer_of(record: dict) -> str | None:
     current = record.get("current_company") or {}
     name = (current.get("name") if isinstance(current, dict) else "") or ""
     name = name.strip() or (record.get("current_company_name") or "").strip()
+    # Placeholders return None so employer_source stays None and the junk
+    # never reaches candidate_signals, the tsvector or the embedding blob.
+    if name.lower() in _JUNK_EMPLOYERS:
+        return None
     return name[:200] or None
 
 
@@ -211,10 +275,13 @@ class ImportRow:
 
 
 def to_import_row(record: dict) -> ImportRow | None:
-    """None = unusable record (no slug or no name); the stream skips it."""
+    """None = unusable record (no slug, no name, or a company page that the
+    export mixed into the person stream); the stream skips it."""
     slug = slug_of(record)
     name = (record.get("name") or "").strip()
     if not slug or not name:
+        return None
+    if looks_like_company(name):
         return None
     roles = flatten_experience(record)
     url = (record.get("url") or "").split("?")[0] or f"https://www.linkedin.com/in/{slug}"

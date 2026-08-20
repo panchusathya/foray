@@ -104,8 +104,8 @@ def parse_arms(raw: str | None = None) -> tuple[str, ...]:
 class SearchResult:
     """The `/search` wire contract.
 
-    ``total_matched`` counts rows that pass the structured filters (the
-    retrievable universe). ``paginable`` is the fused pool after the floor /
+    ``total_matched`` counts rows that pass the structured filters AND, when
+    an archetype matched, its gate (the retrievable universe). ``paginable`` is the fused pool after the floor /
     min-evidence vetoes, capped by ``FORAY_MAX_PAGINABLE``. ``rank`` inside
     ``results`` is absolute across pages, so page 2 starts at 41.
     """
@@ -185,6 +185,7 @@ def _policy(*, n_arms: int = 2) -> RankPolicy:
         unscored_score=settings.unscored_score,
         min_evidence=settings.min_evidence,
         rerank_depth=settings.rerank_depth,
+        ce_floor=settings.rerank_ce_floor,
         rrf_k=settings.rrf_k,
         n_arms=max(1, n_arms),
     )
@@ -237,7 +238,11 @@ def _result(
 
 
 def _filter_clauses(
-    parsed: ParsedFilter, params: Params, *, has_contact: bool = False
+    parsed: ParsedFilter,
+    params: Params,
+    *,
+    has_contact: bool = False,
+    gate_sql: str | None = None,
 ) -> str:
     clauses = [
         "c.merged_into is null",
@@ -262,6 +267,18 @@ def _filter_clauses(
     if parsed.experience_max is not None:
         placeholder = params.add(float(parsed.experience_max))
         clauses.append(f"s.est_experience_years <= {placeholder}")
+    if gate_sql:
+        # The archetype gate is the relevance predicate: without it any Bay
+        # Area person with the right experience band is retrievable for an ML
+        # search, because the gate previously only shaped offline scoring
+        # (score/). Interpolated as literal SQL, not a bind parameter, on
+        # purpose: the gate is repo-controlled (archetypes.yaml), contains no
+        # $N placeholders, is whitespace-normalised at load, and is validated
+        # with EXPLAIN at sync time (score/archetypes.validate_gates) — the
+        # same practice as score/common.py. It must NEVER carry user input;
+        # user-derived values go through ``params`` above. Its now() is safe
+        # under the repeatable-read snapshot.
+        clauses.append(f"({gate_sql})")
     return " and ".join(clauses)
 
 
@@ -471,8 +488,15 @@ async def run_search(
     async with _snapshot(conn):
         pg_ver = await apply_hnsw_gucs(conn, settings.vector_k)
         clock.mark("gucs")
+        # When an archetype matched, its gate applies to the count and to all
+        # three retrieval arms alike, so total_matched / n_lexical / n_scored
+        # describe the GATED universe — the same one the arms draw from. On
+        # the score arm the gate is a no-op predicate (scored rows passed it
+        # by construction), kept anyway for consistency. arch is None
+        # (vector-fallback) leaves behaviour unchanged.
+        gate = arch.gate if arch is not None else None
         params = Params()
-        where = _filter_clauses(parsed, params, has_contact=has_contact)
+        where = _filter_clauses(parsed, params, has_contact=has_contact, gate_sql=gate)
         arch_ph = params.add(arch.id) if arch is not None else None
         arch_join = (
             f"left join archetype_scores a on a.candidate_id = c.id "
@@ -498,7 +522,7 @@ async def run_search(
 
         if n_matched and "vector" in live_arms:
             vparams = Params()
-            vwhere = _filter_clauses(parsed, vparams, has_contact=has_contact)
+            vwhere = _filter_clauses(parsed, vparams, has_contact=has_contact, gate_sql=gate)
             qph = vparams.add(qvec)
             lim = vparams.add(settings.vector_k)
             vector_ids = [
@@ -519,7 +543,7 @@ async def run_search(
 
         if n_matched and "lexical" in live_arms and tsq:
             lparams = Params()
-            lwhere = _filter_clauses(parsed, lparams, has_contact=has_contact)
+            lwhere = _filter_clauses(parsed, lparams, has_contact=has_contact, gate_sql=gate)
             tph = lparams.add(tsq)
             lim = lparams.add(settings.lexical_k)
             lexical_ids = [
@@ -543,7 +567,7 @@ async def run_search(
 
         if n_matched and "score" in live_arms and arch is not None:
             sparams = Params()
-            swhere = _filter_clauses(parsed, sparams, has_contact=has_contact)
+            swhere = _filter_clauses(parsed, sparams, has_contact=has_contact, gate_sql=gate)
             aph = sparams.add(arch.id)
             floor_ph = sparams.add(policy.display_floor)
             lim = sparams.add(settings.score_k)
@@ -618,7 +642,13 @@ async def run_search(
             key=cid,
             score=score,
             cos_sim=float(row["cos_sim"] or 0.0),
-            highlight_count=ev.highlight_count,
+            # PoolRow.highlight_count feeds the min_evidence veto, so it now
+            # carries the SUBSTANTIVE evidence count (highlights minus the
+            # honesty filler evidence.py pads the display list with). Counting
+            # rendered sentences made the veto a near no-op: the pads
+            # guaranteed every row reached 2. The wire payload still renders
+            # ev.highlights unchanged, filler included.
+            highlight_count=ev.evidence_count,
         )
 
     pool = build_pool(
@@ -719,6 +749,9 @@ async def run_search(
         "empty_lexical_query": tsq is None,
         "rrf_only_from_lexical_at_10": sum(1 for key in top_keys if key in lex_only),
         "unscored_in_top_10": sum(1 for hit in results[:10] if hit.get("score") is None),
+        # Head rows the CE demoted below every unreranked row (band 2).
+        # 0 when the request was not reranked.
+        "ce_rejected": sum(1 for row in pool if row.band == 2),
         "timings_ms": clock.marks,
         "arms": list(live_arms),
     }

@@ -36,55 +36,159 @@ COMPANIES = ["@stripe", "@google", "@databricks", "", "", "@openai", "@cloudflar
 FIRST = ["Ada", "Lin", "Sam", "Noor", "Kai", "Ravi", "Mei", "Ivan", "Zoe", "Omar"]
 LAST = ["Kaur", "Rossi", "Novak", "Chen", "Silva", "Khan", "Park", "Diaz", "Ito", "Nguyen"]
 
+# Non-engineering personas seeded alongside the THEMES engineers so the eval can
+# EXPRESS a ranking mistake: with an all-engineer corpus, "personal trainer beats
+# ML engineer" (the prod incident) is literally unrepresentable. Each persona is
+# tuned to a failure class we actually saw or expect:
+#   * trainer / account exec  — pure off-domain prose, should never rank
+#   * logistics               — lexical-noise trap: "shipped", "logistics",
+#                               "training" collide with engineer query words
+#   * project manager         — "infrastructure projects" without any tech
+#   * recruiter               — the hardest class: the profile NAMES the tech
+#                               ("python developers", "machine learning
+#                               engineers") without the person doing any of it
+# Deliberate interplay with ingest: distractors are PEOPLE with junk-job titles.
+# Their person names still come from FIRST/LAST (the company strings below —
+# incl. the "LLC" one — appear only in company fields), so they pass the
+# company-name-in-person-field ingest filter and land in the index. Distractors
+# test RANKING, not ingest filtering.
+DISTRACTORS = [
+    {
+        "title": "Personal Training Counselor",
+        "company": "LA Fitness",
+        "prior_title": "Group Fitness Instructor",
+        "prior_company": "24 Hour Fitness",
+        "about": (
+            "Certified personal training counselor helping fitness clients reach their "
+            "goals through customized workout plans, nutrition coaching, and group classes."
+        ),
+    },
+    {
+        "title": "Logistics Coordinator",
+        "company": "Amerigo Logistics LLC",
+        "prior_title": "Warehouse Supervisor",
+        "prior_company": "Regional Freight Co",
+        # "shipped" / "logistics" / "training" chosen on purpose: they collide
+        # lexically with engineer queries ("shipped training infrastructure").
+        "about": (
+            "Coordinated freight and warehouse operations; shipped over 4,000 pallets a "
+            "month, ran forklift safety training, and optimized logistics routes for "
+            "regional carriers."
+        ),
+    },
+    {
+        "title": "Project Manager",
+        "company": "Confidential Company",
+        "prior_title": "Project Coordinator",
+        "prior_company": "BuildRight Construction",
+        "about": (
+            "Project manager delivering large infrastructure projects on time and under "
+            "budget; stakeholder alignment, risk registers, and weekly status reporting."
+        ),
+    },
+    {
+        "title": "Technical Recruiter",
+        "company": "TalentBridge Staffing",
+        "prior_title": "Sourcing Specialist",
+        "prior_company": "Hays",
+        # Hardest distractor class: recruiters' profiles NAME the tech verbatim.
+        "about": (
+            "I source and place python developers, machine learning engineers, and "
+            "kubernetes platform specialists at high-growth startups. Always hiring — "
+            "reach out if you write pytorch or terraform for a living!"
+        ),
+    },
+    {
+        "title": "Account Executive",
+        "company": "Salesforce",
+        "prior_title": "Sales Development Representative",
+        "prior_company": "Oracle",
+        "about": (
+            "Enterprise account executive consistently exceeding quota; pipeline "
+            "generation, discovery calls, and multi-year SaaS renewals."
+        ),
+    },
+]
+
+# Fraction of synthetic records (both sources) that are distractors. Drawn from
+# the run's single seeded rng so the corpus stays a pure function of the seed.
+DISTRACTOR_RATE = 0.30
+
 
 def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def make_node(rng: random.Random, i: int) -> dict:
-    theme_names = rng.sample(list(THEMES), k=rng.choice([1, 1, 2]))
     created_year = rng.randint(2012, 2021)
     created = datetime(created_year, rng.randint(1, 12), rng.randint(1, 28), tzinfo=UTC)
     now = datetime.now(UTC)
     recent_push = now - timedelta(days=rng.randint(5, 500))
 
     repos = []
-    lang_bytes: dict[str, int] = {}
-    for t_i, name in enumerate(theme_names):
-        theme = THEMES[name]
-        stars = rng.choice([2, 8, 30, 120, 800, 2500]) if t_i == 0 else rng.choice([1, 5, 40])
-        primary = theme["lang"]
-        edges = [
-            {"size": rng.randint(40000, 120000), "node": {"name": primary}},
-            {"size": rng.randint(5000, 30000), "node": {"name": theme["extra"]}},
-        ]
-        for edge in edges:
-            lang_bytes[edge["node"]["name"]] = lang_bytes.get(edge["node"]["name"], 0) + edge["size"]
-        repos.append(
-            {
-                "name": f"{name}-{rng.choice(['engine', 'kit', 'core', 'lab'])}",
-                "description": f"A {name} project using {', '.join(theme['terms'])}.",
-                "stargazerCount": stars,
-                "forkCount": stars // 10,
-                "pushedAt": _iso(recent_push),
-                "createdAt": _iso(created + timedelta(days=rng.randint(0, 400))),
-                "isArchived": rng.random() < 0.1,
-                "primaryLanguage": {"name": primary},
-                "repositoryTopics": {"nodes": [{"topic": {"name": term}} for term in theme["terms"]]},
-                "languages": {"edges": edges},
-            }
-        )
+    # GitHub junk looks different from LinkedIn junk: not a wrong PROFESSION but a
+    # non-professional account — dotfiles + interview grind, zero domain terms. The
+    # "_distr" login suffix (like the LinkedIn "-distr" slug) marks them for the eval.
+    distractor = rng.random() < DISTRACTOR_RATE
+    if distractor:
+        theme_names = ["distractor"]
+        for repo_name, desc in [
+            ("dotfiles", "My personal dotfiles and editor config."),
+            ("leetcode-practice", "Solutions to coursework and interview practice problems."),
+        ]:
+            repos.append(
+                {
+                    "name": repo_name,
+                    "description": desc,
+                    "stargazerCount": rng.choice([0, 1, 3]),
+                    "forkCount": 0,
+                    "pushedAt": _iso(recent_push),
+                    "createdAt": _iso(created + timedelta(days=rng.randint(0, 400))),
+                    "isArchived": False,
+                    "primaryLanguage": {"name": rng.choice(["Shell", "Lua", "Java"])},
+                    "repositoryTopics": {"nodes": []},
+                    "languages": {"edges": [{"size": rng.randint(1000, 9000), "node": {"name": "Shell"}}]},
+                }
+            )
+    else:
+        theme_names = rng.sample(list(THEMES), k=rng.choice([1, 1, 2]))
+        for t_i, name in enumerate(theme_names):
+            theme = THEMES[name]
+            stars = rng.choice([2, 8, 30, 120, 800, 2500]) if t_i == 0 else rng.choice([1, 5, 40])
+            primary = theme["lang"]
+            edges = [
+                {"size": rng.randint(40000, 120000), "node": {"name": primary}},
+                {"size": rng.randint(5000, 30000), "node": {"name": theme["extra"]}},
+            ]
+            repos.append(
+                {
+                    "name": f"{name}-{rng.choice(['engine', 'kit', 'core', 'lab'])}",
+                    "description": f"A {name} project using {', '.join(theme['terms'])}.",
+                    "stargazerCount": stars,
+                    "forkCount": stars // 10,
+                    "pushedAt": _iso(recent_push),
+                    "createdAt": _iso(created + timedelta(days=rng.randint(0, 400))),
+                    "isArchived": rng.random() < 0.1,
+                    "primaryLanguage": {"name": primary},
+                    "repositoryTopics": {
+                        "nodes": [{"topic": {"name": term}} for term in theme["terms"]]
+                    },
+                    "languages": {"edges": edges},
+                }
+            )
 
     name = f"{rng.choice(FIRST)} {rng.choice(LAST)}"
     return {
         "name": name,
-        "login": f"synth_{i:05d}",
+        "login": f"synth_{i:05d}_distr" if distractor else f"synth_{i:05d}",
         "email": rng.choice(["", f"user{i}@acmecorp.com", "user@gmail.com"]),
         "company": rng.choice(COMPANIES),
         "location": rng.choice(
             ["San Francisco, CA", "Seattle, WA", "New York, NY", "Austin, TX", "Remote, US"]
         ),
-        "bio": f"{theme_names[0]} engineer",
+        # Distractor bios carry no domain terms and no "engineer" — junk accounts
+        # rarely self-describe; the "_distr" login is the eval marker, not the bio.
+        "bio": "dotfiles and interview prep" if distractor else f"{theme_names[0]} engineer",
         "websiteUrl": "",
         "twitterUsername": "",
         "createdAt": _iso(created),
@@ -157,21 +261,36 @@ async def _seed_github(conn, rng: random.Random, count: int) -> tuple[str, list[
 def make_linkedin_record(rng: random.Random, i: int) -> dict:
     """A Bright Data-shaped record, for CI/E2E fixtures — real data never
     reaches a runner, which is exactly why this mode exists."""
-    theme_names = rng.sample(list(THEMES), k=1)
-    theme = THEMES[theme_names[0]]
     first = FIRST[i % len(FIRST)]
     last = LAST[(i * 7) % len(LAST)]
     slug = f"{first.lower()}-{last.lower()}-synth{i:05d}"
     start_year = rng.randint(2012, 2023)
-    title = rng.choice(
-        [
-            f"Senior {theme_names[0].title()} Engineer",
-            f"Staff Software Engineer, {theme_names[0]}",
-            "Software Engineer",
-            f"{theme_names[0].title()} Engineer",
-        ]
-    )
-    company = rng.choice(["Stripe", "Databricks", "Cloudflare", "Acme Labs", "OpenAI"])
+    # ~30% distractors, drawn from the same seeded rng as everything else so the
+    # corpus stays deterministic. The "-distr" slug suffix is the eval's ground-
+    # truth marker: to_import_row keeps the slug verbatim (login = "li:"+slug),
+    # so it survives the whole pipeline where an about-text tag would not.
+    # Person NAME stays first+last (see DISTRACTORS comment): the persona's
+    # company strings must only ever appear in company fields, or ingest's
+    # company-page filter would eat the record before ranking sees it.
+    if rng.random() < DISTRACTOR_RATE:
+        persona = rng.choice(DISTRACTORS)
+        slug += "-distr"
+        title, company, about = persona["title"], persona["company"], persona["about"]
+        prior_title, prior_company = persona["prior_title"], persona["prior_company"]
+    else:
+        theme_names = rng.sample(list(THEMES), k=1)
+        theme = THEMES[theme_names[0]]
+        title = rng.choice(
+            [
+                f"Senior {theme_names[0].title()} Engineer",
+                f"Staff Software Engineer, {theme_names[0]}",
+                "Software Engineer",
+                f"{theme_names[0].title()} Engineer",
+            ]
+        )
+        company = rng.choice(["Stripe", "Databricks", "Cloudflare", "Acme Labs", "OpenAI"])
+        about = f"{title} working on {', '.join(theme['terms'])}."
+        prior_title, prior_company = "Software Engineer", "Initech"
     return {
         "id": slug,
         "linkedin_id": slug,
@@ -183,8 +302,8 @@ def make_linkedin_record(rng: random.Random, i: int) -> dict:
         "city": "San Francisco Bay Area",
         "country_code": "US",
         "position": title,
-        "about": f"{title} working on {', '.join(theme['terms'])}.",
-        "current_company": {"company_id": company.lower(), "name": company},
+        "about": about,
+        "current_company": {"company_id": company.lower().replace(" ", "-"), "name": company},
         "current_company_name": company,
         "experience": [
             {
@@ -195,8 +314,8 @@ def make_linkedin_record(rng: random.Random, i: int) -> dict:
                 "positions": None,
             },
             {
-                "title": "Software Engineer",
-                "company": "Initech",
+                "title": prior_title,
+                "company": prior_company,
                 "start_date": f"Jun {start_year}",
                 "end_date": f"Dec {start_year + 1}",
                 "positions": None,

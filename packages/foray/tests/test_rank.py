@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -311,3 +312,64 @@ def test_reciprocal_rank_fusion_k60() -> None:
     fused = reciprocal_rank_fusion([{1: 1, 2: 2}, {2: 1, 3: 2}], k=60)
     assert fused[2] == pytest.approx(1 / 61 + 1 / 62)
     assert fused[1] == pytest.approx(1 / 61)
+
+
+# ----------------------------------------------------------- CE floor (band 2) --
+
+
+def test_ce_floor_demotes_confident_irrelevance_below_band_1(policy: RankPolicy) -> None:
+    """A head row the CE scored at p~=0.0025 (logit -6) must not stay pinned
+    in band 0 above unreranked rows: it lands in band 2, after band 1, and
+    keeps its ce for diagnostics."""
+    floored = replace(policy, ce_floor=0.05)
+    pool = [
+        PoolRow(1, 90, 0.9, rrf=0.02),  # strong retrieval, CE says irrelevant
+        PoolRow(2, 30, 0.2, rrf=0.001),  # weak retrieval, CE says relevant
+        PoolRow(3, 80, 0.8, rrf=0.015),  # not scored by the CE -> band 1
+    ]
+    reranked = apply_ce_scores(pool, {1: -6.0, 2: 2.0}, policy=floored)
+    by_id = {row.key: row for row in reranked}
+    assert by_id[1].band == 2
+    assert by_id[1].ce == pytest.approx(0.0025, abs=1e-4)  # kept, not erased
+    assert by_id[2].band == 0
+    assert by_id[3].band == 1 and by_id[3].ce is None
+    page = rank_page(reranked, total_matched=3, window=Window(0, 40), policy=floored)
+    assert [item.key for item in page.items] == [2, 3, 1]
+    assert [item.band for item in page.items] == [0, 1, 2]
+
+
+def test_band_2_orders_by_retrieval_blend_not_ce(policy: RankPolicy) -> None:
+    """Sub-floor ce values are all ~0 and meaningless to sort by. Row 2 has
+    the higher ce but row 1 has the stronger retrieval blend; retrieval wins."""
+    floored = replace(policy, ce_floor=0.05)
+    pool = [
+        PoolRow(1, 90, 0.9, rrf=0.02),
+        PoolRow(2, 20, 0.1, rrf=0.001),
+    ]
+    reranked = apply_ce_scores(pool, {1: -8.0, 2: -7.0}, policy=floored)
+    assert all(row.band == 2 for row in reranked)
+    ce_by_id = {row.key: row.ce for row in reranked}
+    assert ce_by_id[2] > ce_by_id[1]  # ce alone would invert the order
+    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=floored)
+    assert [item.key for item in page.items] == [1, 2]
+
+
+def test_ce_at_floor_stays_band_0(policy: RankPolicy) -> None:
+    """The floor is exclusive: ce == floor is a keep, not a demotion."""
+    floored = replace(policy, ce_floor=0.5)
+    reranked = apply_ce_scores([PoolRow(1, 50, 0.5)], {1: 0.0}, policy=floored)
+    assert reranked[0].ce == 0.5
+    assert reranked[0].band == 0
+
+
+def test_ce_floor_zero_preserves_legacy_banding(policy: RankPolicy) -> None:
+    """Library default ce_floor=0.0: even a hard CE rejection stays band 0,
+    exactly the pre-floor behaviour (0.0 >= 0.0)."""
+    assert policy.ce_floor == 0.0
+    pool = [PoolRow(1, 90, 0.9, rrf=0.02), PoolRow(2, 30, 0.2, rrf=0.001)]
+    reranked = apply_ce_scores(pool, {1: -30.0, 2: 3.0}, policy=policy)
+    assert [row.band for row in reranked] == [0, 0]
+    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=policy)
+    # Band 0 still orders by ce, so the rejected row sinks within the band
+    # but is not ejected from it.
+    assert [item.key for item in page.items] == [2, 1]

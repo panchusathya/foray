@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from foray.evidence import build_evidence, templates_from_signals, validate
+from foray.evidence import _is_pad, build_evidence, templates_from_signals, validate
 
 
 def _github(**overrides) -> dict:
@@ -119,3 +119,66 @@ def test_evidence_grid_synthetic_rows_all_validate() -> None:
                     if not validate(phrase):
                         failures.append((kind, stars, commits, phrase))
     assert failures == []
+
+
+# ----------------------------------------------- evidence_count vs highlight_count --
+
+
+def test_pad_recognizer_matches_only_the_two_filler_shapes() -> None:
+    assert _is_pad("LinkedIn profile, no public code evidence")
+    assert _is_pad("0 repos, 0 total stars, no scale evidence")
+    assert _is_pad("14 repos, 14000 total stars, no scale evidence")
+    assert not _is_pad("7y stated experience (medium confidence)")
+    assert not _is_pad("Maintains tikv/tikv, 14k stars")
+    assert not _is_pad("Staff Engineer at Stripe, 3y 2m")
+
+
+def test_linkedin_title_plus_pad_counts_as_one_evidence() -> None:
+    """The pad keeps the card honest but is not evidence: this row renders two
+    sentences yet carries one substantive phrase, so min_evidence=2 vetoes it."""
+    row = _linkedin(
+        employer="", tenure_months=None, est_experience_years=None, domain_markers=[]
+    )
+    ev = build_evidence(row, query="ml engineer", score=None, display_floor=20)
+    assert ev.highlights == ["Staff Engineer", "LinkedIn profile, no public code evidence"]
+    assert ev.highlight_count == 2
+    assert ev.evidence_count == 1
+
+
+def test_linkedin_stated_experience_is_evidence() -> None:
+    """Title line + stated-experience line: both checkable, both count."""
+    row = _linkedin(employer="", tenure_months=None, domain_markers=[])
+    ev = build_evidence(row, query="ml engineer", score=None, display_floor=20)
+    assert ev.evidence_count == 2
+    assert all(not _is_pad(h) for h in ev.highlights)
+
+
+def test_github_pad_only_row_has_zero_evidence() -> None:
+    row = _github(
+        primary_language=None,
+        top_repos=[],
+        employer=None,
+        commits_last_year=0,
+        prs_last_year=0,
+        topics=[],
+    )
+    ev = build_evidence(row, query="ml engineer", score=None, display_floor=20)
+    assert ev.highlight_count == 1
+    assert ev.evidence_count == 0
+
+
+def test_stored_archetype_highlights_always_count_as_evidence() -> None:
+    """LLM-written archetype highlights are evidence by definition, and never
+    take the pad shapes."""
+    row = _linkedin(
+        employer="", tenure_months=None, est_experience_years=None, domain_markers=[]
+    )
+    ev = build_evidence(
+        row,
+        query="inference systems",
+        stored_highlights=["Led inference team at Stripe", "Shipped a vLLM fork"],
+        score=70,
+        display_floor=20,
+    )
+    assert ev.highlight_source == "archetype"
+    assert ev.evidence_count == 2

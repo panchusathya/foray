@@ -78,6 +78,8 @@ export const api = {
   // consumes it as a bare array of the whole org.
   contactsGrid: (params = {}) => request(`/v1/candidates?${contactParams(params)}`),
   contactsCount: (params = {}) => request(`/v1/candidates/count?${contactParams(params)}`),
+  // Ids only, capped: feeds "select all matching" without pulling rows.
+  contactIds: (params = {}) => request(`/v1/candidates/ids?${contactParams(params)}`),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
   // Buys contact details for sourced candidates. Goes through /v1 rather than
   // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends

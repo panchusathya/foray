@@ -531,3 +531,28 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   background: none;
   border: none;
 }
+
+/* ---------- contact history ---------- */
+.thread-head { display: flex; gap: 10px; align-items: baseline; width: 100%; }
+/* A flex item defaults to min-width: auto and will not shrink below its
+   content, which is how a long subject pushed the message count and date off
+   the right-hand edge. `overflow: hidden` is what actually fixes it -- the
+   automatic minimum size is zero for any box whose overflow is not visible --
+   so removing it reintroduces the bug even with min-width: 0 still set. The
+   explicit min-width: 0 is kept as belt and braces, not as the mechanism. */
+.thread-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-meta { flex: 0 0 auto; white-space: nowrap; }
+/* Addresses and pasted URLs have no spaces to wrap on. */
+.wrap-anywhere { overflow-wrap: anywhere; }
+.message-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-family: inherit;
+}

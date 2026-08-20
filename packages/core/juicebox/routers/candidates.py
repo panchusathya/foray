@@ -203,12 +203,25 @@ def _candidate_query(
     created_after=None,
     crm_status=None,
     tag=None,
+    exclude_in_sequence=False,
     now=None,
 ):
     """One WHERE clause, shared by the listing and the count.
 
     They used to disagree -- ``/count`` ignored every filter -- so a filtered
     grid had no honest total to show. Building both from here means they cannot.
+
+    ``exclude_in_sequence`` defaults to False, and used to be unconditional.
+    That was wrong in production: an ``Enrollment`` stays ``active`` from the
+    moment someone is enrolled until the last step sends or they answer, so on
+    any multi-step sequence the people who have not replied *yet* are exactly
+    the ones still active. Hiding them emptied the view that exists to find
+    them, and "No reply" reported that everyone had replied.
+
+    The original worry -- surfacing someone mid-sequence invites a
+    double-touch -- does not survive contact with ``enroll_candidates``, which
+    is idempotent and returns the existing row. Hiding people from a diagnostic
+    view is the worse failure, so the filter stays available and off.
     """
     now = now or utcnow()
     stmt = (
@@ -275,16 +288,15 @@ def _candidate_query(
             stmt = stmt.where(
                 rollup.c.last_emailed_at < now - timedelta(days=NO_REPLY_GRACE_DAYS)
             )
-        # Mid-sequence people are already being chased; surfacing them for
-        # revival would double-touch them.
-        stmt = stmt.where(
-            ~exists(
-                select(Enrollment.id).where(
-                    Enrollment.candidate_id == Candidate.id,
-                    Enrollment.status == "active",
+        if exclude_in_sequence:
+            stmt = stmt.where(
+                ~exists(
+                    select(Enrollment.id).where(
+                        Enrollment.candidate_id == Candidate.id,
+                        Enrollment.status == "active",
+                    )
                 )
             )
-        )
     return stmt
 
 
@@ -327,6 +339,9 @@ def list_candidates(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    exclude_in_sequence: bool = Query(
+        default=False, description="Drop people with an active enrollment"
+    ),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     include_history: bool = Query(
@@ -357,6 +372,7 @@ def list_candidates(
         created_after=created_after,
         crm_status=crm_status,
         tag=tag,
+        exclude_in_sequence=exclude_in_sequence,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, sort, dir)).limit(limit).offset(offset)
@@ -397,6 +413,9 @@ def count_candidates(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    exclude_in_sequence: bool = Query(
+        default=False, description="Drop people with an active enrollment"
+    ),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict[str, int]:
@@ -421,6 +440,7 @@ def count_candidates(
         created_after=created_after,
         crm_status=crm_status,
         tag=tag,
+        exclude_in_sequence=exclude_in_sequence,
     )
     total = db.scalar(
         select(func.count()).select_from(stmt.with_only_columns(Candidate.id).subquery())
@@ -440,6 +460,9 @@ def candidate_ids(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    exclude_in_sequence: bool = Query(
+        default=False, description="Drop people with an active enrollment"
+    ),
     limit: int = Query(default=1000, ge=1, le=MAX_SELECT_ALL),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
@@ -468,6 +491,7 @@ def candidate_ids(
         created_after=created_after,
         crm_status=crm_status,
         tag=tag,
+        exclude_in_sequence=exclude_in_sequence,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, "name", "asc")).limit(limit + 1)

@@ -42,13 +42,11 @@ function MessageRow({ message }) {
         </span>
         <span className="muted small">{when(message.sent_at || message.created_at)}</span>
       </div>
-      <div className="small muted">
+      <div className="small muted wrap-anywhere">
         {inbound ? `from ${message.from_address}` : `to ${message.to_address}`}
         {message.reply_intent ? ` · ${message.reply_intent}` : ''}
       </div>
-      <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontFamily: 'inherit' }}>
-        {textOf(message)}
-      </pre>
+      <pre className="message-body">{textOf(message)}</pre>
       {message.web_link ? (
         <div className="small">
           <a href={message.web_link} target="_blank" rel="noreferrer">
@@ -65,11 +63,14 @@ function Thread({ thread, defaultOpen }) {
   return (
     <div className="stack" style={{ gap: 6 }} data-testid="history-thread">
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
-        <span className="spread" style={{ width: '100%' }}>
-          <span>
+        <span className="thread-head">
+          {/* Truncates rather than pushing the count and date off the page:
+              a flex item will not shrink below its content without min-width:0,
+              and real subjects are longer than the column. */}
+          <span className="thread-subject" title={thread.subject}>
             {open ? '▾' : '▸'} {thread.subject}
           </span>
-          <span className="muted small">
+          <span className="thread-meta muted small">
             {thread.messages.length} email{thread.messages.length === 1 ? '' : 's'} ·{' '}
             {shortDate(thread.last_at)}
           </span>

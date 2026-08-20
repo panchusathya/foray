@@ -16,10 +16,13 @@ strictest first:
 2. by the reply's In-Reply-To against the RFC Message-ID we stored on send,
 3. by sender address (``find_message_for_reply``) as the last resort.
 
+(1) checks both conversation_id and provider_native_id, because the two
+providers mean different things by "thread id": Graph mints a separate
+conversationId, while Zoho reuses the root message's own id.
+
 (2) exists because address matching cannot tell two sequences to the same
-person apart, and because Zoho gives no thread id on some replies. Providers
-that need an extra call to populate it only make that call when (1) came up
-empty.
+person apart, and because not every reply carries a thread id. Providers that
+need an extra call to populate it only make that call when (1) came up empty.
 
 Matched replies flow into ``record_reply`` -- intent classification, stopping
 the enrollment, pipeline stage, and the do-not-contact list all live there.
@@ -32,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import MailboxConnection, Message, ReplyDraft, utcnow
@@ -81,12 +84,21 @@ def _already_recorded(db: Session, *, org_id: str, native_id: str) -> bool:
 
 def _match_outbound(db: Session, *, org_id: str, event: MailboxEvent) -> Message | None:
     if event.thread_id:
+        # Two shapes of thread id, one query. Graph mints a conversationId that
+        # looks nothing like a message id, and we store it in conversation_id.
+        # Zoho reuses the ROOT message's own messageId as the thread id, which
+        # for our sends lives in provider_native_id -- checking only
+        # conversation_id meant no Zoho reply ever matched by thread, quietly
+        # demoting every one of them to sender-address guesswork.
         message = db.scalar(
             select(Message)
             .where(
                 Message.org_id == org_id,
                 Message.direction == "outbound",
-                Message.conversation_id == event.thread_id,
+                or_(
+                    Message.conversation_id == event.thread_id,
+                    Message.provider_native_id == event.thread_id,
+                ),
             )
             .order_by(Message.created_at.desc())
         )

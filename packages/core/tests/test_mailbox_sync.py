@@ -230,6 +230,28 @@ class TestSyncMailbox:
         assert matched is not None
         assert matched.internet_message_id == "<out-1@outlook.com>"
 
+    def test_a_zoho_style_thread_id_matches_the_outbound_it_belongs_to(
+        self, session, synced_org
+    ):
+        """Zoho reuses the root message's own id as the thread id, so the
+        lookup has to check provider_native_id as well as conversation_id --
+        otherwise every Zoho reply silently falls through to address matching.
+        """
+        from dataclasses import replace
+
+        from juicebox.integrations.sync import _match_outbound
+
+        event = microsoft.to_event(_inbound(conversation_id="", graph_id="in-thread"))
+        # "out-1" is the provider_native_id the fixture's send recorded; a Zoho
+        # reply would arrive carrying exactly that as its threadId.
+        matched = _match_outbound(
+            session,
+            org_id=synced_org["connection"].org_id,
+            event=replace(event, thread_id="out-1", from_address="stranger@nowhere.io"),
+        )
+        assert matched is not None
+        assert matched.provider_native_id == "out-1"
+
     def test_own_and_unmatched_mail_is_skipped(self, session, synced_org):
         fake = FakeDeltaClient()
         fake.queue(

@@ -21,6 +21,7 @@ from .routers import (
     candidates,
     crm,
     integrations,
+    job_discovery,
     job_matches,
     job_postings,
     org,
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(job_postings.router)
     app.include_router(job_matches.router)
+    app.include_router(job_discovery.router)
     app.include_router(outreach.router)
     app.include_router(outreach.messages_router)
     app.include_router(outreach.reply_drafts_router)

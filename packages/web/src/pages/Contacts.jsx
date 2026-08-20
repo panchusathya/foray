@@ -22,7 +22,7 @@ import { AddContactModal } from '../components/AddContactModal.jsx';
 import { BulkBar } from '../components/BulkBar.jsx';
 import { DiscoveredTray } from '../components/DiscoveredTray.jsx';
 import { DuplicatesPanel } from '../components/DuplicatesPanel.jsx';
-import { Avatar, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { Avatar, Empty, ErrorBox, Loading, PageHeader, ViewTabs } from '../components/common.jsx';
 import { CRM_STATUS_LABELS, api } from '../lib/api.js';
 import {
   CONTACT_COLUMNS,
@@ -169,22 +169,6 @@ function Cell({ column, row }) {
   }
 }
 
-function ViewTabs({ activeId }) {
-  return (
-    <nav className="viewtabs" data-testid="view-tabs">
-      {CONTACT_VIEWS.map((view) => (
-        <Link
-          key={view.id}
-          to={`/contacts?view=${view.id}`}
-          className={view.id === activeId ? 'active' : ''}
-        >
-          {view.label}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-
 export function ContactsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   // The project list is already in context for the sidebar switcher; a
@@ -327,7 +311,7 @@ export function ContactsPage() {
         />
       ) : null}
 
-      <ViewTabs activeId={view.id} />
+      <ViewTabs views={CONTACT_VIEWS} activeId={view.id} basePath="/contacts" />
 
       {view.panel ? (
         view.panel === 'duplicates' ? <DuplicatesPanel /> : <DiscoveredTray />

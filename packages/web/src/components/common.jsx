@@ -1,5 +1,7 @@
 /** Small shared presentational pieces. */
 
+import { Link } from 'react-router-dom';
+
 export function PageHeader({ title, subtitle, actions }) {
   return (
     <div className="page-header spread">
@@ -70,5 +72,21 @@ export function ScoreBar({ value }) {
     <div className="bar">
       <div style={{ width: `${percent}%` }} />
     </div>
+  );
+}
+
+export function ViewTabs({ views, activeId, basePath }) {
+  return (
+    <nav className="viewtabs" data-testid="view-tabs">
+      {views.map((view) => (
+        <Link
+          key={view.id}
+          to={`${basePath}?view=${view.id}`}
+          className={view.id === activeId ? 'active' : ''}
+        >
+          {view.label}
+        </Link>
+      ))}
+    </nav>
   );
 }

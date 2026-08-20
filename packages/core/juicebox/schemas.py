@@ -904,4 +904,39 @@ class CreateProjectFromPosting(BaseModel):
     name: str | None = None
 
 
+class DiscoverMessage(BaseModel):
+    role: Literal["user", "agent"]
+    content: str = ""
+
+
+class DiscoverStep(BaseModel):
+    label: str
+    detail: str = ""
+    count: int = 0
+
+
+class DiscoveredPosting(BaseModel):
+    source_id: str
+    title: str
+    company: str = ""
+    location: str = ""
+    jd_text: str = ""
+    source_url: str = ""
+    already_have: bool = False
+    posting_id: str | None = None
+
+
+class DiscoverTurnIn(BaseModel):
+    messages: list[DiscoverMessage] = Field(min_length=1)
+    num_results: int = Field(default=10, ge=1, le=25)
+
+
+class DiscoverTurnOut(BaseModel):
+    reply: str
+    questions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    steps: list[DiscoverStep] = Field(default_factory=list)
+    results: list[DiscoveredPosting] = Field(default_factory=list)
+
+
 TokenResponse.model_rebuild()

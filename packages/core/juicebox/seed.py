@@ -328,7 +328,7 @@ SEQUENCE_STEPS = [
             "{{ why_relevant }}\n\n"
             "We're hiring a {{ role_title | senior engineer }} and I'd love 15 minutes to walk "
             "you through it. Open to a chat this week?\n\n"
-            "Best,\n{{ sender_name | The Talent Team }}"
+            "Best,\n{{ sender_first_name | The Talent Team }}"
         ),
     },
     {
@@ -339,7 +339,7 @@ SEQUENCE_STEPS = [
             "Following up on my note about the {{ role_title | role }} — happy to send over the "
             "team and scope details if that's easier than a call.\n\n"
             "Either way, thanks for reading.\n\n"
-            "{{ sender_name | The Talent Team }}"
+            "{{ sender_first_name | The Talent Team }}"
         ),
     },
     {
@@ -350,7 +350,7 @@ SEQUENCE_STEPS = [
             "I'll stop here so I'm not cluttering your inbox. If the timing changes, my door is "
             "open — your work on {{ top_skill | your side of the stack }} was genuinely "
             "interesting.\n\n"
-            "{{ sender_name | The Talent Team }}"
+            "{{ sender_first_name | The Talent Team }}"
         ),
     },
 ]

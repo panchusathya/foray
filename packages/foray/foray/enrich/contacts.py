@@ -19,6 +19,7 @@ in ``foray/api/search.py``, and that prefers personal regardless of confidence.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -26,6 +27,81 @@ from ..log import get_logger
 from .emails import UPSERT_EMAIL
 
 log = get_logger("enrich.contacts")
+
+
+class ProviderUnavailable(RuntimeError):
+    """The provider answered, but not with real data about the person we asked for.
+
+    Its own class because the caller has to treat it differently from "no
+    address found": a miss is a fact worth caching, and this is not. Caching it
+    would stamp the negative cache from a vendor's quota wall and make the
+    candidate permanently unenrichable.
+    """
+
+
+# RFC 2606 / RFC 6761 reserve these so documentation and tests can use them
+# without ever reaching a real mailbox. An address in one of them is by
+# definition not a way to contact anybody.
+RESERVED_DOMAINS = frozenset(
+    {"example.com", "example.net", "example.org", "invalid", "localhost", "test"}
+)
+RESERVED_SUFFIXES = (".example", ".invalid", ".localhost", ".test")
+
+# Local parts that are filler in any payload, on any domain. These are never
+# somebody's real address.
+_ALWAYS_FILLER = re.compile(
+    r"^(?:sample|example|your[-_.]?e?-?mail|first[-_.]?last|full[-_.]?name|"
+    r"no-?reply|do-?not-?reply|email[-_.]?address)$",
+    re.IGNORECASE,
+)
+
+# Filler words that are *also* real addresses in the wild: plenty of developers
+# use mail@theirdomain.com. Rejected only with a numeric suffix -- which is what
+# a generated sample looks like (`email1`, `email2`, `test2`) and what a person
+# almost never chooses -- or on a freemail domain, where there is no personal
+# domain to justify it.
+#
+# `abc` and `xyz` are deliberately absent: abc360982737@gmail.com is a real
+# commit-mined address in this database, and the numbered rule would have eaten
+# it.
+_SOFT_WORDS = r"e?-?mail|test|sample|user|username|name|foo|bar|baz"
+_SOFT_FILLER = re.compile(rf"^(?:{_SOFT_WORDS})$", re.IGNORECASE)
+_SOFT_FILLER_NUMBERED = re.compile(rf"^(?:{_SOFT_WORDS})[-_.]?\d{{1,3}}$", re.IGNORECASE)
+
+
+def is_placeholder(email: str) -> bool:
+    """Whether this address is documentation filler rather than a person.
+
+    Checked at the last gate before a write, not only in the adapter, because a
+    stored fake address becomes ``primary_email`` and then a send address. The
+    freemail half of a placeholder pair is the dangerous one:
+    ``email2@gmail.com`` is syntactically perfect and may well belong to a
+    stranger.
+
+    The rule is deliberately narrower than the obvious one. A first pass matched
+    any filler word and would have deleted fifteen real addresses already in the
+    database -- ``mail@danijar.com``, ``email@jamie.sh``, ``mail@taeuk.me`` --
+    all mined from git history, all genuine. Somebody's own domain is exactly
+    where ``mail@`` is a real choice. A false negative is a retryable miss; a
+    false positive silently destroys the only way to reach someone.
+    """
+    local, _, domain = (email or "").strip().lower().rpartition("@")
+    if not local or not domain:
+        return True
+    if domain in RESERVED_DOMAINS or domain.endswith(RESERVED_SUFFIXES):
+        return True
+    if _ALWAYS_FILLER.match(local):
+        return True
+    if _SOFT_FILLER_NUMBERED.match(local):
+        return True
+    if _SOFT_FILLER.match(local):
+        # Bare `mail@` is a real address on a personal domain and filler on a
+        # freemail one, where nobody had to own anything to pick it.
+        from .employer import is_work_domain
+
+        return not is_work_domain(email)
+    return False
+
 
 # Where each provider's addresses sit on the ladder documented in emails.py.
 # contactout_personal sits just above apollo_personal (70) because the provider
@@ -95,6 +171,16 @@ async def store_result(
     """
     written = 0
     for found in result.emails:
+        if is_placeholder(found.email):
+            # Belt and braces. The adapter filters these too, but this is the
+            # last gate before the row exists, and a stored placeholder becomes
+            # Candidate.primary_email and then a send address.
+            log.warning(
+                f"{provider}.placeholder_rejected",
+                candidate_id=candidate_id,
+                email=found.email,
+            )
+            continue
         source = f"{provider}_{'work' if found.is_work else 'personal'}"
         confidence = CONFIDENCE.get(source)
         if confidence is None:

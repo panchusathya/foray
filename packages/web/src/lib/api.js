@@ -119,6 +119,9 @@ export const api = {
   createCandidate: (payload) => request('/v1/candidates', { method: 'POST', body: payload }),
   updateCandidate: (id, payload) =>
     request(`/v1/candidates/${id}`, { method: 'PATCH', body: payload }),
+  // Cascades: notes, tags, the address projection, project memberships and
+  // enrollments all go with the person.
+  deleteCandidate: (id) => request(`/v1/candidates/${id}`, { method: 'DELETE' }),
 
   listNotes: (candidateId) => request(`/v1/candidates/${candidateId}/notes`),
   createNote: (candidateId, payload) =>

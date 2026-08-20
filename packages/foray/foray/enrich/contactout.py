@@ -33,7 +33,12 @@ from ..config import settings
 from ..log import get_logger
 from ..ratelimit import RateLimiter
 from ._http import request_with_retry
-from .contacts import FoundEmail, ProviderResult
+from .contacts import (
+    FoundEmail,
+    ProviderResult,
+    ProviderUnavailable,
+    is_placeholder,
+)
 from .employer import domain_of, is_work_domain
 
 log = get_logger("enrich.contactout")
@@ -41,6 +46,14 @@ log = get_logger("enrich.contactout")
 BASE_URL = "https://api.contactout.com"
 ENRICH_PATH = "/v1/linkedin/enrich"
 _HTTP_TIMEOUT = 30.0
+
+# Once the quota is spent, ContactOut does not answer 402, 429, or anything else
+# an HTTP client would notice. It answers **200** with a fully-formed sample
+# profile: "Example Person" at a made-up company, with email1@example.com and
+# email2@gmail.com. Thirty-two candidates were stored from that payload before
+# this check existed. The `message` field is the one honest part of it.
+_SAMPLE_MARKERS = ("sample response", "unlock full access", "book a call")
+_SAMPLE_IDENTITIES = ("example-person", "example person", "john-doe", "jane-doe")
 
 
 def _normalise_profile(url: str | None) -> str | None:
@@ -59,7 +72,35 @@ def _normalise_profile(url: str | None) -> str | None:
 
 def _usable(email: str | None) -> str | None:
     email = (email or "").strip().lower()
-    return email if "@" in email and " " not in email else None
+    if "@" not in email or " " in email:
+        return None
+    return None if is_placeholder(email) else email
+
+
+def _reject_if_sample(payload: dict, requested: str) -> None:
+    """Refuse a payload that is not about the person we asked for.
+
+    Raises rather than returning an empty result, because the two are recorded
+    differently: an empty result stamps contactout_checked_at and makes the
+    candidate permanently unenrichable, and this condition clears the moment
+    somebody tops up the account.
+    """
+    message = str(payload.get("message") or "").lower()
+    hit = next((m for m in _SAMPLE_MARKERS if m in message), None)
+    if hit:
+        raise ProviderUnavailable(
+            "ContactOut returned a sample response instead of real data, which "
+            "means the account is out of quota. Its message: "
+            f"{str(payload.get('message'))[:160]}"
+        )
+
+    profile = payload.get("profile") or {}
+    identity = f"{profile.get('url') or ''} {profile.get('full_name') or ''}".lower()
+    if any(marker in identity for marker in _SAMPLE_IDENTITIES):
+        raise ProviderUnavailable(
+            f"ContactOut answered about {profile.get('full_name')!r}, not about "
+            f"{requested} -- treating the whole payload as sample data."
+        )
 
 
 class ContactOutProvider:
@@ -104,7 +145,9 @@ class ContactOutProvider:
             if owns_client:
                 await client.aclose()
 
-        return self._parse(response.json() or {})
+        payload = response.json() or {}
+        _reject_if_sample(payload, profile)
+        return self._parse(payload)
 
     def _count(self) -> None:
         self.calls += 1

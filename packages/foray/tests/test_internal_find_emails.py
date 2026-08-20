@@ -154,9 +154,18 @@ class TestLookUp:
 
         provider = Flaky()
         out = asyncio.run(internal._look_up(provider, [row("ok"), row("boom"), row("ok2")]))
-        statuses = {r["login"]: (result is not None) for r, result in out}
+        statuses = {r["login"]: (result is not None) for r, result, _ in out}
         assert statuses == {"ok": True, "boom": False, "ok2": True}
         assert sorted(provider.asked) == ["boom", "ok", "ok2"]
+
+    def test_an_ordinary_failure_is_not_reported_as_provider_unavailable(self):
+        class Broken(RecordingProvider):
+            async def find_emails(self, node):
+                raise RuntimeError("connection reset")
+
+        [(_, result, failure)] = asyncio.run(internal._look_up(Broken(), [row("x")]))
+        assert result is None
+        assert not failure.startswith(internal._UNAVAILABLE)
 
 
 @requires_db

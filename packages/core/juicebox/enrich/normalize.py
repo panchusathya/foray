@@ -100,6 +100,97 @@ def clean_emails(values: list[str] | None) -> list[str]:
     return out
 
 
+# --- placeholder addresses -------------------------------------------------
+#
+# Juicebox trusts whatever ends up in Candidate.emails: primary_email is
+# emails[0] and send_step sends there. That trust is only safe if nothing
+# upstream can put filler in the list -- and something did. ContactOut, once its
+# trial quota was spent, answered HTTP 200 with a complete sample profile
+# carrying email1@example.com and email2@gmail.com, and 30 imported candidates
+# ended up with that pair. email2@gmail.com sorted first, so it would have been
+# the send address.
+#
+# Foray has its own copy of this rule where provider results are written. This
+# one exists because addresses reach Juicebox by more routes than that --
+# import, manual add, a pasted CSV -- and the cost is asymmetric: a rejected
+# real address is a mistake a human can see, and a stored fake one is a message
+# to a stranger.
+#
+# Deliberately narrower than the obvious rule. Matching every filler word would
+# condemn mail@danijar.com and email@jamie.sh, which are real people's real
+# addresses on their own domains; a first draft of the Foray rule did exactly
+# that, and a dry run caught it holding fifteen genuine addresses.
+
+# RFC 2606 / RFC 6761 reserve these precisely so documentation can use them
+# without reaching a mailbox.
+RESERVED_DOMAINS = frozenset(
+    {"example.com", "example.net", "example.org", "invalid", "localhost", "test"}
+)
+RESERVED_SUFFIXES = (".example", ".invalid", ".localhost", ".test")
+
+# Filler on any domain: nobody's real address.
+_ALWAYS_FILLER = re.compile(
+    r"^(?:sample|example|your[-_.]?e?-?mail|first[-_.]?last|full[-_.]?name|"
+    r"no-?reply|do-?not-?reply|email[-_.]?address)$",
+    re.IGNORECASE,
+)
+
+# A numbered filler local part -- what a generated sample looks like, and what a
+# person essentially never picks.
+_NUMBERED_FILLER = re.compile(
+    r"^(?:e?-?mail|test|sample|user|username|name|foo|bar|baz)[-_.]?\d{1,3}$", re.IGNORECASE
+)
+
+# The same words unnumbered. Real on a personal domain, filler on freemail.
+_BARE_FILLER = re.compile(r"^(?:e?-?mail|test|sample|user|username|name|foo|bar|baz)$", re.IGNORECASE)
+
+# Enough of the common ones to make the bare-filler rule useful. Not a complete
+# list and does not need to be: missing one only means a filler address gets
+# through to a human's eyes, which is where it was going anyway.
+FREEMAIL_DOMAINS = frozenset(
+    {
+        "aol.com",
+        "gmail.com",
+        "googlemail.com",
+        "hotmail.co.uk",
+        "hotmail.com",
+        "icloud.com",
+        "live.com",
+        "mac.com",
+        "mail.com",
+        "me.com",
+        "outlook.com",
+        "protonmail.com",
+        "yahoo.co.uk",
+        "yahoo.com",
+        "ymail.com",
+    }
+)
+
+
+def is_placeholder(email: str) -> bool:
+    """Whether this address is documentation filler rather than a person."""
+    local, _, domain = (email or "").strip().lower().rpartition("@")
+    if not local or not domain:
+        return True
+    if domain in RESERVED_DOMAINS or domain.endswith(RESERVED_SUFFIXES):
+        return True
+    if _ALWAYS_FILLER.match(local) or _NUMBERED_FILLER.match(local):
+        return True
+    if _BARE_FILLER.match(local):
+        return domain in FREEMAIL_DOMAINS
+    return False
+
+
+def strip_placeholders(emails: list[str] | None) -> tuple[list[str], list[str]]:
+    """Split a candidate's addresses into keep and drop, order preserved."""
+    keep: list[str] = []
+    drop: list[str] = []
+    for email in emails or []:
+        (drop if is_placeholder(email) else keep).append(email)
+    return keep, drop
+
+
 def clean_phones(values: list[str] | None) -> list[str]:
     out: list[str] = []
     for value in values or []:

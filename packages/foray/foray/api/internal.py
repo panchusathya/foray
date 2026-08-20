@@ -36,7 +36,12 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..db import get_pool
-from ..enrich.contacts import EmailProvider, ProviderResult, store_result
+from ..enrich.contacts import (
+    EmailProvider,
+    ProviderResult,
+    ProviderUnavailable,
+    store_result,
+)
 from ..log import get_logger
 
 log = get_logger("api.internal")
@@ -68,6 +73,10 @@ select c.id,
 """
 
 SKIPPED = {"cached", "has_personal", "no_profile"}
+
+# Marks a failure as "the provider is up but not answering honestly" rather
+# than a one-off error, so the caller can report the difference.
+_UNAVAILABLE = "unavailable:"
 
 _provider: EmailProvider | None = None
 
@@ -138,13 +147,18 @@ async def find_emails(
     looked_up = await _look_up(provider, to_look_up)
 
     written = 0
+    unavailable: str | None = None
     async with pool.acquire() as conn:
-        for row, result in looked_up:
+        for row, result, failure in looked_up:
             if result is None:
-                # The lookup itself failed. Do NOT stamp the cache: that would
-                # record a vendor error as "we asked, there is nothing there",
-                # and no later click could ever correct it.
-                results[row["login"]] = {"status": "error"}
+                # The lookup failed. Do NOT stamp the cache: that would record a
+                # vendor problem as "we asked, there is nothing there", and no
+                # later click could ever correct it.
+                if failure and failure.startswith(_UNAVAILABLE):
+                    unavailable = failure[len(_UNAVAILABLE) :]
+                    results[row["login"]] = {"status": "provider_unavailable"}
+                else:
+                    results[row["login"]] = {"status": "error"}
                 continue
             async with conn.transaction():
                 await conn.execute(
@@ -171,9 +185,17 @@ async def find_emails(
         "found_personal": sum(1 for r in results.values() if r["status"] == "found"),
         "skipped": sum(1 for r in results.values() if r["status"] in SKIPPED),
         "errors": sum(1 for r in results.values() if r["status"] == "error"),
+        "unavailable": sum(
+            1 for r in results.values() if r["status"] == "provider_unavailable"
+        ),
     }
     log.info("internal.find_emails", reason=body.reason, **summary)
-    return {"provider": provider.name, "summary": summary, "results": results}
+    payload: dict = {"provider": provider.name, "summary": summary, "results": results}
+    if unavailable:
+        # Say what the provider actually said. "0 found" would read as "none of
+        # these people have an address", which is a different and wrong answer.
+        payload["detail"] = unavailable
+    return payload
 
 
 def triage(
@@ -209,8 +231,12 @@ def triage(
 
 async def _look_up(
     provider: EmailProvider, rows: list[Any]
-) -> list[tuple[Any, ProviderResult | None]]:
+) -> list[tuple[Any, ProviderResult | None, str | None]]:
     """Concurrent lookups, each result paired back with its row.
+
+    Returns ``(row, result, failure)``. ``failure`` is prefixed with
+    ``_UNAVAILABLE`` when the provider is answering but not with real data, so
+    the caller can say so instead of reporting "nothing found".
 
     Writes are deliberately left to the caller on a single connection: a hundred
     tasks each acquiring from the pool would starve the rest of the service for
@@ -220,14 +246,22 @@ async def _look_up(
         return []
     gate = asyncio.Semaphore(LOOKUP_CONCURRENCY)
 
-    async def one(row: Any) -> tuple[Any, ProviderResult | None]:
+    async def one(row: Any) -> tuple[Any, ProviderResult | None, str | None]:
         async with gate:
             try:
-                return row, await provider.find_emails(
+                result = await provider.find_emails(
                     {"login": row["login"], "linkedin_url": row["linkedin_url"]}
                 )
+                return row, result, None
+            except ProviderUnavailable as exc:
+                log.warning(
+                    "internal.find_emails.provider_unavailable",
+                    login=row["login"],
+                    error=str(exc),
+                )
+                return row, None, f"{_UNAVAILABLE}{exc}"
             except Exception as exc:  # noqa: BLE001 - one bad lookup must not fail the batch
                 log.warning("internal.find_emails.failed", login=row["login"], error=str(exc))
-                return row, None
+                return row, None, str(exc)
 
     return list(await asyncio.gather(*(one(row) for row in rows)))

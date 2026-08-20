@@ -65,14 +65,16 @@ that pass the structured filters, retrieves bounded **vector** and **lexical**
 arms (plus an optional legacy `score` arm), fuses them with RRF, then blends
 RRF with the precomputed archetype score and exact cosine. Unscored rows are
 retrievable; a scored row below `FORAY_DISPLAY_FLOOR` is still excluded.
-Optional local cross-encoder rerank (`FORAY_RERANK_ENABLED`, default off) reorders
-the head of the fused pool. `paginable` is the fused pool capped by
-`FORAY_MAX_PAGINABLE` (1000 by default).
+Local MiniLM rerank (`FORAY_RERANK_ENABLED`) reorders the head of the fused
+pool. The Python default is off so CI (no torch) does not load the model;
+`docker-compose.prod.yml` turns it on together with `FORAY_UNSCORED_SCORE=20`
+so unscored rows sit at the display floor and the CE ranks them. `paginable`
+is the fused pool capped by `FORAY_MAX_PAGINABLE` (1000 by default).
 
 `FORAY_RETRIEVAL_ARMS=score` restores the pre-hybrid "top-N by archetype score"
-pool and is the eval/rollback lever. After enabling the cross-encoder, raise
-`FORAY_UNSCORED_SCORE` from 0 to 20 so unscored rows sit at the display floor
-rather than sinking.
+pool and is the eval/rollback lever. Flipping only one of rerank / unscored
+is wrong: unscored=20 without CE is a precision cliff; CE without unscored=20
+leaves the VLM/CUDA people at the bottom of the page.
 
 Lexical documents live in `candidate_signals.search_tsv` (migration 006). Backfill
 with `scripts/backfill_search_tsv.py` — it never touches `derived_at`. Until that

@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     w_rrf: float = Field(default=0.5, validation_alias="FORAY_W_RRF")
     w_score: float = Field(default=0.3, validation_alias="FORAY_W_SCORE")
     w_vector: float = Field(default=0.2, validation_alias="FORAY_W_VECTOR")
+    # Unscored rows get this prior instead of 0. Production compose sets 20
+    # together with FORAY_RERANK_ENABLED=true. The library default stays 0 so
+    # CI (no torch) and a local uvicorn without the MiniLM weights cannot
+    # flood page 1 with unscored rows ranked only by RRF.
     unscored_score: int = Field(default=0, ge=0, le=100, validation_alias="FORAY_UNSCORED_SCORE")
     min_evidence: int = Field(default=2, ge=0, le=8, validation_alias="FORAY_MIN_EVIDENCE")
     hnsw_ef_search: int = Field(default=100, ge=10, le=2000, validation_alias="FORAY_HNSW_EF_SEARCH")
@@ -110,7 +114,10 @@ class Settings(BaseSettings):
     activity_floor_months: int = Field(default=24, validation_alias="FORAY_ACTIVITY_FLOOR_MONTHS")
     min_results_before_widen: int = Field(default=12, validation_alias="FORAY_MIN_RESULTS")
 
-    # --- cross-encoder rerank (query path, local, default off) ---
+    # --- cross-encoder rerank (query path, local) ---
+    # Library default is off: CI installs foray with --no-deps and no torch, so
+    # search tests must not load MiniLM. docker-compose.prod.yml turns this on
+    # with unscored_score=20 after the image bakes the weights (Dockerfile).
     rerank_enabled: bool = Field(default=False, validation_alias="FORAY_RERANK_ENABLED")
     rerank_model: str = Field(
         default="cross-encoder/ms-marco-MiniLM-L-6-v2",

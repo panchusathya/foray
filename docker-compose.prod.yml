@@ -40,10 +40,13 @@ x-foray-env: &foray_env
   FORAY_W_RRF: ${FORAY_W_RRF:-0.5}
   FORAY_W_SCORE: ${FORAY_W_SCORE:-0.3}
   FORAY_W_VECTOR: ${FORAY_W_VECTOR:-0.2}
-  FORAY_UNSCORED_SCORE: ${FORAY_UNSCORED_SCORE:-0}
+  # MiniLM + unscored=20 are a pair. Raising unscored without the CE lets
+  # ungated rows flood page 1; enabling the CE with unscored=0 wastes it on a
+  # pool where those rows still sink. The image bakes the weights.
+  FORAY_UNSCORED_SCORE: ${FORAY_UNSCORED_SCORE:-20}
   FORAY_MIN_EVIDENCE: ${FORAY_MIN_EVIDENCE:-2}
   FORAY_HNSW_EF_SEARCH: ${FORAY_HNSW_EF_SEARCH:-100}
-  FORAY_RERANK_ENABLED: ${FORAY_RERANK_ENABLED:-false}
+  FORAY_RERANK_ENABLED: ${FORAY_RERANK_ENABLED:-true}
   FORAY_RERANK_DEPTH: ${FORAY_RERANK_DEPTH:-48}
   OMP_NUM_THREADS: "2"
   MKL_NUM_THREADS: "2"

@@ -355,7 +355,10 @@ def preview(
         ).strip()
         ai_status = "unavailable"
     return PreviewResponse(
-        subject=subject, body=body, personalization=context, ai_status=ai_status
+        subject=subject,
+        body=templates.sanitize_preview(body),
+        personalization=context,
+        ai_status=ai_status,
     )
 
 

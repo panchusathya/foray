@@ -14,7 +14,9 @@ import html
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlparse
 
 _VAR_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}")
 # An AI directive: ``{{ai: personalize this, say why the role fits}}``. The
@@ -26,6 +28,14 @@ _VAR_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*(?:\|\s*([^}]*?)\s*)?\}\}")
 # there is nothing to interpolate inside an instruction.
 _AI_RE = re.compile(r"\{\{\s*ai\s*:\s*(?P<instruction>[^{}]+?)\s*\}\}", re.IGNORECASE)
 _LINK_RE = re.compile(r'href="(https?://[^"]+)"', re.IGNORECASE)
+# Recruiter-authored bodies may be the historical plain-text templates or the
+# small HTML allowlist the sequence editor writes. Detection is conservative:
+# only tags the editor actually emits flip us into HTML mode, so a literal
+# "<script>" in an old template is still escaped by to_html().
+_HTML_HINT_RE = re.compile(r"</?(?:p|br|strong|b|em|i|u|a)(?:\s|>|/)", re.IGNORECASE)
+_ALLOWED_TAGS = frozenset({"p", "br", "strong", "b", "em", "i", "u", "a"})
+_SKIP_CONTENT_TAGS = frozenset({"script", "style", "iframe", "object", "embed", "noscript"})
+_SAFE_HREF_SCHEMES = frozenset({"http", "https"})
 
 
 class MissingDirective(ValueError):
@@ -141,8 +151,166 @@ def missing_variables(template: str, context: dict[str, Any]) -> list[str]:
     return sorted(set(missing))
 
 
+def looks_like_html(body: str) -> bool:
+    """True when the body already uses the editor's HTML allowlist tags."""
+    return bool(_HTML_HINT_RE.search(body or ""))
+
+
+def _safe_href(value: str | None) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in _SAFE_HREF_SCHEMES or not parsed.netloc:
+        return ""
+    return raw
+
+
+class _HtmlSanitizer(HTMLParser):
+    """Keep p/br/strong/b/em/i/u/a[href]; unwrap or drop everything else."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._open: list[tuple[str, bool]] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag in _SKIP_CONTENT_TAGS:
+                self._skip += 1
+            return
+        if tag in _SKIP_CONTENT_TAGS:
+            self._skip = 1
+            return
+        if tag not in _ALLOWED_TAGS:
+            return
+        if tag == "br":
+            self.parts.append("<br>")
+            return
+        if tag == "a":
+            href = _safe_href(dict(attrs).get("href"))
+            if not href:
+                self._open.append(("a", False))
+                return
+            self.parts.append(f'<a href="{html.escape(href, quote=True)}">')
+            self._open.append(("a", True))
+            return
+        self.parts.append(f"<{tag}>")
+        self._open.append((tag, True))
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag in _SKIP_CONTENT_TAGS:
+                self._skip = max(0, self._skip - 1)
+            return
+        for index in range(len(self._open) - 1, -1, -1):
+            if self._open[index][0] != tag:
+                continue
+            while len(self._open) > index:
+                opened, emitted = self._open.pop()
+                if emitted:
+                    self.parts.append(f"</{opened}>")
+            return
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.lower() != "br":
+            self.handle_endtag(tag)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip or not data:
+            return
+        self.parts.append(html.escape(data, quote=False))
+
+    def handle_comment(self, data: str) -> None:
+        return
+
+    def finish(self) -> str:
+        self.close()
+        while self._open:
+            opened, emitted = self._open.pop()
+            if emitted:
+                self.parts.append(f"</{opened}>")
+        return "".join(self.parts)
+
+
+class _TextExtractor(HTMLParser):
+    """HTML fragment -> readable plain text for the MIME text part."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag in _SKIP_CONTENT_TAGS:
+                self._skip += 1
+            return
+        if tag in _SKIP_CONTENT_TAGS:
+            self._skip = 1
+            return
+        if tag in {"p", "br"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip:
+            if tag in _SKIP_CONTENT_TAGS:
+                self._skip = max(0, self._skip - 1)
+            return
+        if tag == "p":
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self.parts.append(data)
+
+    def finish(self) -> str:
+        self.close()
+        text = "".join(self.parts)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def _sanitize_html(body: str) -> str:
+    parser = _HtmlSanitizer()
+    parser.feed(body)
+    return parser.finish()
+
+
+def sanitize_preview(body: str) -> str:
+    """Strip disallowed tags so the editor preview can render HTML safely."""
+    if looks_like_html(body):
+        return _sanitize_html(body)
+    return body or ""
+
+
+def to_text(body: str) -> str:
+    """Plain-text MIME part: strip tags when the body is HTML, else as-is."""
+    if not body or not body.strip():
+        return ""
+    if not looks_like_html(body):
+        return body.strip()
+    parser = _TextExtractor()
+    parser.feed(body)
+    return parser.finish()
+
+
 def to_html(body: str) -> str:
-    """Plain-text body -> minimal HTML, preserving paragraph breaks."""
+    """Body -> minimal HTML. HTML templates are sanitized; plain text is wrapped."""
+    if not body or not body.strip():
+        return ""
+    if looks_like_html(body):
+        return _sanitize_html(body)
     escaped = html.escape(body.strip())
     paragraphs = [p.strip().replace("\n", "<br>") for p in escaped.split("\n\n") if p.strip()]
     return "".join(f"<p>{p}</p>" for p in paragraphs)

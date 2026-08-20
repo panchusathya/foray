@@ -286,3 +286,34 @@ class TestPreviewApi:
         ).json()
         assert preview["ai_status"] == "off"
         assert "Ada" in preview["body"]
+
+    def test_preview_sanitizes_html_bodies(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = client.post(
+            "/v1/sequences",
+            json={
+                "name": "Html preview",
+                "personalize": False,
+                "steps": [
+                    {
+                        "delay_days": 0,
+                        "subject_template": "Hello {{first_name}}",
+                        "body_template": (
+                            "<p>Hi {{first_name}}, <strong>welcome</strong>"
+                            "<script>alert(1)</script></p>"
+                        ),
+                    }
+                ],
+            },
+            headers=headers,
+        ).json()
+        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
+        preview = client.post(
+            f"/v1/sequences/{sequence['id']}/preview",
+            json={"candidate_id": candidate_id},
+            headers=headers,
+        ).json()
+        assert "<strong>welcome</strong>" in preview["body"]
+        assert "Ada" in preview["body"]
+        assert "<script>" not in preview["body"]
+        assert "alert" not in preview["body"]

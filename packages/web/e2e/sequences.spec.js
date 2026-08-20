@@ -271,3 +271,37 @@ test.describe('step scheduling', () => {
     await expect(stepCard).not.toContainText('on enrollment');
   });
 });
+
+test.describe('sequence email rich text', () => {
+  test('bold and link round-trip in the body editor', async ({ page, request }) => {
+    const { org, sequence } = await scenario(request, 'rte');
+    await login(page, org.email);
+    await page.goto(`/sequences/${sequence.id}`);
+
+    const editor = page.getByTestId('email-body-editor');
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.type('Hello world');
+    await page.keyboard.press('Control+A');
+    await page.getByRole('button', { name: 'Bold' }).click();
+    await expect(editor.locator('strong')).toContainText('Hello world');
+
+    page.once('dialog', (dialog) => dialog.accept('https://jobs.example.com/role'));
+    await page.getByRole('button', { name: 'Link' }).click();
+    await expect(editor.locator('a[href="https://jobs.example.com/role"]')).toContainText(
+      'Hello world',
+    );
+
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+    await page.reload();
+    // TipTap wraps the link around the bold mark (`<a><strong>`), not the reverse.
+    const reloaded = page.getByTestId('email-body-editor');
+    await expect(reloaded.locator('strong')).toContainText('Hello world');
+    await expect(reloaded.locator('a[href="https://jobs.example.com/role"]')).toContainText(
+      'Hello world',
+    );
+  });
+});

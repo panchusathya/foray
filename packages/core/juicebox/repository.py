@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .enrich.normalize import NormalizedCandidate, normalize_candidate
+from .enrich.normalize import NormalizedCandidate, build_doc_text, normalize_candidate
+from .enrich.taxonomy import normalize_seniority, normalize_title
 from .llm.embeddings import get_embedder
 from .models import Candidate, Education, Experience, utcnow
 from .search.index import invalidate
@@ -25,7 +26,50 @@ class UpsertResult:
             self.ids = []
 
 
+# Hand-edited values are merged with imported ones rather than replacing them:
+# correcting an address should not stop enrichment ever finding another.
+_UNION_FIELDS = ("emails", "phones")
+
+
+def _respect_manual_edits(
+    candidate: Candidate, data: NormalizedCandidate, protected: set[str]
+) -> NormalizedCandidate:
+    """Let a human's edits win over the source, consistently.
+
+    Applied to the incoming payload *before* anything is written, rather than
+    by guarding each assignment, so the derived fields follow the values that
+    actually win. Guarding assignments individually leaves ``current_title``
+    manual but ``current_title_normalized`` and ``doc_text`` rebuilt from the
+    source -- and the person stays findable only under the old title, which is
+    a worse bug than the one being fixed.
+    """
+    merged = replace(data)
+    for field in protected:
+        if not hasattr(merged, field):
+            continue
+        if field in _UNION_FIELDS:
+            kept = list(getattr(candidate, field) or [])
+            for value in getattr(merged, field) or []:
+                if value not in kept:
+                    kept.append(value)
+            setattr(merged, field, kept)
+        else:
+            setattr(merged, field, getattr(candidate, field))
+
+    if "current_title" in protected:
+        merged.current_title_normalized = normalize_title(merged.current_title)
+    if "seniority" in protected:
+        merged.seniority = normalize_seniority(merged.seniority)
+    # Rebuild the search blob from the reconciled values, or the embedding
+    # computed downstream describes a person who no longer exists.
+    merged.doc_text = build_doc_text(merged)
+    return merged
+
+
 def _apply(candidate: Candidate, data: NormalizedCandidate) -> None:
+    protected = set(candidate.manual_fields or [])
+    if protected:
+        data = _respect_manual_edits(candidate, data, protected)
     candidate.full_name = data.full_name
     candidate.first_name = data.first_name
     candidate.last_name = data.last_name

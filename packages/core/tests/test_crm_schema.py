@@ -1,9 +1,8 @@
 """The CRM record's schema: inert defaults, real cascades.
 
-This migration ships ahead of the code that uses it, so the property that
-matters most is that it changes nothing on its own — in particular that no
-existing person silently becomes CRM-tracked, because that flag is what widens
-the thread-sync privacy guard.
+The property that matters most is that no existing person silently becomes
+CRM-tracked, because that flag widens the thread-sync privacy guard: it is the
+difference between storing someone's mailbox history and not.
 """
 
 from __future__ import annotations
@@ -136,18 +135,34 @@ class TestTags:
         assert session.scalars(select(CandidateTag)).all() == []
 
 
-class TestStillInert:
-    def test_the_privacy_guard_has_not_widened_yet(self, session, account):
-        """crm_tracked exists but nothing reads it. Someone with the flag set
-        and no project, sequence or message is still out of scope until the
-        Phase 3 code lands — so this migration cannot change what mail is
-        stored on its own."""
+class TestTheGuard:
+    def test_tracking_a_person_brings_their_mail_into_scope(self, session, account):
+        """The one clause this whole flag exists for. A hand-added or promoted
+        contact has no project, no sequence and no prior message, so without
+        it their mail would keep being discarded right after the user asked to
+        track them."""
         from juicebox.integrations.matching import build_address_index
 
         candidate = _candidate(session, account["org_id"])
         candidate.emails = ["ada@example.com"]
-        candidate.crm_tracked = True
         session.flush()
 
         index = build_address_index(session, org_id=account["org_id"])
         assert "ada@example.com" not in index
+
+        candidate.crm_tracked = True
+        session.flush()
+
+        index = build_address_index(session, org_id=account["org_id"])
+        assert index["ada@example.com"] == candidate.id
+
+    def test_a_stranger_is_still_a_stranger(self, session, account):
+        """Widening the guard must not open it. Someone with no candidate row
+        at all is unreachable regardless."""
+        from juicebox.integrations.matching import build_address_index
+
+        _candidate(session, account["org_id"])
+        session.flush()
+
+        index = build_address_index(session, org_id=account["org_id"])
+        assert "vendor@unrelated.example.com" not in index

@@ -33,7 +33,8 @@ def build_address_index(db: Session, *, org_id: str) -> dict[str, str]:
                     ProjectCandidate.candidate_id == Candidate.id
                 )
             )
-            | exists(select(Message.id).where(Message.candidate_id == Candidate.id)),
+            | exists(select(Message.id).where(Message.candidate_id == Candidate.id))
+            | Candidate.crm_tracked.is_(True),
         )
     )
     index: dict[str, str] = {}

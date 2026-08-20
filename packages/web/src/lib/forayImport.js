@@ -54,3 +54,61 @@ export function partitionByEmail(hits) {
   }
   return { withEmail, withoutEmail };
 }
+
+// Fold a find-emails response back into the selected hits, so the button label,
+// the import warning and the contact chips all agree without waiting for a
+// refetch. Pure, for the same reason as everything else in this file.
+//
+// Personal addresses go first, ahead of anything already on the hit. That is not
+// cosmetic: emails[0] becomes Candidate.primary_email and is the address the
+// sequencer sends to, so a work address in front of a personal one puts a
+// recruiting pitch in somebody's work inbox.
+export function mergeFoundEmails(hits, results = {}) {
+  return hits.map((hit) => {
+    const outcome = results[hit.login];
+    if (!outcome) return hit;
+    const found = [
+      ...(outcome.personal ?? []).map((email) => ({
+        email,
+        source: 'contactout_personal',
+        is_work: false,
+        verified: false,
+      })),
+      ...(outcome.work ?? []).map((email) => ({
+        email,
+        source: 'contactout_work',
+        is_work: true,
+        verified: false,
+      })),
+    ];
+    if (!found.length) return hit;
+    const already = new Set((hit.emails ?? []).map((e) => e.email));
+    const fresh = found.filter((e) => !already.has(e.email));
+    if (!fresh.length) return hit;
+    return { ...hit, emails: [...fresh, ...(hit.emails ?? [])] };
+  });
+}
+
+// What to tell the user after a lookup. Every count here is a decision the
+// server made about whether to spend money, so say which -- "nothing found" and
+// "we already had one" look identical otherwise.
+export function describeFindEmails(summary = {}, results = {}) {
+  const statuses = Object.values(results).map((r) => r.status);
+  const count = (name) => statuses.filter((s) => s === name).length;
+  const parts = [];
+  const found = summary.found_personal ?? count('found');
+  parts.push(found === 1 ? '1 personal address found' : `${found} personal addresses found`);
+  const none = count('none');
+  if (none) parts.push(`${none} with nothing on file`);
+  const covered = count('has_personal');
+  if (covered) parts.push(`${covered} already had one`);
+  const cached = count('cached');
+  if (cached) parts.push(`${cached} looked up before`);
+  const noProfile = count('no_profile');
+  if (noProfile) parts.push(`${noProfile} with no LinkedIn profile to match`);
+  const unknown = count('unknown');
+  if (unknown) parts.push(`${unknown} not in the sourcing database`);
+  const errors = count('error');
+  if (errors) parts.push(`${errors} failed — try those again`);
+  return `${parts.join(', ')}.`;
+}

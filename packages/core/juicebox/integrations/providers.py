@@ -113,6 +113,12 @@ class SweepRecord:
     thread_id: str = ""
     sent_at: datetime | None = None
     is_draft: bool = False
+    # address -> the display name the header carried, e.g.
+    # {"adia@acme.com": "Adia Chenumbay"}. Both providers know this and both
+    # used to discard it, leaving discovery to guess a name from the local
+    # part -- which only ever works for first.last and mangles or invents the
+    # rest. A name on a To: line is identity, not message content.
+    names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

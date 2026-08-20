@@ -204,6 +204,7 @@ def _candidate_query(
     crm_status=None,
     tag=None,
     exclude_in_sequence=False,
+    needs_name=False,
     now=None,
 ):
     """One WHERE clause, shared by the listing and the count.
@@ -244,6 +245,11 @@ def _candidate_query(
         stmt = stmt.where(Candidate.seniority.in_(seniority))
     if scope == "crm":
         stmt = stmt.where(_in_crm_scope())
+    if needs_name:
+        # Promotion falls back to the address when nothing carried a name, so
+        # an @ in the full name is exactly "we never learned who this is".
+        # No column needed, and it self-empties as names get filled in.
+        stmt = stmt.where(Candidate.full_name.like("%@%"))
     if crm_status:
         stmt = stmt.where(Candidate.crm_status.in_(crm_status))
     if tag:
@@ -339,6 +345,9 @@ def list_candidates(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    needs_name: bool = Query(
+        default=False, description="Only people still named by their email address"
+    ),
     exclude_in_sequence: bool = Query(
         default=False, description="Drop people with an active enrollment"
     ),
@@ -373,6 +382,7 @@ def list_candidates(
         crm_status=crm_status,
         tag=tag,
         exclude_in_sequence=exclude_in_sequence,
+        needs_name=needs_name,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, sort, dir)).limit(limit).offset(offset)
@@ -413,6 +423,9 @@ def count_candidates(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    needs_name: bool = Query(
+        default=False, description="Only people still named by their email address"
+    ),
     exclude_in_sequence: bool = Query(
         default=False, description="Drop people with an active enrollment"
     ),
@@ -441,6 +454,7 @@ def count_candidates(
         crm_status=crm_status,
         tag=tag,
         exclude_in_sequence=exclude_in_sequence,
+        needs_name=needs_name,
     )
     total = db.scalar(
         select(func.count()).select_from(stmt.with_only_columns(Candidate.id).subquery())
@@ -460,6 +474,9 @@ def candidate_ids(
     created_after: datetime | None = Query(default=None),
     crm_status: list[str] | None = Query(default=None),
     tag: list[str] | None = Query(default=None),
+    needs_name: bool = Query(
+        default=False, description="Only people still named by their email address"
+    ),
     exclude_in_sequence: bool = Query(
         default=False, description="Drop people with an active enrollment"
     ),
@@ -492,6 +509,7 @@ def candidate_ids(
         crm_status=crm_status,
         tag=tag,
         exclude_in_sequence=exclude_in_sequence,
+        needs_name=needs_name,
     )
     rows = db.scalars(
         stmt.order_by(*_ordering(rollup, "name", "asc")).limit(limit + 1)

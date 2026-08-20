@@ -160,12 +160,14 @@ class TestCompanyPages:
     @pytest.mark.parametrize(
         "name",
         [
-            "Infrastructure United Inc. (IU)",  # real export offender: suffix + initialism
-            "Smith & Wesson Holdings",  # suffix, and 3+ words around an ampersand
+            "Infrastructure United Inc. (IU)",  # the real export offender
+            "Smith & Wesson Holdings",  # trailing org word
             "Acme Solutions LLC",
             "Quantum Labs",
             "Northgate Group",
             "Banco Santander S.A.",  # trailing corporate S.A.
+            "Bonnie & Michelle LLP",  # llp, from the prod validation pass
+            "PulseChart Solutions undefined",  # scraper artifact after org word
             # A sole trader IS a company page; catching her via "ltd" is the
             # accepted trade-off documented on _COMPANY_SUFFIXES.
             "Mary-Jane O'Brien Ltd",
@@ -180,8 +182,15 @@ class TestCompanyPages:
             "Diksha Thapa",
             "Savannah Bryant",
             "Jose Co",  # bare "co" is a surname; only dotted "Co." is corporate
-            "Tom & Jerry",  # duo-name: "&" with only two real words stays a person
+            "Tom & Jerry",  # ampersand alone is never a company signal
             "S.A. Khan",  # leading initials: "s.a" only matches at name end
+            # The prod-validation false positives the removed heuristics used
+            # to delete; they must stay people forever:
+            "Anand Vijay(AV)",  # credential/initials parens (was: initialism rule)
+            "Kok Choo (KC)",
+            "Jason Angeles, MBA (LION)",
+            "CAPITAL R. MAAT",  # org word mid-name, not last
+            "John & Charlotte Schmiedel",  # couple profile (was: ampersand rule)
         ],
     )
     def test_real_people_pass(self, name):

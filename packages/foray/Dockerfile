@@ -24,9 +24,14 @@ COPY pyproject.toml /app/pyproject.toml
 COPY foray/__init__.py /app/foray/__init__.py
 RUN pip install /app
 
-# Bake the embedding model into the image: the query path embeds locally and
-# must not depend on Hugging Face being reachable at runtime.
+# Bake the embedding model AND the cross-encoder into the image: the query
+# path must not depend on Hugging Face being reachable at runtime.
+ENV OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
+    TOKENIZERS_PARALLELISM=false
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 COPY . /app
 RUN pip install --no-deps -e /app

@@ -51,6 +51,63 @@ def test_frontend_marker_requires_js_fraction():
     assert "frontend" not in detect_markers(repos, {"python": 1.0})
 
 
+def test_strong_ml_term_bypasses_python_gate():
+    repos = [
+        {
+            "name": "megatron-kernels",
+            "description": "vllm runtime and megatron training in CUDA",
+            "topics": ["cuda"],
+        }
+    ]
+    assert "ml" in detect_markers(repos, {"cpp": 0.85, "cuda": 0.15})
+
+
+def test_bio_vlm_awards_ml_without_python_majority():
+    repos = [{"name": "train-loop", "description": "data prep utilities", "topics": []}]
+    assert "ml" in detect_markers(
+        repos, {"cpp": 1.0}, bio="I trained VLMs from scratch with a custom stack"
+    )
+    assert "ml" not in detect_markers(repos, {"cpp": 1.0}, bio="I like cooking")
+
+
+def test_weak_ml_term_still_needs_python_gate():
+    repos = [{"name": "notes", "description": "playing with transformers and clip", "topics": []}]
+    assert "ml" not in detect_markers(repos, {"cpp": 1.0})
+
+
+def test_derive_includes_bio_in_markers():
+    s = derive_signals(
+        {
+            "name": "cuda",
+            "login": "cuda",
+            "createdAt": "2018-01-01T00:00:00Z",
+            "bio": "I trained VLMs from scratch",
+            "repositories": {
+                "nodes": [
+                    {
+                        "name": "kernels",
+                        "description": "cuda kernels",
+                        "stargazerCount": 10,
+                        "forkCount": 0,
+                        "pushedAt": "2025-01-01T00:00:00Z",
+                        "createdAt": "2020-01-01T00:00:00Z",
+                        "isArchived": False,
+                        "primaryLanguage": {"name": "C++"},
+                        "repositoryTopics": {"nodes": []},
+                        "languages": {"edges": [{"size": 10000, "node": {"name": "C++"}}]},
+                    }
+                ]
+            },
+            "contributionsCollection": {
+                "totalCommitContributions": 10,
+                "totalPullRequestContributions": 1,
+                "restrictedContributionsCount": 0,
+            },
+        }
+    )
+    assert "ml" in s["domain_markers"]
+
+
 def test_employer_priority_company_first():
     employer, source = infer_employer(ML_ENGINEER_NODE)
     assert employer == "Stripe"

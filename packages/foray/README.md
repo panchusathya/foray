@@ -61,18 +61,30 @@ partial rescoring of stale rows).
 ## Search ranking and pagination
 
 `foray/rank.py` is the dependency-free ranking core. The API counts candidates
-that pass the structured filters and display floor, retrieves a bounded pool in
-stable archetype-score order, applies the score/vector blend with candidate ID
-as the final tie-breaker, slices absolute ranks, and hydrates only the requested
-page. This is an intentionally bounded retrieval approximation rather than a
-claim that vector similarity was evaluated globally over every eligible row.
+that pass the structured filters, retrieves bounded **vector** and **lexical**
+arms (plus an optional legacy `score` arm), fuses them with RRF, then blends
+RRF with the precomputed archetype score and exact cosine. Unscored rows are
+retrievable; a scored row below `FORAY_DISPLAY_FLOOR` is still excluded.
+Optional local cross-encoder rerank (`FORAY_RERANK_ENABLED`, default off) reorders
+the head of the fused pool. `paginable` is the fused pool capped by
+`FORAY_MAX_PAGINABLE` (1000 by default).
+
+`FORAY_RETRIEVAL_ARMS=score` restores the pre-hybrid "top-N by archetype score"
+pool and is the eval/rollback lever. After enabling the cross-encoder, raise
+`FORAY_UNSCORED_SCORE` from 0 to 20 so unscored rows sit at the display floor
+rather than sinking.
+
+Lexical documents live in `candidate_signals.search_tsv` (migration 006). Backfill
+with `scripts/backfill_search_tsv.py` — it never touches `derived_at`. Until that
+runs, the lexical arm matches nothing and search degrades to vector-only.
 
 `POST /search` and `GET /search/stream` accept `limit` and `offset`; `limit: 0`
 means "the server's own page size", which the response echoes back as
 `page_size` so a client never has to hardcode the stride it pages in.
-`total_matched` is the full filters-plus-floor count; `paginable` is the reachable
-count capped by `FORAY_MAX_PAGINABLE` (1000 by default). The same ceiling,
-filters, and deterministic ordering apply to the pure-vector fallback path.
+`total_matched` is the full filter count; `paginable` is the fused retrieval
+pool after floor / min-evidence vetoes, capped by `FORAY_MAX_PAGINABLE`.
+When no archetype matches, score is None for every row and the blend reduces
+to RRF + cosine — there is no separate vector-fallback path.
 
 ## Tests
 

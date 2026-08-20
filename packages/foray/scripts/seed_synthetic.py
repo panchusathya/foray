@@ -103,6 +103,7 @@ def make_node(rng: random.Random, i: int) -> dict:
 async def amain(args: argparse.Namespace) -> int:
     rng = random.Random(20240917)
     pool = await get_pool()
+    labels: list[dict] = []
     async with pool.acquire() as conn:
         if args.reset:
             await conn.execute(
@@ -113,17 +114,26 @@ async def amain(args: argparse.Namespace) -> int:
             await seed_linkedin(conn, rng, args.count)
             summary = f"seeded {args.count} synthetic LinkedIn candidates + raw_profiles"
         else:
-            summary = await _seed_github(conn, rng, args.count)
+            summary, labels = await _seed_github(conn, rng, args.count)
     # Outside the acquire: close_pool() waits for every connection to be
     # released, so calling it while `conn` is still held deadlocks forever.
+    if args.write_labels:
+        from pathlib import Path
+
+        Path(args.write_labels).write_text(
+            "\n".join(json.dumps(row) for row in labels) + "\n", encoding="utf-8"
+        )
+        print(f"wrote labels to {args.write_labels}")
     print(summary)
     await close_pool()
     return 0
 
 
-async def _seed_github(conn, rng: random.Random, count: int) -> str:
+async def _seed_github(conn, rng: random.Random, count: int) -> tuple[str, list[dict]]:
+    labels: list[dict] = []
     for i in range(count):
         node = make_node(rng, i)
+        labels.append({"login": node["login"], "bio": node["bio"]})
         cid = await conn.fetchval(
             "insert into candidates (login, github_id, name, location_raw, discovery_shard) "
             "values ($1, $2, $3, $4, 'synthetic') "
@@ -141,7 +151,7 @@ async def _seed_github(conn, rng: random.Random, count: int) -> str:
             node["login"],
             json.dumps(node),
         )
-    return f"seeded {count} synthetic candidates + raw_profiles"
+    return f"seeded {count} synthetic candidates + raw_profiles", labels
 
 
 def make_linkedin_record(rng: random.Random, i: int) -> dict:
@@ -237,6 +247,7 @@ def main() -> int:
         help="which evidence kind to fabricate",
     )
     ap.add_argument("--reset", action="store_true", help="truncate foray tables first")
+    ap.add_argument("--write-labels", help="write login/bio labels as JSONL")
     return asyncio.run(amain(ap.parse_args()))
 
 

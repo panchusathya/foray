@@ -18,6 +18,7 @@ select
   (select count(*) from raw_profiles where source = 'github')             as enriched,
   (select count(*) from candidate_signals)                                 as derived,
   (select count(*) from candidates where embedding is not null)            as embedded,
+  (select count(*) from candidate_signals where search_tsv is not null)    as lexical_indexed,
   (select count(distinct candidate_id) from archetype_scores)              as scored_candidates,
   (select count(*) from archetype_scores)                                  as scored_pairs,
   (select count(distinct candidate_id) from candidate_emails
@@ -90,7 +91,7 @@ async def amain(args: argparse.Namespace) -> int:
     print("---------------------")
     for key in (
         "candidates", "linkedin_pool", "enriched", "derived", "embedded",
-        "scored_candidates", "scored_pairs", "with_email", "with_linkedin",
+        "lexical_indexed", "scored_candidates", "scored_pairs", "with_email", "with_linkedin",
         "enrich_backlog", "shards_done", "shards_pending", "shards_truncated",
         "enrich_errors_7d", "scoring_errors_7d",
     ):

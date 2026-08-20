@@ -79,19 +79,62 @@ class Settings(BaseSettings):
     )
     embedding_dim: int = Field(default=384, validation_alias="FORAY_EMBEDDING_DIM")
 
-    # --- retrieval blend (Phase 5) ---
-    score_weight: float = Field(default=0.7, validation_alias="FORAY_SCORE_WEIGHT")
-    vector_weight: float = Field(default=0.3, validation_alias="FORAY_VECTOR_WEIGHT")
+    # --- retrieval ---
+    # Arms: comma-separated subset of vector, lexical, score. `score` is the
+    # legacy "top-N by archetype score" retriever and the eval/rollback lever.
+    # Default is hybrid vector+lexical; a deployed .env can set `score` to
+    # restore the pre-hybrid pool. FORAY_SCORE_WEIGHT / FORAY_VECTOR_WEIGHT
+    # are intentionally unread (extra="ignore") so a stale .env cannot keep
+    # the archetype score as the dominant term of a three-way blend.
+    retrieval_arms: str = Field(
+        default="vector,lexical", validation_alias="FORAY_RETRIEVAL_ARMS"
+    )
+    vector_k: int = Field(default=500, ge=1, le=2000, validation_alias="FORAY_VECTOR_K")
+    lexical_k: int = Field(default=500, ge=1, le=2000, validation_alias="FORAY_LEXICAL_K")
+    score_k: int = Field(default=1000, ge=1, le=5000, validation_alias="FORAY_SCORE_K")
+    rrf_k: int = Field(default=60, ge=1, le=200, validation_alias="FORAY_RRF_K")
+    w_rrf: float = Field(default=0.5, validation_alias="FORAY_W_RRF")
+    w_score: float = Field(default=0.3, validation_alias="FORAY_W_SCORE")
+    w_vector: float = Field(default=0.2, validation_alias="FORAY_W_VECTOR")
+    unscored_score: int = Field(default=0, ge=0, le=100, validation_alias="FORAY_UNSCORED_SCORE")
+    min_evidence: int = Field(default=2, ge=0, le=8, validation_alias="FORAY_MIN_EVIDENCE")
+    hnsw_ef_search: int = Field(default=100, ge=10, le=2000, validation_alias="FORAY_HNSW_EF_SEARCH")
+    # Deprecated no-op alias: previously a dead knob (pool_size = max(300, 1000)).
+    # Left in place so a deployed .env cannot change meaning silently.
     rerank_pool: int = Field(default=300, validation_alias="FORAY_RERANK_POOL")
     result_limit: int = Field(default=40, validation_alias="FORAY_RESULT_LIMIT")
-    # Maximum number of ranked candidates exposed through offset pagination.
-    # The retrieval pool grows to at least this size before the vector blend.
     max_paginable: int = Field(
         default=1000, ge=1, le=5000, validation_alias="FORAY_MAX_PAGINABLE"
     )
     display_floor: int = Field(default=20, validation_alias="FORAY_DISPLAY_FLOOR")
     activity_floor_months: int = Field(default=24, validation_alias="FORAY_ACTIVITY_FLOOR_MONTHS")
     min_results_before_widen: int = Field(default=12, validation_alias="FORAY_MIN_RESULTS")
+
+    # --- cross-encoder rerank (query path, local, default off) ---
+    rerank_enabled: bool = Field(default=False, validation_alias="FORAY_RERANK_ENABLED")
+    rerank_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        validation_alias="FORAY_RERANK_MODEL",
+    )
+    rerank_depth: int = Field(default=48, ge=0, le=400, validation_alias="FORAY_RERANK_DEPTH")
+    rerank_max_length: int = Field(default=288, ge=32, le=512, validation_alias="FORAY_RERANK_MAX_LENGTH")
+    rerank_doc_chars: int = Field(default=900, ge=100, le=4000, validation_alias="FORAY_RERANK_DOC_CHARS")
+    rerank_batch_size: int = Field(default=16, ge=1, le=64, validation_alias="FORAY_RERANK_BATCH_SIZE")
+    rerank_torch_threads: int = Field(default=2, ge=1, le=8, validation_alias="FORAY_RERANK_TORCH_THREADS")
+    rerank_timeout_ms: int = Field(default=1200, ge=100, le=10_000, validation_alias="FORAY_RERANK_TIMEOUT_MS")
+    rerank_queue_timeout_ms: int = Field(
+        default=400, ge=50, le=5000, validation_alias="FORAY_RERANK_QUEUE_TIMEOUT_MS"
+    )
+    rerank_cache_entries: int = Field(
+        default=4096, ge=0, le=100_000, validation_alias="FORAY_RERANK_CACHE_ENTRIES"
+    )
+    rerank_cache_ttl_s: int = Field(
+        default=120, ge=0, le=3600, validation_alias="FORAY_RERANK_CACHE_TTL_S"
+    )
+    rerank_failure_threshold: int = Field(
+        default=3, ge=1, le=20, validation_alias="FORAY_RERANK_FAILURE_THRESHOLD"
+    )
+    rerank_warmup: bool = Field(default=True, validation_alias="FORAY_RERANK_WARMUP")
 
     # --- harvest tuning ---
     github_rpm: int = Field(default=28, validation_alias="FORAY_GITHUB_RPM")

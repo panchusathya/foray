@@ -15,6 +15,7 @@ from typing import Any
 
 from ..db import close_pool, get_pool
 from ..log import Heartbeat, get_logger
+from ..search_doc import UPDATE_SEARCH_TSV_SQL
 from .employer import infer_employer
 from .markers import detect_markers, load_markers
 
@@ -152,7 +153,7 @@ def derive_signals(node: dict) -> dict[str, Any]:
         "account_age_years": account_age_years,
         "est_experience_years": est_experience,
         "experience_confidence": _experience_confidence(non_fork, account_age_years),
-        "domain_markers": detect_markers(repos, language_mix),
+        "domain_markers": detect_markers(repos, language_mix, bio=node.get("bio")),
         "oss_maintainer": any(r["stars"] >= OSS_MAINTAINER_STARS for r in repos),
         "top_repos": top_repos,
         "topics": topics,
@@ -484,6 +485,7 @@ async def amain(args: argparse.Namespace) -> int:
                         )
                         log.error("derive.error", candidate_id=candidate_id, error=str(exc))
                     processed += 1
+                await conn.execute(UPDATE_SEARCH_TSV_SQL, batch)
         log.info("derive.done", processed=processed)
         print(f"derived signals for {processed} candidates (0 API calls)")
 
@@ -509,7 +511,12 @@ def main() -> int:
         action="store_true",
         help="only candidates with no signals or signals older than their profile",
     )
-    ap.add_argument("--histogram", action="store_true", help="print marker distribution")
+    ap.add_argument(
+        "--histogram",
+        "--stats",
+        action="store_true",
+        help="print marker distribution (flags any marker above 25%)",
+    )
     ap.add_argument("--sample", type=int, default=0, help="print N random derived candidates")
     ap.add_argument(
         "--no-derive",

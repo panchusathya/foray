@@ -68,6 +68,9 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
     .filter(Boolean)
     .join(' · ');
 
+  const highlights = hit.evidence?.highlights ?? hit.highlights ?? [];
+  const highlightSource = hit.highlight_source ?? hit.evidence?.highlight_source;
+
   return (
     <div className="card hit">
       <div className="hit-rank">
@@ -104,6 +107,11 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
             <div className="meta">
               {meta}
               {hit.inferred?.employer ? <span className="badge" style={{ marginLeft: 6 }}>inferred</span> : null}
+              {highlightSource ? (
+                <span className="badge" style={{ marginLeft: 6 }} data-testid="highlight-source">
+                  {highlightSource}
+                </span>
+              ) : null}
             </div>
           </div>
           <ContactChip hit={hit} />
@@ -115,9 +123,9 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
           </p>
         ) : null}
 
-        {hit.highlights?.length ? (
+        {highlights.length ? (
           <div className="criteria">
-            {hit.highlights.map((highlight, index) => (
+            {highlights.map((highlight, index) => (
               <div className="criterion" key={index}>
                 <span className="dot strong" />
                 <span className="evidence">{highlight}</span>
@@ -185,6 +193,7 @@ export function SourcingPage() {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
   const [addState, setAddState] = useState('');
+  const [showSkeleton, setShowSkeleton] = useState(false);
   const lastIndex = useRef(null);
   const searchRequest = useRef(0);
   const selectAllRequest = useRef(0);
@@ -195,6 +204,15 @@ export function SourcingPage() {
   useEffect(() => {
     api.listProjects().then(setProjects).catch(() => setProjects([]));
   }, []);
+
+  useEffect(() => {
+    if (!busy || result) {
+      setShowSkeleton(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setShowSkeleton(true), 400);
+    return () => clearTimeout(timer);
+  }, [busy, result]);
 
   useEffect(() => {
     if (!activeQuery) return undefined;
@@ -383,6 +401,12 @@ export function SourcingPage() {
 
       <ErrorBox error={error} />
 
+      {showSkeleton ? (
+        <div className="card small muted" data-testid="search-skeleton">
+          Searching…
+        </div>
+      ) : null}
+
       {result ? (
         <div className="stack" style={{ opacity: busy ? 0.55 : 1 }} aria-busy={busy}>
           <div className="card spread">
@@ -390,6 +414,8 @@ export function SourcingPage() {
               {result.archetype ? result.archetype.label : 'semantic search'} · parser:{' '}
               {parserLabel ?? result.parser} · {result.returned} shown · page {result.page} of{' '}
               {result.page_count} · {result.total_matched} matched
+              {result.min_evidence != null ? ` · min evidence ${result.min_evidence}` : ''}
+              {` · reranked ${result.reranked ? result.rerank_depth : 'off'}`}
               {elapsed != null ? ` · ${elapsed}ms` : ''}
             </span>
             <span className="small muted">display floor {result.display_floor}</span>
@@ -427,7 +453,9 @@ export function SourcingPage() {
                     onClick={selectAllMatching}
                     disabled={busy || selectingAll}
                   >
-                    {selectingAll ? 'Selecting…' : `Select all ${result.paginable} matching`}
+                    {selectingAll
+                      ? 'Selecting…'
+                      : `Select all ${result.paginable} matching (${Math.min(result.rerank_depth || 0, result.paginable)} reranked)`}
                   </button>
                 ) : null}
                 <span className="small muted">
@@ -466,15 +494,28 @@ export function SourcingPage() {
             <Empty>Nothing cleared the bar. Widen the search — drop a filter or lower the experience.</Empty>
           ) : (
             <div className="stack">
-              {result.results.map((hit, index) => (
-                <ForayHit
-                  key={hit.login}
-                  hit={hit}
-                  selected={selected.has(hit.login)}
-                  selectionDisabled={busy || selectingAll}
-                  onToggle={(event) => toggle(hit, index, event)}
-                />
-              ))}
+              {result.results.map((hit, index) => {
+                const depth = result.rerank_depth || 0;
+                const divider =
+                  result.reranked &&
+                  depth > 0 &&
+                  hit.rank === depth + 1;
+                return (
+                  <div key={hit.login}>
+                    {divider ? (
+                      <div className="small muted" style={{ margin: '8px 0' }}>
+                        Reranked top {depth}. Rows below keep retrieval order.
+                      </div>
+                    ) : null}
+                    <ForayHit
+                      hit={hit}
+                      selected={selected.has(hit.login)}
+                      selectionDisabled={busy || selectingAll}
+                      onToggle={(event) => toggle(hit, index, event)}
+                    />
+                  </div>
+                );
+              })}
             </div>
           )}
 

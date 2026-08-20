@@ -80,8 +80,12 @@ test-live: ## Contract tests against the real Anthropic / Voyage APIs
 	cd packages/core && ../../$(BIN)/python -m pytest -m live -v
 
 .PHONY: eval
-eval: ## Score search quality against the labelled query set
+eval: ## Score juicebox search quality against the labelled query set
 	$(BIN)/python eval/run_eval.py --corpus-size 400
+
+.PHONY: eval-foray
+eval-foray: ## Score Foray hybrid retrieval (needs Postgres + a derived corpus)
+	cd packages/foray && uv run python eval/run_eval.py
 
 .PHONY: lint
 lint: ## Lint the Python package

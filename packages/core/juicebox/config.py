@@ -88,6 +88,18 @@ class Settings:
         )
     )
 
+    # --- foray (the sourcing engine, a separate service) -----------------
+    # The browser reaches Foray's free routes through the nginx /foray/ proxy.
+    # This is the server-to-server path, used only for the routes that spend
+    # money and therefore need a principal in front of them.
+    foray_base_url: str = field(default_factory=lambda: _env("FORAY_BASE_URL", "http://localhost:8100"))
+    foray_internal_token: str = field(default_factory=lambda: _env("FORAY_INTERNAL_TOKEN", ""))
+    # A 100-candidate batch at 8-way concurrency is a few seconds; the ceiling
+    # is here so a hung vendor cannot pin a request for minutes.
+    foray_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("FORAY_TIMEOUT_SECONDS", 120.0)
+    )
+
     # --- llm -------------------------------------------------------------
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY", ""))
     openrouter_api_key: str = field(default_factory=lambda: _env("OPENROUTER_API_KEY", ""))

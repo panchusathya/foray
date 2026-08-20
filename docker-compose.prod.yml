@@ -32,6 +32,7 @@ x-foray-env: &foray_env
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   APOLLO_API_KEY: ${APOLLO_API_KEY:-}
   CONTACTOUT_API_KEY: ${CONTACTOUT_API_KEY:-}
+  FORAY_INTERNAL_TOKEN: ${FORAY_INTERNAL_TOKEN:-}
   FORAY_DISPLAY_FLOOR: ${FORAY_DISPLAY_FLOOR:-20}
   FORAY_MAX_PAGINABLE: ${FORAY_MAX_PAGINABLE:-1000}
   FORAY_RETRIEVAL_ARMS: ${FORAY_RETRIEVAL_ARMS:-vector,lexical}
@@ -97,6 +98,10 @@ x-app-env: &app_env
   ZOHO_CLIENT_SECRET: ${ZOHO_CLIENT_SECRET:-}
   ZOHO_REDIRECT_URI: ${ZOHO_REDIRECT_URI:-}
   ZOHO_ACCOUNTS_DOMAIN: ${ZOHO_ACCOUNTS_DOMAIN:-https://accounts.zoho.com}
+  # Same secret as x-foray-env above; the api container is the only caller of
+  # Foray's paid routes, and reaches it by service name on the private network.
+  FORAY_INTERNAL_TOKEN: ${FORAY_INTERNAL_TOKEN:-}
+  FORAY_BASE_URL: ${FORAY_BASE_URL:-http://foray:8100}
 
 services:
   db:

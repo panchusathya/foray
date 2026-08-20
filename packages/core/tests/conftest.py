@@ -61,6 +61,7 @@ def isolated_environment(tmp_path, monkeypatch):
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
+    from juicebox.integrations.foray import reset_foray, set_foray
     from juicebox.integrations.providers import reset_providers
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
@@ -79,6 +80,7 @@ def isolated_environment(tmp_path, monkeypatch):
     set_sender(None)
     reset_sender_factories()
     reset_providers()
+    reset_foray()
 
     if TEST_DATABASE_URL:
         # One shared database, so wipe it between tests instead of relying on a
@@ -102,6 +104,10 @@ def isolated_environment(tmp_path, monkeypatch):
     # A test that swapped a mail provider or sender must not leak it forward.
     reset_sender_factories()
     reset_providers()
+    # Likewise a stubbed Foray client: leaking one would let a later test
+    # think enrichment is configured when the deployment has no token.
+    set_foray(None)
+    reset_foray()
 
 
 @pytest.fixture

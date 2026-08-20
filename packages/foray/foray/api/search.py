@@ -185,7 +185,7 @@ def _policy(*, n_arms: int = 2) -> RankPolicy:
         unscored_score=settings.unscored_score,
         min_evidence=settings.min_evidence,
         rerank_depth=settings.rerank_depth,
-        ce_floor=settings.rerank_ce_floor,
+        ce_logit_gap=settings.rerank_ce_gap,
         rrf_k=settings.rrf_k,
         n_arms=max(1, n_arms),
     )

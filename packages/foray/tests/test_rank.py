@@ -314,58 +314,75 @@ def test_reciprocal_rank_fusion_k60() -> None:
     assert fused[1] == pytest.approx(1 / 61)
 
 
-# ----------------------------------------------------------- CE floor (band 2) --
+# ------------------------------------------------------ CE logit gap (band 2) --
 
 
-def test_ce_floor_demotes_confident_irrelevance_below_band_1(policy: RankPolicy) -> None:
-    """A head row the CE scored at p~=0.0025 (logit -6) must not stay pinned
-    in band 0 above unreranked rows: it lands in band 2, after band 1, and
-    keeps its ce for diagnostics."""
-    floored = replace(policy, ce_floor=0.05)
+def test_ce_gap_demotes_deep_outliers_below_band_1(policy: RankPolicy) -> None:
+    """A head row 14 logits under the head's best is a confident relative
+    rejection: it lands in band 2, after band 1, keeping ce for diagnostics."""
+    gapped = replace(policy, ce_logit_gap=5.0)
     pool = [
-        PoolRow(1, 90, 0.9, rrf=0.02),  # strong retrieval, CE says irrelevant
-        PoolRow(2, 30, 0.2, rrf=0.001),  # weak retrieval, CE says relevant
+        PoolRow(1, 90, 0.9, rrf=0.02),  # strong retrieval, CE outlier (junk)
+        PoolRow(2, 30, 0.2, rrf=0.001),  # weak retrieval, CE head max
         PoolRow(3, 80, 0.8, rrf=0.015),  # not scored by the CE -> band 1
     ]
-    reranked = apply_ce_scores(pool, {1: -6.0, 2: 2.0}, policy=floored)
+    reranked = apply_ce_scores(pool, {1: -12.0, 2: 2.0}, policy=gapped)
     by_id = {row.key: row for row in reranked}
     assert by_id[1].band == 2
-    assert by_id[1].ce == pytest.approx(0.0025, abs=1e-4)  # kept, not erased
+    assert by_id[1].ce == pytest.approx(0.0, abs=1e-4)  # kept, not erased
     assert by_id[2].band == 0
     assert by_id[3].band == 1 and by_id[3].ce is None
-    page = rank_page(reranked, total_matched=3, window=Window(0, 40), policy=floored)
+    page = rank_page(reranked, total_matched=3, window=Window(0, 40), policy=gapped)
     assert [item.key for item in page.items] == [2, 3, 1]
     assert [item.band for item in page.items] == [0, 1, 2]
 
 
+def test_ce_gap_is_relative_not_absolute(policy: RankPolicy) -> None:
+    """The prod calibration case: every head probability is tiny (max
+    p=0.0029, logit -5.8), yet rows within the gap of the best stay band 0.
+    An absolute floor demoted this entire head; the gap must not."""
+    gapped = replace(policy, ce_logit_gap=5.0)
+    pool = [
+        PoolRow(1, 68, 0.6, rrf=0.01),
+        PoolRow(2, 55, 0.5, rrf=0.008),
+        PoolRow(3, 90, 0.9, rrf=0.02),
+    ]
+    reranked = apply_ce_scores(pool, {1: -5.8, 2: -9.0, 3: -12.0}, policy=gapped)
+    by_id = {row.key: row for row in reranked}
+    assert by_id[1].band == 0  # the head max itself
+    assert by_id[2].band == 0  # 3.2 logits under: within the gap
+    assert by_id[3].band == 2  # 6.2 logits under: demoted
+
+
 def test_band_2_orders_by_retrieval_blend_not_ce(policy: RankPolicy) -> None:
-    """Sub-floor ce values are all ~0 and meaningless to sort by. Row 2 has
-    the higher ce but row 1 has the stronger retrieval blend; retrieval wins."""
-    floored = replace(policy, ce_floor=0.05)
+    """Deep-outlier ce values are noise to sort by. Row 2 has the higher ce
+    but row 1 has the stronger retrieval blend; retrieval wins in band 2."""
+    gapped = replace(policy, ce_logit_gap=5.0)
     pool = [
         PoolRow(1, 90, 0.9, rrf=0.02),
         PoolRow(2, 20, 0.1, rrf=0.001),
+        PoolRow(3, 50, 0.5, rrf=0.01),
     ]
-    reranked = apply_ce_scores(pool, {1: -8.0, 2: -7.0}, policy=floored)
-    assert all(row.band == 2 for row in reranked)
-    ce_by_id = {row.key: row.ce for row in reranked}
-    assert ce_by_id[2] > ce_by_id[1]  # ce alone would invert the order
-    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=floored)
-    assert [item.key for item in page.items] == [1, 2]
+    reranked = apply_ce_scores(pool, {1: -13.0, 2: -12.0, 3: 0.0}, policy=gapped)
+    by_id = {row.key: row for row in reranked}
+    assert by_id[1].band == 2 and by_id[2].band == 2 and by_id[3].band == 0
+    page = rank_page(reranked, total_matched=3, window=Window(0, 40), policy=gapped)
+    assert [item.key for item in page.items] == [3, 1, 2]
 
 
-def test_ce_at_floor_stays_band_0(policy: RankPolicy) -> None:
-    """The floor is exclusive: ce == floor is a keep, not a demotion."""
-    floored = replace(policy, ce_floor=0.5)
-    reranked = apply_ce_scores([PoolRow(1, 50, 0.5)], {1: 0.0}, policy=floored)
-    assert reranked[0].ce == 0.5
-    assert reranked[0].band == 0
+def test_ce_at_gap_boundary_stays_band_0(policy: RankPolicy) -> None:
+    """The gap is exclusive: exactly ce_logit_gap under the max is a keep."""
+    gapped = replace(policy, ce_logit_gap=5.0)
+    reranked = apply_ce_scores(
+        [PoolRow(1, 50, 0.5), PoolRow(2, 50, 0.4)], {1: 0.0, 2: -5.0}, policy=gapped
+    )
+    assert [row.band for row in reranked] == [0, 0]
 
 
-def test_ce_floor_zero_preserves_legacy_banding(policy: RankPolicy) -> None:
-    """Library default ce_floor=0.0: even a hard CE rejection stays band 0,
-    exactly the pre-floor behaviour (0.0 >= 0.0)."""
-    assert policy.ce_floor == 0.0
+def test_ce_gap_default_inf_preserves_legacy_banding(policy: RankPolicy) -> None:
+    """Library default ce_logit_gap=inf: even a hard CE rejection stays
+    band 0, exactly the pre-gap behaviour."""
+    assert policy.ce_logit_gap == float("inf")
     pool = [PoolRow(1, 90, 0.9, rrf=0.02), PoolRow(2, 30, 0.2, rrf=0.001)]
     reranked = apply_ce_scores(pool, {1: -30.0, 2: 3.0}, policy=policy)
     assert [row.band for row in reranked] == [0, 0]
@@ -373,3 +390,14 @@ def test_ce_floor_zero_preserves_legacy_banding(policy: RankPolicy) -> None:
     # Band 0 still orders by ce, so the rejected row sinks within the band
     # but is not ejected from it.
     assert [item.key for item in page.items] == [2, 1]
+
+
+def test_ce_gap_uniform_junk_head_demotes_nothing(policy: RankPolicy) -> None:
+    """A uniformly-terrible head has no relative signal: nothing demotes and
+    the CE merely reorders it. Documented limitation — retrieval already put
+    junk on top, and a relative rule cannot repair that."""
+    gapped = replace(policy, ce_logit_gap=5.0)
+    pool = [PoolRow(1, 90, 0.9, rrf=0.02), PoolRow(2, 30, 0.2, rrf=0.001)]
+    reranked = apply_ce_scores(pool, {1: -12.0, 2: -12.5}, policy=gapped)
+    assert [row.band for row in reranked] == [0, 0]
+

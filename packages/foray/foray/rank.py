@@ -35,14 +35,19 @@ class RankPolicy:
     unscored_score: int = 0
     min_evidence: int = 2
     rerank_depth: int = 48
-    # CE probability floor for the reranked head. A head row whose logistic
-    # CE probability falls below this is demoted to band 2 (after every
-    # unreranked row) instead of staying pinned in band 0 — see
-    # ``apply_ce_scores``. The library default of 0.0 disables the demotion so
-    # existing dependency-free callers and CI keep today's behaviour; the API
-    # wires ``settings.rerank_ce_floor`` in (this module must stay
-    # settings-free).
-    ce_floor: float = 0.0
+    # CE demotion gap, in LOGITS below the head's best row. A head row whose
+    # raw CE logit sits more than this far under the head maximum is demoted
+    # to band 2 (after every unreranked row) instead of staying pinned in
+    # band 0 — see ``apply_ce_scores``. A gap of logits is an odds RATIO, so
+    # it survives the corpus-level calibration shift that killed the first
+    # design (an absolute probability floor): measured on prod, ms-marco
+    # MiniLM tops out at p=0.0029 (logit -5.8) on candidate-profile documents
+    # — every head row sat under any sane absolute floor while the incident
+    # junk was still 6+ logits under the best row. The library default of
+    # +inf disables demotion so dependency-free callers and CI keep the
+    # pre-gap behaviour; the API wires ``settings.rerank_ce_gap`` in (this
+    # module must stay settings-free).
+    ce_logit_gap: float = float("inf")
     rrf_k: int = 60
     n_arms: int = 2
 
@@ -290,13 +295,17 @@ def apply_ce_scores(
     Do not impute a CE score to the tail: zero is a false "rejected" claim,
     and a batch mean reintroduces batch dependence.
 
-    Head rows whose CE probability falls below ``policy.ce_floor`` land in
-    band 2, not band 0. Without the floor, band 0 could reorder the head but
-    never demote out of it: a row the CE scored at p~=0.000002 (logit -12)
-    still outranked every band-1 row, including score-88 candidates. The
-    demotion keeps the row paginable (the CE is a small local model, so
-    "irrelevant" is a demote, not a hide) and keeps ``ce`` on the row for
-    diagnostics.
+    Head rows whose raw logit sits more than ``policy.ce_logit_gap`` under
+    the head's best logit land in band 2, not band 0. Without demotion,
+    band 0 could reorder the head but never eject from it: a row the CE
+    scored at logit -12 still outranked every band-1 row, including score-88
+    candidates. The gap is relative on purpose — see the RankPolicy field
+    for the prod calibration measurements that ruled out an absolute floor.
+    Consequence worth knowing: a head that is UNIFORMLY junk has no relative
+    signal, so nothing demotes and the CE merely reorders it — retrieval
+    already put junk on top and the CE cannot repair that. The demotion
+    keeps the row paginable (the CE is a small local model, so "irrelevant"
+    is a demote, not a hide) and keeps ``ce`` on the row for diagnostics.
     """
     depth = policy.rerank_depth
     retrieval_ordered = sorted(
@@ -317,15 +326,19 @@ def apply_ce_scores(
         ),
     )
     head_keys = {row.key for row in retrieval_ordered[:depth]}
+    scored_keys = [row.key for row in retrieval_ordered[:depth] if row.key in logits]
+    # The gap compares RAW logits: logistic_ce rounds to 4dp, which collapses
+    # the sub-0.0001 region the demotion decision lives in on this corpus.
+    max_logit = max((logits[key] for key in scored_keys), default=0.0)
     out: list[PoolRow] = []
     for row in pool:
         if row.key in logits and row.key in head_keys:
             ce = logistic_ce(logits[row.key])
-            # At/above the floor: band 0, ordered by ce in rank_page. Below:
-            # band 2 — the ce value is kept for diagnostics, but sub-floor
-            # probabilities are all ~0 and meaningless to sort by, so
+            # Within the gap of the head max: band 0, ordered by ce in
+            # rank_page. Further below: band 2 — ce is kept for diagnostics,
+            # but that far under the best row it is noise to sort by, so
             # rank_page orders band 2 by the retrieval blend instead.
-            band = 0 if ce >= policy.ce_floor else 2
+            band = 0 if (max_logit - logits[row.key]) <= policy.ce_logit_gap else 2
             out.append(
                 PoolRow(
                     key=row.key,

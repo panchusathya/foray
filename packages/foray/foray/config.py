@@ -129,14 +129,17 @@ class Settings(BaseSettings):
         validation_alias="FORAY_RERANK_MODEL",
     )
     rerank_depth: int = Field(default=48, ge=0, le=400, validation_alias="FORAY_RERANK_DEPTH")
-    # A MiniLM CE probability below ~5% is a confident irrelevance verdict.
-    # The floor ejects such rows from the reranked head (band 2, after every
-    # unreranked row) instead of letting band 0 pin them above candidates the
-    # rubric scored in the 80s. This mirrors RankPolicy.ce_floor, whose
-    # library default stays 0.0 (no demotion) so rank.py-only callers and CI
-    # are unaffected; the API wires this value in.
-    rerank_ce_floor: float = Field(
-        default=0.05, ge=0.0, le=1.0, validation_alias="FORAY_RERANK_CE_FLOOR"
+    # How many LOGITS below the head's best CE row a candidate may sit before
+    # being demoted to band 2 (after every unreranked row). Relative, not an
+    # absolute probability floor, because ms-marco calibration does not
+    # transfer to candidate profiles: measured on prod, the best head row
+    # scored p=0.0029 (logit -5.8), so any absolute floor demoted the entire
+    # head, while the incident junk (logit -12) was 6+ logits under the best
+    # row. 5 logits is an ~150x odds ratio. Mirrors RankPolicy.ce_logit_gap,
+    # whose library default stays +inf (no demotion) so rank.py-only callers
+    # and CI are unaffected; the API wires this value in.
+    rerank_ce_gap: float = Field(
+        default=5.0, ge=0.0, le=40.0, validation_alias="FORAY_RERANK_CE_GAP"
     )
     rerank_max_length: int = Field(default=288, ge=32, le=512, validation_alias="FORAY_RERANK_MAX_LENGTH")
     rerank_doc_chars: int = Field(default=900, ge=100, le=4000, validation_alias="FORAY_RERANK_DOC_CHARS")

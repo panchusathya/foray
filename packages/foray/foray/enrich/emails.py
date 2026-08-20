@@ -14,9 +14,21 @@ Sources, in confidence order (see UPSERT: an address is never downgraded):
                    text (rare: ~0.2% of records). Below apollo_work because a
                    scraped self-declared address is weaker than a verified
                    work record; above commit because it is self-published.
+  contactout_personal (72) -- a consumer address from ContactOut, which is
+                   specialised for them and measured a 70% hit rate against
+                   Apollo's 10% on the same ten candidates. Above
+                   apollo_personal because of that; below commit and profile,
+                   which are self-published and so are evidence rather than a
+                   vendor's assertion.
+  contactout_work (80) -- below apollo_work (85), same reasoning as linkedin.
   guess (25)    -- reserved; never written by this module and always excluded
                    from the search payload, so a guess can never become a
                    send-to address downstream.
+
+Confidence is "how sure are we this belongs to this person". It is NOT
+send-preference: which address outreach uses is decided by the ordering in
+foray/api/search.py, which prefers personal regardless of confidence, because a
+recruiting pitch must not land in somebody's work inbox.
 """
 
 from __future__ import annotations

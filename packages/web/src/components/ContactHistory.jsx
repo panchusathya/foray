@@ -7,7 +7,7 @@
  * link to the provider's own web client hands off for the rich version.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { api, providerLabel } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
@@ -81,8 +81,16 @@ function Thread({ thread, defaultOpen }) {
   );
 }
 
-export function ContactHistory({ candidateId }) {
+export function ContactHistory({ candidateId, onCount }) {
   const timeline = useAsync(() => api.candidateTimeline(candidateId), [candidateId]);
+  const total =
+    (timeline.data?.stats?.outbound_count ?? 0) + (timeline.data?.stats?.inbound_count ?? 0);
+
+  // Reported up so the tab strip can label itself without a second request.
+  // Above the early returns: a hook cannot sit behind a conditional.
+  useEffect(() => {
+    if (timeline.data) onCount?.(total);
+  }, [onCount, timeline.data, total]);
 
   if (timeline.loading) return <Loading label="Loading contact history…" />;
   if (timeline.error) return <ErrorBox error={timeline.error} />;

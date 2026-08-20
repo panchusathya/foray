@@ -12,6 +12,32 @@ export function PageHeader({ title, subtitle, actions }) {
   );
 }
 
+/**
+ * Initials in a circle.
+ *
+ * Decorative only -- `aria-hidden`, because the name it stands for is always
+ * rendered right beside it and a screen reader announcing "AC" twice is worse
+ * than silence.
+ */
+export function Avatar({ name, size = 26 }) {
+  const parts = (name || '')
+    .replace(/[^\p{L}\p{N} ]/gu, ' ')
+    .split(' ')
+    .filter(Boolean);
+  const label = parts.length
+    ? (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
+    : '?';
+  return (
+    <span
+      className="avatar"
+      aria-hidden="true"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.38) }}
+    >
+      {label}
+    </span>
+  );
+}
+
 export function ErrorBox({ error }) {
   if (!error) return null;
   return <div className="error">{error.message ?? String(error)}</div>;

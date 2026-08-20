@@ -16,7 +16,7 @@ import { EmailEditor } from '../components/EmailEditor.jsx';
 import { InlineField } from '../components/InlineField.jsx';
 import { NotesPanel } from '../components/NotesPanel.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
-import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { Avatar, Badge, ErrorBox, Loading } from '../components/common.jsx';
 import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -37,6 +37,10 @@ export function CandidateDetailPage() {
   const [tab, setTab] = useState('emails');
   const [saveError, setSaveError] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // null until the panel has actually loaded: a tab reading "Notes 0" before
+  // the request lands says something false for as long as it takes.
+  const [emailCount, setEmailCount] = useState(null);
+  const [noteCount, setNoteCount] = useState(null);
   const navigate = useNavigate();
 
   if (candidate.loading) return <Loading label="Loading candidate…" />;
@@ -89,30 +93,39 @@ export function CandidateDetailPage() {
 
   return (
     <div className="stack">
-      <PageHeader
-        title={person.full_name}
-        subtitle={
-          [person.current_title, person.current_company].filter(Boolean).join(' · ') ||
-          person.headline ||
-          ''
-        }
-        actions={
-          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
-            <button
-              type="button"
-              className="tiny ghost"
-              data-testid="delete-candidate"
-              disabled={deleting}
-              onClick={remove}
-            >
-              {deleting ? 'Deleting…' : 'Delete contact'}
-            </button>
-            <Link className="badge" to="/contacts">
-              ← Contacts
-            </Link>
-          </div>
-        }
-      />
+      {/* A record header rather than the generic PageHeader: who this is, how
+          to reach them, and where they stand, all above the fold. */}
+      <div className="record-head">
+        <Avatar name={person.full_name} size={44} />
+        <div className="record-id">
+          <h1>{person.full_name}</h1>
+          <p>
+            {[person.current_title, person.current_company].filter(Boolean).join(' · ') ||
+              person.headline ||
+              'No title on file'}
+          </p>
+          <p className="mono small muted">{(person.emails ?? [])[0] || 'No email on file'}</p>
+        </div>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          {status !== 'none' ? (
+            <span className={`badge ${status === 'do_not_contact' ? 'miss' : 'accent'}`}>
+              {CRM_STATUS_LABELS[status] ?? status}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="tiny ghost"
+            data-testid="delete-candidate"
+            disabled={deleting}
+            onClick={remove}
+          >
+            {deleting ? 'Deleting…' : 'Delete contact'}
+          </button>
+          <Link className="badge" to="/contacts">
+            ← Contacts
+          </Link>
+        </div>
+      </div>
 
       <ErrorBox error={saveError} />
 
@@ -206,7 +219,8 @@ export function CandidateDetailPage() {
               data-testid="tab-emails"
               onClick={() => setTab('emails')}
             >
-              Emails
+              Emails{' '}
+              {emailCount === null ? null : <span className="tab-count">{emailCount}</span>}
             </button>
             <button
               type="button"
@@ -214,7 +228,8 @@ export function CandidateDetailPage() {
               data-testid="tab-notes"
               onClick={() => setTab('notes')}
             >
-              Notes
+              Notes{' '}
+              {noteCount === null ? null : <span className="tab-count">{noteCount}</span>}
             </button>
           </div>
 
@@ -222,10 +237,10 @@ export function CandidateDetailPage() {
               (see the file header), and hiding rather than unmounting keeps a
               half-typed note alive when you glance at the thread. */}
           <div hidden={tab !== 'emails'}>
-            <ContactHistory candidateId={candidateId} />
+            <ContactHistory candidateId={candidateId} onCount={setEmailCount} />
           </div>
           <div hidden={tab !== 'notes'}>
-            <NotesPanel candidateId={candidateId} />
+            <NotesPanel candidateId={candidateId} onCount={setNoteCount} />
           </div>
         </div>
       </div>

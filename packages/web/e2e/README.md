@@ -53,7 +53,7 @@ npx playwright install chromium
 | `pipeline.spec.js` | duplicate adds collapse, one candidate across projects, the board stays a tracker, outreach-driven stages need an explicit override |
 | `sequences.spec.js` | the enrol picker, already-enrolled exclusion, enrol idempotency, the no-email warning, the paused banner, step editing blocked mid-flight, unsaved edits surviving a pause |
 | `sourcing.spec.js` | contactable filter, and that a guessed address never reaches the UI |
-| `contacts-grid.spec.js` | the CRM grid renders and sorts, the preset views select the right population (going cold, sourced pool vs CRM), and view state survives reload and the back button |
+| `contacts-grid.spec.js` | the CRM grid renders and sorts, the preset views select the right population (going cold, sourced pool vs CRM), view state survives reload and the back button, and the name cell carries the address without widening the table |
 | `contacts-bulk.spec.js` | the bulk bar appears only with a selection, select-page and clear, add-to-project reporting an outcome that outlives the cleared selection, the no-email enrol warning, and that a select-all-matching selection cannot be exported |
 | `contact-record.spec.js` | the person record: Emails is the default tab and present on first paint, notes written/edited/deleted and surviving a reload, inline field editing, and that do-not-contact writes a real suppression |
 | `contacts-add.spec.js` | adding a contact by hand: creation lands on the new record, an optional first note is saved, a duplicate address offers the existing record instead of an error, save-and-add-another, and two same-named people with no email stay two people |

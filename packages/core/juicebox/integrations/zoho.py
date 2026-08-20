@@ -28,10 +28,12 @@ what reply matching and ingest idempotency actually key on.
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import time
 from datetime import UTC, datetime
+from email.parser import HeaderParser
 from urllib.parse import urlencode
 
 import httpx
@@ -429,12 +431,18 @@ class ZohoSender:
                 str(data)[:200],
             )
             return SendResult(ok=False, error="zoho send returned no messageId")
+        # Zoho's send response carries no threadId, but a reply to this message
+        # arrives with threadId == the ROOT message's messageId (verified
+        # against a live mailbox). Storing our own native id as the
+        # conversation id therefore makes thread matching work for the common
+        # case, instead of leaving the column empty and falling back to
+        # address-only guesswork.
         return SendResult(
             ok=True,
             provider_message_id=rfc_id or native_id,
             provider_native_id=native_id,
             internet_message_id=rfc_id,
-            conversation_id=str(data.get("threadId") or ""),
+            conversation_id=str(data.get("threadId") or "") or native_id,
         )
 
 
@@ -683,16 +691,16 @@ class ZohoProvider:
         """Save the generated reply in the mailbox's own Drafts, on the thread.
 
         Zoho has no createReply-into-Drafts, so this is an ordinary draft with
-        the threading headers set. Whether Zoho quotes the original for us once
-        inReplyTo is present is unverified; if it does not, the draft still
-        opens on the right thread with our text in it.
+        the threading headers set and the original quoted underneath -- Zoho
+        does not quote for us even with inReplyTo present, verified against a
+        live mailbox.
         """
         client = self._client(db, connection)
         body = {
             "fromAddress": connection.address,
             "toAddress": inbound.from_address or inbound.to_address,
             "subject": _reply_subject(inbound.subject),
-            "content": html_body,
+            "content": html_body + _quote_original(inbound),
             "mailFormat": "html",
             "encoding": "UTF-8",
             "mode": "draft",
@@ -712,23 +720,57 @@ class ZohoProvider:
 
 
 def _header_value(header: dict, name: str) -> str:
-    """Pull one header out of Zoho's header payload, whatever shape it took.
+    """Pull one header out of Zoho's /header response.
 
-    The endpoint has returned both a flat mapping and a {"headers": {...}}
-    envelope depending on the account, so both are handled rather than
-    guessing.
+    Zoho does not return a key/value map. It returns the message's entire raw
+    RFC 5322 header block as one string under ``headerContent`` -- ARC seals,
+    DKIM signatures, folded continuation lines and all. An earlier version of
+    this looked for a dict key called "in-reply-to" and therefore never found
+    anything, which silently reduced Zoho reply matching to sender-address
+    guesswork. Parse it as what it is.
+
+    The dict fallback stays for the shape a couple of accounts reportedly
+    return, and costs nothing.
     """
     if not header:
         return ""
-    candidates = [header]
-    nested = header.get("headers")
-    if isinstance(nested, dict):
-        candidates.append(nested)
-    for source in candidates:
+    blob = header.get("headerContent")
+    if isinstance(blob, str) and blob:
+        # HeaderParser handles folded lines, which In-Reply-To and References
+        # routinely use -- a naive line split would truncate them.
+        value = HeaderParser().parsestr(blob).get(name)
+        if value:
+            return " ".join(value.split()).strip()
+    for source in (header, header.get("headers") or {}):
+        if not isinstance(source, dict):
+            continue
         for key, value in source.items():
-            if str(key).lower() == name and isinstance(value, str):
+            if str(key).lower() == name.lower() and isinstance(value, str):
                 return value.strip()
     return ""
+
+
+def _quote_original(inbound) -> str:
+    """The candidate's own message, quoted under our drafted reply.
+
+    Graph's createReply quotes the thread for us. Zoho's draft API does not --
+    verified against a live mailbox, even with inReplyTo set -- so a draft would
+    otherwise open with our text and no sight of what was being answered.
+    """
+    body = getattr(inbound, "body_html", "") or ""
+    if not body:
+        plain = getattr(inbound, "body", "") or ""
+        body = f"<p>{html.escape(plain).replace(chr(10), '<br>')}</p>" if plain else ""
+    if not body:
+        return ""
+    sent_at = getattr(inbound, "sent_at", None)
+    when = sent_at.strftime("%d %b %Y at %H:%M") if sent_at else "earlier"
+    who = html.escape(getattr(inbound, "from_address", "") or "they")
+    return (
+        f'<br><div style="color:#666">On {when}, {who} wrote:</div>'
+        f'<blockquote style="margin:0 0 0 12px;padding-left:12px;'
+        f'border-left:2px solid #ccc">{body}</blockquote>'
+    )
 
 
 def _reply_subject(subject: str) -> str:

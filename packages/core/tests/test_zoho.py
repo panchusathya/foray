@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +18,7 @@ from juicebox.integrations import zoho
 from juicebox.integrations.crypto import decrypt_json, encrypt_json
 from juicebox.integrations.providers import FOLDER_INBOX, FOLDER_SENT, set_provider
 from juicebox.integrations.zoho import ZohoClient, ZohoError, ZohoProvider, ZohoSender
-from juicebox.models import MailboxConnection
+from juicebox.models import MailboxConnection, utcnow
 from juicebox.outreach.sender import OutboundEmail
 
 
@@ -80,6 +81,26 @@ class FakeZohoClient:
         if self.send_response is None:
             return {"messageId": "170001", "mailId": "<abc@goforay.io>"}
         return self.send_response
+
+
+def raw_headers(*, in_reply_to="", message_id="<child@goforay.io>") -> dict:
+    """A Zoho /header response, shaped the way the live API shapes it.
+
+    One string under ``headerContent`` holding the entire RFC header block --
+    ARC seals and all, which is why the real thing runs to a couple of KB.
+    """
+    crlf = chr(13) + chr(10)
+    tab = chr(9)
+    lines = [
+        "Delivered-To: tushar@goforay.io",
+        "ARC-Seal: i=1; a=rsa-sha256; t=1787205330; cv=none;",
+        tab + "d=zohomail.com; s=zohoarc;",
+        "Message-ID: " + message_id,
+        "Subject: Re: role",
+    ]
+    if in_reply_to:
+        lines += ["In-Reply-To: " + in_reply_to, "References: " + in_reply_to]
+    return {"headerContent": crlf.join(lines) + crlf, "messageId": "170001"}
 
 
 def _row(
@@ -285,6 +306,42 @@ class TestSender:
         assert body["fromAddress"] == "tushar@goforay.io"
         assert body["toAddress"] == "ada@example.com"
         assert body["mailFormat"] == "html"
+
+    def test_the_send_records_a_thread_id_replies_can_be_matched_on(
+        self, session, account
+    ):
+        """Zoho's send response has no threadId, but a reply to this message
+        arrives with threadId == this message's own id. Leaving the column
+        empty is what made every Zoho reply fall through to address matching.
+        """
+        connection = _connection(account["org_id"])
+        result = ZohoSender(session, connection, client=FakeZohoClient()).send(
+            OutboundEmail(
+                to="ada@example.com",
+                subject="s",
+                text_body="b",
+                html_body="<p>b</p>",
+                from_email=connection.address,
+            )
+        )
+        assert result.provider_native_id == "170001"
+        assert result.conversation_id == "170001"
+
+    def test_a_threadid_in_the_response_wins_over_the_fallback(self, session, account):
+        connection = _connection(account["org_id"])
+        fake = FakeZohoClient(
+            send_response={"messageId": "170001", "mailId": "<a@b>", "threadId": "thr-9"}
+        )
+        result = ZohoSender(session, connection, client=fake).send(
+            OutboundEmail(
+                to="ada@example.com",
+                subject="s",
+                text_body="b",
+                html_body="<p>b</p>",
+                from_email=connection.address,
+            )
+        )
+        assert result.conversation_id == "thr-9"
 
     def test_threading_headers_are_passed_when_present(self, session, account):
         connection = _connection(account["org_id"])
@@ -535,7 +592,7 @@ class TestFolderPolling:
             _row(message_id="loose", received_ms=1_700_000_001_000, thread_id=""),
         ]
         fake = FakeZohoClient(pages=rows)
-        fake.headers["loose"] = {"In-Reply-To": "<parent@goforay.io>"}
+        fake.headers["loose"] = raw_headers(in_reply_to="<parent@goforay.io>")
         provider = ZohoProvider(client_factory=lambda db, conn: fake)
 
         page = provider.iter_folder(
@@ -550,13 +607,42 @@ class TestFolderPolling:
         threaded = next(event for event in page.events if event.native_id == "threaded")
         assert threaded.in_reply_to == ""
 
-    def test_a_nested_header_envelope_is_read_too(self):
+    def test_headers_come_back_as_one_raw_rfc_block(self):
+        """What Zoho actually returns: the whole header block as a single
+        string, not a key/value map. Believing otherwise silently reduced Zoho
+        reply matching to sender-address guesswork."""
+        header = raw_headers(in_reply_to="<parent@goforay.io>")
+        assert zoho._header_value(header, "in-reply-to") == "<parent@goforay.io>"
+        assert zoho._header_value(header, "message-id") == "<child@goforay.io>"
+        # Case-insensitive, and absent headers are empty rather than an error.
+        assert zoho._header_value(header, "In-Reply-To") == "<parent@goforay.io>"
+        assert zoho._header_value(header, "x-nonexistent") == ""
+        assert zoho._header_value({}, "in-reply-to") == ""
+
+    def test_a_folded_header_is_not_truncated(self):
+        """References routinely folds across lines; a naive line split would
+        return only the first id."""
+        crlf = chr(13) + chr(10)
+        tab = chr(9)
+        blob = crlf.join(
+            [
+                "Message-ID: <child@goforay.io>",
+                "References: <one@goforay.io>",
+                tab + "<two@goforay.io>",
+                " <three@goforay.io>",
+                "Subject: Re: role",
+            ]
+        ) + crlf
+        value = zoho._header_value({"headerContent": blob}, "references")
+        assert value == "<one@goforay.io> <two@goforay.io> <three@goforay.io>"
+
+    def test_the_dict_shape_still_works(self):
+        """Kept as a fallback for the shape some accounts reportedly return."""
+        assert zoho._header_value({"In-Reply-To": "<p@x.io>"}, "in-reply-to") == "<p@x.io>"
         assert (
             zoho._header_value({"headers": {"In-Reply-To": "<p@x.io>"}}, "in-reply-to")
             == "<p@x.io>"
         )
-        assert zoho._header_value({"In-Reply-To": "<p@x.io>"}, "in-reply-to") == "<p@x.io>"
-        assert zoho._header_value({}, "in-reply-to") == ""
 
     def test_a_missing_folder_id_says_so(self, session, account):
         connection = _connection(account["org_id"], sync_state={})
@@ -601,6 +687,56 @@ class TestReplyDraft:
         assert body["toAddress"] == "ada@example.com"
         assert body["subject"] == "Re: role"
         assert body["inReplyTo"] == "<parent@example.com>"
+
+    def test_the_draft_quotes_the_original(self, session, account, outreach_fixture):
+        """Zoho does not quote for us even with inReplyTo set, so the draft
+        would otherwise open with no sight of what is being answered."""
+        from juicebox.models import Message
+
+        connection = _connection(account["org_id"])
+        session.add(connection)
+        session.flush()
+        inbound = Message(
+            org_id=account["org_id"],
+            candidate_id=outreach_fixture["candidates"][0].id,
+            direction="inbound",
+            status="received",
+            from_address="ada@example.com",
+            to_address="tushar@goforay.io",
+            subject="Re: role",
+            body="Sounds interesting, what is the comp range?",
+            internet_message_id="<parent@example.com>",
+            provider_native_id="170002",
+            sent_at=utcnow(),
+        )
+        session.add(inbound)
+        session.flush()
+
+        fake = FakeZohoClient(send_response={"messageId": "draft-9"})
+        ZohoProvider(client_factory=lambda db, conn: fake).place_reply_draft(
+            session, connection=connection, inbound=inbound, html_body="<p>Happy to share.</p>"
+        )
+        [body] = [b["content"] for b in fake.sent]
+        assert "<p>Happy to share.</p>" in body
+        assert "what is the comp range?" in body
+        assert "ada@example.com wrote:" in body
+        assert "<blockquote" in body
+
+    def test_quoting_escapes_a_plaintext_original(self, session, account):
+        """A plain-text reply containing angle brackets must not be able to
+        inject markup into the draft."""
+        inbound = SimpleNamespace(
+            body="<script>alert(1)</script> and <b>bold</b>",
+            body_html="",
+            from_address="ada@example.com",
+            sent_at=None,
+        )
+        quoted = zoho._quote_original(inbound)
+        assert "&lt;script&gt;" in quoted
+        assert "<script>" not in quoted
+
+    def test_nothing_to_quote_is_not_an_error(self):
+        assert zoho._quote_original(SimpleNamespace(body="", body_html="")) == ""
 
     def test_a_subject_without_re_gets_one(self):
         assert zoho._reply_subject("Role at Foray") == "Re: Role at Foray"

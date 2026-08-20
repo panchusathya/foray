@@ -9,9 +9,10 @@
  */
 
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ContactHistory } from '../components/ContactHistory.jsx';
+import { EmailEditor } from '../components/EmailEditor.jsx';
 import { InlineField } from '../components/InlineField.jsx';
 import { NotesPanel } from '../components/NotesPanel.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
@@ -35,6 +36,8 @@ export function CandidateDetailPage() {
   const candidate = useAsync(() => api.getCandidate(candidateId), [candidateId]);
   const [tab, setTab] = useState('emails');
   const [saveError, setSaveError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const navigate = useNavigate();
 
   if (candidate.loading) return <Loading label="Loading candidate…" />;
   if (candidate.error) return <ErrorBox error={candidate.error} />;
@@ -51,6 +54,37 @@ export function CandidateDetailPage() {
     }
   }
 
+  async function remove() {
+    // Spelling out what goes with them: the API cascades to notes, tags, the
+    // address projection, project memberships and enrollments, and there is no
+    // undo. A count is more use here than the word "permanently".
+    const owned = [
+      (person.emails ?? []).length && `${person.emails.length} address(es)`,
+      (person.tags ?? []).length && `${person.tags.length} tag(s)`,
+    ].filter(Boolean);
+    if (
+      !window.confirm(
+        `Delete ${person.full_name}?\n\n` +
+          `This removes the person and everything attached to them` +
+          `${owned.length ? ` — including ${owned.join(' and ')}` : ''}` +
+          `, plus any notes, project memberships and sequence enrolments.\n\n` +
+          `There is no undo. To fix a bad address instead, edit the ` +
+          `Email addresses list.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setSaveError(null);
+    try {
+      await api.deleteCandidate(candidateId);
+      navigate('/contacts');
+    } catch (caught) {
+      setSaveError(caught);
+      setDeleting(false);
+    }
+  }
+
   const status = person.crm_status || 'none';
 
   return (
@@ -63,9 +97,20 @@ export function CandidateDetailPage() {
           ''
         }
         actions={
-          <Link className="badge" to="/contacts">
-            ← Contacts
-          </Link>
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="tiny ghost"
+              data-testid="delete-candidate"
+              disabled={deleting}
+              onClick={remove}
+            >
+              {deleting ? 'Deleting…' : 'Delete contact'}
+            </button>
+            <Link className="badge" to="/contacts">
+              ← Contacts
+            </Link>
+          </div>
         }
       />
 
@@ -120,14 +165,13 @@ export function CandidateDetailPage() {
                 <Badge key={skill}>{skill}</Badge>
               ))}
             </div>
-            <div className="row wrap small">
-              {/* Read-only: the address is the key every mail-matching path
-                  reads, and re-keying it needs its own deliberate flow. */}
-              {(person.emails ?? []).map((email) => (
-                <span key={email} className="mono muted">
-                  {email}
-                </span>
-              ))}
+            <div className="stack small">
+              <strong className="small">Email addresses</strong>
+              <EmailEditor
+                candidateId={candidateId}
+                emails={person.emails}
+                onChanged={candidate.reload}
+              />
             </div>
           </div>
 

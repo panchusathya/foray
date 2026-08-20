@@ -71,11 +71,16 @@ class TestUsable:
     @pytest.mark.parametrize(
         "raw, expected",
         [
-            ("  Ada@Example.COM ", "ada@example.com"),
+            ("  Ada@Databricks.COM ", "ada@databricks.com"),
             ("nope", None),
             ("", None),
             (None, None),
             ("two addresses@a.com b@c.com", None),
+            # RFC 2606 reserves example.com precisely so it reaches nobody.
+            ("ada@example.com", None),
+            # The pair ContactOut hands back once its quota is spent.
+            ("email1@example.com", None),
+            ("email2@gmail.com", None),
         ],
     )
     def test_normalises_or_rejects(self, raw, expected):

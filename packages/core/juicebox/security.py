@@ -79,17 +79,29 @@ def _sign(message: bytes, secret: str) -> bytes:
 
 
 def create_access_token(
-    *, subject: str, org_id: str, role: str, ttl_seconds: int | None = None
+    *,
+    subject: str,
+    org_id: str,
+    role: str,
+    ttl_seconds: int | None = None,
+    extra: dict | None = None,
 ) -> str:
+    """Sign a compact HS256 token.
+
+    ``extra`` carries non-identity claims for single-purpose tokens — the OAuth
+    connect state uses it to remember which mail provider the round trip is
+    for. It cannot overwrite the reserved claims below.
+    """
     settings = get_settings()
     now = int(time.time())
-    payload = {
+    payload = dict(extra or {})
+    payload.update({
         "sub": subject,
         "org": org_id,
         "role": role,
         "iat": now,
         "exp": now + (ttl_seconds or settings.access_token_ttl_seconds),
-    }
+    })
     header = _b64e(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header}.{body}".encode("ascii")

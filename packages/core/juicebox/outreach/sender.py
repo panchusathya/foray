@@ -27,6 +27,12 @@ class OutboundEmail:
     from_email: str
     from_name: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    # RFC 5322 threading hints, set for follow-up steps from the previous
+    # outbound message on the same enrollment. Providers that cannot express
+    # them ignore them and send a fresh message -- a broken thread is worth
+    # far less than a step that refuses to send.
+    in_reply_to: str = ""
+    references: str = ""
 
     @property
     def from_header(self) -> str:
@@ -38,8 +44,12 @@ class SendResult:
     ok: bool
     provider_message_id: str = ""
     error: str = ""
-    # Set by the Graph provider; reply detection matches on these.
-    graph_message_id: str = ""
+    # Set by mailbox providers; reply detection matches on these.
+    # provider_native_id is the provider's own message id and is what makes
+    # ingest idempotent. conversation_id is Graph's conversationId or Zoho's
+    # threadId. internet_message_id is the RFC Message-ID, which is what lets
+    # a later reply be matched by its In-Reply-To header.
+    provider_native_id: str = ""
     internet_message_id: str = ""
     conversation_id: str = ""
 
@@ -100,6 +110,10 @@ class SmtpSender:
         message["To"] = email.to
         message["From"] = email.from_header
         message["Subject"] = email.subject
+        if email.in_reply_to:
+            message["In-Reply-To"] = email.in_reply_to
+        if email.references:
+            message["References"] = email.references
         for key, value in email.headers.items():
             message[key] = value
         message.set_content(email.text_body)
@@ -167,30 +181,126 @@ class FailingSender:
         return SendResult(ok=False, error=self.reason)
 
 
-_graph_sender_factory = None
+_sender_factories: dict[str, object] = {}
 
 
-def set_graph_sender_factory(factory) -> None:
-    """Tests inject a fake Graph sender; None restores the real one."""
-    global _graph_sender_factory
-    _graph_sender_factory = factory
+def set_sender_factory(provider: str, factory) -> None:
+    """Tests inject a fake sender for one provider; None removes it."""
+    if factory is None:
+        _sender_factories.pop(provider, None)
+    else:
+        _sender_factories[provider] = factory
 
 
-def resolve_sender(db, sequence) -> EmailSender:
-    """The provider for one sequence: its connected mailbox, else the global."""
-    if not sequence.mailbox_id:
-        return get_sender()
+def reset_sender_factories() -> None:
+    _sender_factories.clear()
 
+
+def has_sender_factory(provider: str) -> bool:
+    return provider in _sender_factories
+
+
+@dataclass
+class ResolvedSender:
+    """Who is about to send, and whether anybody can right now.
+
+    ``deferred`` is not a failure: every eligible mailbox is at its daily cap,
+    so the caller should leave the enrollment alone and let the job requeue.
+    Turning that into an error would park a permanent idempotency key and the
+    step could never send again.
+    """
+
+    sender: EmailSender
+    connection: object | None = None  # MailboxConnection; None = global provider
+    deferred: bool = False
+    reason: str = ""
+
+
+def sender_for_connection(db, connection) -> EmailSender:
+    factory = _sender_factories.get(connection.provider)
+    if factory is not None:
+        return factory(db, connection)
+
+    from ..integrations.providers import get_provider
+
+    return get_provider(connection.provider).build_sender(db, connection)
+
+
+def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
+    """Resolve one specific mailbox, refusing loudly when it cannot send.
+
+    Never falls back to the global provider: the address was chosen (pinned to
+    the enrollment, or fixed on the sequence), and sending from a different one
+    is worse than not sending.
+    """
     from ..models import MailboxConnection
 
-    connection = db.get(MailboxConnection, sequence.mailbox_id)
-    if connection is None or connection.org_id != sequence.org_id:
-        return FailingSender("mailbox connection not found")
+    connection = db.get(MailboxConnection, mailbox_id)
+    if connection is None or connection.org_id != org_id:
+        return ResolvedSender(FailingSender("mailbox connection not found"))
     if connection.status != "active":
-        return FailingSender(f"mailbox {connection.address} is {connection.status}; reconnect it")
-    if _graph_sender_factory is not None:
-        return _graph_sender_factory(db, connection)
+        return ResolvedSender(
+            FailingSender(f"mailbox {connection.address} is {connection.status}; reconnect it"),
+            connection=connection,
+        )
+    if not connection.send_enabled:
+        return ResolvedSender(
+            FailingSender(f"sending is switched off for mailbox {connection.address}"),
+            connection=connection,
+        )
 
-    from ..integrations.microsoft import GraphSender
+    from .rotation import is_over_cap
 
-    return GraphSender(db, connection)
+    if is_over_cap(db, connection=connection, now=now):
+        return ResolvedSender(
+            FailingSender(f"mailbox {connection.address} is at its daily cap"),
+            connection=connection,
+            deferred=True,
+            reason="mailbox_cap",
+        )
+    return ResolvedSender(sender_for_connection(db, connection), connection=connection)
+
+
+def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender:
+    """Pick the mailbox for the next send on this sequence.
+
+    Order matters:
+
+    1. An enrollment that has already sent stays on its mailbox forever. The
+       candidate's client threads on the address, so moving mid-sequence starts
+       a second conversation from a stranger.
+    2. A sequence pinned with sender_mode="fixed" uses exactly that mailbox.
+    3. Otherwise rotate over the pool.
+
+    With no mailbox connected at all, rotation falls through to the globally
+    configured provider (console/smtp/memory), which is how every org behaved
+    before rotation existed.
+    """
+    from ..models import utcnow
+
+    now = now or utcnow()
+    org_id = sequence.org_id
+
+    if enrollment is not None and enrollment.mailbox_id:
+        return _bind(db, org_id, enrollment.mailbox_id, now=now)
+
+    if getattr(sequence, "sender_mode", "rotate") == "fixed":
+        if not sequence.mailbox_id:
+            # Pinned to nothing. Fall back rather than refuse, matching what a
+            # null mailbox_id has always meant.
+            return ResolvedSender(get_sender())
+        return _bind(db, org_id, sequence.mailbox_id, now=now)
+
+    from .rotation import eligible_mailboxes, pick_mailbox
+
+    if not eligible_mailboxes(db, org_id=org_id):
+        return ResolvedSender(get_sender())
+
+    connection = pick_mailbox(db, org_id=org_id, now=now)
+    if connection is None:
+        return ResolvedSender(
+            FailingSender("every connected mailbox is at its daily cap"),
+            deferred=True,
+            reason="mailbox_cap",
+        )
+    return ResolvedSender(sender_for_connection(db, connection), connection=connection)

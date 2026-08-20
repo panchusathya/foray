@@ -1,9 +1,12 @@
 """When a candidate replies, put a ready-to-edit response in the user's Drafts.
 
-The Juicebox loop: reply detected (sync.py) → this module writes a reply draft
-on the actual Outlook thread via Graph createReply, then emails the user a
-"your draft is ready" notification from their own mailbox. The user edits and
-sends from Outlook itself — we never send the reply for them.
+The Juicebox loop: reply detected (sync.py) → this module generates the body,
+asks the provider to place it as a draft on the actual thread, then emails the
+user a "your draft is ready" notification from their own mailbox. The user
+edits and sends from their own mail client — we never send the reply for them.
+
+Generating the body and persisting the ReplyDraft row stay here for every
+provider; only placing the draft in the mailbox is the provider's job.
 
 Drafting uses the LLM when configured and a plain per-intent template
 otherwise, so the loop works offline end to end. What the user eventually
@@ -32,7 +35,7 @@ from ..models import (
     utcnow,
 )
 from ..outreach.templates import to_html
-from .microsoft import GraphClient
+from .providers import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -181,12 +184,17 @@ def _send_notification(
     db,
     *,
     connection: MailboxConnection,
-    client: GraphClient,
     candidate: Candidate | None,
     inbound: Message,
     draft: ReplyDraft,
 ) -> None:
-    """'Your draft is ready' email, sent from the user's mailbox to themselves."""
+    """'Your draft is ready' email, sent from the user's mailbox to themselves.
+
+    Goes out through the same EmailSender the outreach uses, so it works for
+    any provider and honours the test seam.
+    """
+    from ..outreach.sender import OutboundEmail, sender_for_connection
+
     name = candidate.full_name if candidate else inbound.to_address
     subject = f"{name} replied ({inbound.reply_intent.replace('_', ' ')}) — your draft is ready"
     preview = (inbound.body or "").strip()
@@ -201,20 +209,22 @@ def _send_notification(
         "Their reply:",
         preview,
         "",
-        "A response draft is waiting in your Outlook Drafts — edit and send:",
-        draft.web_link or "https://outlook.office.com/mail/drafts",
-        "",
-        f"Candidate in Foray: {app_url}/contacts",
+        "A response draft is waiting in your Drafts folder — edit and send.",
     ]
+    if draft.web_link:
+        text_lines.append(draft.web_link)
+    text_lines += ["", f"Candidate in Foray: {app_url}/contacts"]
     body_text = "\n".join(text_lines)
-    message = {
-        "subject": subject,
-        "body": {"contentType": "HTML", "content": to_html(body_text)},
-        "toRecipients": [{"emailAddress": {"address": connection.address}}],
-    }
     try:
-        created = client.create_draft(message)
-        client.send_draft(created["id"])
+        sender_for_connection(db, connection).send(
+            OutboundEmail(
+                to=connection.address,
+                subject=subject,
+                text_body=body_text,
+                html_body=to_html(body_text),
+                from_email=connection.address,
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - the draft matters more than the ping
         logger.warning("draft-ready notification failed for %s: %s", connection.address, exc)
 
@@ -224,7 +234,7 @@ def create_reply_draft(
     *,
     inbound: Message,
     connection: MailboxConnection,
-    client: GraphClient | None = None,
+    provider=None,
     now: datetime | None = None,
 ) -> ReplyDraft | None:
     """Draft a response to one inbound reply. Idempotent per inbound message."""
@@ -236,25 +246,27 @@ def create_reply_draft(
     )
     if existing is not None:
         return existing
-    if not inbound.graph_message_id:
-        # Replies that arrived via webhook instead of sync have no thread to
-        # attach a Graph draft to.
+    if not inbound.provider_native_id:
+        # Replies that arrived via the ESP webhook instead of a mailbox sync
+        # have no provider-side thread to attach a draft to.
         return None
 
-    client = client or GraphClient(db, connection)
+    provider = provider or get_provider(connection.provider)
     candidate = db.get(Candidate, inbound.candidate_id) if inbound.candidate_id else None
     body, generated_by = generate_reply_body(
         db, inbound=inbound, candidate=candidate, mailbox_id=connection.id
     )
-    graph_draft = client.create_reply_draft(inbound.graph_message_id, to_html(body))
+    placed = provider.place_reply_draft(
+        db, connection=connection, inbound=inbound, html_body=to_html(body)
+    )
 
     draft = ReplyDraft(
         org_id=inbound.org_id,
         mailbox_id=connection.id,
         inbound_message_id=inbound.id,
         candidate_id=inbound.candidate_id,
-        graph_draft_id=graph_draft.get("id", ""),
-        web_link=graph_draft.get("webLink", ""),
+        provider_draft_id=placed.provider_draft_id,
+        web_link=placed.web_link,
         body=body,
         generated_by=generated_by,
         intent=inbound.reply_intent,
@@ -276,7 +288,6 @@ def create_reply_draft(
     _send_notification(
         db,
         connection=connection,
-        client=client,
         candidate=candidate,
         inbound=inbound,
         draft=draft,

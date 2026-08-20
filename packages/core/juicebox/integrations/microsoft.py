@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx
@@ -18,6 +19,15 @@ import httpx
 from ..config import get_settings
 from ..models import MailboxConnection
 from .crypto import decrypt_json, encrypt_json
+from .providers import (
+    FOLDER_INBOX,
+    FOLDER_SENT,
+    ConnectResult,
+    DraftResult,
+    FolderPage,
+    MailboxEvent,
+    ProviderError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +40,9 @@ _TOKEN_SKEW_SECONDS = 60
 _HTTP_TIMEOUT = 30.0
 
 
-class MicrosoftError(Exception):
-    def __init__(self, detail: str, *, status_code: int = 0) -> None:
-        super().__init__(detail)
-        self.status_code = status_code
+class MicrosoftError(ProviderError):
+    """Graph-side failure. A ProviderError so the sync loop can survive one
+    broken mailbox without knowing which provider it belongs to."""
 
 
 def is_configured() -> bool:
@@ -116,7 +125,7 @@ def fetch_profile(access_token: str) -> dict:
     return {
         "address": (data.get("mail") or data.get("userPrincipalName") or "").lower(),
         "display_name": data.get("displayName", ""),
-        "ms_user_id": data.get("id", ""),
+        "provider_account_id": data.get("id", ""),
     }
 
 
@@ -302,7 +311,141 @@ class GraphSender:
         return SendResult(
             ok=True,
             provider_message_id=draft.get("internetMessageId", "") or draft.get("id", ""),
-            graph_message_id=draft.get("id", ""),
+            provider_native_id=draft.get("id", ""),
             internet_message_id=draft.get("internetMessageId", ""),
             conversation_id=draft.get("conversationId", ""),
         )
+
+
+def _stamp(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def to_event(payload: dict) -> MailboxEvent:
+    """One Graph message payload as a provider-neutral MailboxEvent.
+
+    This is the only place Graph's field names are allowed to appear on the
+    read path; everything downstream works on the DTO.
+    """
+    body = payload.get("body") or {}
+    content = body.get("content") or payload.get("bodyPreview") or ""
+    recipients: list[str] = []
+    for key in ("toRecipients", "ccRecipients"):
+        for entry in payload.get(key) or []:
+            address = ((entry or {}).get("emailAddress") or {}).get("address", "")
+            if address:
+                recipients.append(address.lower())
+    sender = ((payload.get("from") or {}).get("emailAddress") or {}).get("address", "") or ""
+    return MailboxEvent(
+        native_id=payload.get("id", "") or "",
+        from_address=sender.lower(),
+        subject=payload.get("subject", "") or "",
+        body=content,
+        body_is_html=(body.get("contentType") or "").lower() == "html",
+        to_addresses=tuple(recipients),
+        thread_id=payload.get("conversationId", "") or "",
+        rfc_message_id=payload.get("internetMessageId", "") or "",
+        # Graph does not return In-Reply-To in the delta projection, and asking
+        # for internetMessageHeaders per message would double the call count
+        # for a match conversationId already makes.
+        in_reply_to="",
+        received_at=_stamp(payload.get("receivedDateTime", "") or ""),
+        sent_at=_stamp(payload.get("sentDateTime", "") or ""),
+        is_draft=bool(payload.get("isDraft")),
+        removed=payload.get("@removed") is not None,
+        web_link=payload.get("webLink", "") or "",
+        has_attachments=bool(payload.get("hasAttachments")),
+    )
+
+
+# Which GraphClient methods serve which logical folder. Keeping the original
+# per-folder method names means existing fake clients still satisfy the seam.
+_FOLDER_METHODS = {
+    FOLDER_INBOX: ("inbox_delta_baseline", "inbox_delta"),
+    FOLDER_SENT: ("sent_delta_baseline", "sent_delta"),
+}
+
+
+class MicrosoftProvider:
+    """MailProvider over Microsoft Graph.
+
+    A thin adapter: the OAuth and HTTP work above is unchanged, this only gives
+    it the shape sync.py and the router now talk to. ``client_factory`` exists
+    so tests can inject a fake GraphClient without faking the whole provider.
+    """
+
+    name = "microsoft"
+
+    def __init__(self, client_factory=None) -> None:
+        self._client_factory = client_factory or GraphClient
+
+    def _client(self, db, connection: MailboxConnection):
+        return self._client_factory(db, connection)
+
+    def is_configured(self) -> bool:
+        return is_configured()
+
+    def redirect_uri(self) -> str:
+        return redirect_uri()
+
+    def authorize_url(self, state: str) -> str:
+        return authorize_url(state)
+
+    def exchange_code(self, code: str, params) -> ConnectResult:
+        tokens = exchange_code(code)
+        profile = fetch_profile(tokens["access_token"])
+        return ConnectResult(
+            tokens=tokens,
+            address=profile["address"],
+            display_name=profile["display_name"],
+            provider_account_id=profile["provider_account_id"],
+        )
+
+    def build_sender(self, db, connection: MailboxConnection):
+        return GraphSender(db, connection, client=self._client(db, connection))
+
+    def read_cursor(self, connection: MailboxConnection, folder: str) -> str:
+        if folder == FOLDER_INBOX:
+            return connection.inbox_delta_link
+        if folder == FOLDER_SENT:
+            return connection.sent_delta_link
+        return ""
+
+    def iter_folder(self, db, connection: MailboxConnection, folder: str, *, cursor: str):
+        baseline_name, walk_name = _FOLDER_METHODS[folder]
+        client = self._client(db, connection)
+        if not cursor:
+            # First pass: record where "now" is and read nothing. Old mail is
+            # not outreach traffic.
+            return FolderPage(next_cursor=getattr(client, baseline_name)(), initialized=True)
+        payloads, delta_link = getattr(client, walk_name)(cursor)
+        payloads.sort(key=lambda item: item.get("receivedDateTime") or "")
+        return FolderPage(
+            events=[to_event(payload) for payload in payloads],
+            next_cursor=delta_link or cursor,
+        )
+
+    def commit_cursor(self, db, connection: MailboxConnection, folder: str, cursor: str) -> None:
+        if not cursor:
+            return
+        if folder == FOLDER_INBOX:
+            connection.inbox_delta_link = cursor
+        elif folder == FOLDER_SENT:
+            connection.sent_delta_link = cursor
+
+    def place_reply_draft(self, db, *, connection, inbound, html_body: str) -> DraftResult:
+        draft = self._client(db, connection).create_reply_draft(
+            inbound.provider_native_id, html_body
+        )
+        return DraftResult(
+            provider_draft_id=draft.get("id", ""), web_link=draft.get("webLink", "")
+        )
+
+    def search_participant(self, db, connection: MailboxConnection, address: str):
+        found = self._client(db, connection).search_participant(address)
+        return [to_event(payload) for payload in found]

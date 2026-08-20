@@ -27,7 +27,13 @@ logger = logging.getLogger(__name__)
 KIND_OUTREACH_TICK = "outreach.tick"
 KIND_OUTREACH_SEND = "outreach.send"
 KIND_AGENT_TICK = "agent.tick"
+# mailbox.sync is the per-org dispatcher; mailbox.sync.one does the work for
+# a single mailbox. Splitting them keeps one slow or backlogged mailbox from
+# eating a whole tick and starving the others -- with six mailboxes polling two
+# folders each, plus a content fetch per new message, one job per org does not
+# fit in a 120s tick.
 KIND_MAILBOX_SYNC = "mailbox.sync"
+KIND_MAILBOX_SYNC_ONE = "mailbox.sync.one"
 KIND_MAILBOX_BACKFILL = "mailbox.backfill"
 KIND_REPLY_DRAFT = "reply.draft"
 

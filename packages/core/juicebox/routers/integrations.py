@@ -1,66 +1,137 @@
-"""Connect external mailboxes (Microsoft Graph / Outlook).
+"""Connect external mailboxes (Microsoft Graph / Outlook, Zoho Mail).
 
-The callback is unauthenticated by necessity — the browser arrives from
-Microsoft's login page — so it carries a short-lived signed state token minted
-at connect time instead of a bearer header.
+The callback is unauthenticated by necessity — the browser arrives from the
+provider's login page — so it carries a short-lived signed state token minted
+at connect time instead of a bearer header. The state also names the provider,
+so one callback handler serves all of them.
+
+Callback paths stay per-provider and stable (``/v1/integrations/zoho/callback``)
+because they are registered with the provider: changing one means editing an
+app registration, so they are treated as fixed API surface.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
-from ..integrations import microsoft
 from ..integrations.crypto import encrypt_json
-from ..models import MailboxConnection, record_event
-from ..schemas import MailboxConnectionOut, MicrosoftConnectOut, MicrosoftIntegrationOut
+from ..integrations.providers import (
+    ProviderError,
+    get_provider,
+    provider_names,
+)
+from ..models import MailboxConnection, record_event, utcnow
+from ..outreach.rotation import sent_in_window
+from ..schemas import (
+    MailboxConnectionOut,
+    MailboxConnectOut,
+    MailboxIntegrationOut,
+    MailboxProviderOut,
+    MailboxSendingPatch,
+)
 from ..security import TokenError, create_access_token, decode_access_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    route_class=CommittingRoute, prefix="/v1/integrations/microsoft", tags=["integrations"]
+    route_class=CommittingRoute, prefix="/v1/integrations", tags=["integrations"]
 )
 
-_STATE_ROLE = "msconnect"
+_STATE_ROLE = "mailconnect"
 _STATE_TTL_SECONDS = 600
+# Env var names per provider, for the "not configured" message. Naming them
+# beats a generic error: the fix is always "set these two".
+_CREDENTIAL_VARS = {
+    "microsoft": "MS_CLIENT_ID and MS_CLIENT_SECRET",
+    "zoho": "ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET",
+}
 
 
-def _not_configured() -> HTTPException:
+def _provider_or_404(name: str):
+    """Resolve a provider name from the URL.
+
+    An unknown name is a client error, never a silent fallback to Microsoft:
+    that would connect the wrong kind of mailbox and send from it.
+    """
+    try:
+        return get_provider(name)
+    except ProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+
+def _not_configured(name: str) -> HTTPException:
+    hint = _CREDENTIAL_VARS.get(name, "its client id and secret")
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Microsoft integration is not configured; set MS_CLIENT_ID and MS_CLIENT_SECRET",
+        detail=f"{name} integration is not configured; set {hint}",
     )
 
 
-@router.get("", response_model=MicrosoftIntegrationOut)
-def integration_status(
+def _connection_or_404(
+    db: Session, connection_id: str, principal: Principal
+) -> MailboxConnection:
+    connection = db.get(MailboxConnection, connection_id)
+    if connection is None or connection.org_id != principal.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    return connection
+
+
+def _require_active(connection: MailboxConnection) -> None:
+    if connection.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Mailbox is {connection.status}; reconnect it first",
+        )
+
+
+@router.get("/mailboxes", response_model=MailboxIntegrationOut)
+def list_mailboxes(
     principal: Principal = Depends(get_principal), db: Session = Depends(get_db)
-) -> MicrosoftIntegrationOut:
+) -> MailboxIntegrationOut:
+    """Every connected mailbox in the org, plus which providers can be added.
+
+    Mailboxes are a tenant-wide pool: anybody in the org can send from any of
+    them, so this is deliberately not filtered by user.
+    """
+    now = utcnow()
     rows = db.scalars(
         select(MailboxConnection)
-        .where(
-            MailboxConnection.org_id == principal.org_id,
-            MailboxConnection.provider == "microsoft",
-        )
+        .where(MailboxConnection.org_id == principal.org_id)
         .order_by(MailboxConnection.created_at.desc())
     ).all()
-    return MicrosoftIntegrationOut(
-        configured=microsoft.is_configured(),
-        redirect_uri=microsoft.redirect_uri(),
-        connections=[MailboxConnectionOut.model_validate(row) for row in rows],
-    )
+    connections = []
+    for row in rows:
+        out = MailboxConnectionOut.model_validate(row)
+        out.sent_last_24h = sent_in_window(db, mailbox_id=row.id, now=now)
+        connections.append(out)
+    providers = []
+    for name in provider_names():
+        provider = get_provider(name)
+        providers.append(
+            MailboxProviderOut(
+                name=name,
+                configured=provider.is_configured(),
+                redirect_uri=provider.redirect_uri(),
+            )
+        )
+    return MailboxIntegrationOut(providers=providers, connections=connections)
 
 
-@router.post("/connect", response_model=MicrosoftConnectOut)
-def start_connect(principal: Principal = Depends(require_write)) -> MicrosoftConnectOut:
-    if not microsoft.is_configured():
-        raise _not_configured()
+@router.post("/{provider_name}/connect", response_model=MailboxConnectOut)
+def start_connect(
+    provider_name: str, principal: Principal = Depends(require_write)
+) -> MailboxConnectOut:
+    provider = _provider_or_404(provider_name)
+    if not provider.is_configured():
+        raise _not_configured(provider_name)
     if not principal.user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -71,8 +142,9 @@ def start_connect(principal: Principal = Depends(require_write)) -> MicrosoftCon
         org_id=principal.org_id,
         role=_STATE_ROLE,
         ttl_seconds=_STATE_TTL_SECONDS,
+        extra={"provider": provider_name},
     )
-    return MicrosoftConnectOut(auth_url=microsoft.authorize_url(state))
+    return MailboxConnectOut(auth_url=provider.authorize_url(state))
 
 
 def _callback_page(title: str, body: str) -> HTMLResponse:
@@ -84,8 +156,10 @@ def _callback_page(title: str, body: str) -> HTMLResponse:
     )
 
 
-@router.get("/callback", include_in_schema=False)
+@router.get("/{provider_name}/callback", include_in_schema=False)
 def oauth_callback(
+    provider_name: str,
+    request: Request,
     code: str = Query(default=""),
     state: str = Query(default=""),
     error: str = Query(default=""),
@@ -93,17 +167,21 @@ def oauth_callback(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     if error:
-        logger.warning("microsoft consent failed: %s %s", error, error_description)
+        logger.warning("%s consent failed: %s %s", provider_name, error, error_description)
         return _callback_page(
-            "Connection cancelled", error_description or "Microsoft did not grant access."
+            "Connection cancelled",
+            error_description or f"{provider_name} did not grant access.",
         )
-    if not microsoft.is_configured():
-        raise _not_configured()
+    provider = _provider_or_404(provider_name)
+    if not provider.is_configured():
+        raise _not_configured(provider_name)
 
     try:
         payload = decode_access_token(state)
         if payload.get("role") != _STATE_ROLE:
             raise TokenError("wrong token type")
+        if payload.get("provider", provider_name) != provider_name:
+            raise TokenError("state was minted for a different provider")
     except TokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid state: {exc}"
@@ -111,76 +189,92 @@ def oauth_callback(
 
     org_id, user_id = payload["org"], payload["sub"]
     try:
-        tokens = microsoft.exchange_code(code)
-        profile = microsoft.fetch_profile(tokens["access_token"])
-    except microsoft.MicrosoftError as exc:
-        logger.error("microsoft connect failed: %s", exc)
+        # The whole query string goes through: Zoho reports the data centre
+        # this mailbox belongs to as an extra callback param, and the token
+        # exchange has to be aimed at that host.
+        result = provider.exchange_code(code, dict(request.query_params))
+    except ProviderError as exc:
+        logger.error("%s connect failed: %s", provider_name, exc)
         return _callback_page("Connection failed", str(exc))
 
-    if not profile["address"]:
-        return _callback_page("Connection failed", "Microsoft returned no mailbox address.")
+    if not result.address:
+        return _callback_page(
+            "Connection failed", f"{provider_name} returned no mailbox address."
+        )
 
     connection = db.scalar(
         select(MailboxConnection).where(
             MailboxConnection.org_id == org_id,
-            MailboxConnection.address == profile["address"],
+            MailboxConnection.address == result.address,
         )
     )
     if connection is None:
-        connection = MailboxConnection(org_id=org_id, address=profile["address"])
+        connection = MailboxConnection(org_id=org_id, address=result.address)
         db.add(connection)
+    connection.provider = provider_name
     connection.user_id = user_id
-    connection.display_name = profile["display_name"]
-    connection.ms_user_id = profile["ms_user_id"]
-    connection.token_blob = encrypt_json(tokens)
+    connection.display_name = result.display_name
+    connection.provider_account_id = result.provider_account_id
+    connection.api_base = result.api_base
+    connection.auth_base = result.auth_base
+    if result.sync_state:
+        connection.sync_state = result.sync_state
+    connection.token_blob = encrypt_json(result.tokens)
     connection.status = "active"
     connection.error = ""
     db.flush()
-    # Baseline the delta cursors NOW: a reply that lands between connect and
-    # the first worker sync must not fall on the wrong side of the cursor.
-    try:
-        client = microsoft.GraphClient(db, connection)
-        if not connection.inbox_delta_link:
-            connection.inbox_delta_link = client.inbox_delta_baseline()
-        if not connection.sent_delta_link:
-            connection.sent_delta_link = client.sent_delta_baseline()
-        db.flush()
-    except Exception as exc:  # noqa: BLE001 - the first sync will baseline instead
-        logger.warning("delta baseline at connect failed for %s: %s", connection.address, exc)
+    # Baseline the sync cursors NOW: a reply that lands between connect and the
+    # first worker sync must not fall on the wrong side of the cursor.
+    _baseline_cursors(db, connection, provider)
     record_event(
         db,
         org_id=org_id,
         type="integration.mailbox_connected",
         subject_type="mailbox",
         subject_id=connection.id,
-        payload={"address": connection.address, "provider": "microsoft"},
+        payload={"address": connection.address, "provider": provider_name},
     )
     return _callback_page(
-        "Outlook connected",
+        "Mailbox connected",
         f"{connection.address} can now send outreach. You can close this tab.",
     )
 
 
-@router.post("/{connection_id}/sync")
+def _baseline_cursors(db: Session, connection: MailboxConnection, provider) -> None:
+    from ..integrations.providers import FOLDER_INBOX, FOLDER_SENT
+
+    for folder in (FOLDER_INBOX, FOLDER_SENT):
+        try:
+            if provider.read_cursor(connection, folder):
+                continue
+            page = provider.iter_folder(db, connection, folder, cursor="")
+            provider.commit_cursor(db, connection, folder, page.next_cursor)
+        except Exception as exc:  # noqa: BLE001 - the first sync will baseline instead
+            logger.warning(
+                "cursor baseline at connect failed for %s/%s: %s",
+                connection.address,
+                folder,
+                exc,
+            )
+            return
+    db.flush()
+
+
+@router.post("/mailboxes/{connection_id}/sync")
 def sync_now(
     connection_id: str,
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Run one inbox delta pass immediately (the worker also does this on a timer)."""
-    connection = db.get(MailboxConnection, connection_id)
-    if connection is None or connection.org_id != principal.org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
-    if connection.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Mailbox is {connection.status}; reconnect it first",
-        )
+    """Run one sync pass immediately (the worker also does this on a timer)."""
+    connection = _connection_or_404(db, connection_id, principal)
+    _require_active(connection)
+
     from ..integrations.sync import sync_mailbox
 
     try:
         summary = sync_mailbox(db, connection)
-    except microsoft.MicrosoftError as exc:
+    except ProviderError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {
         "initialized": summary.initialized,
@@ -196,7 +290,7 @@ def sync_now(
     }
 
 
-@router.patch("/{connection_id}/thread-sync")
+@router.patch("/mailboxes/{connection_id}/thread-sync")
 def set_thread_sync(
     connection_id: str,
     enabled: bool = Query(...),
@@ -209,9 +303,7 @@ def set_thread_sync(
     not silently start retaining its contents. Only mail that resolves to a
     candidate already in a project, sequence or prior thread is ever stored.
     """
-    connection = db.get(MailboxConnection, connection_id)
-    if connection is None or connection.org_id != principal.org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    connection = _connection_or_404(db, connection_id, principal)
     connection.thread_sync_enabled = enabled
     db.flush()
     record_event(
@@ -226,7 +318,38 @@ def set_thread_sync(
     return {"thread_sync_enabled": connection.thread_sync_enabled}
 
 
-@router.post("/{connection_id}/backfill")
+@router.patch("/mailboxes/{connection_id}/sending", response_model=MailboxConnectionOut)
+def set_sending(
+    connection_id: str,
+    payload: MailboxSendingPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> MailboxConnectionOut:
+    """Rotation controls: whether this mailbox sends, and how much per day."""
+    connection = _connection_or_404(db, connection_id, principal)
+    if payload.send_enabled is not None:
+        connection.send_enabled = payload.send_enabled
+    if payload.daily_send_cap is not None:
+        connection.daily_send_cap = payload.daily_send_cap
+    db.flush()
+    record_event(
+        db,
+        org_id=principal.org_id,
+        type="integration.mailbox_sending",
+        subject_type="mailbox",
+        subject_id=connection.id,
+        actor_id=principal.user_id,
+        payload={
+            "send_enabled": connection.send_enabled,
+            "daily_send_cap": connection.daily_send_cap,
+        },
+    )
+    out = MailboxConnectionOut.model_validate(connection)
+    out.sent_last_24h = sent_in_window(db, mailbox_id=connection.id, now=utcnow())
+    return out
+
+
+@router.post("/mailboxes/{connection_id}/backfill")
 def backfill_history(
     connection_id: str,
     principal: Principal = Depends(require_write),
@@ -236,14 +359,8 @@ def backfill_history(
     known candidates only). Explicit button, never automatic."""
     from ..jobs import KIND_MAILBOX_BACKFILL, enqueue
 
-    connection = db.get(MailboxConnection, connection_id)
-    if connection is None or connection.org_id != principal.org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
-    if connection.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Mailbox is {connection.status}; reconnect it first",
-        )
+    connection = _connection_or_404(db, connection_id, principal)
+    _require_active(connection)
     if not connection.thread_sync_enabled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -259,15 +376,20 @@ def backfill_history(
     return {"queued": True, "job_id": job.id}
 
 
-@router.delete("/{connection_id}")
+@router.delete("/mailboxes/{connection_id}")
 def disconnect(
     connection_id: str,
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> dict:
-    connection = db.get(MailboxConnection, connection_id)
-    if connection is None or connection.org_id != principal.org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    """Revoke rather than delete.
+
+    Enrollments pin themselves to the mailbox that first emailed a candidate,
+    so deleting the row would either break those threads or be refused by the
+    foreign key. A revoked mailbox drops out of the rotation and any enrollment
+    still pinned to it fails loudly instead of silently moving address.
+    """
+    connection = _connection_or_404(db, connection_id, principal)
     connection.status = "revoked"
     connection.token_blob = ""
     connection.error = ""

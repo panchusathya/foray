@@ -61,9 +61,10 @@ def isolated_environment(tmp_path, monkeypatch):
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
+    from juicebox.integrations.providers import reset_providers
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
-    from juicebox.outreach.sender import set_graph_sender_factory, set_sender
+    from juicebox.outreach.sender import reset_sender_factories, set_sender
     from juicebox.search.engine import reset_engine
     from juicebox.search.index import invalidate
 
@@ -74,7 +75,8 @@ def isolated_environment(tmp_path, monkeypatch):
     reset_engine()
     invalidate()
     set_sender(None)
-    set_graph_sender_factory(None)
+    reset_sender_factories()
+    reset_providers()
 
     if TEST_DATABASE_URL:
         # One shared database, so wipe it between tests instead of relying on a
@@ -92,7 +94,9 @@ def isolated_environment(tmp_path, monkeypatch):
     reset_engine()
     invalidate()
     set_sender(None)
-    set_graph_sender_factory(None)
+    # A test that swapped a mail provider or sender must not leak it forward.
+    reset_sender_factories()
+    reset_providers()
 
 
 @pytest.fixture

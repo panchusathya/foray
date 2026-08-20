@@ -72,18 +72,36 @@ class MailboxConnectionOut(BaseModel):
     error: str
     user_id: str | None
     thread_sync_enabled: bool
+    send_enabled: bool
+    daily_send_cap: int
     last_synced_at: datetime | None
     created_at: datetime
+    # Rolling 24h volume, computed per row by the list endpoint. Sent here so
+    # the settings page can show "12 / 40" without a query per mailbox.
+    sent_last_24h: int = 0
 
 
-class MicrosoftIntegrationOut(BaseModel):
+class MailboxProviderOut(BaseModel):
+    name: str
     configured: bool
     redirect_uri: str
+
+
+class MailboxIntegrationOut(BaseModel):
+    providers: list[MailboxProviderOut]
     connections: list[MailboxConnectionOut]
 
 
-class MicrosoftConnectOut(BaseModel):
+class MailboxConnectOut(BaseModel):
     auth_url: str
+
+
+class MailboxSendingPatch(BaseModel):
+    """Rotation controls for one mailbox. Unset fields are left alone."""
+
+    send_enabled: bool | None = None
+    # 0 means "stop using this mailbox", not "unlimited".
+    daily_send_cap: int | None = Field(default=None, ge=0, le=10_000)
 
 
 class ReplyDraftOut(BaseModel):
@@ -443,6 +461,10 @@ class SequenceIn(BaseModel):
     stop_on_reply: bool = True
     from_email: str = ""
     from_name: str = ""
+    # Left unset, a payload carrying a mailbox_id is taken to mean "send from
+    # that one" -- see _resolve_sender_mode in routers/outreach.py. Being
+    # explicit here always wins.
+    sender_mode: Literal["rotate", "fixed"] | None = None
     mailbox_id: str | None = None
 
 
@@ -471,6 +493,7 @@ class SequenceOut(BaseModel):
     stop_on_reply: bool
     from_email: str
     from_name: str
+    sender_mode: str
     mailbox_id: str | None
     steps: list[SequenceStepOut]
 
@@ -484,7 +507,10 @@ class SequenceUpdate(BaseModel):
     stop_on_reply: bool | None = None
     from_email: str | None = None
     from_name: str | None = None
-    # Explicit null reverts to the globally configured provider.
+    sender_mode: Literal["rotate", "fixed"] | None = None
+    # Explicit null clears the pin. Under sender_mode="rotate" the pool decides
+    # anyway; with no mailbox connected at all, sends fall through to the
+    # globally configured provider.
     mailbox_id: str | None = None
 
 

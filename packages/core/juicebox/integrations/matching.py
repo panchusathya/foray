@@ -18,6 +18,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from ..models import Candidate, Enrollment, Message, ProjectCandidate
+from .providers import MailboxEvent
 
 
 def build_address_index(db: Session, *, org_id: str) -> dict[str, str]:
@@ -63,21 +64,16 @@ def record_synced_message(
     direction: str,
     from_address: str,
     to_address: str,
-    payload: dict,
+    event: MailboxEvent,
     now: datetime,
+    source: str = "microsoft",
 ) -> Message:
-    """One Outlook message -> one CRM row. No enrollment, no side effects:
+    """One mailbox message -> one CRM row. No enrollment, no side effects:
     classification, sequence stops and pipeline moves belong to record_reply,
-    and an enrollment-less email has no sequence to stop."""
-    body = payload.get("body") or {}
-    content = body.get("content") or payload.get("bodyPreview") or ""
-    is_html = (body.get("contentType") or "").lower() == "html"
-    sent_raw = payload.get("sentDateTime") or payload.get("receivedDateTime") or ""
-    try:
-        sent_at = datetime.fromisoformat(sent_raw.replace("Z", "+00:00")) if sent_raw else now
-    except ValueError:
-        sent_at = now
+    and an enrollment-less email has no sequence to stop.
 
+    ``source`` names the provider it was synced from, so the timeline can say
+    where a message came from instead of calling everything Outlook."""
     message = Message(
         org_id=org_id,
         enrollment_id=None,
@@ -85,20 +81,20 @@ def record_synced_message(
         step_id=None,
         channel="email",
         direction=direction,
-        source="outlook",
+        source=source,
         status="sent" if direction == "outbound" else "received",
         from_address=from_address,
         to_address=to_address,
-        subject=payload.get("subject", "") or "",
-        body="" if is_html else content,
-        body_html=content if is_html else "",
+        subject=event.subject,
+        body="" if event.body_is_html else event.body,
+        body_html=event.body if event.body_is_html else "",
         mailbox_id=mailbox_id,
-        graph_message_id=payload.get("id", "") or "",
-        internet_message_id=payload.get("internetMessageId", "") or "",
-        conversation_id=payload.get("conversationId", "") or "",
-        web_link=payload.get("webLink", "") or "",
-        attachment_count=1 if payload.get("hasAttachments") else 0,
-        sent_at=sent_at,
+        provider_native_id=event.native_id,
+        internet_message_id=event.rfc_message_id,
+        conversation_id=event.thread_id,
+        web_link=event.web_link,
+        attachment_count=1 if event.has_attachments else 0,
+        sent_at=event.occurred_at or now,
     )
     db.add(message)
     db.flush()

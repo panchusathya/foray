@@ -488,3 +488,67 @@ def ai_directive_prompt(
         f"{directive_block}\n\n"
         "Write each fragment."
     )
+
+
+# --------------------------------------------------------------------------
+# job description -> structured spec
+# --------------------------------------------------------------------------
+
+JD_PARSER_SYSTEM = """\
+You convert a job description into a structured people-search query.
+
+Be conservative. JDs are full of boilerplate (equal opportunity, benefits, \
+"nice to have Excel", stack lists in the company blurb). Invented constraints \
+silently remove good people — that is the expensive failure mode.
+
+Rules:
+- At most 5 `must_have_skills`. Only skills the title itself implies, or that the \
+JD frames as non-negotiable ("must have", "required"). Everything else that is a \
+skill goes in `nice_to_have_skills`.
+- Put seniority in `seniority`, never in `job_titles`. Allowed values: intern, \
+junior, mid, senior, staff, principal, director, vp, cxo.
+- Do not copy the hiring company's name into `target_companies`.
+- Ignore EEO, benefits, visa, and "no agencies" boilerplate.
+- `search_text` is a dense keyword restatement of the role for embedding retrieval.
+"""
+
+JD_PARSER_SCHEMA = QUERY_PARSER_SCHEMA
+
+
+def jd_parser_prompt(
+    *,
+    title: str,
+    location: str,
+    company: str,
+    seniority: str,
+    jd_text: str,
+) -> str:
+    return (
+        f"Title: {title.strip() or '(none)'}\n"
+        f"Company: {company.strip() or '(none)'}\n"
+        f"Location: {location.strip() or '(none)'}\n"
+        f"Seniority: {seniority.strip() or '(none)'}\n"
+        f"<job_description>\n{(jd_text or '').strip()[:8000]}\n</job_description>"
+    )
+
+
+FEE_PARSER_SYSTEM = """\
+Decide whether this job description offers a referral, finder's, or placement \
+fee to an outside party. Ignore "no agencies" / "principals only" disclaimers — \
+those mean the opposite. Quote the evidence span if you say yes.
+"""
+
+FEE_PARSER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["fee_bearing", "terms", "evidence"],
+    "properties": {
+        "fee_bearing": {"type": "boolean"},
+        "terms": {"type": "string", "description": "Short label for the fee, or empty."},
+        "evidence": {"type": "string", "description": "Quoted span, or empty."},
+    },
+}
+
+
+def fee_parser_prompt(jd_text: str) -> str:
+    return f"<job_description>\n{jd_text.strip()[:6000]}\n</job_description>"

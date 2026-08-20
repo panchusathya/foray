@@ -12,7 +12,7 @@ export function ProjectsPage() {
   // shared CurrentProject context, so a new project has to refresh that too —
   // otherwise they keep showing "Create your first project" until a full reload.
   const { reload: reloadCurrentProject, setProject } = useCurrentProject();
-  const [form, setForm] = useState({ name: '', role_title: '', location: '', description: '' });
+  const [form, setForm] = useState({ name: '', role_title: '', location: '', description: '', company: '' });
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,7 +23,7 @@ export function ProjectsPage() {
     setError(null);
     try {
       const created = await api.createProject(form);
-      setForm({ name: '', role_title: '', location: '', description: '' });
+      setForm({ name: '', role_title: '', location: '', description: '', company: '' });
       projects.reload();
       await reloadCurrentProject();
       if (created?.id) setProject(created.id);
@@ -77,6 +77,12 @@ export function ProjectsPage() {
             placeholder="Location"
             value={form.location}
             onChange={(event) => setForm({ ...form, location: event.target.value })}
+          />
+          <input
+            type="text"
+            placeholder="Client / company"
+            value={form.company}
+            onChange={(event) => setForm({ ...form, company: event.target.value })}
           />
           <input
             type="text"

@@ -113,6 +113,13 @@ services:
         condition: service_healthy
     command: python -m juicebox.cli work
 
+    # The core image bakes a HEALTHCHECK that probes uvicorn on :8000 (correct
+    # for `api`, which shares this image). The worker runs the queue loop and
+    # serves no HTTP, so it inherited a probe that can only ever fail: it has
+    # been reporting "unhealthy" in prod while working fine. Nothing depends on
+    # worker being healthy, so drop the probe rather than invent a fake one.
+    healthcheck:
+      disable: true
   foray:
     build:
       context: packages/foray

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..crm import track_all
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..jobmatch.sync import archive_project_posting, upsert_project_posting
 from ..models import (
     OUTREACH_DRIVEN_STAGES,
     PIPELINE_STAGES,
@@ -52,6 +53,7 @@ def create_project(
     )
     db.add(project)
     db.flush()
+    upsert_project_posting(db, project)
     return ProjectOut.model_validate(project)
 
 
@@ -87,6 +89,7 @@ def update_project(
     for key, value in payload.model_dump().items():
         setattr(project, key, value)
     db.flush()
+    upsert_project_posting(db, project)
     return ProjectOut.model_validate(project)
 
 
@@ -99,6 +102,7 @@ def delete_project(
     """Remove a project. Pipeline cards and sourcing agents go with it;
     sequences keep their copy but lose the project link (role_title becomes empty)."""
     project = _load_project(db, project_id, principal.org_id)
+    archive_project_posting(db, project_id)
     for agent in db.scalars(
         select(SourcingAgent).where(SourcingAgent.project_id == project_id)
     ).all():

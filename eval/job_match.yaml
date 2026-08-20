@@ -1,0 +1,32 @@
+# Labelled job ↔ candidate pairs for match-quality tracking.
+# Labels are on (query-shaped posting, candidate source_id). relevant: true means
+# the person should clear JOB_MATCH_MIN_SCORE for that posting.
+
+postings:
+  - id: ml-sf
+    title: Senior Machine Learning Engineer
+    company: Acme
+    location: San Francisco
+    jd_text: >
+      Senior machine learning engineer in San Francisco. Production Python and
+      PyTorch ranking systems. LLM experience a plus.
+  - id: backend-go
+    title: Staff Backend Engineer
+    company: Datadog
+    location: New York
+    jd_text: >
+      Staff backend engineer. Go, PostgreSQL, Kafka, distributed systems.
+
+labels:
+  - posting: ml-sf
+    source_id: ml-1
+    relevant: true
+  - posting: ml-sf
+    source_id: fe-1
+    relevant: false
+  - posting: backend-go
+    source_id: be-1
+    relevant: true
+  - posting: backend-go
+    source_id: fe-1
+    relevant: false

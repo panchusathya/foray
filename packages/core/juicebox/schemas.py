@@ -512,6 +512,7 @@ class ProjectIn(BaseModel):
     role_title: str = ""
     description: str = ""
     location: str = ""
+    company: str = ""
 
 
 class ProjectOut(BaseModel):
@@ -522,6 +523,7 @@ class ProjectOut(BaseModel):
     role_title: str
     description: str
     location: str
+    company: str = ""
     status: str
     created_at: datetime
 
@@ -795,6 +797,111 @@ class FunnelStats(BaseModel):
     reply_rate: float
     open_rate: float
     positive_reply_rate: float
+
+
+# --------------------------------------------------------------------------
+# job postings / matches
+# --------------------------------------------------------------------------
+
+
+class JobPostingIn(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    company: str = ""
+    location: str = ""
+    jd_text: str = ""
+    source_url: str = ""
+    seniority: str = ""
+    open_to_remote: bool = False
+    project_id: str | None = None
+
+
+class JobPostingPatch(BaseModel):
+    title: str | None = None
+    company: str | None = None
+    location: str | None = None
+    jd_text: str | None = None
+    source_url: str | None = None
+    seniority: str | None = None
+    open_to_remote: bool | None = None
+    status: str | None = None
+    project_id: str | None = None
+
+
+class JobPostingImport(BaseModel):
+    postings: list[JobPostingIn] = Field(min_length=1, max_length=500)
+    source: str = "csv"
+
+
+class JobPostingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    source: str
+    source_id: str
+    source_url: str
+    company: str
+    company_normalized: str
+    title: str
+    title_normalized: str
+    location: str
+    open_to_remote: bool
+    seniority: str
+    jd_text: str
+    status: str
+    parsed_spec: dict[str, Any] = Field(default_factory=dict)
+    spec_version: str
+    parser: str
+    parsed_at: datetime | None
+    embedding_model: str
+    fee_bearing: bool
+    fee_terms: str
+    fee_evidence: str
+    referral_paths: list[Any] = Field(default_factory=list)
+    has_warm_path: bool
+    match_count: int
+    project_id: str | None
+    posted_at: datetime | None
+    first_seen_at: datetime | None
+    last_seen_at: datetime | None
+    created_at: datetime
+
+
+class JobMatchPatch(BaseModel):
+    status: Literal["new", "shortlisted", "dismissed"]
+    dismissed_reason: str = ""
+
+
+class JobMatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    job_posting_id: str
+    candidate_id: str
+    score: float
+    heuristic_score: float
+    vector_score: float
+    criteria: list[Any] = Field(default_factory=list)
+    status: str
+    dismissed_reason: str
+    spec_version: str
+    computed_at: datetime | None
+    candidate: CandidateSummary | None = None
+    posting: JobPostingOut | None = None
+
+
+class RematchQueueRow(BaseModel):
+    candidate: CandidateSummary
+    reply_intent: str
+    declined_project_id: str | None
+    declined_label: str
+    declined_on: datetime | None
+    matches: list[JobMatchOut]
+
+
+class CreateProjectFromPosting(BaseModel):
+    name: str | None = None
 
 
 TokenResponse.model_rebuild()

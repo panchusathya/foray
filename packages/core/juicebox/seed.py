@@ -380,6 +380,8 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
         db, org_id=org.id, payloads=generate_candidates(candidate_count)
     )
 
+    from .jobmatch.sync import upsert_project_posting
+
     project = db.scalar(select(Project).where(Project.org_id == org.id))
     if project is None:
         project = Project(
@@ -391,10 +393,12 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
                 "evaluation harness. Small team, high autonomy, production LLM systems."
             ),
             location="San Francisco, CA",
+            company="Juicebox",
             created_by=user.id,
         )
         db.add(project)
         db.flush()
+    upsert_project_posting(db, project)
 
     sequence = db.scalar(select(Sequence).where(Sequence.org_id == org.id))
     if sequence is None:

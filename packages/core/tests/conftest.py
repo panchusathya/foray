@@ -54,6 +54,7 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("JUICEBOX_LLM_PROVIDER", "none")
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
+    monkeypatch.setenv("EXA_API_KEY", "")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
     # Retry logic is asserted by call counts, so don't actually sleep for it.
@@ -63,6 +64,7 @@ def isolated_environment(tmp_path, monkeypatch):
     from juicebox.config import reset_settings_cache
     from juicebox.integrations.foray import reset_foray, set_foray
     from juicebox.integrations.providers import reset_providers
+    from juicebox.jobmatch.exa import reset_exa
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
     from juicebox.outreach.personalize import reset_fragment_cache
@@ -74,6 +76,7 @@ def isolated_environment(tmp_path, monkeypatch):
     db_module.reset_engine()
     reset_llm()
     reset_embedder()
+    reset_exa()
     reset_engine()
     invalidate()
     reset_fragment_cache()
@@ -95,6 +98,7 @@ def isolated_environment(tmp_path, monkeypatch):
     set_llm(None)
     reset_llm()
     reset_embedder()
+    reset_exa()
     reset_engine()
     invalidate()
     # Written fragments are cached in-process; a leak would make one test's

@@ -102,6 +102,10 @@ x-app-env: &app_env
   # Foray's paid routes, and reaches it by service name on the private network.
   FORAY_INTERNAL_TOKEN: ${FORAY_INTERNAL_TOKEN:-}
   FORAY_BASE_URL: ${FORAY_BASE_URL:-http://foray:8100}
+  # Worker scrape of public job postings. Empty = skip cleanly (no error).
+  # Put the key in /opt/juicebox/.env then recreate api + worker so they
+  # pick it up — editing the file in an editor is not enough.
+  EXA_API_KEY: ${EXA_API_KEY:-}
 
 services:
   db:

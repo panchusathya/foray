@@ -101,13 +101,26 @@ export const CONTACT_VIEWS = [
     empty: `Nobody added in the last ${RECENTLY_ADDED_DAYS} days.`,
   },
   {
+    id: 'duplicates',
+    label: 'Possible duplicates',
+    blurb: 'People who may be in the CRM twice.',
+    // Its own panel, like the tray: groups of records rather than rows, and
+    // its own actions.
+    panel: 'duplicates',
+    columns: [],
+    sort: 'name',
+    dir: 'asc',
+    params: {},
+    empty: 'Nobody looks duplicated.',
+  },
+  {
     id: 'discovered',
     label: 'Discovered',
     blurb: 'People you have emailed who are not in Contacts yet.',
     // Rendered by DiscoveredTray, not the grid: different rows, different
     // actions. A query param rather than its own route, so /contacts/:id
     // cannot swallow it and App.jsx stays untouched.
-    tray: true,
+    panel: 'discovered',
     columns: [],
     sort: 'name',
     dir: 'asc',

@@ -91,6 +91,11 @@ export const api = {
   ignoreDomain: (payload) =>
     request('/v1/crm/discovered/ignore-domain', { method: 'POST', body: payload }),
   listTags: () => request('/v1/crm/tags'),
+  listDuplicates: () => request('/v1/crm/duplicates'),
+  mergeDuplicates: (payload) =>
+    request('/v1/crm/duplicates/merge', { method: 'POST', body: payload }),
+  dismissDuplicate: (payload) =>
+    request('/v1/crm/duplicates/dismiss', { method: 'POST', body: payload }),
   // Both long-running mailbox jobs report here: the contact sweep and the
   // history import.
   mailboxActivity: () => request('/v1/integrations/mailbox-activity'),

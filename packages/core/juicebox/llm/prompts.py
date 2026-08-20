@@ -552,3 +552,88 @@ FEE_PARSER_SCHEMA: dict[str, Any] = {
 
 def fee_parser_prompt(jd_text: str) -> str:
     return f"<job_description>\n{jd_text.strip()[:6000]}\n</job_description>"
+
+
+# --------------------------------------------------------------------------
+# 8. job discovery planner (Exa)
+# --------------------------------------------------------------------------
+
+DISCOVER_PLANNER_SYSTEM = """\
+You turn a recruiter's brief into either a clarifying question or a small \
+set of Exa job-posting searches.
+
+Extract only what the recruiter actually said. Inventing a location, seniority, \
+or company they did not mention is the expensive error: it silently drops good \
+roles from the result set.
+
+Ask (`action=ask`) when the brief would produce noise — typically when both \
+location (including remote) and seniority are missing. One or two short \
+questions, not a questionnaire. If they already answered those in the thread, \
+search.
+
+Search (`action=search`) with at most 3 short Exa-style query strings \
+(title + location/seniority, no filler). Leave `queries` empty when asking.
+"""
+
+DISCOVER_PLANNER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "questions", "queries", "assumptions", "reply"],
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["ask", "search"],
+            "description": "ask = need a follow-up; search = run Exa.",
+        },
+        "questions": _string_array("Follow-up questions when action is ask."),
+        "queries": _string_array("At most 3 short Exa job-posting queries."),
+        "assumptions": _string_array("Constraints you inferred, each one phrase."),
+        "reply": {
+            "type": "string",
+            "description": "One or two sentences to show the recruiter.",
+        },
+    },
+}
+
+
+def discover_planner_prompt(messages: list[Any]) -> str:
+    lines: list[str] = []
+    for message in messages:
+        if hasattr(message, "role"):
+            role = str(message.role)
+            content = str(message.content or "")
+        else:
+            role = str(message.get("role") or "user")
+            content = str(message.get("content") or "")
+        lines.append(f"{role}: {content.strip()}")
+    return "Thread:\n" + "\n".join(lines)
+
+
+DISCOVER_SUMMARISER_SYSTEM = """\
+Write a one- or two-sentence close for a recruiter who just searched public \
+job postings. Be specific about the counts. Do not invent roles that were not \
+found. `follow_up` is an optional next move (widen location, drop seniority).
+"""
+
+DISCOVER_SUMMARISER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["reply", "follow_up"],
+    "properties": {
+        "reply": {"type": "string", "description": "Closing line with counts."},
+        "follow_up": {
+            "type": "string",
+            "description": "Optional next-step question, or empty.",
+        },
+    },
+}
+
+
+def discover_summariser_prompt(*, n_results: int, n_new: int, n_have: int, queries: list[str]) -> str:
+    listed = "; ".join(queries) if queries else "(none)"
+    return (
+        f"queries: {listed}\n"
+        f"unique_postings: {n_results}\n"
+        f"new: {n_new}\n"
+        f"already_yours: {n_have}\n"
+    )

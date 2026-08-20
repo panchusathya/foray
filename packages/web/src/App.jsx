@@ -11,7 +11,6 @@ import { HomePage } from './pages/Home.jsx';
 import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
 import { LoginPage } from './pages/Login.jsx';
-import { RematchPage } from './pages/Rematch.jsx';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
@@ -25,7 +24,6 @@ const NAV = [
   { to: '/sourcing', label: 'Sourcing' },
   { to: '/projects', label: 'Projects' },
   { to: '/jobs', label: 'Jobs' },
-  { to: '/rematch', label: 'Rematch' },
   { to: '/sequences', label: 'Sequences' },
   { to: '/contacts', label: 'Contacts' },
   { to: '/analytics', label: 'Analytics' },
@@ -138,7 +136,7 @@ export function App() {
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:postingId" element={<JobDetailPage />} />
-          <Route path="/rematch" element={<RematchPage />} />
+          <Route path="/rematch" element={<Navigate to="/jobs?view=rematch" replace />} />
           <Route path="/sequences" element={<SequencesPage />} />
           <Route path="/sequences/:sequenceId" element={<SequenceEditorPage />} />
           <Route path="/outreach" element={<Navigate to="/sequences" replace />} />

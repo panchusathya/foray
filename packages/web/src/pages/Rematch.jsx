@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
 import { PitchButton, SourceBadge } from './JobPitch.jsx';
@@ -15,7 +15,7 @@ function formatDay(value) {
   });
 }
 
-export function RematchPage() {
+export function RematchPanel() {
   const queue = useAsync(() => jobsApi.rematchQueue(), []);
   const [error, setError] = useState(null);
 
@@ -33,10 +33,6 @@ export function RematchPage() {
 
   return (
     <div className="stack">
-      <PageHeader
-        title="Rematch"
-        subtitle="People who declined a role, with better-fitting jobs still open."
-      />
       <ErrorBox error={error} />
       {queue.loading ? <Loading /> : null}
       {!queue.loading && !rows.length ? (

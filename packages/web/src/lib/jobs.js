@@ -58,6 +58,7 @@ export const jobsApi = {
     request(`/v1/job-matches${queryString({ candidate_id: candidateId })}`),
   patchMatch: (id, payload) => request(`/v1/job-matches/${id}`, { method: 'PATCH', body: payload }),
   rematchQueue: () => request('/v1/job-matches/rematch-queue'),
+  discoverTurn: (payload) => request('/v1/job-discovery/turns', { method: 'POST', body: payload }),
 };
 
 export const JOB_SOURCE_LABELS = {

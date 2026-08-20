@@ -7,7 +7,8 @@ test.describe('rematch tab', () => {
     const org = await createOrg(request, 'rematch');
     await login(page, org.email);
     await page.goto('/rematch');
-    await expect(page.getByRole('heading', { name: 'Rematch' })).toBeVisible();
+    await expect(page).toHaveURL(/\/jobs\?view=rematch/);
+    await expect(page.getByTestId('view-tabs').getByRole('link', { name: 'Rematch' })).toBeVisible();
     await expect(page.getByText('Nobody in the rematch queue.')).toBeVisible();
   });
 });

@@ -334,7 +334,11 @@ class Sequence(Base, TimestampMixin):
     stop_on_reply: Mapped[bool] = mapped_column(Boolean, default=True)
     from_email: Mapped[str] = mapped_column(String(255), default="")
     from_name: Mapped[str] = mapped_column(String(200), default="")
-    # Send from this connected mailbox; null = the globally configured provider.
+    # rotate: spread sends across every eligible mailbox in the org, honouring
+    # each one's daily cap. fixed: send only from mailbox_id below.
+    sender_mode: Mapped[str] = mapped_column(String(16), default="rotate")
+    # The pinned mailbox when sender_mode is "fixed". Null under "rotate" with
+    # no connected mailbox at all falls through to the global provider.
     mailbox_id: Mapped[str | None] = mapped_column(
         ForeignKey("mailbox_connections.id", ondelete="SET NULL"), nullable=True
     )
@@ -388,6 +392,15 @@ class Enrollment(Base, TimestampMixin):
     next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stopped_reason: Mapped[str] = mapped_column(String(120), default="")
     personalization: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Pinned at the first successful send and never reassigned: every step of
+    # one conversation goes out from the same address, or the thread breaks in
+    # the candidate's client. RESTRICT rather than SET NULL because silently
+    # unpinning a live enrollment would let rotation move it mid-sequence --
+    # disconnecting revokes the row instead of deleting it, so this never fires
+    # in normal use.
+    mailbox_id: Mapped[str | None] = mapped_column(
+        ForeignKey("mailbox_connections.id", ondelete="RESTRICT"), nullable=True
+    )
 
     sequence: Mapped[Sequence] = relationship()
     candidate: Mapped[Candidate] = relationship()
@@ -407,24 +420,26 @@ class Message(Base, TimestampMixin):
             sqlite_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
             postgresql_where=text("direction = 'outbound' AND step_id IS NOT NULL"),
         ),
-        # The per-candidate timeline sorts on sent_at; the graph-id index makes
-        # thread-sync ingest idempotent (one row per Outlook message, ever).
+        # The per-candidate timeline sorts on sent_at; the native-id index
+        # makes mailbox ingest idempotent (one row per provider message, ever).
         Index("ix_messages_candidate_sent", "candidate_id", "sent_at"),
         Index("ix_messages_org_conversation", "org_id", "conversation_id"),
         Index(
-            "uq_messages_org_graph_id",
+            "uq_messages_org_native_id",
             "org_id",
-            "graph_message_id",
+            "provider_native_id",
             unique=True,
-            sqlite_where=text("graph_message_id != ''"),
-            postgresql_where=text("graph_message_id != ''"),
+            sqlite_where=text("provider_native_id != ''"),
+            postgresql_where=text("provider_native_id != ''"),
         ),
+        # Per-mailbox rolling send volume, for the rotation caps.
+        Index("ix_messages_mailbox_sent", "mailbox_id", "sent_at"),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("msg"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
-    # Nullable: mail synced from the user's own Outlook (source="outlook") has
-    # no sequence behind it. Sequence sends always set it.
+    # Nullable: mail synced from the user's own mailbox (source names the
+    # provider) has no sequence behind it. Sequence sends always set it.
     enrollment_id: Mapped[str | None] = mapped_column(
         ForeignKey("enrollments.id", ondelete="CASCADE"), index=True, nullable=True
     )
@@ -436,8 +451,9 @@ class Message(Base, TimestampMixin):
     )
     channel: Mapped[str] = mapped_column(String(32), default="email")
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
-    # sequence: sent by the sequencer. outlook: synced from the user's mailbox
-    # (a manual email or a reply captured without a matching outbound).
+    # "sequence" means the sequencer sent it. Anything else is the provider it
+    # was synced from (microsoft | zoho) -- a manual email, or a reply captured
+    # without a matching outbound.
     source: Mapped[str] = mapped_column(String(20), default="sequence")
     from_address: Mapped[str] = mapped_column(String(255), default="")
     to_address: Mapped[str] = mapped_column(String(255), default="")
@@ -447,9 +463,13 @@ class Message(Base, TimestampMixin):
     # queued|sent|failed|bounced|received
     error: Mapped[str] = mapped_column(Text, default="")
     provider_message_id: Mapped[str] = mapped_column(String(200), default="")
-    # Graph sends: which mailbox sent it, plus the ids reply detection matches on.
+    # Which connected mailbox sent it, plus the ids reply detection matches on.
+    # provider_native_id is the provider's own message id (Graph immutable id,
+    # Zoho messageId) and is the ingest idempotency key -- see the partial
+    # unique index above. conversation_id holds Graph's conversationId or
+    # Zoho's threadId; they play the same role.
     mailbox_id: Mapped[str] = mapped_column(String(40), default="")
-    graph_message_id: Mapped[str] = mapped_column(String(300), default="")
+    provider_native_id: Mapped[str] = mapped_column(String(300), default="")
     internet_message_id: Mapped[str] = mapped_column(String(300), default="", index=True)
     conversation_id: Mapped[str] = mapped_column(String(200), default="")
 
@@ -468,7 +488,7 @@ class Message(Base, TimestampMixin):
     # already gone out, and the recruiter can audit what the model wrote.
     ai_fragments: Mapped[dict] = mapped_column(JSON, default=dict)
     # Thread-sync extras: the original HTML body when the plaintext is a
-    # conversion, Outlook's own deep link (the UI hands off rather than
+    # conversion, the provider's own deep link (the UI hands off rather than
     # rendering untrusted HTML), and how many attachments the message carried
     # (bytes are never stored).
     body_html: Mapped[str] = mapped_column(Text, default="")
@@ -482,8 +502,13 @@ class Message(Base, TimestampMixin):
 class MailboxConnection(Base, TimestampMixin):
     """A recruiter's own mailbox, connected via OAuth. Outreach sends as them.
 
-    Tokens live in ``token_blob`` encrypted (integrations/crypto.py). The delta
-    links and last_synced_at exist for the Phase-4.3 inbox sync job.
+    Tokens live in ``token_blob`` encrypted (integrations/crypto.py).
+
+    Cursors come in two shapes on purpose. Graph hands back an opaque delta
+    link per folder, so those keep their own columns. Zoho has no delta API and
+    is polled by timestamp, so its high-water marks live in ``sync_state``
+    alongside the folder ids it needs. Forcing one representation on both would
+    have meant rewriting the working Outlook cursor to gain nothing.
     """
 
     __tablename__ = "mailbox_connections"
@@ -497,13 +522,26 @@ class MailboxConnection(Base, TimestampMixin):
     provider: Mapped[str] = mapped_column(String(40), default="microsoft")
     address: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(200), default="")
-    ms_user_id: Mapped[str] = mapped_column(String(80), default="")
+    # The provider's own id for this mailbox: Graph user id, Zoho accountId.
+    provider_account_id: Mapped[str] = mapped_column(String(120), default="")
+    # Resolved at connect time, empty for providers with fixed hosts. Zoho only
+    # reveals its data centre during the callback, and every later token
+    # refresh must go back to the same accounts host.
+    api_base: Mapped[str] = mapped_column(String(255), default="")
+    auth_base: Mapped[str] = mapped_column(String(255), default="")
     token_blob: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
     # active | error | revoked
     error: Mapped[str] = mapped_column(Text, default="")
     inbox_delta_link: Mapped[str] = mapped_column(Text, default="")
     sent_delta_link: Mapped[str] = mapped_column(Text, default="")
+    # Provider-specific sync bookkeeping: Zoho folder ids, per-folder
+    # high-water marks, and the last ids seen at that timestamp.
+    sync_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Rotation controls. A cap of 0 or less makes the mailbox ineligible rather
+    # than unlimited -- "stop using this one" is what a zero cap means.
+    send_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    daily_send_cap: Mapped[int] = mapped_column(Integer, default=40)
     # Opt-in for copying candidate correspondence (manual Outlook mail, both
     # directions) into the CRM timeline. Off by default: connecting a mailbox
     # for sending must not silently start retaining its contents.
@@ -514,7 +552,7 @@ class MailboxConnection(Base, TimestampMixin):
 
 
 class ReplyDraft(Base, TimestampMixin):
-    """An AI-written reply placed in the recruiter's Outlook Drafts.
+    """An AI-written reply placed in the recruiter's own Drafts folder.
 
     One per inbound reply. ``body`` is what we generated; Phase 4.5 fills
     ``final_sent_text`` when the sent version shows up in Sent Items, which is
@@ -537,7 +575,7 @@ class ReplyDraft(Base, TimestampMixin):
     candidate_id: Mapped[str | None] = mapped_column(
         ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
     )
-    graph_draft_id: Mapped[str] = mapped_column(String(300), default="")
+    provider_draft_id: Mapped[str] = mapped_column(String(300), default="")
     web_link: Mapped[str] = mapped_column(Text, default="")
     body: Mapped[str] = mapped_column(Text, default="")
     generated_by: Mapped[str] = mapped_column(String(20), default="template")

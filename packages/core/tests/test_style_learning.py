@@ -1,5 +1,6 @@
 """Style learning: Sent Items delta → draft outcomes → examples in the prompt."""
 
+from test_mailbox_sync import graph_provider
 from test_reply_drafting import FakeDraftClient, replied_org  # noqa: F401 - fixture
 
 from juicebox.integrations.reply_drafting import create_reply_draft, recent_style_examples
@@ -42,7 +43,7 @@ class TestSentItemsSync:
             session,
             inbound=replied_org["inbound"],
             connection=replied_org["connection"],
-            client=replied_org["fake"],
+            provider=graph_provider(lambda db, conn: replied_org["fake"]),
         )
 
     def test_first_sync_also_baselines_sent_items(self, session, account):
@@ -52,7 +53,7 @@ class TestSentItemsSync:
         session.add(connection)
         session.flush()
         fake = FakeDraftClient()
-        sync_mailbox(session, connection, client=fake)
+        sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
         assert connection.sent_delta_link.startswith("https://graph.test/sent-delta")
         assert fake.sent_baseline_calls == 1
 
@@ -60,14 +61,14 @@ class TestSentItemsSync:
         draft = self._drafted(session, replied_org)
         fake = replied_org["fake"]
         # sent_delta_link was empty until now; first pass baselines it.
-        sync_mailbox(session, replied_org["connection"], client=fake)
+        sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         fake.queue_sent(
             _sent_payload(
-                graph_id=draft.graph_draft_id,
+                graph_id=draft.provider_draft_id,
                 body="Great — Thursday 3pm works.\n\nFrom: Ada <ada@example.com>\nquoted",
             )
         )
-        summary = sync_mailbox(session, replied_org["connection"], client=fake)
+        summary = sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.drafts_sent == 1
@@ -79,11 +80,11 @@ class TestSentItemsSync:
     def test_own_reply_on_the_thread_marks_the_draft_discarded(self, session, replied_org):  # noqa: F811
         draft = self._drafted(session, replied_org)
         fake = replied_org["fake"]
-        sync_mailbox(session, replied_org["connection"], client=fake)
+        sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         fake.queue_sent(
             _sent_payload(graph_id="totally-different", body="Wrote my own thing instead.")
         )
-        summary = sync_mailbox(session, replied_org["connection"], client=fake)
+        summary = sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.drafts_discarded == 1
@@ -94,11 +95,11 @@ class TestSentItemsSync:
     def test_unrelated_sent_mail_changes_nothing(self, session, replied_org):  # noqa: F811
         draft = self._drafted(session, replied_org)
         fake = replied_org["fake"]
-        sync_mailbox(session, replied_org["connection"], client=fake)
+        sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         fake.queue_sent(
             _sent_payload(graph_id="other", conversation_id="conv-unrelated", body="hello")
         )
-        summary = sync_mailbox(session, replied_org["connection"], client=fake)
+        summary = sync_mailbox(session, replied_org["connection"], provider=graph_provider(lambda db, conn: fake))
         assert summary.drafts_sent == 0 and summary.drafts_discarded == 0
         session.refresh(draft)
         assert draft.status == "created"
@@ -111,7 +112,7 @@ class TestStyleExamples:
             session,
             inbound=replied_org["inbound"],
             connection=connection,
-            client=replied_org["fake"],
+            provider=graph_provider(lambda db, conn: replied_org["fake"]),
         )
         draft.status = "sent"
         draft.final_sent_text = "Short and direct. Thursday works."
@@ -133,7 +134,7 @@ class TestStyleExamples:
             session,
             inbound=replied_org["inbound"],
             connection=connection,
-            client=replied_org["fake"],
+            provider=graph_provider(lambda db, conn: replied_org["fake"]),
         )
         draft.status = "sent"
         draft.final_sent_text = "VOICE-MARKER: cheers, T"

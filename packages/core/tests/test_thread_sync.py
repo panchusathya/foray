@@ -9,13 +9,17 @@ correspondence never lands, not even metadata.
 from __future__ import annotations
 
 import pytest
-from test_mailbox_sync import FakeDeltaClient, _inbound
+from test_mailbox_sync import (
+    FakeDeltaClient,
+    _inbound,
+    graph_provider,
+    install_graph_sender,
+)
 
 from juicebox.integrations.crypto import encrypt_json
 from juicebox.integrations.matching import build_address_index
 from juicebox.integrations.sync import sync_mailbox
 from juicebox.models import MailboxConnection, Message
-from juicebox.outreach.sender import SendResult, set_graph_sender_factory
 from juicebox.outreach.sequencer import enroll_candidates, run_due
 
 
@@ -59,22 +63,7 @@ def thread_org(session, account, outreach_fixture):
     session.flush()
     sequence = outreach_fixture["sequence"]
     sequence.mailbox_id = connection.id
-    set_graph_sender_factory(
-        lambda db, conn: type(
-            "S",
-            (),
-            {
-                "name": "graph",
-                "send": lambda self, email: SendResult(
-                    ok=True,
-                    provider_message_id="<out-1@outlook.com>",
-                    graph_message_id="out-1",
-                    internet_message_id="<out-1@outlook.com>",
-                    conversation_id="conv-1",
-                ),
-            },
-        )()
-    )
+    install_graph_sender()
     ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
     enroll_candidates(
         session, sequence=sequence, candidate_ids=[ada.id], project_id=sequence.project_id
@@ -89,11 +78,11 @@ class TestSentItemsIngest:
     def test_manual_mail_to_a_known_candidate_becomes_a_timeline_row(self, session, thread_org):
         fake = FakeDeltaClient()
         fake.queue_sent(_sent())
-        summary = sync_mailbox(session, thread_org["connection"], client=fake)
+        summary = sync_mailbox(session, thread_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.sent_ingested == 1
-        row = session.query(Message).filter_by(source="outlook").one()
+        row = session.query(Message).filter_by(source="microsoft").one()
         assert row.enrollment_id is None
         assert row.direction == "outbound"
         assert row.candidate_id == thread_org["ada"].id
@@ -105,20 +94,20 @@ class TestSentItemsIngest:
     def test_mail_to_a_stranger_stores_nothing_at_all(self, session, thread_org):
         fake = FakeDeltaClient()
         fake.queue_sent(_sent(to="boss@westbridgecap.com", graph_id="sent-2"))
-        summary = sync_mailbox(session, thread_org["connection"], client=fake)
+        summary = sync_mailbox(session, thread_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.sent_ingested == 0
         assert summary.unmatched_discarded >= 1
-        assert session.query(Message).filter_by(source="outlook").count() == 0
+        assert session.query(Message).filter_by(source="microsoft").count() == 0
 
     def test_a_sequence_send_seen_in_sent_items_is_not_double_stored(self, session, thread_org):
-        # The sequencer stored graph_message_id="out-1" at send time; the same
+        # The sequencer stored provider_native_id="out-1" at send time; the same
         # ImmutableId coming back through the Sent Items delta must be a no-op.
         before = session.query(Message).count()
         fake = FakeDeltaClient()
         fake.queue_sent(_sent(graph_id="out-1", conversation_id="conv-1"))
-        summary = sync_mailbox(session, thread_org["connection"], client=fake)
+        summary = sync_mailbox(session, thread_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.sent_ingested == 0
@@ -130,19 +119,23 @@ class TestSentItemsIngest:
         session.commit()
         fake = FakeDeltaClient()
         fake.queue_sent(_sent(graph_id="sent-3"))
-        summary = sync_mailbox(session, connection, client=fake)
+        summary = sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.sent_ingested == 0
-        assert session.query(Message).filter_by(source="outlook").count() == 0
+        assert session.query(Message).filter_by(source="microsoft").count() == 0
 
     def test_second_pass_over_the_same_message_is_a_noop(self, session, thread_org):
         for _ in range(2):
             fake = FakeDeltaClient()
             fake.queue_sent(_sent(graph_id="sent-4"))
-            sync_mailbox(session, thread_org["connection"], client=fake)
+            sync_mailbox(
+                session,
+                thread_org["connection"],
+                provider=graph_provider(lambda db, conn, client=fake: client),
+            )
             session.commit()
-        assert session.query(Message).filter_by(graph_message_id="sent-4").count() == 1
+        assert session.query(Message).filter_by(provider_native_id="sent-4").count() == 1
 
 
 class TestUnmatchedInbound:
@@ -155,12 +148,12 @@ class TestUnmatchedInbound:
         fake.queue(
             _inbound(conversation_id="conv-other", graph_id="in-9", subject="Hey, question")
         )
-        summary = sync_mailbox(session, thread_org["connection"], client=fake)
+        summary = sync_mailbox(session, thread_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         # conv-1 exists from the sequence send, so _match_outbound would match
         # by sender fallback... assert on what actually got stored instead:
-        stored = session.query(Message).filter_by(graph_message_id="in-9").one()
+        stored = session.query(Message).filter_by(provider_native_id="in-9").one()
         assert stored.candidate_id == thread_org["ada"].id
         assert summary.seen == 1
 
@@ -173,11 +166,11 @@ class TestUnmatchedInbound:
                 graph_id="in-10",
             )
         )
-        summary = sync_mailbox(session, thread_org["connection"], client=fake)
+        summary = sync_mailbox(session, thread_org["connection"], provider=graph_provider(lambda db, conn: fake))
         session.commit()
 
         assert summary.unmatched_discarded == 1
-        assert session.query(Message).filter_by(graph_message_id="in-10").count() == 0
+        assert session.query(Message).filter_by(provider_native_id="in-10").count() == 0
 
 
 class TestScopeGuard:

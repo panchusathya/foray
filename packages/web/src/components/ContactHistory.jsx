@@ -2,15 +2,14 @@
  * Per-candidate contact history: the stats strip plus the actual emails,
  * grouped into conversation threads.
  *
- * Bodies render as plain text only. Synced Outlook mail can be HTML, and
- * there is no sanitizer dependency in this repo — so rather than injecting
- * body_html, an "Open in Outlook" link (Graph's own webLink) hands off to
- * the real client for the rich version.
+ * Bodies render as plain text only. Synced mail can be HTML, and there is no
+ * sanitizer dependency in this repo — so rather than injecting body_html, a
+ * link to the provider's own web client hands off for the rich version.
  */
 
 import { useState } from 'react';
 
-import { api } from '../lib/api.js';
+import { api, providerLabel } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
 import { Badge, Empty, ErrorBox, Loading } from './common.jsx';
 
@@ -35,7 +34,9 @@ function MessageRow({ message }) {
       <div className="row small spread">
         <span className="row" style={{ gap: 6 }}>
           <Badge tone={inbound ? 'accent' : 'strong'}>{inbound ? '← reply' : '→ sent'}</Badge>
-          <Badge>{message.source === 'outlook' ? 'Outlook' : 'sequence'}</Badge>
+          <Badge>
+            {message.source === 'sequence' ? 'sequence' : providerLabel(message.source)}
+          </Badge>
           {message.status === 'failed' ? <Badge tone="partial">failed</Badge> : null}
           {message.attachment_count ? <span className="muted">📎</span> : null}
         </span>
@@ -51,7 +52,7 @@ function MessageRow({ message }) {
       {message.web_link ? (
         <div className="small">
           <a href={message.web_link} target="_blank" rel="noreferrer">
-            Open in Outlook →
+            Open in {providerLabel(message.source)} →
           </a>
         </div>
       ) : null}

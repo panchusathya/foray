@@ -170,7 +170,23 @@ class Settings:
     # Defaults to {BASE_URL}/v1/integrations/microsoft/callback; must match the
     # redirect URI registered on the Azure app.
     ms_redirect_uri: str = field(default_factory=lambda: _env("MS_REDIRECT_URI", ""))
-    # How often the worker delta-polls each connected inbox for replies.
+
+    # --- integrations: Zoho Mail -------------------------------------------
+    # A "server-based" OAuth client at api-console.zoho.com. Multi DC must be
+    # enabled on it if any mailbox lives outside the accounts domain below; the
+    # callback then tells us which data centre a given mailbox belongs to.
+    zoho_client_id: str = field(default_factory=lambda: _env("ZOHO_CLIENT_ID", ""))
+    zoho_client_secret: str = field(default_factory=lambda: _env("ZOHO_CLIENT_SECRET", ""))
+    zoho_redirect_uri: str = field(default_factory=lambda: _env("ZOHO_REDIRECT_URI", ""))
+    # Where the consent screen lives. Set this to the data centre the mailboxes
+    # are actually in (accounts.zoho.eu, .in, .com.au, ...) so the first hop is
+    # right; the callback confirms it.
+    zoho_accounts_domain: str = field(
+        default_factory=lambda: _env("ZOHO_ACCOUNTS_DOMAIN", "https://accounts.zoho.com")
+    )
+
+    # --- mailbox sync (any provider) ---------------------------------------
+    # How often the worker polls each connected inbox for replies.
     mailbox_sync_seconds: int = field(
         default_factory=lambda: _env_int("MAILBOX_SYNC_SECONDS", 120)
     )

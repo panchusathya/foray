@@ -21,6 +21,7 @@ from .jobs import (
     KIND_AGENT_TICK,
     KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
+    KIND_MAILBOX_SYNC_ONE,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
     KIND_REPLY_DRAFT,
@@ -159,15 +160,44 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
 
 
 def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
-    from .integrations.sync import sync_org_mailboxes
+    """Fan one sync round out to one job per mailbox, then reschedule itself.
 
+    The per-mailbox jobs are spread across the interval rather than all fired
+    at once: six mailboxes hitting two providers in the same second is how you
+    find a rate limit, and nothing here is latency-critical to the second.
+    """
     org_id = job.payload.get("org_id") or job.org_id
-    results = sync_org_mailboxes(db, org_id=org_id, now=now)
+    settings = get_settings()
+    interval = max(settings.mailbox_sync_seconds, 30)
+
+    mailboxes = db.scalars(
+        select(MailboxConnection)
+        .where(
+            MailboxConnection.org_id == org_id,
+            MailboxConnection.status == "active",
+        )
+        .order_by(MailboxConnection.id)
+    ).all()
+    stagger = interval // max(len(mailboxes), 1)
+    queued = 0
+    for index, connection in enumerate(mailboxes):
+        run_at = now + timedelta(seconds=stagger * index)
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_MAILBOX_SYNC_ONE,
+            idempotency_key=(
+                f"{KIND_MAILBOX_SYNC_ONE}:{connection.id}:{int(run_at.timestamp())}"
+            ),
+            payload={"org_id": org_id, "mailbox_id": connection.id},
+            run_at=run_at,
+        )
+        queued += 1
+
     # Reschedule only while a mailbox is connected; ensure_ticks restarts the
     # loop when one is connected later.
-    if _org_has_active_mailbox(db, org_id):
-        settings = get_settings()
-        run_at = now + timedelta(seconds=max(settings.mailbox_sync_seconds, 30))
+    if mailboxes:
+        run_at = now + timedelta(seconds=interval)
         enqueue(
             db,
             org_id=org_id,
@@ -176,10 +206,33 @@ def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
             payload={"org_id": org_id},
             run_at=run_at,
         )
+    return {"mailboxes": queued}
+
+
+def _handle_mailbox_sync_one(db: Session, job: Job, now) -> dict[str, Any]:
+    """One sync pass over one mailbox, whatever provider it belongs to."""
+    from .integrations.providers import ProviderError
+    from .integrations.sync import sync_mailbox
+
+    connection = db.get(MailboxConnection, job.payload.get("mailbox_id", ""))
+    if connection is None or connection.status != "active":
+        return {"skipped": "mailbox gone or inactive"}
+    try:
+        summary = sync_mailbox(db, connection, now=now)
+    except ProviderError as exc:
+        # One broken mailbox writes its error to its own row and does not fail
+        # the job: a revoked token would otherwise retry-and-park forever while
+        # the healthy mailboxes carry on regardless.
+        logger.warning("mailbox sync failed for %s: %s", connection.address, exc)
+        connection.error = str(exc)
+        db.flush()
+        return {"error": str(exc), "address": connection.address}
     return {
-        "mailboxes": len(results),
-        "matched": sum(s.matched for s in results.values()),
-        "seen": sum(s.seen for s in results.values()),
+        "address": connection.address,
+        "provider": connection.provider,
+        "seen": summary.seen,
+        "matched": summary.matched,
+        "initialized": summary.initialized,
     }
 
 
@@ -240,6 +293,7 @@ HANDLERS = {
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_AGENT_TICK: _handle_agent_tick,
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
+    KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,
     KIND_MAILBOX_BACKFILL: _handle_mailbox_backfill,
     KIND_REPLY_DRAFT: _handle_reply_draft,
 }

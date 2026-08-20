@@ -1,13 +1,18 @@
 """Reply drafts: generation, Graph draft creation, notification, worker wiring."""
 
 import pytest
-from test_mailbox_sync import FakeDeltaClient, _inbound
+from test_mailbox_sync import (
+    FakeDeltaClient,
+    _inbound,
+    graph_provider,
+    install_graph,
+    install_graph_sender,
+)
 
 from juicebox.integrations.crypto import encrypt_json
 from juicebox.integrations.reply_drafting import create_reply_draft, generate_reply_body
 from juicebox.integrations.sync import sync_mailbox
 from juicebox.models import MailboxConnection, Message, ReplyDraft
-from juicebox.outreach.sender import SendResult, set_graph_sender_factory
 from juicebox.outreach.sequencer import enroll_candidates, record_reply, run_due
 
 
@@ -47,22 +52,7 @@ def replied_org(session, account, outreach_fixture):
     session.flush()
     sequence = outreach_fixture["sequence"]
     sequence.mailbox_id = connection.id
-    set_graph_sender_factory(
-        lambda db, conn: type(
-            "S",
-            (),
-            {
-                "name": "graph",
-                "send": lambda self, email: SendResult(
-                    ok=True,
-                    provider_message_id="<out-1@outlook.com>",
-                    graph_message_id="out-1",
-                    internet_message_id="<out-1@outlook.com>",
-                    conversation_id="conv-1",
-                ),
-            },
-        )()
-    )
+    install_graph_sender()
     ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
     enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id], project_id=sequence.project_id)
     session.commit()
@@ -71,7 +61,7 @@ def replied_org(session, account, outreach_fixture):
 
     fake = FakeDraftClient()
     fake.queue(_inbound(body="This sounds interesting — happy to chat this week."))
-    sync_mailbox(session, connection, client=fake)
+    sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
     session.commit()
     inbound = session.query(Message).filter_by(direction="inbound").one()
     return {"connection": connection, "inbound": inbound, "ada": ada, "fake": fake}
@@ -94,7 +84,7 @@ class TestGeneration:
                 session,
                 inbound=inbound,
                 connection=replied_org["connection"],
-                client=replied_org["fake"],
+                provider=graph_provider(lambda db, conn: replied_org["fake"]),
             )
             is None
         )
@@ -103,37 +93,39 @@ class TestGeneration:
 class TestCreateReplyDraft:
     def test_draft_lands_on_the_thread_with_a_notification(self, session, replied_org):
         fake = replied_org["fake"]
+        # Fresh recorder so the outbox holds only the notification, not the
+        # outreach step the fixture already sent.
+        notifier = install_graph_sender()
         draft = create_reply_draft(
             session,
             inbound=replied_org["inbound"],
             connection=replied_org["connection"],
-            client=fake,
+            provider=graph_provider(lambda db, conn: fake),
         )
         session.commit()
 
         assert draft is not None and draft.generated_by == "template"
         # The Graph draft was created as a reply on the inbound message's thread.
         [(thread_message_id, comment_html)] = fake.reply_drafts
-        assert thread_message_id == replied_org["inbound"].graph_message_id
+        assert thread_message_id == replied_org["inbound"].provider_native_id
         assert "Ada" in comment_html
-        assert draft.graph_draft_id == "draft-1"
+        assert draft.provider_draft_id == "draft-1"
         assert draft.web_link.endswith("draft-1")
 
         # The user got a "draft ready" email from their own mailbox to themselves.
-        [notification] = fake.sent_messages
-        assert notification["toRecipients"] == [
-            {"emailAddress": {"address": "recruiter@goforay.io"}}
-        ]
-        assert "Ada Okonkwo replied" in notification["subject"]
-        assert "draft-1" in notification["body"]["content"]
+        [notification] = notifier.outbox
+        assert notification.to == "recruiter@goforay.io"
+        assert notification.from_email == "recruiter@goforay.io"
+        assert "Ada Okonkwo replied" in notification.subject
+        assert "draft-1" in notification.html_body
 
     def test_idempotent_per_inbound_message(self, session, replied_org):
         fake = replied_org["fake"]
         first = create_reply_draft(
-            session, inbound=replied_org["inbound"], connection=replied_org["connection"], client=fake
+            session, inbound=replied_org["inbound"], connection=replied_org["connection"], provider=graph_provider(lambda db, conn: fake)
         )
         second = create_reply_draft(
-            session, inbound=replied_org["inbound"], connection=replied_org["connection"], client=fake
+            session, inbound=replied_org["inbound"], connection=replied_org["connection"], provider=graph_provider(lambda db, conn: fake)
         )
         assert first.id == second.id
         assert len(fake.reply_drafts) == 1
@@ -157,7 +149,7 @@ class TestCreateReplyDraft:
         session.flush()
         assert (
             create_reply_draft(
-                session, inbound=inbound, connection=connection, client=FakeDraftClient()
+                session, inbound=inbound, connection=connection, provider=graph_provider(lambda db, conn: FakeDraftClient())
             )
             is None
         )
@@ -173,9 +165,7 @@ class TestWorkerFlow:
         assert job.payload["inbound_message_id"] == replied_org["inbound"].id
 
         fake = replied_org["fake"]
-        monkeypatch.setattr(
-            "juicebox.integrations.reply_drafting.GraphClient", lambda db, conn: fake
-        )
+        install_graph(lambda db, conn: fake)
         process_job(session, job)
         session.commit()
         assert job.status == "succeeded"
@@ -194,17 +184,9 @@ class TestWorkerFlow:
         session.flush()
         sequence = outreach_fixture["sequence"]
         ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        set_graph_sender_factory(
-            lambda db, conn: type(
-                "S",
-                (),
-                {
-                    "name": "graph",
-                    "send": lambda self, email: SendResult(ok=True, conversation_id="conv-1"),
-                },
-            )()
-        )
+        sequence.sender_mode = "fixed"
         sequence.mailbox_id = connection.id
+        install_graph_sender()
         enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
         session.commit()
         run_due(session, org_id=sequence.org_id)
@@ -212,7 +194,7 @@ class TestWorkerFlow:
 
         fake = FakeDraftClient()
         fake.queue(_inbound(body="Please stop contacting me.", graph_id="in-9"))
-        sync_mailbox(session, connection, client=fake)
+        sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
         session.commit()
         assert session.query(Job).filter_by(kind=KIND_REPLY_DRAFT).count() == 0
 
@@ -223,7 +205,7 @@ class TestReplyDraftsApi:
             session,
             inbound=replied_org["inbound"],
             connection=replied_org["connection"],
-            client=replied_org["fake"],
+            provider=graph_provider(lambda db, conn: replied_org["fake"]),
         )
         session.commit()
         rows = client.get("/v1/reply-drafts", headers=account["headers"]).json()

@@ -1,15 +1,27 @@
-"""Inbox sync: detect candidate replies in a connected Outlook mailbox.
+"""Inbox sync: detect candidate replies in any connected mailbox.
 
-The worker delta-polls each active mailbox (no public URL on the deploy VM, so
-Graph change-notification webhooks are out; delta queries need nothing inbound).
-The first sync stores a baseline delta link without reading history — old mail
-is not outreach replies. Every later sync walks only what changed.
+The worker polls each active mailbox (no public URL on the deploy VM, so Graph
+change notifications are out, and Zoho has no webhooks at all). How a provider
+tracks its position is its own business -- Graph walks a delta link, Zoho keeps
+a timestamp high-water mark -- and both hand this module the same
+``MailboxEvent`` stream. Nothing below this line knows a provider's field names.
 
-Matching an inbound email back to the outreach that provoked it:
-1. by Graph conversationId against the outbound Message rows we sent, then
-2. by sender address (``find_message_for_reply``) as the fallback.
+The first pass over a folder only records where "now" is and reads no history:
+old mail is not outreach replies. Every later pass walks what arrived since.
 
-Matched replies flow into ``record_reply`` — intent classification, stopping
+Matching an inbound email back to the outreach that provoked it, cheapest and
+strictest first:
+
+1. by thread id (Graph conversationId, Zoho threadId) against outbound rows,
+2. by the reply's In-Reply-To against the RFC Message-ID we stored on send,
+3. by sender address (``find_message_for_reply``) as the last resort.
+
+(2) exists because address matching cannot tell two sequences to the same
+person apart, and because Zoho gives no thread id on some replies. Providers
+that need an extra call to populate it only make that call when (1) came up
+empty.
+
+Matched replies flow into ``record_reply`` -- intent classification, stopping
 the enrollment, pipeline stage, and the do-not-contact list all live there.
 """
 
@@ -26,9 +38,14 @@ from sqlalchemy.orm import Session
 from ..models import MailboxConnection, Message, ReplyDraft, utcnow
 from ..outreach.sequencer import find_message_for_reply, record_reply
 from .matching import build_address_index, record_synced_message, resolve_candidate
-from .microsoft import GraphClient, MicrosoftError
+from .providers import FOLDER_INBOX, FOLDER_SENT, MailboxEvent, get_provider
 
 logger = logging.getLogger(__name__)
+
+# One sync pass reads at most this many pages per folder. Providers that page
+# by offset (Zoho) would otherwise let one very stale mailbox monopolise the
+# worker; the next tick picks up where this one stopped.
+MAX_PAGES_PER_FOLDER = 10
 
 
 @dataclass
@@ -46,87 +63,96 @@ class SyncSummary:
     unmatched_discarded: int = 0
 
 
-def _from_address(payload: dict) -> str:
-    return (
-        (payload.get("from") or {}).get("emailAddress", {}).get("address", "") or ""
-    ).lower()
-
-
-def _body_text(payload: dict) -> str:
-    """Best plain-text body. The Prefer header asks Graph for text, but when a
-    message arrives HTML anyway, the full content beats a 255-char preview."""
-    body = payload.get("body") or {}
-    if body.get("content"):
-        return body["content"]
-    return payload.get("bodyPreview") or ""
-
-
-def _recipient_addresses(payload: dict) -> list[str]:
-    addresses = []
-    for key in ("toRecipients", "ccRecipients"):
-        for entry in payload.get(key) or []:
-            address = ((entry or {}).get("emailAddress") or {}).get("address", "")
-            if address:
-                addresses.append(address.lower())
-    return addresses
-
-
-def _already_recorded(db: Session, *, org_id: str, graph_message_id: str) -> bool:
-    """Any direction: a sequence send stores the same ImmutableId that the
-    Sent Items delta later returns, which is what stops double-storing it."""
-    if not graph_message_id:
+def _already_recorded(db: Session, *, org_id: str, native_id: str) -> bool:
+    """Any direction: a sequence send stores the same native id the Sent folder
+    later returns, which is what stops double-storing it."""
+    if not native_id:
         return False
     return (
         db.scalar(
             select(Message.id).where(
                 Message.org_id == org_id,
-                Message.graph_message_id == graph_message_id,
+                Message.provider_native_id == native_id,
             )
         )
         is not None
     )
 
 
-def _match_outbound(
-    db: Session, *, org_id: str, conversation_id: str, sender: str
-) -> Message | None:
-    if conversation_id:
+def _match_outbound(db: Session, *, org_id: str, event: MailboxEvent) -> Message | None:
+    if event.thread_id:
         message = db.scalar(
             select(Message)
             .where(
                 Message.org_id == org_id,
                 Message.direction == "outbound",
-                Message.conversation_id == conversation_id,
+                Message.conversation_id == event.thread_id,
+            )
+            .order_by(Message.created_at.desc())
+        )
+        if message is not None:
+            return message
+    if event.in_reply_to:
+        message = db.scalar(
+            select(Message)
+            .where(
+                Message.org_id == org_id,
+                Message.direction == "outbound",
+                Message.internet_message_id == event.in_reply_to,
             )
             .order_by(Message.created_at.desc())
         )
         if message is not None:
             return message
     return find_message_for_reply(
-        db, org_id=org_id, candidate_email=sender, provider_message_id=None
+        db, org_id=org_id, candidate_email=event.from_address, provider_message_id=None
     )
+
+
+def _read_folder(
+    db: Session,
+    connection: MailboxConnection,
+    provider,
+    folder: str,
+    *,
+    cursor: str,
+    handle,
+) -> bool:
+    """Walk one folder, handing each page to ``handle`` before its cursor lands.
+
+    Committing the cursor only after the page is recorded means a crash
+    mid-page replays rather than skips; the idempotent ingest makes the replay
+    free. Returns True when this call only established a baseline.
+    """
+    for _ in range(MAX_PAGES_PER_FOLDER):
+        page = provider.iter_folder(db, connection, folder, cursor=cursor)
+        if page.initialized:
+            provider.commit_cursor(db, connection, folder, page.next_cursor)
+            return True
+        events = sorted(
+            page.events, key=lambda item: item.received_at or item.sent_at or utcnow()
+        )
+        for event in events:
+            handle(event)
+        provider.commit_cursor(db, connection, folder, page.next_cursor)
+        if not page.has_more:
+            return False
+        cursor = page.next_cursor
+    return False
 
 
 def sync_mailbox(
     db: Session,
     connection: MailboxConnection,
     *,
-    client: GraphClient | None = None,
+    provider=None,
     now: datetime | None = None,
 ) -> SyncSummary:
-    """One delta pass over the mailbox's inbox. Raises MicrosoftError upward —
-    the job queue owns retries and backoff."""
+    """One pass over a mailbox's inbox and sent folder. Raises ProviderError
+    upward -- the job queue owns retries and backoff."""
     now = now or utcnow()
-    client = client or GraphClient(db, connection)
+    provider = provider or get_provider(connection.provider)
     summary = SyncSummary()
-
-    if not connection.inbox_delta_link:
-        connection.inbox_delta_link = client.inbox_delta_baseline()
-        connection.sent_delta_link = client.sent_delta_baseline()
-        connection.last_synced_at = now
-        db.flush()
-        summary.initialized = True
-        return summary
 
     address_index = (
         build_address_index(db, org_id=connection.org_id)
@@ -134,69 +160,58 @@ def sync_mailbox(
         else {}
     )
 
-    messages, delta_link = client.inbox_delta(connection.inbox_delta_link)
-    messages.sort(key=lambda m: m.get("receivedDateTime") or "")
-    for payload in messages:
-        summary.seen += 1
-        sender = _from_address(payload)
-        if (
-            payload.get("isDraft")
-            or not sender
-            or sender == connection.address
-            or payload.get("@removed") is not None
-        ):
-            summary.skipped += 1
-            continue
-        if _already_recorded(db, org_id=connection.org_id, graph_message_id=payload.get("id", "")):
-            summary.skipped += 1
-            continue
-        outbound = _match_outbound(
+    def handle_inbound(event: MailboxEvent) -> None:
+        _handle_inbound_event(
             db,
-            org_id=connection.org_id,
-            conversation_id=payload.get("conversationId", ""),
-            sender=sender,
-        )
-        if outbound is None:
-            # Not a reply to anything we sent. With thread sync on, mail from a
-            # known candidate still belongs in their timeline; strangers are
-            # discarded without storing anything. Deliberately no
-            # classify_reply / enrollment stop / pipeline move — there is no
-            # sequence behind this email.
-            candidate_id = resolve_candidate(address_index, [sender])
-            if candidate_id is not None:
-                record_synced_message(
-                    db,
-                    org_id=connection.org_id,
-                    candidate_id=candidate_id,
-                    mailbox_id=connection.id,
-                    direction="inbound",
-                    from_address=sender,
-                    to_address=connection.address,
-                    payload=payload,
-                    now=now,
-                )
-                summary.inbound_ingested += 1
-            else:
-                summary.unmatched_discarded += 1
-            summary.skipped += 1
-            continue
-        verdict = record_reply(
-            db,
-            message=outbound,
-            subject=payload.get("subject", "") or "",
-            body=_body_text(payload),
+            connection,
+            event,
+            summary=summary,
             now=now,
-            mailbox_id=connection.id,
-            graph_message_id=payload.get("id", ""),
-            internet_message_id=payload.get("internetMessageId", ""),
-            conversation_id=payload.get("conversationId", ""),
+            address_index=address_index,
         )
-        summary.matched += 1
-        summary.intents.append(verdict.intent)
-        _enqueue_reply_draft(db, connection=connection, graph_message_id=payload.get("id", ""))
 
-    connection.inbox_delta_link = delta_link
-    _sync_sent_items(db, connection, client, summary, now, address_index)
+    baselined = _read_folder(
+        db,
+        connection,
+        provider,
+        FOLDER_INBOX,
+        cursor=provider.read_cursor(connection, FOLDER_INBOX),
+        handle=handle_inbound,
+    )
+    if baselined:
+        # Baseline the sent cursor in the same pass so the next one reads both.
+        _read_folder(
+            db,
+            connection,
+            provider,
+            FOLDER_SENT,
+            cursor=provider.read_cursor(connection, FOLDER_SENT),
+            handle=lambda event: None,
+        )
+        connection.last_synced_at = now
+        db.flush()
+        summary.initialized = True
+        return summary
+
+    def handle_sent(event: MailboxEvent) -> None:
+        _handle_sent_event(
+            db,
+            connection,
+            event,
+            summary=summary,
+            now=now,
+            address_index=address_index,
+        )
+
+    _read_folder(
+        db,
+        connection,
+        provider,
+        FOLDER_SENT,
+        cursor=provider.read_cursor(connection, FOLDER_SENT),
+        handle=handle_sent,
+    )
+
     connection.last_synced_at = now
     db.flush()
     if summary.seen or summary.matched or summary.unmatched_discarded:
@@ -205,9 +220,10 @@ def sync_mailbox(
         # logs were gone and the job row just said "succeeded". Every non-empty
         # pass now leaves a durable trace of what it did with each count.
         logger.info(
-            "mailbox sync %s: seen=%d matched=%d skipped=%d intents=%s "
+            "mailbox sync %s (%s): seen=%d matched=%d skipped=%d intents=%s "
             "sent_ingested=%d inbound_ingested=%d unmatched_discarded=%d",
             connection.address,
+            connection.provider,
             summary.seen,
             summary.matched,
             summary.skipped,
@@ -217,6 +233,68 @@ def sync_mailbox(
             summary.unmatched_discarded,
         )
     return summary
+
+
+def _handle_inbound_event(
+    db: Session,
+    connection: MailboxConnection,
+    event: MailboxEvent,
+    *,
+    summary: SyncSummary,
+    now: datetime,
+    address_index: dict[str, str],
+) -> None:
+    summary.seen += 1
+    if (
+        event.is_draft
+        or event.removed
+        or not event.from_address
+        or event.from_address == connection.address
+    ):
+        summary.skipped += 1
+        return
+    if _already_recorded(db, org_id=connection.org_id, native_id=event.native_id):
+        summary.skipped += 1
+        return
+    outbound = _match_outbound(db, org_id=connection.org_id, event=event)
+    if outbound is None:
+        # Not a reply to anything we sent. With thread sync on, mail from a
+        # known candidate still belongs in their timeline; strangers are
+        # discarded without storing anything. Deliberately no classify_reply /
+        # enrollment stop / pipeline move — there is no sequence behind this.
+        candidate_id = resolve_candidate(address_index, [event.from_address])
+        if candidate_id is not None:
+            record_synced_message(
+                db,
+                org_id=connection.org_id,
+                candidate_id=candidate_id,
+                mailbox_id=connection.id,
+                direction="inbound",
+                from_address=event.from_address,
+                to_address=connection.address,
+                event=event,
+                now=now,
+                source=connection.provider,
+            )
+            summary.inbound_ingested += 1
+        else:
+            summary.unmatched_discarded += 1
+        summary.skipped += 1
+        return
+    verdict = record_reply(
+        db,
+        message=outbound,
+        subject=event.subject,
+        body=event.body,
+        now=now,
+        mailbox_id=connection.id,
+        provider_native_id=event.native_id,
+        internet_message_id=event.rfc_message_id,
+        conversation_id=event.thread_id,
+    )
+    summary.matched += 1
+    summary.intents.append(verdict.intent)
+    _enqueue_reply_draft(db, connection=connection, native_id=event.native_id)
 
 
 # Everything below the first of these markers is quoted history, not the reply.
@@ -236,81 +314,78 @@ def strip_quoted_history(text: str) -> str:
     return _QUOTE_MARKERS.split(text or "", maxsplit=1)[0].strip()
 
 
-def _sync_sent_items(
+def _handle_sent_event(
     db: Session,
     connection: MailboxConnection,
-    client: GraphClient,
+    event: MailboxEvent,
+    *,
     summary: SyncSummary,
     now: datetime,
-    address_index: dict[str, str] | None = None,
+    address_index: dict[str, str],
 ) -> None:
-    """Learn what happened to our reply drafts by watching Sent Items.
+    """Learn what happened to our reply drafts by watching the Sent folder.
 
-    A sent message with a draft's own id means the user sent (a possibly
-    edited version of) our draft. A different message on the same conversation
-    means they discarded ours and wrote their own — the strongest style
-    signal of all. Either way the final text lands on the ReplyDraft row.
+    A sent message carrying a draft's own id means the user sent (a possibly
+    edited version of) our draft. A different message on the same thread means
+    they discarded ours and wrote their own — the strongest style signal of
+    all. Either way the final text lands on the ReplyDraft row.
+
+    Zoho does not guarantee that a draft keeps its id once sent, so the
+    draft-id match is tried first and the thread match catches the rest.
     """
-    if not connection.sent_delta_link:
-        connection.sent_delta_link = client.sent_delta_baseline()
+    if event.removed or event.is_draft:
         return
-    messages, delta_link = client.sent_delta(connection.sent_delta_link)
-    for payload in messages:
-        if payload.get("@removed") is not None or payload.get("isDraft"):
-            continue
-        _ingest_sent_message(db, connection, payload, summary, now, address_index or {})
-        sent_text = strip_quoted_history(_body_text(payload))
-        draft = db.scalar(
-            select(ReplyDraft).where(
-                ReplyDraft.mailbox_id == connection.id,
-                ReplyDraft.graph_draft_id == payload.get("id", ""),
-            )
+    _ingest_sent_message(db, connection, event, summary, now, address_index)
+    sent_text = strip_quoted_history(event.body)
+    draft = db.scalar(
+        select(ReplyDraft).where(
+            ReplyDraft.mailbox_id == connection.id,
+            ReplyDraft.provider_draft_id == event.native_id,
         )
-        if draft is not None:
-            if draft.status == "created":
-                draft.status = "sent"
-                draft.final_sent_text = sent_text
-                draft.sent_at = now
-                summary.drafts_sent += 1
-            continue
-        conversation_id = payload.get("conversationId", "")
-        if not conversation_id:
-            continue
-        abandoned = db.scalar(
-            select(ReplyDraft)
-            .join(Message, Message.id == ReplyDraft.inbound_message_id)
-            .where(
-                ReplyDraft.mailbox_id == connection.id,
-                ReplyDraft.status == "created",
-                Message.conversation_id == conversation_id,
-            )
+    )
+    if draft is not None:
+        if draft.status == "created":
+            draft.status = "sent"
+            draft.final_sent_text = sent_text
+            draft.sent_at = now
+            summary.drafts_sent += 1
+        return
+    if not event.thread_id:
+        return
+    abandoned = db.scalar(
+        select(ReplyDraft)
+        .join(Message, Message.id == ReplyDraft.inbound_message_id)
+        .where(
+            ReplyDraft.mailbox_id == connection.id,
+            ReplyDraft.status == "created",
+            Message.conversation_id == event.thread_id,
         )
-        if abandoned is not None and sent_text:
-            abandoned.status = "discarded"
-            abandoned.final_sent_text = sent_text
-            abandoned.sent_at = now
-            summary.drafts_discarded += 1
-    connection.sent_delta_link = delta_link
+    )
+    if abandoned is not None and sent_text:
+        abandoned.status = "discarded"
+        abandoned.final_sent_text = sent_text
+        abandoned.sent_at = now
+        summary.drafts_discarded += 1
 
 
 def _ingest_sent_message(
     db: Session,
     connection: MailboxConnection,
-    payload: dict,
+    event: MailboxEvent,
     summary: SyncSummary,
     now: datetime,
     address_index: dict[str, str],
 ) -> None:
     """A manually sent email to a known candidate becomes a CRM row.
 
-    Sequence sends are recognised by their ImmutableId (stored at send time)
-    and skipped; mail to strangers is skipped without storing anything.
+    Sequence sends are recognised by their native id (stored at send time) and
+    skipped; mail to strangers is skipped without storing anything.
     """
     if not connection.thread_sync_enabled:
         return
-    if _already_recorded(db, org_id=connection.org_id, graph_message_id=payload.get("id", "")):
+    if _already_recorded(db, org_id=connection.org_id, native_id=event.native_id):
         return
-    recipients = _recipient_addresses(payload)
+    recipients = list(event.to_addresses)
     candidate_id = resolve_candidate(address_index, recipients)
     if candidate_id is None:
         summary.unmatched_discarded += 1
@@ -326,14 +401,15 @@ def _ingest_sent_message(
         direction="outbound",
         from_address=connection.address,
         to_address=to_address or (recipients[0] if recipients else ""),
-        payload=payload,
+        event=event,
         now=now,
+        source=connection.provider,
     )
     summary.sent_ingested += 1
 
 
 def _enqueue_reply_draft(
-    db: Session, *, connection: MailboxConnection, graph_message_id: str
+    db: Session, *, connection: MailboxConnection, native_id: str
 ) -> None:
     """Queue drafting for one recorded reply. Opt-outs and automation get none."""
     from ..jobs import KIND_REPLY_DRAFT, enqueue
@@ -343,7 +419,7 @@ def _enqueue_reply_draft(
         select(Message).where(
             Message.org_id == connection.org_id,
             Message.direction == "inbound",
-            Message.graph_message_id == graph_message_id,
+            Message.provider_native_id == native_id,
         )
     )
     if inbound is None or inbound.reply_intent in NO_DRAFT_INTENTS:
@@ -359,27 +435,3 @@ def _enqueue_reply_draft(
             "mailbox_id": connection.id,
         },
     )
-
-
-def sync_org_mailboxes(
-    db: Session, *, org_id: str, now: datetime | None = None
-) -> dict[str, SyncSummary]:
-    """Sync every active mailbox in the org. One broken mailbox must not stop
-    the others — its error lands on the connection row and the loop moves on."""
-    now = now or utcnow()
-    results: dict[str, SyncSummary] = {}
-    connections = db.scalars(
-        select(MailboxConnection).where(
-            MailboxConnection.org_id == org_id,
-            MailboxConnection.provider == "microsoft",
-            MailboxConnection.status == "active",
-        )
-    ).all()
-    for connection in connections:
-        try:
-            results[connection.address] = sync_mailbox(db, connection, now=now)
-        except MicrosoftError as exc:
-            logger.warning("mailbox sync failed for %s: %s", connection.address, exc)
-            connection.error = str(exc)
-            db.flush()
-    return results

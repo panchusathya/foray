@@ -249,6 +249,38 @@ def _sent_today(db: Session, org_id: str, now: datetime) -> int:
     )
 
 
+def _effective_daily_cap(db: Session, org_id: str) -> int:
+    """The org-wide ceiling, lifted to whatever the mailbox pool can carry.
+
+    OUTREACH_DAILY_CAP is a spend guard set for one sending identity. Left
+    alone, five mailboxes capped at 40 each would sit under it and the pool
+    would silently defer everything the moment it was fully used -- rotation
+    that unlocks nothing. The pool's own per-mailbox caps are the real
+    deliverability control.
+    """
+    from .rotation import pool_capacity
+
+    return max(get_settings().outreach_daily_cap, pool_capacity(db, org_id=org_id))
+
+
+def _thread_parent(db: Session, enrollment_id: str) -> Message | None:
+    """The last message we actually got out on this enrollment.
+
+    Its RFC Message-ID is what makes a follow-up land in the same thread in the
+    candidate's client instead of arriving as an unrelated second email.
+    """
+    return db.scalar(
+        select(Message)
+        .where(
+            Message.enrollment_id == enrollment_id,
+            Message.direction == "outbound",
+            Message.status == "sent",
+            Message.internet_message_id != "",
+        )
+        .order_by(Message.sent_at.desc())
+    )
+
+
 def _finish_enrollment(enrollment: Enrollment, status: str, reason: str = "") -> None:
     enrollment.status = status
     enrollment.stopped_reason = reason
@@ -274,7 +306,10 @@ def send_step(
     candidate: Candidate,
     now: datetime,
     dry_run: bool = False,
+    resolved=None,
 ) -> Message:
+    """Send one step. ``resolved`` is the mailbox process_enrollment already
+    picked; passing it avoids resolving (and re-counting caps) twice."""
     settings = get_settings()
     existing = _existing_outbound(db, enrollment.id, step.id)
     if existing is not None and existing.status == "sent":
@@ -383,7 +418,8 @@ def send_step(
         _finish_enrollment(enrollment, "stopped", "missing_email")
         return message
 
-    sender = resolve_sender(db, sequence)
+    resolved = resolved or resolve_sender(db, sequence, enrollment, now=now)
+    sender = resolved.sender
     token = signed_tracking_token(message.id)
     html_body = templates.add_tracking(
         templates.to_html(body),
@@ -392,6 +428,9 @@ def send_step(
         token=token,
     )
 
+    # Follow-ups thread off the previous send. Providers that cannot express
+    # these headers ignore them and send a fresh message rather than failing.
+    parent = _thread_parent(db, enrollment.id)
     email = OutboundEmail(
         to=to_address,
         subject=subject,
@@ -400,6 +439,8 @@ def send_step(
         from_email=sequence.from_email or settings.outreach_from_email,
         from_name=sequence.from_name or settings.outreach_from_name,
         headers={"X-Juicebox-Message-Id": message.id},
+        in_reply_to=parent.internet_message_id if parent is not None else "",
+        references=parent.internet_message_id if parent is not None else "",
     )
 
     if dry_run:
@@ -412,11 +453,18 @@ def send_step(
         message.status = "sent"
         message.sent_at = now
         message.provider_message_id = result.provider_message_id
-        message.mailbox_id = sequence.mailbox_id or ""
-        message.graph_message_id = result.graph_message_id
+        # The mailbox that actually sent it, not the sequence's preference --
+        # under rotation those differ, and the cap query reads this column.
+        connection = getattr(resolved, "connection", None)
+        message.mailbox_id = connection.id if connection is not None else ""
+        message.provider_native_id = result.provider_native_id
         message.internet_message_id = result.internet_message_id
         message.conversation_id = result.conversation_id
         message.error = ""
+        if connection is not None and not enrollment.mailbox_id:
+            # Pin on first success: every later step of this conversation goes
+            # out from the same address.
+            enrollment.mailbox_id = connection.id
         record_event(
             db,
             org_id=sequence.org_id,
@@ -436,6 +484,10 @@ def send_step(
             subject_id=message.id,
             payload={"error": result.error},
         )
+    # Sessions are autoflush=False, so without this the row this send just
+    # produced is invisible to the next enrollment's cap query in the same pass
+    # -- every daily cap would be overshot by the size of the batch.
+    db.flush()
     return message
 
 
@@ -494,11 +546,21 @@ def process_enrollment(
     if due_at is None or due_at > now:
         return "skipped", None
 
+    resolved = None
     if not dry_run:
         remaining_cap = max(
-            0, get_settings().outreach_daily_cap - _sent_today(db, sequence.org_id, now)
+            0, _effective_daily_cap(db, sequence.org_id) - _sent_today(db, sequence.org_id, now)
         )
         if remaining_cap == 0:
+            return "deferred", None
+        # Resolving here rather than inside send_step keeps a full mailbox from
+        # touching the enrollment at all: "deferred" leaves next_send_at alone
+        # so the worker requeues this same permanent idempotency key. Raising
+        # would park the job and the step could never send again; advancing
+        # next_send_at would make the requeue return "skipped", which marks the
+        # job succeeded and loses the step just as permanently.
+        resolved = resolve_sender(db, sequence, enrollment, now=now)
+        if resolved.deferred:
             return "deferred", None
 
     candidate = db.get(Candidate, enrollment.candidate_id)
@@ -515,6 +577,7 @@ def process_enrollment(
         candidate=candidate,
         now=now,
         dry_run=dry_run,
+        resolved=resolved,
     )
     if message.status == "failed":
         return "failed", message
@@ -545,7 +608,7 @@ def run_due(
     now = now or utcnow()
     summary = RunSummary()
 
-    remaining_cap = max(0, get_settings().outreach_daily_cap - _sent_today(db, org_id, now))
+    remaining_cap = max(0, _effective_daily_cap(db, org_id) - _sent_today(db, org_id, now))
     if remaining_cap == 0 and not dry_run:
         logger.info("daily outreach cap reached for org %s", org_id)
         return summary
@@ -608,14 +671,14 @@ def record_reply(
     body: str,
     now: datetime | None = None,
     mailbox_id: str = "",
-    graph_message_id: str = "",
+    provider_native_id: str = "",
     internet_message_id: str = "",
     conversation_id: str = "",
 ) -> ReplyVerdict:
     """Attach an inbound reply to the outbound message and act on its intent.
 
-    The graph ids are set when the reply arrived via mailbox sync, so the same
-    inbound email is never recorded twice.
+    The provider ids are set when the reply arrived via mailbox sync, so the
+    same inbound email is never recorded twice.
     """
     now = now or utcnow()
     verdict = classify_reply(subject, body)
@@ -642,7 +705,7 @@ def record_reply(
         reply_intent=verdict.intent,
         reply_text=body,
         mailbox_id=mailbox_id,
-        graph_message_id=graph_message_id,
+        provider_native_id=provider_native_id,
         internet_message_id=internet_message_id,
         conversation_id=conversation_id,
     )

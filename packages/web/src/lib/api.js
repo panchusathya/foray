@@ -120,19 +120,49 @@ export const api = {
     request(`/v1/analytics/funnel${projectId ? `?project_id=${projectId}` : ''}`),
   activity: () => request('/v1/analytics/activity?limit=25'),
 
-  microsoftStatus: () => request('/v1/integrations/microsoft'),
-  microsoftConnect: () => request('/v1/integrations/microsoft/connect', { method: 'POST' }),
-  microsoftDisconnect: (connectionId) =>
-    request(`/v1/integrations/microsoft/${connectionId}`, { method: 'DELETE' }),
-  microsoftSync: (connectionId) =>
-    request(`/v1/integrations/microsoft/${connectionId}/sync`, { method: 'POST' }),
-  microsoftThreadSync: (connectionId, enabled) =>
-    request(`/v1/integrations/microsoft/${connectionId}/thread-sync?enabled=${enabled}`, {
+  // Mailboxes are a tenant-wide pool, so these are not scoped to a user.
+  // Connect stays per-provider because the OAuth round trip is.
+  mailboxes: () => request('/v1/integrations/mailboxes'),
+  mailboxConnect: (provider) =>
+    request(`/v1/integrations/${provider}/connect`, { method: 'POST' }),
+  mailboxDisconnect: (connectionId) =>
+    request(`/v1/integrations/mailboxes/${connectionId}`, { method: 'DELETE' }),
+  mailboxSync: (connectionId) =>
+    request(`/v1/integrations/mailboxes/${connectionId}/sync`, { method: 'POST' }),
+  mailboxThreadSync: (connectionId, enabled) =>
+    request(`/v1/integrations/mailboxes/${connectionId}/thread-sync?enabled=${enabled}`, {
       method: 'PATCH',
     }),
-  microsoftBackfill: (connectionId) =>
-    request(`/v1/integrations/microsoft/${connectionId}/backfill`, { method: 'POST' }),
+  mailboxBackfill: (connectionId) =>
+    request(`/v1/integrations/mailboxes/${connectionId}/backfill`, { method: 'POST' }),
+  mailboxSending: (connectionId, payload) =>
+    request(`/v1/integrations/mailboxes/${connectionId}/sending`, {
+      method: 'PATCH',
+      body: payload,
+    }),
 };
+
+// What each provider is called in the UI, and what the server needs to enable
+// it. Keyed by MailboxConnection.provider, which is also Message.source for
+// mail synced out of a mailbox.
+export const MAIL_PROVIDERS = {
+  microsoft: {
+    label: 'Outlook',
+    blurb:
+      'Send sequences from your own Microsoft 365 mailbox, so outreach looks like the personal email it is.',
+    envVars: ['MS_CLIENT_ID', 'MS_CLIENT_SECRET'],
+  },
+  zoho: {
+    label: 'Zoho Mail',
+    blurb:
+      'Add Zoho mailboxes to spread sending volume across more addresses without leaning on one reputation.',
+    envVars: ['ZOHO_CLIENT_ID', 'ZOHO_CLIENT_SECRET'],
+  },
+};
+
+export function providerLabel(provider) {
+  return MAIL_PROVIDERS[provider]?.label ?? provider;
+}
 
 export const PIPELINE_STAGES = [
   'sourced',

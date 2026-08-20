@@ -12,7 +12,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
-import { api } from '../lib/api.js';
+import { api, providerLabel } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
 
 // Chip catalog mirrors the variable bag in outreach/personalize.py base_context.
@@ -257,13 +257,67 @@ function CandidatePicker({ projectId, enrolledIds, busy, firstSendLabel, onCance
   );
 }
 
+/**
+ * Which mailbox this sequence sends from. Sequence-level, not per-step: a
+ * conversation that changes address mid-thread arrives as a second email from
+ * a stranger, so a step can never pick its own sender.
+ */
+function SenderPicker({ meta, setMeta, mailboxes }) {
+  const active = (mailboxes.data?.connections ?? []).filter(
+    (connection) => connection.status === 'active' && connection.send_enabled,
+  );
+  const capacity = active.reduce((total, c) => total + c.daily_send_cap, 0);
+  const value = meta.sender_mode === 'fixed' && meta.mailbox_id ? meta.mailbox_id : 'rotate';
+
+  return (
+    <div className="card row wrap small muted" style={{ alignItems: 'center' }}>
+      <span>Send from</span>
+      <select
+        style={{ width: 300 }}
+        data-testid="sender-picker"
+        value={value}
+        onChange={(event) => {
+          const next = event.target.value;
+          setMeta(
+            next === 'rotate'
+              ? { ...meta, sender_mode: 'rotate', mailbox_id: null }
+              : { ...meta, sender_mode: 'fixed', mailbox_id: next },
+          );
+        }}
+      >
+        <option value="rotate">
+          {active.length
+            ? `Rotate across all mailboxes (${active.length}, ${capacity}/24h)`
+            : 'Rotate across all mailboxes'}
+        </option>
+        {active.map((connection) => (
+          <option key={connection.id} value={connection.id}>
+            Only {connection.address} ({providerLabel(connection.provider)})
+          </option>
+        ))}
+      </select>
+      {active.length ? (
+        <span>
+          {value === 'rotate'
+            ? 'Each contact stays on whichever mailbox emailed them first.'
+            : 'Every step goes out from this one address.'}
+        </span>
+      ) : (
+        <span>
+          <Link to="/settings">Connect a mailbox</Link> to send as yourself
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function SequenceEditorPage() {
   const { sequenceId } = useParams();
   const navigate = useNavigate();
   const sequence = useAsync(() => api.getSequence(sequenceId), [sequenceId]);
   const enrollments = useAsync(() => api.listEnrollments(sequenceId), [sequenceId]);
   const candidates = useAsync(() => api.listCandidates({ limit: 25 }), []);
-  const microsoft = useAsync(() => api.microsoftStatus(), []);
+  const mailboxes = useAsync(() => api.mailboxes(), []);
 
   const [meta, setMeta] = useState(null);
   const [steps, setSteps] = useState([]);
@@ -296,6 +350,7 @@ export function SequenceEditorPage() {
       stop_on_reply: sequence.data.stop_on_reply,
       from_email: sequence.data.from_email,
       from_name: sequence.data.from_name,
+      sender_mode: sequence.data.sender_mode,
       mailbox_id: sequence.data.mailbox_id,
     });
     setSteps(normalizeSteps(sequence.data.steps));
@@ -309,9 +364,15 @@ export function SequenceEditorPage() {
   const stepsDirty = JSON.stringify(steps) !== JSON.stringify(savedSteps);
   const metaDirty =
     meta && sequence.data
-      ? ['name', 'personalize', 'stop_on_reply', 'from_email', 'from_name', 'mailbox_id'].some(
-          (key) => meta[key] !== sequence.data[key],
-        )
+      ? [
+          'name',
+          'personalize',
+          'stop_on_reply',
+          'from_email',
+          'from_name',
+          'sender_mode',
+          'mailbox_id',
+        ].some((key) => meta[key] !== sequence.data[key])
       : false;
   const dirty = stepsDirty || metaDirty;
   dirtyRef.current = dirty;
@@ -483,6 +544,8 @@ export function SequenceEditorPage() {
       ) : null}
       {notice ? <div className="card small">{notice}</div> : null}
 
+      <SenderPicker meta={meta} setMeta={setMeta} mailboxes={mailboxes} />
+
       <div className="editor-grid">
         <div className="stack" style={{ gap: 8 }}>
           {steps.map((s, index) => (
@@ -604,30 +667,6 @@ export function SequenceEditorPage() {
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="row wrap small muted" style={{ alignItems: 'center' }}>
-                <span>Send from</span>
-                <select
-                  style={{ width: 260 }}
-                  value={meta.mailbox_id ?? ''}
-                  onChange={(event) =>
-                    setMeta({ ...meta, mailbox_id: event.target.value || null })
-                  }
-                >
-                  <option value="">Server default</option>
-                  {(microsoft.data?.connections ?? [])
-                    .filter((connection) => connection.status === 'active')
-                    .map((connection) => (
-                      <option key={connection.id} value={connection.id}>
-                        {connection.address} (Outlook)
-                      </option>
-                    ))}
-                </select>
-                {!(microsoft.data?.connections ?? []).some((c) => c.status === 'active') ? (
-                  <span>
-                    <Link to="/settings">Connect Outlook</Link> to send as yourself
-                  </span>
-                ) : null}
               </div>
             </div>
           ) : null}

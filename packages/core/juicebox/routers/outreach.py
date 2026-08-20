@@ -91,6 +91,18 @@ def _has_active_enrollments(db: Session, sequence_id: str) -> bool:
     )
 
 
+def _resolve_sender_mode(requested: str | None, mailbox_id: str | None) -> str:
+    """What a payload means when it names a mailbox but not a mode.
+
+    The column defaults to "rotate", so a client that sets mailbox_id and says
+    nothing else would have its choice silently ignored by the pool. Naming a
+    mailbox is taken as pinning to it; an explicit sender_mode always wins.
+    """
+    if requested:
+        return requested
+    return "fixed" if mailbox_id else "rotate"
+
+
 @router.post("", response_model=SequenceOut, status_code=status.HTTP_201_CREATED)
 def create_sequence(
     payload: SequenceIn,
@@ -111,6 +123,7 @@ def create_sequence(
         stop_on_reply=payload.stop_on_reply,
         from_email=payload.from_email,
         from_name=payload.from_name,
+        sender_mode=_resolve_sender_mode(payload.sender_mode, payload.mailbox_id),
         mailbox_id=payload.mailbox_id,
     )
     db.add(sequence)
@@ -192,6 +205,17 @@ def update_sequence(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox connection not found"
             )
+    if "mailbox_id" in updates and "sender_mode" not in updates:
+        # Same reasoning as on create: setting a mailbox means pinning to it,
+        # clearing it means going back to the pool.
+        updates["sender_mode"] = "fixed" if updates["mailbox_id"] else "rotate"
+    if updates.get("sender_mode") == "fixed" and not (
+        updates.get("mailbox_id") or sequence.mailbox_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sender_mode 'fixed' needs a mailbox_id to pin to",
+        )
     for attr, value in updates.items():
         setattr(sequence, attr, value)
     db.flush()
@@ -261,9 +285,10 @@ def clone_sequence(
         stop_on_reply=source.stop_on_reply,
         from_email=source.from_email,
         from_name=source.from_name,
-        # Without this the copy falls back to the server default sender, so a
-        # cloned sequence would quietly send from a different address than the
-        # one it was cloned from.
+        # Without these the copy falls back to the pool, so a cloned sequence
+        # would quietly send from a different address than the one it was
+        # cloned from.
+        sender_mode=source.sender_mode,
         mailbox_id=source.mailbox_id,
     )
     db.add(copy)

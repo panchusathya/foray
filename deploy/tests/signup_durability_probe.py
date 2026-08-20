@@ -44,6 +44,13 @@ PASSWORD = "probe-password-9182"
 EMAIL_DOMAIN = "e2e.example.com"
 
 
+def _redact(body: object) -> object:
+    """Keep bearer tokens out of the CI log."""
+    if isinstance(body, dict) and "access_token" in body:
+        return {**body, "access_token": "<redacted>"}
+    return body
+
+
 def post(base: str, path: str, payload: dict, token: str | None = None) -> tuple[int, object]:
     headers = {"Content-Type": "application/json"}
     if token:
@@ -85,9 +92,12 @@ def main() -> int:
             {"org_name": f"Probe {i}", "email": email, "password": PASSWORD},
         )
         token = body.get("access_token") if isinstance(body, dict) else None
-        if status != 200 or not token:
+        # 2xx, not == 200: signup answers 201 Created. Checking for 200 made the
+        # first run count all 40 successful signups as failures and measure
+        # nothing -- which is what the "inconclusive" guard below caught.
+        if not (200 <= status < 300) or not token:
             counts["signup_failed"] += 1
-            print(f"[{i:>3}] signup -> {status} {body}", flush=True)
+            print(f"[{i:>3}] signup -> {status} {_redact(body)}", flush=True)
             continue
 
         # No pause: this is exactly what the e2e helpers do.

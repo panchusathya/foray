@@ -60,7 +60,14 @@ EMAILS_LATERAL = """
             select jsonb_agg(jsonb_build_object(
                      'email', e.email, 'source', e.source, 'is_work', e.is_work,
                      'confidence', e.confidence, 'verified', e.verified)
-                   order by e.is_work desc, e.confidence desc, e.first_seen_at) as emails
+                   -- Personal first, deliberately. The consumer of emails[0]
+                   -- is outreach: forayImport flattens this list in order, the
+                   -- main app's Candidate.primary_email is emails[0], and
+                   -- send_step sends there. A recruiting pitch must not land in
+                   -- somebody's work inbox, so a work address is the fallback,
+                   -- never the default. Confidence still orders within each
+                   -- group.
+                   order by e.is_work asc, e.confidence desc, e.first_seen_at) as emails
             from candidate_emails e
             where e.candidate_id = c.id and e.source <> 'guess'
         ) em on true

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..llm.client import LLMUnavailable
 from ..models import (
@@ -21,7 +22,8 @@ from ..models import (
 )
 from ..outreach import templates
 from ..outreach.drafts import draft_sequence
-from ..outreach.personalize import personalize
+from ..outreach.personalize import personalize, sender_context
+from ..outreach.sender import preview_connection
 from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
@@ -29,6 +31,7 @@ from ..outreach.sequencer import (
     process_enrollment,
     record_reply,
     run_due,
+    suggested_date_context,
 )
 from ..schemas import (
     EnrollmentOut,
@@ -372,6 +375,17 @@ def preview(
         # marker so the recruiter sees where AI text will go once a model is
         # available. Sending still fails closed — this leniency is preview-only.
         context = personalize(candidate, None, use_llm=False)
+        # Rebuilt from scratch, so re-add the sender and date variables or the
+        # fallback preview signs off with nothing.
+        context = {
+            **context,
+            **sender_context(
+                preview_connection(db, sequence, enrollment),
+                sequence,
+                fallback_name=get_settings().outreach_from_name,
+            ),
+            **suggested_date_context(db, enrollment=enrollment, step=step, now=utcnow()),
+        }
         subject = templates.render(
             templates.mark_directives(step.subject_template or ""), context
         ).strip()
@@ -379,11 +393,16 @@ def preview(
             templates.mark_directives(step.body_template or ""), context
         ).strip()
         ai_status = "unavailable"
+    # The context carries whichever mailbox preview_step rendered as, so the
+    # response can name it rather than leaving the recruiter to trust that the
+    # signature in front of them is the one the candidate will get.
     return PreviewResponse(
         subject=subject,
         body=templates.sanitize_preview(body),
         personalization=context,
         ai_status=ai_status,
+        sender_email=context.get("sender_email", ""),
+        sender_name=context.get("sender_name", ""),
     )
 
 

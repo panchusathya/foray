@@ -29,7 +29,7 @@ from . import templates
 from .ai_directives import resolve_directives
 from .personalize import personalize, sender_context
 from .replies import ReplyVerdict, classify_reply
-from .sender import OutboundEmail, resolve_sender
+from .sender import OutboundEmail, preview_connection, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
 
 logger = logging.getLogger(__name__)
@@ -299,8 +299,17 @@ def preview_step(
     if not steps:
         raise ValueError("sequence has no steps")
     step = next((s for s in steps if s.step_order == step_order), steps[0])
+    # Render as the mailbox that would actually send this, or the signature in
+    # the preview is not the signature the candidate gets -- which is the whole
+    # point of previewing.
+    connection = preview_connection(db, sequence, enrollment)
     subject, body, context, _ = build_message_content(
-        db, sequence=sequence, step=step, candidate=candidate, enrollment=enrollment
+        db,
+        sequence=sequence,
+        step=step,
+        candidate=candidate,
+        enrollment=enrollment,
+        connection=connection,
     )
     return subject, body, context
 

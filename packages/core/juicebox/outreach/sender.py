@@ -261,6 +261,46 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)
 
 
+def preview_connection(db, sequence, enrollment=None, *, now=None):
+    """Which mailbox a preview should render as, or None for the global provider.
+
+    Deliberately not ``resolve_sender``. That function answers "can this send go
+    out right now", so it returns no connection when every mailbox is at its cap
+    -- and a preview that fell back to the configured default would then show
+    the wrong signature precisely when the pool was busy. A cap decides *when* a
+    send happens, not *who* it comes from.
+
+    It also ignores status: a preview of a sequence pinned to a revoked mailbox
+    should still say which mailbox, because that is the fact the recruiter needs
+    to see in order to fix it.
+    """
+    from ..models import MailboxConnection, utcnow
+    from .rotation import active_mailboxes, pick_mailbox
+
+    now = now or utcnow()
+
+    def _owned(mailbox_id):
+        connection = db.get(MailboxConnection, mailbox_id) if mailbox_id else None
+        if connection is not None and connection.org_id == sequence.org_id:
+            return connection
+        return None
+
+    pinned = _owned(getattr(enrollment, "mailbox_id", None))
+    if pinned is not None:
+        return pinned
+    if getattr(sequence, "sender_mode", "rotate") == "fixed":
+        return _owned(sequence.mailbox_id)
+
+    # Rotating: show whoever would send if this went out now. Falling back to
+    # any live mailbox when all are capped keeps the preview truthful about the
+    # kind of signature the candidate will see.
+    chosen = pick_mailbox(db, org_id=sequence.org_id, now=now)
+    if chosen is not None:
+        return chosen
+    live = active_mailboxes(db, org_id=sequence.org_id)
+    return live[0] if live else None
+
+
 def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender:
     """Pick the mailbox for the next send on this sequence.
 

@@ -169,6 +169,11 @@ async def resolve_and_store(
             await fetcher.aclose()
 
     if url:
+        # linkedin_url only -- never linkedin_slug. The slug unique index is the
+        # LinkedIn-only row's identity; writing it here would collide with the
+        # person we are about to merge with. resolve.py joins on
+        # lower(g.linkedin_url) like '%/in/' || l.linkedin_slug, then
+        # apply_merge copies the slug onto the winner.
         await conn.execute(
             "update candidates set linkedin_url = $1, linkedin_source = $2, "
             "linkedin_checked_at = now() where id = $3",

@@ -38,6 +38,24 @@ FOLLOWER_BUCKETS = ["10..24", "25..49", "50..99", "100..249", "250..999", ">=100
 
 YEARS = list(range(2012, 2023))  # 2012..2022 inclusive (11 years)
 
+# Engineer-weighted subset: languages the archetypes actually score, more
+# recent accounts, and follower floors that correlate with public git history.
+# The full grid stays the default; `--engineer-weighted` is how nightly
+# harvest grows the pool that Phase 1/3 can mine.
+ENGINEER_LANGUAGES = [
+    "python",
+    "go",
+    "rust",
+    "typescript",
+    "javascript",
+    "java",
+    "kotlin",
+    "cpp",
+]
+ENGINEER_FOLLOWER_BUCKETS = ["25..49", "50..99", "100..249", "250..999", ">=1000"]
+ENGINEER_YEARS = list(range(2015, 2023))
+
+
 
 def load_metros() -> list[str]:
     path = settings.data_dir / "metros.txt"
@@ -59,13 +77,23 @@ def compose_query(location: str, language: str, followers: str, created_range: s
     )
 
 
-def generate_shards() -> list[tuple[str, str, str, str, str]]:
+def generate_shards(
+    *,
+    languages: list[str] | None = None,
+    follower_buckets: list[str] | None = None,
+    years: list[int] | None = None,
+    locations: list[str] | None = None,
+) -> list[tuple[str, str, str, str, str]]:
     """Return (location, language, followers, created_range, query) tuples."""
+    langs = languages if languages is not None else LANGUAGES
+    buckets = follower_buckets if follower_buckets is not None else FOLLOWER_BUCKETS
+    year_list = years if years is not None else YEARS
+    metros = locations if locations is not None else load_metros()
     shards: list[tuple[str, str, str, str, str]] = []
-    for loc in load_metros():
-        for lang in LANGUAGES:
-            for followers in FOLLOWER_BUCKETS:
-                for year in YEARS:
+    for loc in metros:
+        for lang in langs:
+            for followers in buckets:
+                for year in year_list:
                     created_range = created_range_for_year(year)
                     shards.append(
                         (
@@ -92,7 +120,14 @@ async def _insert(shards: list[tuple[str, str, str, str, str]]) -> int:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    shards = generate_shards()
+    if args.engineer_weighted:
+        shards = generate_shards(
+            languages=ENGINEER_LANGUAGES,
+            follower_buckets=ENGINEER_FOLLOWER_BUCKETS,
+            years=ENGINEER_YEARS,
+        )
+    else:
+        shards = generate_shards()
     if args.dry_run:
         preview = shards[: args.limit] if args.limit else shards[:20]
         for shard in preview:
@@ -110,6 +145,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Generate the GitHub harvest shard grid.")
     ap.add_argument("--dry-run", action="store_true", help="print query strings, write nothing")
     ap.add_argument("--limit", type=int, default=0, help="dry-run: how many queries to print")
+    ap.add_argument(
+        "--engineer-weighted",
+        action="store_true",
+        help="restrict to archetype languages, 2015+, followers 25+ (smaller grid)",
+    )
     return asyncio.run(amain(ap.parse_args()))
 
 

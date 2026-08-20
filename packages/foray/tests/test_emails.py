@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from foray.enrich.apollo import _usable
-from foray.enrich.emails import extract_own_commit_emails
+from foray.enrich.emails import extract_own_commit_emails, is_usable_commit_email
 from foray.enrich.employer import domain_of, freemail_domains, is_work_domain
 
 
@@ -44,3 +44,11 @@ def test_is_work_domain_uses_freemail_list():
     assert not is_work_domain("someone@gmail.com")
     assert is_work_domain("someone@stripe.com")
     assert not is_work_domain("garbage")
+
+
+def test_usable_commit_email_keeps_incident_addresses():
+    assert is_usable_commit_email("mail@danijar.com")
+    assert is_usable_commit_email("email@jamie.sh")
+    assert is_usable_commit_email("mail@taeuk.me")
+    assert not is_usable_commit_email("123+ada@users.noreply.github.com")
+    assert not is_usable_commit_email("dependabot@example.com")

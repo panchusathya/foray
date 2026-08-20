@@ -11,6 +11,9 @@ from foray.harvest.search import (
     split_range,
 )
 from foray.harvest.shards import (
+    ENGINEER_FOLLOWER_BUCKETS,
+    ENGINEER_LANGUAGES,
+    ENGINEER_YEARS,
     FOLLOWER_BUCKETS,
     LANGUAGES,
     YEARS,
@@ -37,6 +40,24 @@ def test_shard_grid_is_31680():
     # unique on the 4 dimensions
     keys = {(loc, lang, fb, cr) for (loc, lang, fb, cr, _q) in shards}
     assert len(keys) == len(shards)
+
+
+def test_engineer_weighted_grid_is_a_strict_subset():
+    full = generate_shards()
+    weighted = generate_shards(
+        languages=ENGINEER_LANGUAGES,
+        follower_buckets=ENGINEER_FOLLOWER_BUCKETS,
+        years=ENGINEER_YEARS,
+    )
+    assert len(weighted) == (
+        40 * len(ENGINEER_LANGUAGES) * len(ENGINEER_FOLLOWER_BUCKETS) * len(ENGINEER_YEARS)
+    )
+    assert len(weighted) < len(full)
+    assert set(ENGINEER_LANGUAGES) <= set(LANGUAGES)
+    assert set(ENGINEER_FOLLOWER_BUCKETS) <= set(FOLLOWER_BUCKETS)
+    assert set(ENGINEER_YEARS) <= set(YEARS)
+    # No 10..24 bucket: those shards dominate harvest time for little email yield.
+    assert all("followers:10..24" not in q for *_rest, q in weighted)
 
 
 def test_compose_query_shape():

@@ -179,6 +179,10 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
+    # Send-floor copied from Foray. 0 disables it (the default until the
+    # measured reach_score distribution is known). Unscored addresses are
+    # never blocked; only a stored score below the floor is.
+    min_reach_score: int = field(default_factory=lambda: _env_int("FORAY_MIN_REACH_SCORE", 0))
 
     # --- integrations: Microsoft Graph (Outlook) ---------------------------
     # Azure app registration (single-tenant). Empty client id = not configured;

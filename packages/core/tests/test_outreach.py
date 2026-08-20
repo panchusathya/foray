@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,7 @@ from juicebox.outreach import templates
 from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
 from juicebox.outreach.sequencer import (
+    _sendable_address,
     enroll_candidates,
     find_message_for_reply,
     preview_step,
@@ -488,6 +490,67 @@ class TestSequenceRun:
         assert enrollment.status == "stopped"
         assert enrollment.stopped_reason == "missing_email"
 
+    def test_a_low_reach_score_stops_the_send(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        monkeypatch.setenv("FORAY_MIN_REACH_SCORE", "40")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        ada.emails = ["ada@example.com"]
+        ada.raw = {"foray": {"email_reach": {"ada@example.com": 5}}}
+        session.commit()
+        enroll_candidates(
+            session, sequence=outreach_fixture["sequence"], candidate_ids=[ada.id]
+        )
+        session.commit()
+        summary = run_due(session, org_id=outreach_fixture["sequence"].org_id)
+        session.commit()
+        assert summary.failed == 1 and not mailbox.outbox
+        enrollment = session.query(Enrollment).filter_by(candidate_id=ada.id).one()
+        assert enrollment.status == "stopped"
+        assert enrollment.stopped_reason == "reach_score_below_floor"
+
+    def test_the_floor_skips_to_the_next_address(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        monkeypatch.setenv("FORAY_MIN_REACH_SCORE", "40")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        ada.emails = ["low@gmail.com", "ada@example.com"]
+        ada.raw = {
+            "foray": {"email_reach": {"low@gmail.com": 5, "ada@example.com": 80}}
+        }
+        session.commit()
+        enroll_candidates(
+            session, sequence=outreach_fixture["sequence"], candidate_ids=[ada.id]
+        )
+        session.commit()
+        run_due(session, org_id=outreach_fixture["sequence"].org_id)
+        session.commit()
+        assert mailbox.outbox[0].to == "ada@example.com"
+
+    def test_an_unscored_address_is_not_blocked_by_the_floor(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        monkeypatch.setenv("FORAY_MIN_REACH_SCORE", "40")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        ada.raw = {}
+        session.commit()
+        enroll_candidates(
+            session, sequence=outreach_fixture["sequence"], candidate_ids=[ada.id]
+        )
+        session.commit()
+        run_due(session, org_id=outreach_fixture["sequence"].org_id)
+        session.commit()
+        assert mailbox.outbox
+
     def test_enrolment_is_idempotent(self, session, outreach_fixture):
         sequence = outreach_fixture["sequence"]
         candidate_id = outreach_fixture["candidates"][0].id
@@ -736,3 +799,34 @@ class TestTracking:
         assert client.get(f"/t/o/{message.id}.png?k=forged").status_code == 200
         session.expire_all()
         assert session.get(Message, message.id).opened_at is None
+
+
+class TestSendableAddress:
+    def test_unscored_passes_the_floor(self):
+        cand = SimpleNamespace(emails=["ada@gmail.com"], raw={})
+        addr, err = _sendable_address(cand, 40)
+        assert addr == "ada@gmail.com" and err is None
+
+    def test_below_floor_is_blocked(self):
+        cand = SimpleNamespace(
+            emails=["ada@gmail.com"],
+            raw={"foray": {"email_reach": {"ada@gmail.com": 5}}},
+        )
+        addr, err = _sendable_address(cand, 40)
+        assert addr == "" and err == "reach_score_below_floor"
+
+    def test_floor_zero_disables_the_gate(self):
+        cand = SimpleNamespace(
+            emails=["ada@gmail.com"],
+            raw={"foray": {"email_reach": {"ada@gmail.com": 0}}},
+        )
+        addr, err = _sendable_address(cand, 0)
+        assert addr == "ada@gmail.com" and err is None
+
+    def test_skips_low_then_picks_the_next(self):
+        cand = SimpleNamespace(
+            emails=["low@gmail.com", "ok@gmail.com"],
+            raw={"foray": {"email_reach": {"low@gmail.com": 5, "ok@gmail.com": 80}}},
+        )
+        addr, err = _sendable_address(cand, 40)
+        assert addr == "ok@gmail.com" and err is None

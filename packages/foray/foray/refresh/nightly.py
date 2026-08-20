@@ -43,6 +43,19 @@ def _phases() -> list[Phase]:
         Phase("derive", ["foray.enrich.derive", "--stale-only"], 20, "derived"),
         Phase("embed", ["foray.embed.run"], 40, "embedded"),
         Phase("emails", ["foray.enrich.emails", "--source", "commit", "--limit", str(settings.nightly_enrich)], 45, "with_email"),
+        # Search-API jobs share the 30/min bucket with harvest. They run
+        # sequentially after it, never concurrently: commit_search then
+        # name_bridge. Own-repo mining above uses the core REST bucket, so
+        # it does not contend.
+        Phase("commit_search", ["foray.enrich.commit_search", "--limit", str(settings.nightly_enrich)], 30, "with_email"),
+        # Existing bulk waterfall (gated, above-floor). Resolves LinkedIn
+        # URLs onto GitHub rows so resolve.py --tier linkedin_url can join.
+        Phase("linkedin", ["foray.enrich.linkedin_bulk", "--limit", str(settings.nightly_enrich)], 20, "with_linkedin"),
+        Phase("name_bridge", ["foray.enrich.name_bridge", "--limit", str(settings.nightly_enrich)], 30, "candidates"),
+        Phase("verify", ["foray.enrich.verify", "--limit", str(settings.nightly_enrich)], 15, "with_email"),
+        # Dry-run only: new auto-apply pairs surface in the night's log.
+        # Applying a merge is a human decision (`--tier … --apply`).
+        Phase("resolve", ["foray.ingest.resolve", "--scan"], 5, "candidates"),
         # NOT --stale-only: that clause requires an existing score row, so new
         # candidates would never be scored. The default rubric_hash-mismatch
         # predicate covers both new (null hash) and stale rows.

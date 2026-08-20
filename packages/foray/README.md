@@ -60,8 +60,15 @@ only harmless because nothing calls it.
 
 ```bash
 uv run python -m foray.harvest.shards            # generate the shard grid
+uv run python -m foray.harvest.shards --engineer-weighted  # archetype languages, 2015+, followers 25+
 uv run python -m foray.harvest.search --limit N  # harvest logins
 uv run python -m foray.enrich.profiles           # GraphQL profile+repo fetch
+uv run python -m foray.enrich.emails --source commit
+uv run python -m foray.enrich.commit_search      # whole-graph commit emails (Search API)
+uv run python -m foray.enrich.linkedin_bulk      # free LinkedIn URL waterfall on GitHub rows
+uv run python -m foray.ingest.resolve --scan     # dry-run LinkedIn↔GitHub pair counts
+uv run python -m foray.enrich.name_bridge        # queue review-only name merges (mints GitHub rows)
+uv run python -m foray.enrich.verify             # Gravatar + reach_score
 uv run python -m foray.enrich.derive             # recompute signals (no API calls)
 uv run python -m foray.embed.run                 # local bge-small embeddings
 uv run python -m foray.score.gate --archetype X --count

@@ -59,7 +59,8 @@ EMAILS_LATERAL = """
         left join lateral (
             select jsonb_agg(jsonb_build_object(
                      'email', e.email, 'source', e.source, 'is_work', e.is_work,
-                     'confidence', e.confidence, 'verified', e.verified)
+                     'confidence', e.confidence, 'verified', e.verified,
+                     'reach_score', e.reach_score)
                    -- Personal first, deliberately. The consumer of emails[0]
                    -- is outreach: forayImport flattens this list in order, the
                    -- main app's Candidate.primary_email is emails[0], and

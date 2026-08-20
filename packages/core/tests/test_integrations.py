@@ -279,12 +279,13 @@ class TestTokenRefresh:
 
 
 class FakeGraphClient:
-    def __init__(self, *, reply_fails: bool = False):
+    def __init__(self, *, reply_fails: bool = False, patch_fails: bool = False):
         self.drafts: list[dict] = []
         self.sent_ids: list[str] = []
         self.replied_to: list[str] = []
         self.patches: list[tuple[str, dict]] = []
         self.reply_fails = reply_fails
+        self.patch_fails = patch_fails
 
     def create_draft(self, message):
         self.drafts.append(message)
@@ -308,6 +309,8 @@ class FakeGraphClient:
         }
 
     def update_draft(self, message_id, patch):
+        if self.patch_fails:
+            raise microsoft.MicrosoftError("ErrorInvalidPropertySet", status_code=400)
         self.patches.append((message_id, patch))
         return {"id": message_id, "conversationId": "conv-parent"}
 
@@ -417,6 +420,18 @@ class TestGraphThreading:
 
         assert result.ok
         assert len(fake.drafts) == 1
+        assert fake.sent_ids == ["graph-1"]
+
+    def test_a_refused_reply_draft_still_sends(self, session, account):
+        """The fallback covers the PATCH too: five failed attempts would park
+        the send job and lose the step."""
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient(patch_fails=True)
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        result = sender.send(self._email(thread_native_id="graph-parent"))
+
+        assert result.ok
         assert fake.sent_ids == ["graph-1"]
 
     def test_a_first_send_is_a_plain_draft(self, session, account):

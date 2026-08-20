@@ -372,34 +372,35 @@ class GraphSender:
         ]
 
         if email.thread_native_id:
+            patch = {
+                # createReply addresses the reply to the parent's From, which
+                # on a message we sent is this mailbox. Left alone, the
+                # follow-up would go to ourselves.
+                "toRecipients": recipients,
+                "subject": email.subject,
+                # Replaces Graph's quoted original rather than appending to it:
+                # the quote carries the previous step's tracking pixel, so
+                # every open of the follow-up would also count as an open of
+                # the email before it.
+                "body": body,
+            }
+            if headers:
+                patch["internetMessageHeaders"] = headers
             try:
                 reply = self.client.create_reply_draft(email.thread_native_id, "")
+                updated = self.client.update_draft(reply["id"], patch) or {}
             except (MicrosoftError, ValueError) as exc:
-                # The parent is gone: deleted, or moved out of this mailbox. An
-                # unthreaded send is worse than a threaded one and much better
-                # than a step that never goes out.
+                # Either the parent is gone (deleted, moved out of this
+                # mailbox) or Graph refused the draft. Covers both calls on
+                # purpose: an unthreaded send is worse than a threaded one and
+                # much better than a step that fails five times and parks.
                 logger.warning(
-                    "graph createReply on %s failed for %s, sending unthreaded: %s",
+                    "graph reply on %s failed for %s, sending unthreaded: %s",
                     email.thread_native_id,
                     self.connection.address,
                     exc,
                 )
             else:
-                patch = {
-                    # createReply addresses the reply to the parent's From,
-                    # which on a message we sent is this mailbox. Left alone,
-                    # the follow-up would go to ourselves.
-                    "toRecipients": recipients,
-                    "subject": email.subject,
-                    # Replaces Graph's quoted original rather than appending to
-                    # it: the quote carries the previous step's tracking pixel,
-                    # so every open of the follow-up would also count as an
-                    # open of the email before it.
-                    "body": body,
-                }
-                if headers:
-                    patch["internetMessageHeaders"] = headers
-                updated = self.client.update_draft(reply["id"], patch) or {}
                 # PATCH returns the message, but fall back to the createReply
                 # response for anything it leaves out -- the id has to be there.
                 return {**reply, **updated}

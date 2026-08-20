@@ -91,7 +91,12 @@ def build_linkedin_blob(
         company = (entry.get("company") or "").strip()
         if not role_title and not company:
             continue
-        span = " - ".join(
+        # U+2013 EN DASH, spelled as an escape on purpose. This string is
+        # embedded document text, not source prose: embed/run.py re-embeds any
+        # row whose stored blob no longer matches, so swapping the character
+        # for a hyphen would silently re-embed every LinkedIn candidate with a
+        # dated role. The escape keeps a lint autofix from doing that quietly.
+        span = " \u2013 ".join(
             part for part in ((entry.get("start_date") or "").strip(), (entry.get("end_date") or "").strip())
             if part
         )

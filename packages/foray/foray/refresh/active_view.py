@@ -21,8 +21,14 @@ async def amain(args: argparse.Namespace) -> int:
             return 0
         try:
             await conn.execute("refresh materialized view concurrently active_candidates")
-        except asyncpg.ObjectNotInPrerequisiteStateError:
-            # CONCURRENTLY needs a prior populated state; fall back on first run.
+        except (
+            # Not yet populated (55000) -- the first-run case.
+            asyncpg.ObjectNotInPrerequisiteStateError,
+            # No unique index on the matview (0A000). Migrations 002 and 005
+            # create one, so this only fires on a partially migrated database,
+            # which is exactly when the non-concurrent fallback should save us.
+            asyncpg.FeatureNotSupportedError,
+        ):
             await conn.execute("refresh materialized view active_candidates")
         run.rows = await conn.fetchval("select count(*) from active_candidates")
         print(f"active_candidates refreshed: {run.rows} rows")

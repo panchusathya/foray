@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from foray.embed.blob import build_blob
+from foray.embed.blob import build_blob, build_linkedin_blob
 
 
 def _blob(**kw):
@@ -37,6 +37,45 @@ def test_blob_is_stable_for_diffing():
 def test_blob_truncates():
     blob = _blob(bio="x" * 5000, max_chars=200)
     assert len(blob) == 200
+
+
+def _linkedin_blob(**kw):
+    base = dict(
+        record={
+            "headline": "Staff engineer",
+            "experience": [{"title": "Staff Engineer", "company": "Stripe",
+                            "start_date": "2019", "end_date": "2022"}],
+        },
+        name="Ada",
+        login="li:ada",
+        title=None,
+        employer="Stripe",
+    )
+    base.update(kw)
+    return build_linkedin_blob(**base)
+
+
+def test_linkedin_blob_role_span_separator_is_pinned():
+    """This string IS the embedded document text.
+
+    embed/run.py re-embeds any row whose stored blob no longer matches, so
+    changing this separator silently re-embeds every LinkedIn candidate with a
+    dated role. Pinned so a lint autofix or a stray edit cannot do that quietly.
+    """
+    assert "(2019 \u2013 2022)" in _linkedin_blob()
+
+
+def test_linkedin_blob_is_stable_for_diffing():
+    assert _linkedin_blob() == _linkedin_blob()
+
+
+def test_linkedin_blob_handles_a_missing_end_date():
+    blob = _linkedin_blob(
+        record={"experience": [{"title": "Staff Engineer", "company": "Stripe",
+                                "start_date": "2019"}]}
+    )
+    assert "(2019)" in blob
+    assert "\u2013" not in blob
 
 
 def test_blob_handles_missing_fields():

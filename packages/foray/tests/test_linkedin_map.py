@@ -18,9 +18,11 @@ from foray.ingest.linkedin_map import (
     best_title,
     business_emails,
     current_role_start,
+    employer_of,
     experience_years,
     flatten_experience,
     is_target_geo,
+    looks_like_company,
     parse_month,
     pseudo_repos,
     slug_of,
@@ -152,6 +154,69 @@ class TestTitles:
         roles = flatten_experience(row)
         assert roles[0].title == "Vice President, Senior Business Analyst"
         assert roles[0].company == "Bank of the West"
+
+
+class TestCompanyPages:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Infrastructure United Inc. (IU)",  # real export offender: suffix + initialism
+            "Smith & Wesson Holdings",  # suffix, and 3+ words around an ampersand
+            "Acme Solutions LLC",
+            "Quantum Labs",
+            "Northgate Group",
+            "Banco Santander S.A.",  # trailing corporate S.A.
+            # A sole trader IS a company page; catching her via "ltd" is the
+            # accepted trade-off documented on _COMPANY_SUFFIXES.
+            "Mary-Jane O'Brien Ltd",
+        ],
+    )
+    def test_org_shaped_names_are_companies(self, name):
+        assert looks_like_company(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Diksha Thapa",
+            "Savannah Bryant",
+            "Jose Co",  # bare "co" is a surname; only dotted "Co." is corporate
+            "Tom & Jerry",  # duo-name: "&" with only two real words stays a person
+            "S.A. Khan",  # leading initials: "s.a" only matches at name end
+        ],
+    )
+    def test_real_people_pass(self, name):
+        assert looks_like_company(name) is False
+
+    def test_empty_input_is_not_a_company(self):
+        assert looks_like_company("") is False
+        assert looks_like_company("   ") is False
+
+    def test_company_named_record_is_unusable(self):
+        assert to_import_row(record(name="Infrastructure United Inc. (IU)")) is None
+
+    def test_person_named_record_still_maps(self):
+        assert to_import_row(record()).name == "Jane Doe"
+
+
+class TestEmployers:
+    def test_confidential_placeholder_is_dropped(self):
+        row = record(
+            current_company={"company_id": "x", "name": "Confidential Company"},
+            current_company_name="Confidential Company",
+        )
+        assert employer_of(row) is None
+
+    def test_stealth_is_a_real_employer(self):
+        # Stealth is signal, not junk: a founding-engineer search wants it.
+        row = record(
+            current_company={"company_id": "x", "name": "Stealth Startup"},
+            current_company_name="Stealth Startup",
+        )
+        assert employer_of(row) == "Stealth Startup"
+
+    def test_punctuation_junk_is_dropped(self):
+        row = record(current_company={}, current_company_name="--")
+        assert employer_of(row) is None
 
 
 class TestGeo:

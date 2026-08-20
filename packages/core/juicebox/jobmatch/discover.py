@@ -20,7 +20,7 @@ from ..llm.prompts import (
 )
 from ..models import JobPosting
 from ..schemas import DiscoveredPosting, DiscoverStep, DiscoverTurnOut
-from .exa import ExaUnavailable, get_exa
+from .exa import ExaRequestFailed, ExaUnavailable, get_exa
 from .ids import source_id_for
 
 logger = logging.getLogger(__name__)
@@ -221,9 +221,24 @@ def discover_turn(
 
     steps: list[DiscoverStep] = []
     raw_hits: list[dict[str, Any]] = []
+    # De-duplicated: the planner can propose the same query twice, and each one
+    # is a billed search.
+    planned: list[str] = []
+    for query in plan.queries:
+        if query and query not in planned:
+            planned.append(query)
     try:
-        for query in plan.queries[:MAX_QUERIES]:
-            hits = client.search_job_postings(query, num_results=num_results)
+        for query in planned[:MAX_QUERIES]:
+            # Per-query, so one bad response does not discard the hits the
+            # earlier queries were already billed for.
+            try:
+                hits = client.search_job_postings(query, num_results=num_results)
+            except ExaRequestFailed as exc:
+                logger.warning("exa discover search failed for %r: %s", query, exc)
+                steps.append(
+                    DiscoverStep(label=query, detail="Exa search failed", count=0)
+                )
+                continue
             steps.append(
                 DiscoverStep(label=query, detail="Exa search", count=len(hits))
             )

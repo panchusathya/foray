@@ -352,7 +352,7 @@ def promote(
     history; if promoting them were a no-op, that offer would be a lie and
     ``crm_tracked`` would never be set, so the import would find nothing.
     """
-    from ..crm import track
+    from ..crm import set_crm_status, track
     from ..repository import owner_of_email, upsert_candidates
 
     now = now or utcnow()
@@ -391,7 +391,10 @@ def promote(
     # guard would keep discarding their mail.
     track(candidate)
     if crm_status:
-        candidate.crm_status = crm_status
+        # Through set_crm_status, not a raw assignment: do_not_contact has to
+        # write the Suppression rows that send_step actually checks, or
+        # promoting someone straight onto the list leaves them mailable.
+        set_crm_status(db, candidate, crm_status)
 
     row.status = "promoted"
     row.candidate_id = candidate_id

@@ -12,6 +12,7 @@ app registration, so they are treated as fixed API surface.
 
 from __future__ import annotations
 
+import html
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -148,11 +149,29 @@ def start_connect(
 
 
 def _callback_page(title: str, body: str) -> HTMLResponse:
+    """Render the post-consent page.
+
+    Both halves are escaped: ``body`` carries provider text that arrives on the
+    query string of an endpoint no login guards (the ``error`` branch answers
+    before ``state`` is ever checked), and nginx proxies this API from the same
+    origin that serves the app and holds its token in ``localStorage``. Raw
+    interpolation here is a session-stealing injection, not a cosmetic bug.
+    """
     return HTMLResponse(
         "<!doctype html><html><body style='font-family:system-ui;background:#080D0B;"
         "color:#EAF0EC;display:grid;place-items:center;height:100vh;margin:0'>"
-        f"<div style='text-align:center'><h2>{title}</h2><p>{body}</p></div>"
-        "</body></html>"
+        f"<div style='text-align:center'><h2>{html.escape(title)}</h2>"
+        f"<p>{html.escape(body)}</p></div>"
+        "</body></html>",
+        headers={
+            # Nothing on this page needs script or an external fetch.
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'none'"
+            ),
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        },
     )
 
 

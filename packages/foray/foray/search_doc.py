@@ -88,40 +88,95 @@ update candidate_signals s
 
 # Function words and recruiter-generic tokens that match nearly every document
 # in this corpus. Years/counts are already structured filters.
+#
+# Boundary rule for what belongs here: words that describe the ROLE or the ASK
+# (recruiter framing: "founding", "shipped", "hiring", "strong background")
+# are noise; words that describe the candidate's TECHNOLOGY or domain
+# ("training", "infrastructure", "platform", "research", "data", "backend",
+# "frontend", "mobile", "security") are never noise, however often they
+# collide with unrelated titles and employer names. Motivating incident: for
+# "founding ML engineer, shipped training infrastructure", the A-weighted
+# title/employer fields (ts_rank_cd has no IDF) let a personal training
+# counselor at LA Fitness (title hits 'training') and "Infrastructure United
+# Inc." (employer name hits 'infrastructure') outrank real ML profiles whose
+# matches were C/D-weight technical terms. The fix is to strip the framing
+# words around them — 'training' and 'infrastructure' themselves stay
+# searchable because they are legitimately load-bearing in queries like
+# "ML training infrastructure"; the archetype retrieval gate handles the
+# title-collision problem for archetype queries.
 _NOISE = {
     "a",
     "an",
     "and",
     "at",
+    "background",
+    "build",
+    "building",
+    "builds",
+    "built",
     "candidate",
     "candidates",
+    "cofounder",
+    "companies",
+    "company",
+    "early",
     "engineer",
     "engineering",
     "engineers",
     "experience",
     "experienced",
+    "expert",
+    "experts",
     "for",
+    "founder",
+    "founding",
     "from",
     "has",
     "have",
+    "hire",
+    "hiring",
+    "ideally",
     "in",
     "job",
     "jobs",
+    "join",
+    "joining",
+    "lead",
+    "leading",
+    "leads",
     "looking",
+    "must",
     "of",
     "or",
     "people",
+    "plus",
+    "principal",
     "role",
     "roles",
+    "seeking",
     "senior",
+    "ship",
+    "shipped",
+    "shipping",
+    "ships",
     "someone",
     "staff",
+    "stage",
+    "startup",
+    "startups",
+    "strong",
+    "team",
+    "teams",
     "that",
     "the",
     "this",
     "to",
     "who",
     "with",
+    "work",
+    "worked",
+    "working",
+    "works",
     "year",
     "years",
 }

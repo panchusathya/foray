@@ -3,6 +3,11 @@
 #
 # theme          the seed theme that must be present on the candidate
 # terms_any      at least one of these tokens in the bio/repo description
+#
+# Rules are source-agnostic: themes come from candidate_signals.domain_markers,
+# which derive fills for GitHub and LinkedIn rows alike. Seeded distractors
+# (the "-distr"/"_distr" login suffix) are excluded in run_eval.is_relevant and
+# additionally measured by junk@10 — no rule here can mark one relevant.
 
 queries:
   - id: founding-ml-vlm
@@ -24,3 +29,10 @@ queries:
     relevant:
       theme_any: [gpu]
       terms_any: [cuda, triton, vllm]
+  # The production incident, verbatim shape: "shipped" + "training" +
+  # "infrastructure" are lexical bait for the logistics / PM / trainer
+  # distractors; only actual ml/gpu people count as relevant.
+  - id: founding-ml-infra
+    query: founding ML engineer, shipped training infrastructure, 3-8 years
+    relevant:
+      theme_any: [ml, gpu]

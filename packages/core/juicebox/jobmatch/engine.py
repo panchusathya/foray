@@ -216,13 +216,22 @@ def _upsert_match(
 
 
 def _drop_match(db: Session, posting_id: str, candidate_id: str) -> None:
+    """Withdraw a match the heuristics no longer stand behind.
+
+    Only ``new`` rows are deleted. A shortlist or a dismissal is a human
+    decision with a reason attached, and the incumbency check that calls this
+    reads mutable enrichment data -- a refreshed ``current_company``, or a
+    corrected company on the posting, would otherwise silently erase that
+    decision and let the pair come back as new on the next sweep. Same rule as
+    ``_score_pair`` above.
+    """
     row = db.scalar(
         select(JobMatch).where(
             JobMatch.job_posting_id == posting_id,
             JobMatch.candidate_id == candidate_id,
         )
     )
-    if row is not None:
+    if row is not None and row.status == "new":
         db.delete(row)
 
 

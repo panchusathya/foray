@@ -42,6 +42,31 @@ def test_build_filters_placeholder_numbering():
     assert where.index("$1") < where.index("$2") < where.index("$3")
 
 
+def test_filter_clauses_append_the_archetype_gate():
+    """Retrieval is gated on the archetype's full gate SQL: without it, any
+    metro/experience match is retrievable for an ML search (the LA Fitness
+    trainer bug). The gate is repo-controlled literal SQL, never a bind param."""
+    from foray.score.archetypes import load_archetypes
+
+    arch = load_archetypes()["founding_ml"]
+    params = Params()
+    where = _filter_clauses(ParsedFilter(), params, gate_sql=arch.gate)
+    assert f"({arch.gate})" in where
+    assert params.values == []  # the gate consumes no placeholders
+    assert "domain_markers @> array['ml']" in where
+
+
+def test_gate_does_not_disturb_placeholder_numbering():
+    parsed = ParsedFilter(metros=["SF"], languages=["go"], experience_min=5)
+    gated = Params()
+    where = _filter_clauses(parsed, gated, gate_sql="s.est_experience_years >= 2")
+    ungated = Params()
+    _filter_clauses(parsed, ungated)
+    assert gated.values == ungated.values
+    assert "$1" in where and "$2" in where and "$3" in where
+    assert "$4" not in where
+
+
 def test_frontend_never_renders_score():
     html = (Path(__file__).resolve().parent.parent / "foray/api/static/index.html").read_text()
     # The numeric score is kept in the payload but must never be rendered.
@@ -161,13 +186,20 @@ async def test_pagination_is_stable_and_uses_absolute_ranks(monkeypatch):
             vector,
         )
         candidate_ids = [int(row["id"]) for row in candidate_rows]
+        # Retrieval now ANDs the archetype gate into every arm. These fixture
+        # rows take senior_backend's non-github branch (evidence_kind <>
+        # 'github' and a backend-ish title): the github branch would demand a
+        # compiled primary_language plus non-fork repos, and the query needs
+        # 'haskell' to keep matching. The title also gives the linkedin
+        # evidence template a second substantive phrase (title + stated
+        # experience) so evidence_count clears min_evidence=2.
         await conn.execute(
             """
             insert into candidate_signals (
                 candidate_id, primary_language, est_experience_years,
-                activity_at, last_push_at
+                activity_at, last_push_at, evidence_kind, title
             )
-            select id, 'haskell', 47, now(), now()
+            select id, 'haskell', 47, now(), now(), 'linkedin', 'Backend Engineer'
             from unnest($1::bigint[]) id
             """,
             candidate_ids,
@@ -242,13 +274,18 @@ async def test_lexical_arm_finds_a_term_the_vector_arm_misses(monkeypatch):
             prefix + "decoy",
             decoy_vec,
         )
+        # min_evidence now counts substantive phrases, not rendered sentences:
+        # without topics these thin fixture rows would carry one real phrase
+        # plus the "no scale evidence" pad and be vetoed before paging. The
+        # 'ml' marker + 6y keep them inside founding_ml's retrieval gate.
         await conn.execute(
             """
             insert into candidate_signals (
                 candidate_id, primary_language, est_experience_years,
-                activity_at, last_push_at, domain_markers
+                activity_at, last_push_at, domain_markers, topics
             )
-            select $1, 'python', 6, now(), now(), array['ml']::text[]
+            select $1, 'python', 6, now(), now(), array['ml']::text[],
+                   array['vllm','inference']::text[]
             """,
             rare_id,
         )
@@ -264,9 +301,10 @@ async def test_lexical_arm_finds_a_term_the_vector_arm_misses(monkeypatch):
             """
             insert into candidate_signals (
                 candidate_id, primary_language, est_experience_years,
-                activity_at, last_push_at, domain_markers
+                activity_at, last_push_at, domain_markers, topics
             )
-            select id, 'python', 6, now(), now(), array['ml']::text[]
+            select id, 'python', 6, now(), now(), array['ml']::text[],
+                   array['web','servers']::text[]
             from unnest($1::bigint[]) id
             """,
             [int(r["id"]) for r in decoy_ids],

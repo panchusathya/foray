@@ -41,6 +41,40 @@ def test_empty_and_noise_only_return_none() -> None:
     assert build_websearch_or("senior engineer with years of experience") is None
 
 
+def test_framing_words_dropped_technical_words_survive() -> None:
+    # The LA Fitness 'training' / 'Infrastructure United Inc.' incident: the
+    # framing words (founding, shipped) are noise, but the technical words
+    # (training, infrastructure) stay load-bearing.
+    q = build_websearch_or(
+        "founding ML engineer, shipped training infrastructure, 3-8 years"
+    )
+    assert q == "ml or training or infrastructure or 3-8"
+
+
+def test_pure_framing_query_returns_none_for_vector_only() -> None:
+    # None means "run the vector arm alone", never an empty result set.
+    assert build_websearch_or("founding engineer building a team") is None
+
+
+def test_technical_domain_words_are_not_noise() -> None:
+    q = build_websearch_or(
+        "training infrastructure platform research data backend frontend mobile security"
+    )
+    assert q is not None
+    for word in (
+        "training",
+        "infrastructure",
+        "platform",
+        "research",
+        "data",
+        "backend",
+        "frontend",
+        "mobile",
+        "security",
+    ):
+        assert word in q.split(" or ")
+
+
 def test_cplusplus_is_quoted() -> None:
     q = build_websearch_or("systems engineer in c++")
     assert q is not None

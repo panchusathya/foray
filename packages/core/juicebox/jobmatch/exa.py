@@ -2,15 +2,23 @@
 
 No key → ``ExaUnavailable``. The scrape handler records a skip rather than
 failing the job, mirroring ``LLMUnavailable``.
+
+A *reachable* Exa that answers badly -- 429, 5xx, a timeout, unparseable JSON --
+raises ``ExaRequestFailed`` for the same reason: every one of these calls is
+billed, and a caller that lets the exception escape gets the job retried, which
+buys the same failure four more times. Callers record the attempt and move on.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 import httpx
 
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 EXA_SEARCH_URL = "https://api.exa.ai/search"
 EXA_CONTENTS_URL = "https://api.exa.ai/contents"
@@ -18,6 +26,10 @@ EXA_CONTENTS_URL = "https://api.exa.ai/contents"
 
 class ExaUnavailable(RuntimeError):
     """Raised when Exa is called with no usable backend."""
+
+
+class ExaRequestFailed(RuntimeError):
+    """Raised when Exa was reached but the call did not succeed."""
 
 
 class ExaTransport(Protocol):
@@ -47,21 +59,36 @@ class ExaClient:
         missing_ids = [r.get("id") for r in results if not (r.get("text") or r.get("summary"))]
         missing_ids = [i for i in missing_ids if i]
         if missing_ids:
-            contents = self._post(EXA_CONTENTS_URL, {"ids": missing_ids, "text": True})
-            by_id = {item.get("id"): item for item in contents.get("results") or []}
-            for row in results:
-                extra = by_id.get(row.get("id")) or {}
-                if extra.get("text") and not row.get("text"):
-                    row["text"] = extra["text"]
+            # Best-effort enrichment of an already-billed search. Letting this
+            # raise would throw away results we have paid for, so a failure
+            # here means some rows keep the shorter text they came with.
+            try:
+                contents = self._post(EXA_CONTENTS_URL, {"ids": missing_ids, "text": True})
+            except ExaRequestFailed as exc:
+                logger.warning("exa /contents backfill failed, keeping search text: %s", exc)
+            else:
+                by_id = {item.get("id"): item for item in contents.get("results") or []}
+                for row in results:
+                    extra = by_id.get(row.get("id")) or {}
+                    if extra.get("text") and not row.get("text"):
+                        row["text"] = extra["text"]
         return results
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if self.transport is not None:
-            return self.transport("POST", url, payload)
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
-        response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
-        response.raise_for_status()
-        return response.json()
+        # Both branches funnel through the same mapping: the transport seam
+        # exists so tests can stand in for the network, and it is only worth
+        # anything if a transport that fails fails the way the network does.
+        try:
+            if self.transport is not None:
+                return self.transport("POST", url, payload)
+            headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
+            response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as exc:
+            raise ExaRequestFailed(f"{url}: {exc}") from exc
+        except ValueError as exc:  # includes JSONDecodeError
+            raise ExaRequestFailed(f"{url}: malformed response: {exc}") from exc
 
 
 _client: ExaClient | None = None

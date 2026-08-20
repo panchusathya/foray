@@ -24,6 +24,7 @@ from juicebox.models import (
     Project,
     ProjectCandidate,
     Sequence,
+    SequenceStep,
     utcnow,
 )
 from juicebox.repository import sync_candidate_emails
@@ -271,6 +272,68 @@ class TestMergeKeepsEverything:
         rows = session.scalars(select(Enrollment)).all()
         assert len(rows) == 1
         assert rows[0].candidate_id == primary.id
+
+    def test_sequence_mail_survives_a_shared_enrollment(self, session, account, pair):
+        """The duplicate's sent mail must outlive its enrollment.
+
+        ``messages.enrollment_id`` is ON DELETE CASCADE, so dropping the
+        duplicate's overlapping enrollment takes its sequence mail with it --
+        even though the merge had already re-pointed those rows at the
+        survivor. Mailbox-synced mail has no enrollment and never showed this.
+        """
+        primary, other = pair
+        sequence = Sequence(org_id=account["org_id"], name="Outreach", status="active")
+        session.add(sequence)
+        session.flush()
+        steps = [
+            SequenceStep(sequence_id=sequence.id, step_order=n, subject_template=f"s{n}")
+            for n in (0, 1)
+        ]
+        session.add_all(steps)
+        session.flush()
+
+        enrollments = {}
+        for candidate in (primary, other):
+            row = Enrollment(
+                sequence_id=sequence.id, candidate_id=candidate.id, status="active"
+            )
+            session.add(row)
+            enrollments[candidate.id] = row
+        session.flush()
+
+        # The survivor got step 0. The duplicate got both steps, so its step-1
+        # mail has no counterpart on the survivor and must be carried over.
+        session.add(
+            Message(
+                org_id=account["org_id"], candidate_id=primary.id,
+                enrollment_id=enrollments[primary.id].id, step_id=steps[0].id,
+                direction="outbound", source="sequence", status="sent", sent_at=utcnow(),
+            )
+        )
+        for step in steps:
+            session.add(
+                Message(
+                    org_id=account["org_id"], candidate_id=other.id,
+                    enrollment_id=enrollments[other.id].id, step_id=step.id,
+                    direction="outbound", source="sequence", status="sent",
+                    sent_at=utcnow() - timedelta(days=1),
+                )
+            )
+        session.flush()
+
+        merge(session, org_id=account["org_id"],
+              primary_id=primary.id, duplicate_ids=[other.id])
+        session.flush()
+        session.expire_all()
+
+        kept = session.scalars(select(Message)).all()
+        assert len(kept) == 3, "merging must not delete the duplicate's sequence mail"
+        assert {row.candidate_id for row in kept} == {primary.id}
+        # Nothing may still point at the enrollment that was dropped.
+        surviving = {row.id for row in session.scalars(select(Enrollment)).all()}
+        assert all(
+            row.enrollment_id is None or row.enrollment_id in surviving for row in kept
+        )
 
     def test_a_shared_tag_does_not_break_the_merge(self, session, account, pair):
         primary, other = pair

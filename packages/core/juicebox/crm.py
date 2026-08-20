@@ -88,7 +88,7 @@ def track_all(db: Session, *, org_id: str, candidate_ids: Iterable[str]) -> int:
     return changed
 
 
-def _apply_status(db: Session, candidate: Candidate, status: str) -> None:
+def set_crm_status(db: Session, candidate: Candidate, status: str) -> None:
     """Move a person's status, keeping the do-not-contact list in step.
 
     A ``do_not_contact`` status that the sequencer ignores is a promise the
@@ -146,7 +146,7 @@ def patch_candidate(
             value = normalize_seniority(value)
 
         if name == "crm_status":
-            _apply_status(db, candidate, value)
+            set_crm_status(db, candidate, value)
         else:
             setattr(candidate, name, value)
         touched.append(name)
@@ -173,6 +173,20 @@ def patch_candidate(
 
     if "emails" in touched:
         sync_candidate_emails(db, candidate)
+        # Suppression is keyed on the address, not on the person, and
+        # ``send_step`` asks only ``is_suppressed(email=...)`` -- it never reads
+        # crm_status. So an address added to someone already on the
+        # do-not-contact list would be mailable on that new address. Reconcile
+        # against the final list, whatever order the payload arrived in.
+        if candidate.crm_status == "do_not_contact":
+            for address in candidate.emails or []:
+                suppress(
+                    db,
+                    org_id=candidate.org_id,
+                    email=address,
+                    reason="manual",
+                    source="crm_status",
+                )
 
     db.flush()
     return candidate

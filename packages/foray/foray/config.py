@@ -129,6 +129,15 @@ class Settings(BaseSettings):
         validation_alias="FORAY_RERANK_MODEL",
     )
     rerank_depth: int = Field(default=48, ge=0, le=400, validation_alias="FORAY_RERANK_DEPTH")
+    # A MiniLM CE probability below ~5% is a confident irrelevance verdict.
+    # The floor ejects such rows from the reranked head (band 2, after every
+    # unreranked row) instead of letting band 0 pin them above candidates the
+    # rubric scored in the 80s. This mirrors RankPolicy.ce_floor, whose
+    # library default stays 0.0 (no demotion) so rank.py-only callers and CI
+    # are unaffected; the API wires this value in.
+    rerank_ce_floor: float = Field(
+        default=0.05, ge=0.0, le=1.0, validation_alias="FORAY_RERANK_CE_FLOOR"
+    )
     rerank_max_length: int = Field(default=288, ge=32, le=512, validation_alias="FORAY_RERANK_MAX_LENGTH")
     rerank_doc_chars: int = Field(default=900, ge=100, le=4000, validation_alias="FORAY_RERANK_DOC_CHARS")
     rerank_batch_size: int = Field(default=16, ge=1, le=64, validation_alias="FORAY_RERANK_BATCH_SIZE")

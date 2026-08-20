@@ -23,6 +23,26 @@ HEDGE_WORDS = {"strong", "excellent", "impressive", "solid", "passionate", "tale
 MAX_WORDS = 11
 _WORD = re.compile(r"[a-z0-9+#./-]+")
 
+# The two honesty-filler phrases the template builders append so a card never
+# renders a single lonely sentence. They are DISPLAY filler, not evidence:
+# Evidence.evidence_count (the min_evidence veto input) must not count them,
+# or the veto counts rendered sentences and becomes a near no-op. Recognised
+# by shape rather than threaded through as a parallel structure because the
+# highlight list is sorted, mixed with stored highlights, and truncated in
+# ``build_evidence`` — a side-channel "is pad" flag would have to survive all
+# of that. The trade-off: an LLM-stored highlight that exactly matches one of
+# these two anchored shapes would be miscounted, which is accepted (validate()
+# and the archetype prompt make that shape effectively unreachable). Keep
+# these in lockstep with ``_linkedin_templates`` / ``_github_templates``.
+_PAD_LINKEDIN = "LinkedIn profile, no public code evidence"
+_PAD_GITHUB_RE = re.compile(r"^\d+ repos, \d+ total stars, no scale evidence$")
+
+
+def _is_pad(phrase: str) -> bool:
+    """True for the two known display-filler shapes; see the note above."""
+    text = str(phrase).strip()
+    return text == _PAD_LINKEDIN or bool(_PAD_GITHUB_RE.match(text))
+
 
 def _as_json(value: Any, default: Any) -> Any:
     if value is None:
@@ -127,6 +147,7 @@ def _github_templates(row: Mapping[str, Any]) -> list[str]:
         phrases.append(f"No public push in {int(months)} months")
     total_stars = int(row.get("total_stars") or 0)
     if len(phrases) < 2:
+        # Display filler, not evidence — must keep matching _PAD_GITHUB_RE.
         phrases.append(f"{non_fork} repos, {total_stars} total stars, no scale evidence")
     return phrases
 
@@ -152,7 +173,8 @@ def _linkedin_templates(row: Mapping[str, Any]) -> list[str]:
     if markers:
         phrases.append("Stated domains: " + ", ".join(markers))
     if len(phrases) < 2:
-        phrases.append("LinkedIn profile, no public code evidence")
+        # Display filler, not evidence — must keep matching _PAD_LINKEDIN.
+        phrases.append(_PAD_LINKEDIN)
     return phrases
 
 
@@ -178,10 +200,22 @@ class Evidence:
     highlights: list[str]
     flags: list[str]
     highlight_source: str
+    # highlight_count is the rendered-sentence count (display); evidence_count
+    # is the substantive-phrase count — highlights minus the honesty filler —
+    # and is what the min_evidence veto in rank.py must consume. Stored
+    # archetype highlights (LLM-written, validate()-checked) always count:
+    # they never take the pad shapes, and stated-experience / title lines ARE
+    # checkable evidence.
     highlight_count: int = field(init=False)
+    evidence_count: int = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "highlight_count", len(self.highlights))
+        object.__setattr__(
+            self,
+            "evidence_count",
+            sum(1 for h in self.highlights if not _is_pad(h)),
+        )
 
 
 def build_evidence(

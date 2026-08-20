@@ -35,6 +35,14 @@ class RankPolicy:
     unscored_score: int = 0
     min_evidence: int = 2
     rerank_depth: int = 48
+    # CE probability floor for the reranked head. A head row whose logistic
+    # CE probability falls below this is demoted to band 2 (after every
+    # unreranked row) instead of staying pinned in band 0 — see
+    # ``apply_ce_scores``. The library default of 0.0 disables the demotion so
+    # existing dependency-free callers and CI keep today's behaviour; the API
+    # wires ``settings.rerank_ce_floor`` in (this module must stay
+    # settings-free).
+    ce_floor: float = 0.0
     rrf_k: int = 60
     n_arms: int = 2
 
@@ -154,7 +162,8 @@ def blend_one(
 
 
 def sort_key(blend: float, key: int, *, band: int = 1, cos_sim: float = 0.0) -> tuple[int, float, float, int]:
-    """A total order: band 0 (reranked) first, then higher blends, cosine, id."""
+    """A total order: band 0 (reranked) first, then band 1 (unreranked), then
+    band 2 (CE-rejected); within a band, higher blends, cosine, id."""
     return (band, -blend, -cos_sim, key)
 
 
@@ -280,6 +289,14 @@ def apply_ce_scores(
 
     Do not impute a CE score to the tail: zero is a false "rejected" claim,
     and a batch mean reintroduces batch dependence.
+
+    Head rows whose CE probability falls below ``policy.ce_floor`` land in
+    band 2, not band 0. Without the floor, band 0 could reorder the head but
+    never demote out of it: a row the CE scored at p~=0.000002 (logit -12)
+    still outranked every band-1 row, including score-88 candidates. The
+    demotion keeps the row paginable (the CE is a small local model, so
+    "irrelevant" is a demote, not a hide) and keeps ``ce`` on the row for
+    diagnostics.
     """
     depth = policy.rerank_depth
     retrieval_ordered = sorted(
@@ -303,6 +320,12 @@ def apply_ce_scores(
     out: list[PoolRow] = []
     for row in pool:
         if row.key in logits and row.key in head_keys:
+            ce = logistic_ce(logits[row.key])
+            # At/above the floor: band 0, ordered by ce in rank_page. Below:
+            # band 2 — the ce value is kept for diagnostics, but sub-floor
+            # probabilities are all ~0 and meaningless to sort by, so
+            # rank_page orders band 2 by the retrieval blend instead.
+            band = 0 if ce >= policy.ce_floor else 2
             out.append(
                 PoolRow(
                     key=row.key,
@@ -310,8 +333,8 @@ def apply_ce_scores(
                     cos_sim=row.cos_sim,
                     rrf=row.rrf,
                     highlight_count=row.highlight_count,
-                    ce=logistic_ce(logits[row.key]),
-                    band=0,
+                    ce=ce,
+                    band=band,
                 )
             )
         else:
@@ -355,7 +378,10 @@ def rank_page(
             unscored_score=policy.unscored_score,
             rrf_k=policy.rrf_k,
             n_arms=policy.n_arms,
-            ce=row.ce,
+            # Only band 0 orders by ce. A band-2 (CE-rejected) row keeps its ce
+            # for diagnostics, but every sub-floor probability is ~0, so within
+            # band 2 the retrieval blend is the only meaningful order.
+            ce=row.ce if row.band == 0 else None,
         )
         blended.append((blend, row))
 

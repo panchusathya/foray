@@ -269,23 +269,60 @@ def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
 
 
 def _handle_mailbox_backfill(db: Session, job: Job, now) -> dict[str, Any]:
-    """One batch of the historical import; re-enqueues itself until done."""
+    """One batch of the historical import; re-enqueues itself until done.
+
+    Every key carries the run stamp minted when the button was pressed. It used
+    to be ``mailbox.backfill:<id>:<offset>``, fixed for all time, and ``enqueue``
+    returns the existing row for a key forever -- including one that already
+    succeeded. So the first import worked and every later one silently returned
+    the old finished job while the endpoint answered "queued". The offsets were
+    poisoned too, so even a fresh walk collided with the previous run's keys.
+    """
     from .integrations.backfill import backfill_mailbox_history
     from .models import MailboxConnection
 
     connection = db.get(MailboxConnection, job.payload.get("mailbox_id", ""))
     if connection is None or connection.status != "active":
         return {"skipped": "mailbox gone or inactive"}
+
+    run = str(job.payload.get("run") or "")
     offset = int(job.payload.get("offset") or 0)
+    state = dict(connection.backfill_state or {})
+    # A stale batch from a run the user has since restarted must not write over
+    # the new run's counters.
+    if run and state.get("run") and state["run"] != run:
+        return {"skipped": "superseded by a newer import"}
+
     result = backfill_mailbox_history(db, connection, offset=offset, now=now)
     next_offset = result.get("next_offset")
+
+    state["status"] = "running" if next_offset is not None else "done"
+    state["run"] = run or state.get("run", "")
+    state["total"] = int(result.get("total") or state.get("total") or 0)
+    state["done"] = min(int(next_offset or state["total"]), state["total"])
+    state["imported"] = int(state.get("imported") or 0) + int(result.get("ingested") or 0)
+    state["note"] = result.get("note") or ""
+    if next_offset is None:
+        state["finished_at"] = now.isoformat()
+    # Reassigned, not mutated: SQLAlchemy does not notice an in-place edit of a
+    # JSON column, and a silently unsaved counter is exactly the blindness this
+    # is meant to cure.
+    connection.backfill_state = state
+
     if next_offset is not None:
         enqueue(
             db,
             org_id=job.org_id,
             kind=KIND_MAILBOX_BACKFILL,
-            idempotency_key=f"{KIND_MAILBOX_BACKFILL}:{connection.id}:{next_offset}",
-            payload={"org_id": job.org_id, "mailbox_id": connection.id, "offset": next_offset},
+            idempotency_key=(
+                f"{KIND_MAILBOX_BACKFILL}:{connection.id}:{run}:{next_offset}"
+            ),
+            payload={
+                "org_id": job.org_id,
+                "mailbox_id": connection.id,
+                "offset": next_offset,
+                "run": run,
+            },
             run_at=now + timedelta(seconds=30),
         )
     return result

@@ -49,7 +49,13 @@ def backfill_mailbox_history(
     """
     now = now or utcnow()
     if not connection.thread_sync_enabled:
-        return {"ingested": 0, "skipped": 0, "next_offset": None, "reason": "disabled"}
+        return {
+            "ingested": 0,
+            "skipped": 0,
+            "next_offset": None,
+            "total": 0,
+            "note": "thread sync is off for this mailbox",
+        }
 
     _explicit = addresses is not None
     provider = provider or get_provider(connection.provider)
@@ -63,7 +69,16 @@ def backfill_mailbox_history(
         targets = sorted(index)[offset : offset + BATCH_ADDRESSES]
     addresses = targets
     if not addresses:
-        return {"ingested": 0, "skipped": 0, "next_offset": None}
+        # Distinguish "nobody to import for" from "imported nothing": an org
+        # whose people are not yet in scope is a normal state with a normal
+        # explanation, not a failure and not a success.
+        return {
+            "ingested": 0,
+            "skipped": 0,
+            "next_offset": None,
+            "total": len(index),
+            "note": "no contacts in scope to import for" if not index else "",
+        }
 
     mailbox_address = connection.address.lower()
     ingested = 0
@@ -107,12 +122,22 @@ def backfill_mailbox_history(
             )
             ingested += 1
 
-    if targets is not None and offset == 0 and _explicit:
+    if _explicit:
         # An explicit address list is one pass, not a walk.
-        return {"ingested": ingested, "skipped": skipped, "next_offset": None}
+        return {
+            "ingested": ingested,
+            "skipped": skipped,
+            "next_offset": None,
+            "total": len(addresses),
+            "note": "",
+        }
     next_offset = offset + BATCH_ADDRESSES
     return {
         "ingested": ingested,
         "skipped": skipped,
         "next_offset": next_offset if next_offset < len(index) else None,
+        # How many people the whole walk covers, so progress can be shown as
+        # "40 of 380" rather than as an unanchored number that means nothing.
+        "total": len(index),
+        "note": "",
     }

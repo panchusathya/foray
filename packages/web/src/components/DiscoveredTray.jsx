@@ -48,7 +48,7 @@ function useSweepStatus() {
       if (cancelled) return;
       let running = false;
       try {
-        const rows = await api.discoveryStatus();
+        const rows = (await api.mailboxActivity()).map((row) => ({ ...row, ...row.discovery }));
         if (cancelled) return;
         setSweeps(rows);
         running = rows.some((row) => ['queued', 'running'].includes(row.status));

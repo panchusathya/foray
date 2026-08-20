@@ -12,10 +12,34 @@ import { useAsync } from '../lib/useAsync.js';
  * control. It is shown next to the rolling 24h count so the number means
  * something while you are setting it.
  */
+/**
+ * Two different zeros, which looked identical and were the whole complaint.
+ *
+ * "0 imported" because nobody is in scope is a setup problem; "0 imported"
+ * because the mail is already here is success. Neither should read as a
+ * broken button.
+ */
+function backfillSummary(backfill) {
+  if (!backfill.total) return backfill.note || 'nothing to import';
+  const checked = `${backfill.done} of ${backfill.total} contacts checked`;
+  if (backfill.imported) {
+    return `${checked}, ${backfill.imported} email${
+      backfill.imported === 1 ? '' : 's'
+    } imported`;
+  }
+  return backfill.status === 'done'
+    ? `${checked} — already up to date, nothing new to import`
+    : checked;
+}
+
 export function SettingsPage() {
   const status = useAsync(() => api.mailboxes(), []);
   const [error, setError] = useState(null);
   const [syncNote, setSyncNote] = useState('');
+  // What the import and the sweep are doing. Polled rather than pushed --
+  // there is no realtime plumbing here -- and only while something is
+  // actually running, so an idle Settings page makes no requests.
+  const [activity, setActivity] = useState([]);
   const [syncing, setSyncing] = useState('');
   const [caps, setCaps] = useState({});
 
@@ -120,6 +144,39 @@ export function SettingsPage() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    let timer;
+    let elapsed = 0;
+
+    async function tick() {
+      if (cancelled) return;
+      let busy = false;
+      try {
+        const rows = await api.mailboxActivity();
+        if (cancelled) return;
+        setActivity(rows);
+        busy = rows.some((row) =>
+          ['queued', 'running'].includes(row.backfill.status) ||
+          ['queued', 'running'].includes(row.discovery.status),
+        );
+      } catch {
+        // A failed poll is not worth a banner; the next one may work.
+      }
+      if (cancelled || !busy) return;
+      elapsed += 5000;
+      // Back off, then stop rather than polling a stuck job forever.
+      if (elapsed > 10 * 60_000) return;
+      timer = setTimeout(tick, elapsed > 2 * 60_000 ? 15_000 : 5_000);
+    }
+
+    tick();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [syncNote]);
+
   async function backfill(connection) {
     if (
       !window.confirm(
@@ -131,8 +188,15 @@ export function SettingsPage() {
     }
     setError(null);
     try {
-      await api.mailboxBackfill(connection.id);
-      setSyncNote('History import queued — it runs in the background.');
+      const result = await api.mailboxBackfill(connection.id);
+      setSyncNote(
+        result.contacts
+          ? `History import queued for ${result.contacts} contact${
+              result.contacts === 1 ? '' : 's'
+            } — progress below.`
+          : 'Nothing to import yet: no contacts are in scope for this mailbox. ' +
+            'Add people to a project or sweep for contacts first.',
+      );
     } catch (caught) {
       setError(caught);
     }
@@ -175,6 +239,32 @@ export function SettingsPage() {
       />
       <ErrorBox error={error} />
       {syncNote ? <div className="card small">{syncNote}</div> : null}
+
+      {activity
+        .filter(
+          (row) =>
+            row.backfill.status !== 'idle' || row.discovery.status !== 'idle',
+        )
+        .map((row) => (
+          <div className="card small stack" key={row.mailbox_id} data-testid="mailbox-activity">
+            <strong>{row.address}</strong>
+            {row.backfill.status !== 'idle' ? (
+              <span data-testid="backfill-progress">
+                History import: {row.backfill.status} —{' '}
+                {backfillSummary(row.backfill)}
+                {row.backfill.error ? ` · ${row.backfill.error}` : ''}
+              </span>
+            ) : null}
+            {row.discovery.status !== 'idle' ? (
+              <span data-testid="discovery-progress">
+                Contact sweep: {row.discovery.status} —{' '}
+                {row.discovery.scanned.toLocaleString()} messages scanned,{' '}
+                {row.discovery.found.toLocaleString()} people found
+                {row.discovery.error ? ` · ${row.discovery.error}` : ''}
+              </span>
+            ) : null}
+          </div>
+        ))}
       {status.loading ? <Loading /> : null}
 
       {data ? (

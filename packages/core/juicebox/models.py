@@ -740,6 +740,11 @@ class MailboxConnection(Base, TimestampMixin):
     # cannot show progress. The sweep cursor lives here too, and must never be
     # written to inbox_delta_link / sent_delta_link / sync_state["cursors"].
     discovery_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Progress of the per-candidate history import, same shape and same reason:
+    # the job re-enqueues itself per batch, so a counter in the job payload
+    # cannot survive to be shown. {status, done, total, imported, run, note,
+    # started_at, finished_at, error}.
+    backfill_state: Mapped[dict] = mapped_column(JSON, default=dict)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

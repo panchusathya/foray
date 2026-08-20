@@ -91,7 +91,9 @@ export const api = {
   ignoreDomain: (payload) =>
     request('/v1/crm/discovered/ignore-domain', { method: 'POST', body: payload }),
   listTags: () => request('/v1/crm/tags'),
-  discoveryStatus: () => request('/v1/integrations/discovery-status'),
+  // Both long-running mailbox jobs report here: the contact sweep and the
+  // history import.
+  mailboxActivity: () => request('/v1/integrations/mailbox-activity'),
   startDiscovery: (connectionId) =>
     request(
       connectionId

@@ -37,56 +37,74 @@ _JUNK_TITLES = {"", "--", "-", "set at linkedin", "retired", "n/a", "none"}
 # embedding blob.
 _JUNK_EMPLOYERS = {"confidential", "confidential company", "n/a", "none", "-", "--", "."}
 
-# Legal-entity suffixes and org-shaped tokens that mark a "person" row as a
-# company page. Whole-word, case-insensitive, anywhere in the name.
-# False-positive analysis behind the borderline entries:
-#   * "co." keeps its dot -- bare "co" is a real surname (e.g. "Jose Co"),
-#     while "Co." mid-name is unambiguously corporate.
-#   * "group" is included: "Group" as a surname is vanishingly rare in this
-#     corpus, while "<Something> Group" company pages are common.
-#   * "labs" is included: it appears in company names constantly and in
-#     person names essentially never.
-#   * "ltd"/"limited" catch sole traders like "Mary-Jane O'Brien Ltd" -- a
-#     person trading as a company IS a company page here; accepted trade-off.
-#   * "s.a" only matches at the END of the name: corporate "S.A." is a
-#     trailing suffix ("Banco Santander S.A."), while the same letters at the
-#     front are a real person's initials ("S.A. Khan").
-# Dotted tokens ("l.l.c", "s.a", "s.r.l", "co.") escape their dots; the
-# lookarounds below replace \b so a trailing dot still terminates a match
-# (\b after "\." would require a following word char and miss end-of-name).
-_COMPANY_SUFFIXES = (
+# Two token classes mark a "person" row as a company page, validated against
+# the full prod corpus (196,952 linkedin names; the tightened rules kept 174
+# true company pages and cleared ~100 false positives the first cut had):
+#   * LEGAL suffixes match ANYWHERE, case-insensitive, whole-word: no real
+#     person's name contains "LLC" or "GmbH" in any position.
+#     - "co." keeps its dot -- bare "co" is a real surname ("Jose Co"),
+#       while "Co." mid-name is unambiguously corporate.
+#     - "s.a" only matches at the END of the name: corporate "S.A." is a
+#       trailing suffix ("Banco Santander S.A."), while the same letters at
+#       the front are a person's initials ("S.A. Khan").
+#     - "ltd"/"limited" catch sole traders like "Mary-Jane O'Brien Ltd" -- a
+#       person trading as a company IS a company page here; accepted.
+#   * DESCRIPTIVE org words ("capital", "group", "solutions", ...) match only
+#     as the LAST word: companies end with them ("Madison Group", "Finnoble
+#     Solutions"), while mid-name occurrences are real people ("CAPITAL R.
+#     MAAT", "Sylvia Jones ... Staffing ... Consulting" -- both live in the
+#     export). A trailing scraper artifact ("PulseChart Solutions undefined")
+#     and trailing punctuation are tolerated after the word.
+# Two heuristics were REMOVED after the prod validation caught them deleting
+# real people, so do not reintroduce them:
+#   * trailing parenthesised initialism: "(IU)" looked org-shaped, but the
+#     corpus is full of credentialed people -- "(MBA)", "(CISSP)", "(ASCP)",
+#     "(LION)", "Anand Vijay(AV)". Every true org it caught also carries a
+#     legal suffix.
+#   * ampersand with 3+ words: caught couples' profiles ("John & Charlotte
+#     Schmiedel"), which are person pages.
+# The cost is a handful of suffix-less orgs slipping through ("WestEnd
+# Capital Management", "MGA Nurse Staffing San Francisco"); they are
+# linkedin-only, unscored rows the archetype gate and ranking already bury,
+# while a false positive here DELETES a real candidate in the purge script.
+# Dotted tokens escape their dots; the lookarounds below replace \b so a
+# trailing dot still terminates a match (\b after "\." would require a
+# following word char and miss end-of-name).
+_COMPANY_LEGAL_SUFFIXES = (
     "inc", "llc", r"l\.l\.c", "ltd", "limited", "corp", "corporation", "plc",
-    "gmbh", r"s\.a\.?(?=\s*$)", r"s\.r\.l", "pvt", "pty", r"co\.", "holdings", "ventures",
-    "capital", "partners", "staffing", "recruiting", "agency", "consultancy",
-    "logistics", "solutions", "technologies", "labs", "group",
+    "gmbh", "llp", r"s\.a\.?(?=\s*$)", r"s\.r\.l", "pvt", "pty", r"co\.",
 )
 
-_COMPANY_SUFFIX_RE = re.compile(
-    r"(?<!\w)(?:" + "|".join(_COMPANY_SUFFIXES) + r")(?!\w)", re.IGNORECASE
+_COMPANY_ORG_LAST_WORDS = (
+    "holdings", "ventures", "capital", "partners", "staffing", "recruiting",
+    "agency", "consultancy", "logistics", "solutions", "technologies", "labs",
+    "group",
 )
 
-# A trailing parenthesised initialism -- "Infrastructure United Inc. (IU)".
-# People do not append their own initials in caps-parens; org pages do.
-_COMPANY_INITIALISM_RE = re.compile(r"\([A-Z]{2,5}\)\s*$")
+_COMPANY_LEGAL_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(_COMPANY_LEGAL_SUFFIXES) + r")(?!\w)", re.IGNORECASE
+)
+
+_COMPANY_ORG_LAST_RE = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(_COMPANY_ORG_LAST_WORDS)
+    + r")(?!\w)(?:\s+undefined)?[\s.)]*$",
+    re.IGNORECASE,
+)
 
 
 def looks_like_company(name: str) -> bool:
     """True when a Bright Data "person" name is actually a company page.
 
-    Conservative by construction: every heuristic is a pattern real people's
-    names essentially never carry (see _COMPANY_SUFFIXES for the analysis).
+    Conservative by construction -- the purge script deletes on this verdict,
+    so every rule is a pattern real people's names essentially never carry
+    (see the analysis on the constants above).
     """
     if not name or not name.strip():
         return False
-    if _COMPANY_SUFFIX_RE.search(name):
-        return True
-    if _COMPANY_INITIALISM_RE.search(name):
-        return True
-    # "A & B" duo-names of real people exist ("Tom & Jerry" profiles do occur),
-    # but three-plus words around an ampersand is org-shaped ("Smith & Wesson
-    # Holdings"). Count words excluding the "&" itself so a bare duo stays a
-    # person.
-    return "&" in name and len([w for w in name.split() if w != "&"]) >= 3
+    return bool(
+        _COMPANY_LEGAL_RE.search(name) or _COMPANY_ORG_LAST_RE.search(name)
+    )
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _SLUG_RE = re.compile(r"/in/([^/?#]+)")

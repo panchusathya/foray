@@ -163,4 +163,19 @@ def reembed_org(db: Session, *, org_id: str, batch_size: int = 256) -> int:
             candidate.embedding_model = embedder.name
         db.flush()
     invalidate(org_id)
+    from .models import JobPosting
+    from .search.parser import ParsedQuery
+
+    postings = db.scalars(select(JobPosting).where(JobPosting.org_id == org_id)).all()
+    for start in range(0, len(postings), batch_size):
+        batch = postings[start : start + batch_size]
+        texts = []
+        for posting in batch:
+            spec = ParsedQuery.from_dict(posting.parsed_spec or {})
+            texts.append(spec.retrieval_text() or posting.title or posting.jd_text or "")
+        vectors = embedder.embed(texts)
+        for posting, vector in zip(batch, vectors, strict=True):
+            posting.embedding = [float(v) for v in vector]
+            posting.embedding_model = embedder.name
+        db.flush()
     return len(candidates)

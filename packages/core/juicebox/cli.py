@@ -8,6 +8,7 @@
     juicebox run-outreach --org <org_id> [--dry-run]
     juicebox run-agents --org <org_id>
     juicebox work [--once]
+    juicebox backfill-jobs [--org]
     juicebox reembed --org <org_id>
     juicebox export-seed <file.jsonl> [--count 120]
     juicebox serve [--port 8000]
@@ -173,11 +174,22 @@ def cmd_work(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_jobs(args: argparse.Namespace) -> int:
+    from .jobmatch.sync import backfill_project_postings
+
+    ensure_schema()
+    with session_scope() as db:
+        org_id = _resolve_org(db, args.org) if args.org else None
+        count = backfill_project_postings(db, org_id=org_id)
+    print(f"upserted {count} project postings")
+    return 0
+
+
 def cmd_reembed(args: argparse.Namespace) -> int:
     with session_scope() as db:
         org_id = _resolve_org(db, args.org)
         count = reembed_org(db, org_id=org_id)
-    print(f"re-embedded {count} candidates")
+    print(f"re-embedded {count} candidates (and any job postings)")
     return 0
 
 
@@ -259,6 +271,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="drain due work and exit (used by make worker)",
     )
     work.set_defaults(func=cmd_work)
+
+    backfill = sub.add_parser(
+        "backfill-jobs", help="upsert a JobPosting for every Project mandate"
+    )
+    backfill.add_argument("--org", default=None)
+    backfill.set_defaults(func=cmd_backfill_jobs)
 
     reembed = sub.add_parser("reembed", help="recompute candidate embeddings")
     reembed.add_argument("--org", default=None)

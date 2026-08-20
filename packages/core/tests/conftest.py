@@ -54,6 +54,7 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("JUICEBOX_LLM_PROVIDER", "none")
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
+    monkeypatch.setenv("EXA_API_KEY", "")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
     # Retry logic is asserted by call counts, so don't actually sleep for it.
@@ -64,6 +65,7 @@ def isolated_environment(tmp_path, monkeypatch):
     from juicebox.integrations.providers import reset_providers
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
+    from juicebox.jobmatch.exa import reset_exa
     from juicebox.outreach.sender import reset_sender_factories, set_sender
     from juicebox.search.engine import reset_engine
     from juicebox.search.index import invalidate
@@ -72,6 +74,7 @@ def isolated_environment(tmp_path, monkeypatch):
     db_module.reset_engine()
     reset_llm()
     reset_embedder()
+    reset_exa()
     reset_engine()
     invalidate()
     set_sender(None)
@@ -91,6 +94,7 @@ def isolated_environment(tmp_path, monkeypatch):
     set_llm(None)
     reset_llm()
     reset_embedder()
+    reset_exa()
     reset_engine()
     invalidate()
     set_sender(None)

@@ -1,0 +1,107 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+
+import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { jobsApi } from '../lib/jobs.js';
+import { useAsync } from '../lib/useAsync.js';
+import './jobs.css';
+
+function formatDay(value) {
+  if (!value) return '';
+  return new Date(value).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+export function RematchPage() {
+  const queue = useAsync(() => jobsApi.rematchQueue(), []);
+  const [error, setError] = useState(null);
+
+  async function setStatus(matchId, status) {
+    setError(null);
+    try {
+      await jobsApi.patchMatch(matchId, { status });
+      queue.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  const rows = queue.data ?? [];
+
+  return (
+    <div className="stack">
+      <PageHeader
+        title="Rematch"
+        subtitle="People who declined a role, with better-fitting jobs still open."
+      />
+      <ErrorBox error={error} />
+      {queue.loading ? <Loading /> : null}
+      {!queue.loading && !rows.length ? (
+        <Empty>Nobody in the rematch queue.</Empty>
+      ) : (
+        rows.map((row) => (
+          <div key={row.candidate.id} className="card rematch-row" data-testid="rematch-row">
+            <div>
+              <Link to={`/contacts/${row.candidate.id}`} style={{ fontWeight: 600 }}>
+                {row.candidate.full_name}
+              </Link>
+              <div className="small muted">
+                declined {row.declined_label || 'a role'}
+                {row.declined_on ? ` on ${formatDay(row.declined_on)}` : ''}
+                {' — '}
+                {row.matches.length} better fit{row.matches.length === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="rematch-fits">
+              {row.matches.map((match) => {
+                const posting = match.posting;
+                return (
+                  <div key={match.id} className="row spread" data-testid="rematch-fit">
+                    <div>
+                      <Link to={`/jobs/${match.job_posting_id}`}>
+                        {posting?.title || match.job_posting_id}
+                      </Link>
+                      <div className="small muted">
+                        {posting?.company || ''}
+                        {posting?.has_warm_path ? ' · warm path' : ''}
+                        {posting?.fee_bearing ? ' · fee' : ''}
+                      </div>
+                    </div>
+                    <div className="row wrap">
+                      <Badge>{Math.round(match.score * 100)}</Badge>
+                      <button
+                        type="button"
+                        className="tiny"
+                        onClick={() => setStatus(match.id, 'shortlisted')}
+                      >
+                        Shortlist
+                      </button>
+                      <button
+                        type="button"
+                        className="tiny ghost"
+                        onClick={() => setStatus(match.id, 'dismissed')}
+                      >
+                        Dismiss
+                      </button>
+                      {posting?.project_id ? (
+                        <Link to={`/projects/${posting.project_id}`} className="tiny">
+                          Pitch via project
+                        </Link>
+                      ) : (
+                        <Link to={`/jobs/${match.job_posting_id}`} className="tiny">
+                          Create project from this posting
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}

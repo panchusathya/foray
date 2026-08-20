@@ -205,6 +205,30 @@ class Settings:
         default_factory=lambda: _env_int("MAILBOX_BACKFILL_DAYS", 365)
     )
 
+    # --- job matching ----------------------------------------------------
+    job_match_heuristic_weight: float = field(
+        default_factory=lambda: _env_float("JOB_MATCH_HEURISTIC_WEIGHT", 0.70)
+    )
+    job_match_vector_weight: float = field(
+        default_factory=lambda: _env_float("JOB_MATCH_VECTOR_WEIGHT", 0.30)
+    )
+    job_match_min_score: float = field(
+        default_factory=lambda: _env_float("JOB_MATCH_MIN_SCORE", 0.55)
+    )
+    job_posting_stale_days: int = field(
+        default_factory=lambda: _env_int("JOB_POSTING_STALE_DAYS", 21)
+    )
+    job_rematch_not_now_days: int = field(
+        default_factory=lambda: _env_int("JOB_REMATCH_NOT_NOW_DAYS", 90)
+    )
+    job_match_refresh_hours: int = field(
+        default_factory=lambda: _env_int("JOB_MATCH_REFRESH_HOURS", 24)
+    )
+    exa_api_key: str = field(default_factory=lambda: _env("EXA_API_KEY", ""))
+    job_scrape_max_auto_queries: int = field(
+        default_factory=lambda: _env_int("JOB_SCRAPE_MAX_AUTO_QUERIES", 5)
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

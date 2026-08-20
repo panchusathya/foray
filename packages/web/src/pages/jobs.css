@@ -1,0 +1,55 @@
+.jobs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.jobs-table th,
+.jobs-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.jobs-table th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.jobs-table a {
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.jobs-table a:hover {
+  color: var(--accent-light);
+}
+
+.jd-body {
+  white-space: pre-wrap;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.rematch-row {
+  display: grid;
+  gap: 12px;
+}
+
+.rematch-fits {
+  display: grid;
+  gap: 8px;
+}

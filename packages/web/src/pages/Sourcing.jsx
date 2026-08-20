@@ -51,8 +51,11 @@ function ContactChip({ hit }) {
   if (primary) {
     // Show the SOURCE, never "verified" unless the flag is set — a recruiter
     // must be able to tell a published profile address from a mined one.
-    const label = primary.verified ? `email · ${primary.source} ✓` : `email · ${primary.source}`;
-    return <Badge tone="strong">{label}</Badge>;
+    // reach_score is the free corroboration floor, not a re-rank.
+    const bits = [`email · ${primary.source}`];
+    if (primary.verified) bits.push('✓');
+    if (primary.reach_score != null) bits.push(String(primary.reach_score));
+    return <Badge tone="strong">{bits.join(' · ')}</Badge>;
   }
   if (hit.linkedin_url) return <Badge>LinkedIn only</Badge>;
   return <Badge tone="partial">no email</Badge>;

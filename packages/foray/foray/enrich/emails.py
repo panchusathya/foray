@@ -143,6 +143,21 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 BOT_LOCALPARTS = {"actions", "github-actions", "dependabot", "renovate", "noreply", "bot", "ci"}
 
 
+def is_usable_commit_email(email: str | None) -> bool:
+    """Whether a git-author address is worth storing.
+
+    Noreply and automation addresses are dropped here. ``is_placeholder`` is a
+    separate last gate before the write -- a real ``mail@own-domain`` must
+    survive this filter.
+    """
+    value = (email or "").strip().lower()
+    if not EMAIL_RE.match(value):
+        return False
+    if value.endswith("@users.noreply.github.com") or value.endswith("@github.com"):
+        return False
+    return value.split("@", 1)[0] not in BOT_LOCALPARTS
+
+
 def extract_own_commit_emails(commits: list[dict]) -> dict[str, int]:
     """{email: occurrences} from an author-filtered commit list of the
     candidate's own repo. Noreply and automation addresses are dropped."""
@@ -150,11 +165,7 @@ def extract_own_commit_emails(commits: list[dict]) -> dict[str, int]:
     for item in commits:
         author = (item.get("commit") or {}).get("author") or {}
         email = (author.get("email") or "").strip().lower()
-        if not EMAIL_RE.match(email):
-            continue
-        if email.endswith("@users.noreply.github.com") or email.endswith("@github.com"):
-            continue
-        if email.split("@", 1)[0] in BOT_LOCALPARTS:
+        if not is_usable_commit_email(email):
             continue
         found[email] = found.get(email, 0) + 1
     return found

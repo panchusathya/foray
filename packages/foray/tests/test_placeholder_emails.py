@@ -110,6 +110,11 @@ class TestIsPlaceholder:
             "usering@gmail.com",
             "foobarbaz@gmail.com",
             "example.person@databricks.com",
+            # 2026-08-20 incident: git-mined own-domain addresses a first
+            # placeholder draft would have eaten. Every new gate must keep them.
+            "mail@danijar.com",
+            "email@jamie.sh",
+            "mail@taeuk.me",
         ],
     )
     def test_keeps_real_addresses(self, email):

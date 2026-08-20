@@ -9,6 +9,11 @@
 
 export function forayHitToCandidate(hit, { archetypeId = null } = {}) {
   const emails = (hit.emails ?? []).map((e) => e.email).filter(Boolean);
+  const emailReach = Object.fromEntries(
+    (hit.emails ?? [])
+      .filter((e) => e.email && e.reach_score != null)
+      .map((e) => [e.email, e.reach_score]),
+  );
   return {
     source: 'foray',
     source_id: hit.login,
@@ -38,6 +43,7 @@ export function forayHitToCandidate(hit, { archetypeId = null } = {}) {
         last_push_at: hit.last_push_at,
         experience_confidence: hit.experience_confidence,
         email_sources: (hit.emails ?? []).map((e) => e.source),
+        email_reach: emailReach,
         archetype: archetypeId,
       },
     },

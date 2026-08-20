@@ -164,6 +164,18 @@ class Settings(BaseSettings):
     # ContactOut documents 1000 req/min for enrichment; stay well under it.
     contactout_rpm: int = Field(default=300, validation_alias="CONTACTOUT_RPM")
     linkedin_rpm: int = Field(default=120, validation_alias="FORAY_LINKEDIN_RPM")
+    # Send-floor, not a re-rank. 0 disables the gate until the measured
+    # distribution is known; the sequencer then refuses addresses below it.
+    # Unscored addresses (reach_score is null) are never blocked.
+    min_reach_score: int = Field(
+        default=0, ge=0, le=100, validation_alias="FORAY_MIN_REACH_SCORE"
+    )
+    # How many commits a unique author-name login needs before rarity alone
+    # corroborates a LinkedIn name-bridge hit. A single-commit "David Lee" is
+    # not identity.
+    name_bridge_min_commits: int = Field(
+        default=3, ge=1, le=50, validation_alias="FORAY_NAME_BRIDGE_MIN_COMMITS"
+    )
 
     # --- scoring spend guard ---
     spend_confirm_threshold_usd: float = Field(

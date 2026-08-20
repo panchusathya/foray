@@ -31,6 +31,9 @@ class TestOrderByClause:
     def test_guesses_are_still_excluded(self):
         assert "e.source <> 'guess'" in EMAILS_LATERAL
 
+    def test_reach_score_is_in_the_payload(self):
+        assert "'reach_score', e.reach_score" in EMAILS_LATERAL
+
 
 @requires_db
 class TestAgainstPostgres:

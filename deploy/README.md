@@ -95,13 +95,14 @@ machine with `ssh -L 8787:127.0.0.1:8787 <vm>`.
 `/etc/cron.d/juicebox-backup`:
 
 ```
-15 3 * * * root docker compose -f /opt/juicebox/docker-compose.prod.yml exec -T db pg_dump -U juicebox juicebox | gzip > /var/backups/juicebox/$(date +\%F).sql.gz && find /var/backups/juicebox -name '*.sql.gz' -mtime +14 -delete
+15 3 * * * root docker compose -f /opt/juicebox/docker-compose.prod.yml exec -T db pg_dump -U juicebox juicebox | gzip > /var/backups/juicebox/$(date +\%F).sql.gz && docker compose -f /opt/juicebox/docker-compose.prod.yml exec -T db pg_dump -U juicebox foray | gzip > /var/backups/juicebox/$(date +\%F)-foray.sql.gz && find /var/backups/juicebox -name '*.sql.gz' -mtime +14 -delete
 ```
 
 (`mkdir -p /var/backups/juicebox` first.) Restore:
 
 ```bash
 gunzip -c /var/backups/juicebox/<date>.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U juicebox juicebox
+gunzip -c /var/backups/juicebox/<date>-foray.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U juicebox foray
 ```
 
 ## 8. Updating

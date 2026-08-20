@@ -475,6 +475,52 @@ def _existing_outbound(db: Session, enrollment_id: str, step_id: str) -> Message
     )
 
 
+def _reach_score_for(address: str, scores: dict) -> int | None:
+    if address in scores:
+        try:
+            return int(scores[address])
+        except (TypeError, ValueError):
+            return None
+    for key, value in scores.items():
+        if isinstance(key, str) and key.lower() == address:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None]:
+    """First address that clears the reach-score floor, preserving list order.
+
+    The floor skips; it does not re-rank. Unscored addresses (no entry in
+    ``raw.foray.email_reach``) pass, because the gate only applies when we
+    actually scored them. Returns ``(address, error)``; ``error`` is
+    ``reach_score_below_floor`` when every scored address is below ``floor``.
+    """
+    emails = [normalize_email(raw or "") for raw in (candidate.emails or [])]
+    emails = [addr for addr in emails if addr]
+    if not emails:
+        return "", None
+    if floor <= 0:
+        return emails[0], None
+    payload = candidate.raw if isinstance(candidate.raw, dict) else {}
+    scores = (payload.get("foray") or {}).get("email_reach") or {}
+    if not isinstance(scores, dict):
+        scores = {}
+    saw_score = False
+    for addr in emails:
+        score = _reach_score_for(addr, scores)
+        if score is None:
+            return addr, None
+        saw_score = True
+        if score >= floor:
+            return addr, None
+    if saw_score:
+        return "", "reach_score_below_floor"
+    return emails[0], None
+
+
 def send_step(
     db: Session,
     *,
@@ -499,7 +545,7 @@ def send_step(
     if existing is not None and existing.status == "failed" and existing.error == "suppressed":
         return existing
 
-    to_address = normalize_email(candidate.primary_email or "")
+    to_address, reach_error = _sendable_address(candidate, settings.min_reach_score)
     if to_address and is_suppressed(db, org_id=sequence.org_id, email=to_address):
         message = existing or Message(
             org_id=sequence.org_id,
@@ -603,8 +649,12 @@ def send_step(
 
     if not to_address:
         message.status = "failed"
-        message.error = "no email address on file"
-        _finish_enrollment(enrollment, "stopped", "missing_email")
+        if reach_error == "reach_score_below_floor":
+            message.error = "reach_score_below_floor"
+            _finish_enrollment(enrollment, "stopped", "reach_score_below_floor")
+        else:
+            message.error = "no email address on file"
+            _finish_enrollment(enrollment, "stopped", "missing_email")
         return message
 
     sender = resolved.sender

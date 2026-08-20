@@ -237,6 +237,28 @@ async def amain(args: argparse.Namespace) -> int:
             await close_pool()
             return 0
 
+        if args.scan:
+            # Nightly dry-run: surface pair counts for the auto-apply tiers
+            # without applying anything. Name-bridge rows arrive via
+            # enrich.name_bridge into the pending queue, not this scan.
+            total_auto = total_review = 0
+            for tier in _TIER_SQL:
+                pairs = await find_pairs(conn, tier)
+                auto = sum(1 for p in pairs if p["exclusive"])
+                review = len(pairs) - auto
+                total_auto += auto
+                total_review += review
+                print(f"tier {tier}: {auto} auto-mergeable, {review} need review")
+            pending = await conn.fetchval(
+                "select count(*) from candidate_merges where status = 'pending'"
+            )
+            print(
+                f"scan: {total_auto} auto-mergeable across tiers, "
+                f"{total_review} need review, {pending} already pending"
+            )
+            await close_pool()
+            return 0
+
         pairs = await find_pairs(conn, args.tier)
         auto = [p for p in pairs if p["exclusive"]]
         review = [p for p in pairs if not p["exclusive"]]
@@ -274,6 +296,11 @@ def main() -> int:
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--tier", choices=tuple(_TIER_SQL))
     group.add_argument("--pending", action="store_true", help="list the review queue")
+    group.add_argument(
+        "--scan",
+        action="store_true",
+        help="dry-run every auto-apply tier (nightly; never applies)",
+    )
     group.add_argument("--revert", type=int, metavar="MERGE_ID")
     ap.add_argument("--apply", action="store_true", help="execute (default: dry-run)")
     return asyncio.run(amain(ap.parse_args()))

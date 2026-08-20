@@ -16,8 +16,8 @@ const HIT = {
   domain_markers: ['infra'],
   topics: ['kubernetes'],
   emails: [
-    { email: 'jane@stripe.com', source: 'profile', is_work: true },
-    { email: 'jd@gmail.com', source: 'commit', is_work: false },
+    { email: 'jane@stripe.com', source: 'profile', is_work: true, reach_score: 55 },
+    { email: 'jd@gmail.com', source: 'commit', is_work: false, reach_score: 72 },
   ],
   score: 71,
   highlights: ['x'],
@@ -33,6 +33,10 @@ test('maps core fields with login as source_id', () => {
   assert.equal(c.current_company_domain, 'stripe.com');
   assert.equal(c.years_experience, 7.2);
   assert.deepEqual(c.emails, ['jane@stripe.com', 'jd@gmail.com']);
+  assert.deepEqual(c.raw.foray.email_reach, {
+    'jane@stripe.com': 55,
+    'jd@gmail.com': 72,
+  });
   assert.deepEqual(c.skills, ['go', 'infra', 'kubernetes']);
   assert.equal(c.raw.foray.score, 71);
   assert.equal(c.raw.foray.archetype, 'infra_platform');

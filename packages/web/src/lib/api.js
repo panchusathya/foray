@@ -93,6 +93,7 @@ export const api = {
     return request(`/v1/candidates${suffix ? `?${suffix}` : ''}`);
   },
   getCandidate: (id) => request(`/v1/candidates/${id}`),
+  createCandidate: (payload) => request('/v1/candidates', { method: 'POST', body: payload }),
   updateCandidate: (id, payload) =>
     request(`/v1/candidates/${id}`, { method: 'PATCH', body: payload }),
 

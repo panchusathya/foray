@@ -16,8 +16,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
+import { AddContactModal } from '../components/AddContactModal.jsx';
 import { BulkBar } from '../components/BulkBar.jsx';
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -134,6 +135,7 @@ export function ContactsPage() {
   // The project list is already in context for the sidebar switcher; a
   // second fetch here would just be the same rows again.
   const { project, projects } = useCurrentProject();
+  const navigate = useNavigate();
 
   const viewId = searchParams.get('view') ?? DEFAULT_VIEW_ID;
   const view = viewById(viewId);
@@ -154,6 +156,7 @@ export function ContactsPage() {
   // Outcome of the last bulk action. Lives here rather than in BulkBar,
   // which unmounts the moment the selection clears.
   const [bulkNote, setBulkNote] = useState('');
+  const [adding, setAdding] = useState(false);
   const lastIndex = useRef(null);
 
   function patchParams(changes, { resetPage = true } = {}) {
@@ -242,7 +245,23 @@ export function ContactsPage() {
             ? `${count.toLocaleString()} ${count === 1 ? 'person' : 'people'} · ${view.blurb}`
             : view.blurb
         }
+        actions={
+          <button type="button" onClick={() => setAdding(true)} data-testid="add-contact">
+            Add contact
+          </button>
+        }
       />
+
+      {adding ? (
+        <AddContactModal
+          onClose={() => setAdding(false)}
+          onCreated={(created) => {
+            setAdding(false);
+            // Land on the record you just made: the next thing is usually a note.
+            navigate(`/contacts/${created.id}`);
+          }}
+        />
+      ) : null}
 
       <ViewTabs activeId={view.id} />
 

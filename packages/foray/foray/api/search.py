@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import asyncpg
+
 from ..config import settings
 from ..embed.model import embed_query, to_halfvec_literal
 from ..evidence import Evidence, build_evidence
@@ -350,19 +352,37 @@ async def _snapshot(conn):
         yield
 
 
+async def _ensure_pgvector_loaded(conn) -> None:
+    """Load pgvector's .so so ``hnsw.*`` GUCs exist in this session.
+
+    Those GUCs are registered when the library loads, not at connect.
+    ``set_config('hnsw.ef_search', ...)`` before that creates a dummy custom
+    GUC that HNSW never reads — and ``SHOW`` raises UndefinedObjectError.
+    Touching a vector type forces the load.
+    """
+    await conn.execute("select null::vector")
+
+
 async def apply_hnsw_gucs(conn, vector_k: int) -> str | None:
     """SET LOCAL so a pooled connection cannot leak ef_search to the next request."""
     version = await probe_pgvector_version(conn)
-    if version and _version_tuple(version) >= (0, 8):
-        await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true)")
-        await conn.execute(
-            "select set_config('hnsw.ef_search', $1, true)", str(settings.hnsw_ef_search)
-        )
-    else:
-        # Pre-0.8 has no iterative scan; ef_search must cover the arm LIMIT or
-        # post-filtering yields a handful of rows regardless of LIMIT.
-        ef = max(settings.hnsw_ef_search, int(vector_k * 1.6), 40)
-        await conn.execute("select set_config('hnsw.ef_search', $1, true)", str(ef))
+    try:
+        await _ensure_pgvector_loaded(conn)
+    except asyncpg.UndefinedObjectError:
+        return version
+    try:
+        if version and _version_tuple(version) >= (0, 8):
+            await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true)")
+            await conn.execute(
+                "select set_config('hnsw.ef_search', $1, true)", str(settings.hnsw_ef_search)
+            )
+        else:
+            # Pre-0.8 has no iterative scan; ef_search must cover the arm LIMIT or
+            # post-filtering yields a handful of rows regardless of LIMIT.
+            ef = max(settings.hnsw_ef_search, int(vector_k * 1.6), 40)
+            await conn.execute("select set_config('hnsw.ef_search', $1, true)", str(ef))
+    except asyncpg.UndefinedObjectError:
+        log.warning("search.hnsw_guc_missing", pgvector_version=version)
     return version
 
 

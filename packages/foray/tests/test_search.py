@@ -299,13 +299,16 @@ async def test_search_never_raises_on_adversarial_query():
 async def test_ef_search_does_not_leak_from_the_pool():
     """SET LOCAL on a pooled connection must not survive the request.
 
-    ``show hnsw.ef_search`` can return '' on some pgvector builds when the
-    GUC has never been set in the session — do not int() that. A leak is
-    the raised request value (100, or 1.6*vector_k) sticking after search.
+    pgvector registers ``hnsw.ef_search`` when its library loads, not at
+    connect. Touch a vector type first; skip if this build has no GUC.
     """
     conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
     try:
-        before = await conn.fetchval("show hnsw.ef_search")
+        try:
+            await conn.execute("select null::vector")
+            before = await conn.fetchval("show hnsw.ef_search")
+        except asyncpg.UndefinedObjectError:
+            pytest.skip("hnsw.ef_search is not a GUC in this pgvector build")
         await run_search(conn, "backend engineer rust", 5, use_llm=False)
         after = await conn.fetchval("show hnsw.ef_search")
         assert after == before

@@ -22,8 +22,8 @@ import { AddContactModal } from '../components/AddContactModal.jsx';
 import { BulkBar } from '../components/BulkBar.jsx';
 import { DiscoveredTray } from '../components/DiscoveredTray.jsx';
 import { DuplicatesPanel } from '../components/DuplicatesPanel.jsx';
-import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
-import { api } from '../lib/api.js';
+import { Avatar, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { CRM_STATUS_LABELS, api } from '../lib/api.js';
 import {
   CONTACT_COLUMNS,
   CONTACT_VIEWS,
@@ -65,18 +65,50 @@ function relativeDate(value) {
 function DateCell({ value }) {
   const label = relativeDate(value);
   if (!label) return <span className="muted">—</span>;
-  return <span title={new Date(value).toLocaleString()}>{label}</span>;
+  // Two lines, the way Affinity does it: the relative age is what you scan,
+  // the absolute date is what you need the moment you care. A tooltip hid the
+  // second one behind a hover nobody performs.
+  return (
+    <span className="cell-stack">
+      <span>{label}</span>
+      <span className="cell-sub">
+        {new Date(value).toLocaleDateString(undefined, {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })}
+      </span>
+    </span>
+  );
 }
 
 function Cell({ column, row }) {
   const history = row.history ?? {};
   switch (column) {
-    case 'full_name':
+    case 'full_name': {
+      const email = (row.emails ?? [])[0];
+      // Name and address in one cell, which is how you actually identify
+      // somebody, and frees the column the address used to take.
       return (
-        <Link to={`/contacts/${row.id}`} title={row.full_name}>
-          {row.full_name}
-        </Link>
+        <span className="identity">
+          <Avatar name={row.full_name} />
+          <span className="cell-stack">
+            {/* The link wraps the name alone: an e2e spec finds people by
+                accessible name, and folding the address in would break it. */}
+            <Link to={`/contacts/${row.id}`} title={row.full_name}>
+              {row.full_name}
+            </Link>
+            {email ? (
+              <span className="cell-sub mono" title={(row.emails ?? []).join(', ')}>
+                {email}
+              </span>
+            ) : (
+              <span className="cell-sub muted">no email</span>
+            )}
+          </span>
+        </span>
       );
+    }
     case 'current_title':
       return row.current_title ? (
         <span title={row.current_title}>{row.current_title}</span>
@@ -100,6 +132,27 @@ function Cell({ column, row }) {
           <span className="muted"> / </span>
           {history.inbound_count ?? 0}
         </span>
+      );
+    case 'status':
+      return row.crm_status && row.crm_status !== 'none' ? (
+        <span className="badge">{CRM_STATUS_LABELS[row.crm_status] ?? row.crm_status}</span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'tags':
+      return (row.tags ?? []).length ? (
+        <span className="row wrap" style={{ gap: 4 }}>
+          {row.tags.slice(0, 3).map((tag) => (
+            <span key={tag} className="badge tag">
+              {tag}
+            </span>
+          ))}
+          {row.tags.length > 3 ? (
+            <span className="muted small">+{row.tags.length - 3}</span>
+          ) : null}
+        </span>
+      ) : (
+        <span className="muted">—</span>
       );
     case 'emails':
       return row.emails?.length ? (
@@ -392,6 +445,7 @@ export function ContactsPage() {
                       {view.columns.map((key) => (
                         <td
                           key={key}
+                          data-col={key}
                           className={CONTACT_COLUMNS[key].numeric ? 'num' : undefined}
                         >
                           <Cell column={key} row={row} />

@@ -6,7 +6,7 @@
  * markdown — a half-rendered note is worse than a plain one.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
@@ -102,7 +102,7 @@ function Note({ note, onChanged }) {
   );
 }
 
-export function NotesPanel({ candidateId }) {
+export function NotesPanel({ candidateId, onCount }) {
   const notes = useAsync(() => api.listNotes(candidateId), [candidateId]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -125,6 +125,10 @@ export function NotesPanel({ candidateId }) {
   }
 
   const rows = notes.data ?? [];
+
+  useEffect(() => {
+    if (notes.data) onCount?.(rows.length);
+  }, [notes.data, onCount, rows.length]);
 
   return (
     <div className="stack" data-testid="notes-panel">

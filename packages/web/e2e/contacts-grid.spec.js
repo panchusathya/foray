@@ -40,10 +40,79 @@ test.describe('contacts grid', () => {
     await page.goto('/contacts');
 
     await expect(page.getByTestId('contacts-grid')).toBeVisible();
-    for (const header of ['Name', 'Title', 'Company', 'Last contacted', 'Last reply', 'Touches']) {
+    for (const header of [
+      'Name',
+      'Title',
+      'Company',
+      'Last contacted',
+      'Last reply',
+      'Touches',
+      'Status',
+    ]) {
       await expect(page.getByRole('columnheader', { name: new RegExp(header) })).toBeVisible();
     }
     await expect(page.getByTestId('contact-row').first()).toBeVisible();
+  });
+
+  test('the name cell carries the address without widening the grid', async ({
+    page,
+    request,
+  }) => {
+    // The address used to need its own column. Folding it under the name is
+    // only an improvement if the cell still truncates -- an un-ellipsised
+    // address is exactly what pushes a fixed-layout table sideways.
+    const { org } = await population(request, 'grid-identity');
+    // Deliberately far too long for the column. A fixture-length address
+    // fits either way, which would make the layout half of this test pass
+    // with the fix removed.
+    const longEmail = 'aaaaaaaaaa.bbbbbbbbbb.cccccccccc@a-very-long-company-domain.example.com';
+    await request.post('/v1/candidates', {
+      headers: org.headers,
+      data: {
+        source: 'e2e',
+        source_id: 'grid-identity-long',
+        full_name: 'Aaa Longmail',
+        emails: [longEmail],
+      },
+    });
+
+    await login(page, org.email);
+    await page.goto('/contacts');
+
+    const cell = page
+      .getByTestId('contact-row')
+      .filter({ hasText: 'Ada grid-identity' })
+      .locator('td[data-col="full_name"]');
+    // The link is the name alone -- specs find people by accessible name.
+    await expect(cell.getByRole('link', { name: 'Ada grid-identity' })).toBeVisible();
+    await expect(cell).toContainText('ada-grid-identity@e2e.example.com');
+    // The contactless fixture says so rather than rendering a blank line.
+    await expect(
+      page
+        .getByTestId('contact-row')
+        .filter({ hasText: 'Noemail grid-identity' })
+        .locator('td[data-col="full_name"]'),
+    ).toContainText('no email');
+
+    const layout = await page.evaluate(() => {
+      const row = [...document.querySelectorAll('[data-testid="contact-row"]')].find((tr) =>
+        tr.textContent.includes('Aaa Longmail'),
+      );
+      const td = row.querySelector('td[data-col="full_name"]');
+      const sub = td.querySelector('.cell-sub');
+      return {
+        truncated: sub.scrollWidth > sub.clientWidth,
+        addressFits: sub.getBoundingClientRect().right <= td.getBoundingClientRect().right + 1,
+        gridWidth: document.querySelector('.dgrid').scrollWidth,
+        pageScrollsSideways:
+          document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      };
+    });
+    // Ellipsised inside its cell rather than stretching the fixed layout.
+    expect(layout.truncated).toBe(true);
+    expect(layout.addressFits).toBe(true);
+    expect(layout.gridWidth).toBeLessThan(1200);
+    expect(layout.pageScrollsSideways).toBe(false);
   });
 
   test('sorting flips aria-sort and stays in the URL', async ({ page, request }) => {

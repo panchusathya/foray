@@ -87,9 +87,13 @@ test.describe('contact history', () => {
 
     const row = page.getByTestId('contact-row').first();
     await expect(row).toBeVisible();
-    // Column 4 is Last contacted; a contacted person renders a relative age,
-    // never the em dash used for "no contact on file".
-    await expect(row.locator('td').nth(3)).not.toHaveText('—');
+    // By name, not by index: counting <td>s made this pass off the Company
+    // cell once the columns moved, which is a green test asserting nothing.
+    // A contacted person renders a relative age, never the em dash used for
+    // "no contact on file".
+    const cell = row.locator('td[data-col="last_emailed_at"]');
+    await expect(cell).toBeVisible();
+    await expect(cell).not.toHaveText('—');
   });
 
   test('a long subject truncates instead of pushing the date off the page', async ({

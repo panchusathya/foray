@@ -23,12 +23,15 @@ export const MAX_SELECT_ALL = 1000;
 
 /** Column definitions, so each view can show a different subset. */
 export const CONTACT_COLUMNS = {
-  full_name: { label: 'Name', width: 220, sort: 'name' },
+  // Wider than the rest: it carries the avatar and the address underneath.
+  full_name: { label: 'Name', width: 260, sort: 'name' },
   current_title: { label: 'Title', width: 200, sort: null },
   current_company: { label: 'Company', width: 170, sort: null },
   last_emailed_at: { label: 'Last contacted', width: 130, sort: 'last_contacted' },
   last_reply_at: { label: 'Last reply', width: 120, sort: 'last_reply' },
   touches: { label: 'Touches', width: 90, sort: 'touches', numeric: true },
+  status: { label: 'Status', width: 120, sort: null },
+  tags: { label: 'Tags', width: 160, sort: null },
   emails: { label: 'Email', width: 210, sort: null },
   created_at: { label: 'Added', width: 110, sort: 'created' },
 };
@@ -40,6 +43,8 @@ const DEFAULT_COLUMNS = [
   'last_emailed_at',
   'last_reply_at',
   'touches',
+  // A CRM row without its status is just a mailing list.
+  'status',
 ];
 
 export const CONTACT_VIEWS = [

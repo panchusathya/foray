@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader, Stat } from '../components/common.jsx';
 import { api } from '../lib/api.js';
@@ -197,7 +197,9 @@ export function SequencesPage() {
   const sequences = useAsync(() => api.listSequences(), []);
   const funnel = useAsync(() => api.funnel(), []);
   const { projects, project } = useCurrentProject();
-  const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
+  const pitchProjectId = searchParams.get('project') || '';
+  const [creating, setCreating] = useState(searchParams.get('new') === '1');
   const [error, setError] = useState(null);
 
   const outreach = funnel.data?.outreach ?? {};
@@ -294,7 +296,7 @@ export function SequencesPage() {
         <CreateSequenceModal
           projects={projects}
           sequences={sequences.data ?? []}
-          defaultProjectId={project?.id}
+          defaultProjectId={pitchProjectId || project?.id}
           onClose={() => setCreating(false)}
         />
       ) : null}

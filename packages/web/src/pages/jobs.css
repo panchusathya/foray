@@ -53,3 +53,24 @@
   display: grid;
   gap: 8px;
 }
+
+.jobs-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.jobs-detail-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.jobs-inline-link {
+  font-size: 13px;
+  font-weight: 500;
+}

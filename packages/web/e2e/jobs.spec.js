@@ -21,5 +21,12 @@ test.describe('jobs tab', () => {
     await expect(page.getByTestId('job-row').first()).toBeVisible();
     await expect(page.getByTestId('job-row')).toHaveCount(1);
     await expect(page.getByText('Senior Machine Learning Engineer')).toBeVisible();
+    await expect(page.getByTestId('job-source')).toHaveText('Manual');
+    await expect(page.getByTestId('pitch-cta')).toHaveText('Create project to pitch');
+    await expect(page.getByTestId('jobs-source-filter')).toBeVisible();
+
+    await page.getByTestId('pitch-cta').click();
+    await expect(page.getByRole('heading', { name: 'Sequences' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Create sequence' })).toBeVisible();
   });
 });

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
+import { PitchButton, SourceBadge } from './JobPitch.jsx';
 import './jobs.css';
 
 function formatDay(value) {
@@ -68,6 +69,11 @@ export function RematchPage() {
                         {posting?.has_warm_path ? ' · warm path' : ''}
                         {posting?.fee_bearing ? ' · fee' : ''}
                       </div>
+                      {posting?.source ? (
+                        <div style={{ marginTop: 4 }}>
+                          <SourceBadge source={posting.source} />
+                        </div>
+                      ) : null}
                     </div>
                     <div className="row wrap">
                       <Badge>{Math.round(match.score * 100)}</Badge>
@@ -85,15 +91,10 @@ export function RematchPage() {
                       >
                         Dismiss
                       </button>
-                      {posting?.project_id ? (
-                        <Link to={`/projects/${posting.project_id}`} className="tiny">
-                          Pitch via project
-                        </Link>
-                      ) : (
-                        <Link to={`/jobs/${match.job_posting_id}`} className="tiny">
-                          Create project from this posting
-                        </Link>
-                      )}
+                      <PitchButton
+                        posting={posting || { id: match.job_posting_id, project_id: null }}
+                        onError={setError}
+                      />
                     </div>
                   </div>
                 );

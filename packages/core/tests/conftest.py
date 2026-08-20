@@ -6,16 +6,26 @@ PostgreSQL — the production database deserves the same coverage:
 
     JUICEBOX_TEST_DATABASE_URL=postgresql+psycopg://juicebox:juicebox@localhost/juicebox_test \\
         pytest
+
+SQLite tests copy a session-built empty schema instead of running
+``create_all`` per test, and hash passwords at ``TEST_PBKDF2_ROUNDS`` so
+signup is not the suite's bottleneck. ``verify_password`` reads the cost
+out of the stored hash, so a leftover 240k hash still verifies.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
 TEST_DATABASE_URL = os.environ.get("JUICEBOX_TEST_DATABASE_URL", "")
+# Cheap enough that hundreds of signups are noise, high enough that we still
+# exercise PBKDF2 rather than a plaintext shortcut.
+TEST_PBKDF2_ROUNDS = 1_000
 
 
 def pytest_configure(config):
@@ -37,16 +47,62 @@ def pytest_configure(config):
         ) from exc
 
 
+@pytest.fixture(scope="session")
+def sqlite_schema_template(tmp_path_factory):
+    """Empty SQLite file with the full schema, reused by every test via copy.
+
+    ``create_all`` on a fresh file is tens of milliseconds; ``shutil.copyfile``
+    of this template is sub-millisecond. Postgres tests skip this and still
+    drop/create per test against the shared database.
+    """
+    if TEST_DATABASE_URL:
+        yield None
+        return
+
+    path = tmp_path_factory.mktemp("schema") / "empty.db"
+    previous_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = f"sqlite:///{path.as_posix()}"
+    try:
+        from juicebox import db as db_module
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        db_module.reset_engine()
+        db_module.create_all()
+        db_module.reset_engine()
+        # create_all enables WAL; a copy of the main file alone would miss
+        # uncheckpointed pages. Truncate the WAL and switch to DELETE so the
+        # template is a single self-contained file.
+        conn = sqlite3.connect(path.as_posix())
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.commit()
+        finally:
+            conn.close()
+        reset_settings_cache()
+    finally:
+        if previous_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous_url
+    yield path
+
+
 @pytest.fixture(autouse=True)
-def isolated_environment(tmp_path, monkeypatch):
+def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     """Every test gets its own database, no model calls and a memory mailbox."""
     if TEST_DATABASE_URL:
         monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     else:
         db_path = tmp_path / "test.db"
+        shutil.copyfile(sqlite_schema_template, db_path)
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("JUICEBOX_LLM_ENABLED", "false")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("JUICEBOX_PBKDF2_ROUNDS", str(TEST_PBKDF2_ROUNDS))
+    # Schema is already in the copied file (SQLite) or created below (Postgres).
+    monkeypatch.setenv("JUICEBOX_AUTO_CREATE_SCHEMA", "false")
     # Both provider keys must be blank: the repo-root .env carries a real
     # OPENROUTER_API_KEY for Foray, and a test that enables the LLM would
     # otherwise reach the network.
@@ -89,7 +145,7 @@ def isolated_environment(tmp_path, monkeypatch):
         # One shared database, so wipe it between tests instead of relying on a
         # fresh file per test the way the SQLite path does.
         db_module.drop_all()
-    db_module.create_all()
+        db_module.create_all()
     yield
 
     db_module.reset_engine()

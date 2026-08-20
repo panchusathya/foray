@@ -337,10 +337,12 @@ make lint
 make test-live   # contract tests against the real APIs; needs keys
 ```
 
-Python tests run against an isolated SQLite file per test, with the model
-disabled and a memory mailbox, so the suite is deterministic and needs no
-network. Model-backed code is covered through `FakeTransport`, which scripts
-responses, failures and retries without a key.
+Python tests run against an isolated SQLite file per test — the empty schema
+is built once per session and copied, password hashing uses 1k PBKDF2 rounds
+instead of 240k, the model is disabled, and the mailbox is in-memory — so the
+suite is deterministic and needs no network. Model-backed code is covered
+through `FakeTransport`, which scripts responses, failures and retries
+without a key.
 
 The same suite runs against PostgreSQL — worth doing before a deploy, since
 SQLite will not catch a Postgres-only problem:

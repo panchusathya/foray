@@ -40,8 +40,11 @@ logger = logging.getLogger("juicebox")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     settings = get_settings()
-    if settings.is_sqlite:
+    if settings.is_sqlite and settings.auto_create_schema:
         # Zero-setup dev/demo path: the local file may not exist yet.
+        # Tests copy a session-built schema into each tmp db and set
+        # JUICEBOX_AUTO_CREATE_SCHEMA=false so TestClient does not run
+        # create_all a second time on every client fixture.
         create_all()
     elif not is_up_to_date():
         # Never mutate a real database implicitly — several workers boot at once

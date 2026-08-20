@@ -14,6 +14,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DEV_SECRET_KEY = "dev-secret-change-me-in-production"
 
+# OWASP's 2023 PBKDF2-HMAC-SHA256 baseline. Tests drop this via
+# JUICEBOX_PBKDF2_ROUNDS; verify_password reads the cost out of the stored
+# hash, so mixed-cost hashes keep verifying. Production and staging refuse to
+# boot below this so a leftover test env cannot weaken live passwords.
+DEFAULT_PBKDF2_ROUNDS = 240_000
+
 # Values that must never sign tokens in production: the shipped default, the
 # ones in .env.example and docker-compose.yml, and the obvious placeholders.
 INSECURE_SECRET_KEYS = frozenset(
@@ -86,6 +92,15 @@ class Settings:
         default_factory=lambda: _env(
             "DATABASE_URL", f"sqlite:///{(REPO_ROOT / 'data' / 'juicebox.db').as_posix()}"
         )
+    )
+    # Local SQLite boots with no migrate step. Tests copy a prebuilt schema
+    # into each tmp db and turn this off so TestClient lifespan is not a
+    # second create_all().
+    auto_create_schema: bool = field(
+        default_factory=lambda: _env_bool("JUICEBOX_AUTO_CREATE_SCHEMA", True)
+    )
+    pbkdf2_rounds: int = field(
+        default_factory=lambda: _env_int("JUICEBOX_PBKDF2_ROUNDS", DEFAULT_PBKDF2_ROUNDS)
     )
 
     # --- foray (the sourcing engine, a separate service) -----------------
@@ -321,20 +336,30 @@ class Settings:
         value means anyone can mint a token for any workspace. That is worth
         refusing to boot over in production and staging — every other
         environment keeps working with no .env at all.
-        """
-        if not self.requires_secure_secret:
-            return
 
+        PBKDF2 rounds below 1 are never valid. Staging and production also
+        refuse a cost below ``DEFAULT_PBKDF2_ROUNDS`` so ``JUICEBOX_PBKDF2_ROUNDS``
+        cannot be left at the test value of 1000.
+        """
         problems: list[str] = []
-        if not self.secret_key or self.secret_key in INSECURE_SECRET_KEYS:
-            problems.append(
-                "SECRET_KEY is unset or still the development default; generate one with "
-                '`python -c "import secrets; print(secrets.token_urlsafe(48))"`'
-            )
-        elif len(self.secret_key) < 32:
-            problems.append(
-                f"SECRET_KEY is only {len(self.secret_key)} characters; use at least 32"
-            )
+        if self.pbkdf2_rounds < 1:
+            problems.append("JUICEBOX_PBKDF2_ROUNDS must be at least 1")
+
+        if self.requires_secure_secret:
+            if not self.secret_key or self.secret_key in INSECURE_SECRET_KEYS:
+                problems.append(
+                    "SECRET_KEY is unset or still the development default; generate one with "
+                    '`python -c "import secrets; print(secrets.token_urlsafe(48))"`'
+                )
+            elif len(self.secret_key) < 32:
+                problems.append(
+                    f"SECRET_KEY is only {len(self.secret_key)} characters; use at least 32"
+                )
+            if self.pbkdf2_rounds < DEFAULT_PBKDF2_ROUNDS:
+                problems.append(
+                    f"JUICEBOX_PBKDF2_ROUNDS is {self.pbkdf2_rounds}; "
+                    f"production and staging must use at least {DEFAULT_PBKDF2_ROUNDS}"
+                )
 
         if problems:
             raise ConfigError(

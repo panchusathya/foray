@@ -21,6 +21,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AddContactModal } from '../components/AddContactModal.jsx';
 import { BulkBar } from '../components/BulkBar.jsx';
 import { DiscoveredTray } from '../components/DiscoveredTray.jsx';
+import { DuplicatesPanel } from '../components/DuplicatesPanel.jsx';
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import {
@@ -192,14 +193,14 @@ export function ContactsPage() {
   // page of candidates nobody is going to look at.
   const rows = useAsync(
     () =>
-      view.tray
+      view.panel
         ? Promise.resolve([])
         : api.contactsGrid({ ...listParams, include_history: true }),
-    [listKey, view.tray],
+    [listKey, view.panel],
   );
   const total = useAsync(
-    () => (view.tray ? Promise.resolve(null) : api.contactsCount(totalParams)),
-    [totalKey, view.tray],
+    () => (view.panel ? Promise.resolve(null) : api.contactsCount(totalParams)),
+    [totalKey, view.panel],
   );
   const sequences = useAsync(() => api.listSequences(), []);
 
@@ -275,8 +276,8 @@ export function ContactsPage() {
 
       <ViewTabs activeId={view.id} />
 
-      {view.tray ? (
-        <DiscoveredTray />
+      {view.panel ? (
+        view.panel === 'duplicates' ? <DuplicatesPanel /> : <DiscoveredTray />
       ) : (
       <div className="stack">
         <input

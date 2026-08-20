@@ -431,6 +431,31 @@ class CandidateEmail(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class DuplicateDismissal(Base, TimestampMixin):
+    """A pair someone has looked at and said are two different people.
+
+    Suggestions are recomputed from live data every time, so without this the
+    same "Are these the same John Smith?" comes back forever and the list
+    stops being read. The pair is stored with the ids sorted, so it matches
+    whichever way round it is later suggested.
+    """
+
+    __tablename__ = "duplicate_dismissals"
+    __table_args__ = (
+        UniqueConstraint("left_id", "right_id", name="uq_duplicate_dismissal"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("dup"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    left_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    right_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    dismissed_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
 class CandidateTag(Base, TimestampMixin):
     """A tag on a person.
 

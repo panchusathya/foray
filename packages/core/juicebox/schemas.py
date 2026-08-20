@@ -390,6 +390,15 @@ class IgnoreDomainRequest(BaseModel):
     domain: str
 
 
+class MergeRequest(BaseModel):
+    primary_id: str
+    duplicate_ids: list[str]
+
+
+class DismissDuplicateRequest(BaseModel):
+    candidate_ids: list[str]
+
+
 class DiscoveredBulkResult(BaseModel):
     promoted: int = 0
     dismissed: int = 0

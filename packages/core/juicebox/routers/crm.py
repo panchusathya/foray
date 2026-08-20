@@ -11,10 +11,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..duplicates import dismiss_pair as dismiss_duplicate_pair
+from ..duplicates import merge as merge_candidates
+from ..duplicates import suggestions as duplicate_suggestions
 from ..integrations.discovery import dismiss as dismiss_row
 from ..integrations.discovery import promote as promote_row
 from ..models import (
     DISCOVERED_STATUSES,
+    Candidate,
     CandidateTag,
     DiscoveredContact,
     Org,
@@ -25,7 +29,9 @@ from ..schemas import (
     DiscoveredDismissRequest,
     DiscoveredOut,
     DiscoveredPromoteRequest,
+    DismissDuplicateRequest,
     IgnoreDomainRequest,
+    MergeRequest,
 )
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/crm", tags=["crm"])
@@ -82,6 +88,107 @@ def list_tags(
         .order_by(func.count(CandidateTag.id).desc(), CandidateTag.tag)
     ).all()
     return [{"tag": tag, "count": int(count)} for tag, count in rows]
+
+
+@router.get("/duplicates")
+def list_duplicates(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """People who may be in the CRM twice, strongest evidence first.
+
+    Suggestions only. Nothing is merged without someone saying so: a matching
+    name is not proof, and a merge cannot be undone once notes, mail and
+    enrolments have moved onto the survivor.
+    """
+    groups = duplicate_suggestions(db, org_id=principal.org_id)
+    if not groups:
+        return []
+
+    people = {
+        row.id: row
+        for row in db.scalars(
+            select(Candidate).where(
+                Candidate.id.in_([i for g in groups for i in g.candidate_ids])
+            )
+        ).all()
+    }
+    return [
+        {
+            "name": group.name,
+            "confidence": group.confidence,
+            "reason": group.reason,
+            "candidates": [
+                {
+                    "id": cid,
+                    "full_name": people[cid].full_name,
+                    "emails": people[cid].emails,
+                    "current_title": people[cid].current_title,
+                    "current_company": people[cid].current_company,
+                    "created_at": people[cid].created_at,
+                }
+                for cid in group.candidate_ids
+                if cid in people
+            ],
+        }
+        for group in groups
+    ]
+
+
+@router.post("/duplicates/merge")
+def merge_duplicates(
+    payload: MergeRequest,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fold the duplicates into the chosen survivor. Not reversible."""
+    result = merge_candidates(
+        db,
+        org_id=principal.org_id,
+        primary_id=payload.primary_id,
+        duplicate_ids=payload.duplicate_ids,
+    )
+    if result.get("error"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=result["error"]
+        )
+    record_event(
+        db,
+        org_id=principal.org_id,
+        type="crm.candidates_merged",
+        subject_type="candidate",
+        subject_id=payload.primary_id,
+        actor_id=principal.user_id,
+        payload={"merged": result["merged"], "moved": result["moved"]},
+    )
+    return result
+
+
+@router.post("/duplicates/dismiss")
+def dismiss_duplicate(
+    payload: DismissDuplicateRequest,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Say that these are different people, so the pair stops being suggested."""
+    ids = payload.candidate_ids
+    if len(ids) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Dismissing needs at least two candidates",
+        )
+    pairs = 0
+    for index, left in enumerate(ids):
+        for right in ids[index + 1 :]:
+            dismiss_duplicate_pair(
+                db,
+                org_id=principal.org_id,
+                left=left,
+                right=right,
+                actor_id=principal.user_id,
+            )
+            pairs += 1
+    return {"dismissed": pairs}
 
 
 @router.get("/discovered", response_model=list[DiscoveredOut])

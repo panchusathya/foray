@@ -11,18 +11,16 @@ import time
 
 from .config import get_settings
 
-_PBKDF2_ROUNDS = 240_000
-
-
 # --------------------------------------------------------------------------
 # passwords
 # --------------------------------------------------------------------------
 
 
 def hash_password(password: str) -> str:
+    rounds = get_settings().pbkdf2_rounds
     salt = secrets.token_bytes(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ROUNDS)
-    return f"pbkdf2_sha256${_PBKDF2_ROUNDS}${salt.hex()}${dk.hex()}"
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${salt.hex()}${dk.hex()}"
 
 
 def verify_password(password: str, encoded: str) -> bool:

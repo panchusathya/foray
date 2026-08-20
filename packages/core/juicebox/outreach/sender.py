@@ -33,6 +33,13 @@ class OutboundEmail:
     # far less than a step that refuses to send.
     in_reply_to: str = ""
     references: str = ""
+    # The parent's id in the SENDING provider's own namespace (a Graph message
+    # id, a Zoho messageId), set only when the parent went out from the same
+    # mailbox. Graph rejects In-Reply-To and References in
+    # internetMessageHeaders -- it takes x- names only -- so the RFC hints
+    # above cannot thread an Outlook send on their own; replying to this id is
+    # the only way. Providers that thread on headers alone ignore it.
+    thread_native_id: str = ""
 
     @property
     def from_header(self) -> str:

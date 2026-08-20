@@ -199,6 +199,20 @@ class GraphClient:
     def send_draft(self, message_id: str) -> None:
         self._request("POST", f"/me/messages/{message_id}/send")
 
+    def update_draft(self, message_id: str, patch: dict) -> dict:
+        """Overwrite fields on an unsent draft.
+
+        Used on a createReply draft: Graph fills it with the thread's headers
+        and the quoted original, and this replaces the parts that are ours.
+        """
+        response = self._request(
+            "PATCH",
+            f"/me/messages/{message_id}",
+            json=patch,
+            headers={"Prefer": 'IdType="ImmutableId"'},
+        )
+        return response.json()
+
     def create_reply_draft(self, message_id: str, comment_html: str) -> dict:
         """Draft a reply on the actual thread; it lands in the user's Drafts.
 
@@ -322,20 +336,8 @@ class GraphSender:
     def send(self, email) -> SendResult:  # noqa: F821 - see import below
         from ..outreach.sender import SendResult
 
-        message = {
-            "subject": email.subject,
-            "body": {"contentType": "HTML", "content": email.html_body or email.text_body},
-            "toRecipients": [{"emailAddress": {"address": email.to}}],
-        }
-        if email.headers:
-            # Graph only accepts custom x-headers here; ours all qualify.
-            message["internetMessageHeaders"] = [
-                {"name": name, "value": value}
-                for name, value in email.headers.items()
-                if name.lower().startswith("x-")
-            ]
         try:
-            draft = self.client.create_draft(message)
+            draft = self._draft_for(email)
             self.client.send_draft(draft["id"])
         except (MicrosoftError, ValueError) as exc:
             logger.error("graph send failed for %s: %s", self.connection.address, exc)
@@ -347,6 +349,66 @@ class GraphSender:
             internet_message_id=draft.get("internetMessageId", ""),
             conversation_id=draft.get("conversationId", ""),
         )
+
+    def _draft_for(self, email) -> dict:
+        """The draft this send goes out as: a reply on the thread when there is
+        one, otherwise a new message.
+
+        Graph takes ``internetMessageHeaders`` for x- names only, so it will not
+        accept In-Reply-To or References. A follow-up built as a fresh draft
+        therefore arrives as a brand new conversation whatever headers we ask
+        for, which is what it was doing: same subject, new thread, and the
+        candidate reads it as a second cold email. ``createReply`` is the way to
+        put a send on an existing Outlook thread -- Graph copies the
+        conversation and the RFC threading headers onto the draft, and this
+        overwrites the parts that are ours.
+        """
+        body = {"contentType": "HTML", "content": email.html_body or email.text_body}
+        recipients = [{"emailAddress": {"address": email.to}}]
+        headers = [
+            {"name": name, "value": value}
+            for name, value in (email.headers or {}).items()
+            if name.lower().startswith("x-")
+        ]
+
+        if email.thread_native_id:
+            patch = {
+                # createReply addresses the reply to the parent's From, which
+                # on a message we sent is this mailbox. Left alone, the
+                # follow-up would go to ourselves.
+                "toRecipients": recipients,
+                "subject": email.subject,
+                # Replaces Graph's quoted original rather than appending to it:
+                # the quote carries the previous step's tracking pixel, so
+                # every open of the follow-up would also count as an open of
+                # the email before it.
+                "body": body,
+            }
+            if headers:
+                patch["internetMessageHeaders"] = headers
+            try:
+                reply = self.client.create_reply_draft(email.thread_native_id, "")
+                updated = self.client.update_draft(reply["id"], patch) or {}
+            except (MicrosoftError, ValueError) as exc:
+                # Either the parent is gone (deleted, moved out of this
+                # mailbox) or Graph refused the draft. Covers both calls on
+                # purpose: an unthreaded send is worse than a threaded one and
+                # much better than a step that fails five times and parks.
+                logger.warning(
+                    "graph reply on %s failed for %s, sending unthreaded: %s",
+                    email.thread_native_id,
+                    self.connection.address,
+                    exc,
+                )
+            else:
+                # PATCH returns the message, but fall back to the createReply
+                # response for anything it leaves out -- the id has to be there.
+                return {**reply, **updated}
+
+        message = {"subject": email.subject, "body": body, "toRecipients": recipients}
+        if headers:
+            message["internetMessageHeaders"] = headers
+        return self.client.create_draft(message)
 
 
 def _stamp(raw: str) -> datetime | None:

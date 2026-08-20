@@ -279,9 +279,13 @@ class TestTokenRefresh:
 
 
 class FakeGraphClient:
-    def __init__(self):
+    def __init__(self, *, reply_fails: bool = False, patch_fails: bool = False):
         self.drafts: list[dict] = []
         self.sent_ids: list[str] = []
+        self.replied_to: list[str] = []
+        self.patches: list[tuple[str, dict]] = []
+        self.reply_fails = reply_fails
+        self.patch_fails = patch_fails
 
     def create_draft(self, message):
         self.drafts.append(message)
@@ -290,6 +294,25 @@ class FakeGraphClient:
             "internetMessageId": f"<imid-{len(self.drafts)}@outlook.com>",
             "conversationId": "conv-1",
         }
+
+    def create_reply_draft(self, message_id, comment_html):
+        if self.reply_fails:
+            raise microsoft.MicrosoftError("ErrorItemNotFound", status_code=404)
+        self.replied_to.append(message_id)
+        return {
+            "id": "graph-reply-1",
+            "internetMessageId": "<imid-reply-1@outlook.com>",
+            # Graph puts the reply on the parent's conversation, which is the
+            # whole point: same thread in the candidate's client.
+            "conversationId": "conv-parent",
+            "body": {"contentType": "HTML", "content": "<p>quoted original</p>"},
+        }
+
+    def update_draft(self, message_id, patch):
+        if self.patch_fails:
+            raise microsoft.MicrosoftError("ErrorInvalidPropertySet", status_code=400)
+        self.patches.append((message_id, patch))
+        return {"id": message_id, "conversationId": "conv-parent"}
 
     def send_draft(self, message_id):
         self.sent_ids.append(message_id)
@@ -325,6 +348,101 @@ class TestGraphSender:
         assert draft["internetMessageHeaders"] == [
             {"name": "X-Juicebox-Message-Id", "value": "msg_1"}
         ]
+
+
+class TestGraphThreading:
+    """A follow-up has to land in the thread the first email started.
+
+    Graph takes ``internetMessageHeaders`` for x- names only, so In-Reply-To and
+    References cannot get a send onto an Outlook thread. Before this, every
+    follow-up arrived as a new conversation with the same subject -- verified in
+    production, where step 2 went out under a fresh conversationId.
+    """
+
+    def _email(self, **kwargs):
+        from juicebox.outreach.sender import OutboundEmail
+
+        defaults = dict(
+            to="ada@example.com",
+            subject="Re: Quick note",
+            text_body="Following up",
+            html_body="<p>Following up</p>",
+            from_email="ignored@goforay.io",
+            headers={"X-Juicebox-Message-Id": "msg_2"},
+            in_reply_to="<imid-1@outlook.com>",
+            references="<imid-1@outlook.com>",
+        )
+        defaults.update(kwargs)
+        return OutboundEmail(**defaults)
+
+    def test_a_follow_up_replies_on_the_parents_thread(self, session, account):
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient()
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        result = sender.send(self._email(thread_native_id="graph-parent"))
+
+        assert result.ok
+        assert fake.replied_to == ["graph-parent"]
+        # No fresh draft: a new draft is a new conversation.
+        assert fake.drafts == []
+        assert fake.sent_ids == ["graph-reply-1"]
+        assert result.conversation_id == "conv-parent"
+
+    def test_the_reply_goes_to_the_candidate_not_back_to_us(self, session, account):
+        """createReply addresses the reply to the parent's From, and on a
+        message we sent that is our own mailbox."""
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient()
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        sender.send(self._email(thread_native_id="graph-parent"))
+
+        [(draft_id, patch)] = fake.patches
+        assert draft_id == "graph-reply-1"
+        assert patch["toRecipients"] == [{"emailAddress": {"address": "ada@example.com"}}]
+        assert patch["subject"] == "Re: Quick note"
+        # Our body replaces Graph's quoted original: the quote carries the
+        # previous step's tracking pixel.
+        assert patch["body"]["content"] == "<p>Following up</p>"
+        assert "quoted original" not in patch["body"]["content"]
+        assert patch["internetMessageHeaders"] == [
+            {"name": "X-Juicebox-Message-Id", "value": "msg_2"}
+        ]
+
+    def test_a_missing_parent_still_sends(self, session, account):
+        """Deleted parent: unthreaded beats not sending at all."""
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient(reply_fails=True)
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        result = sender.send(self._email(thread_native_id="graph-parent"))
+
+        assert result.ok
+        assert len(fake.drafts) == 1
+        assert fake.sent_ids == ["graph-1"]
+
+    def test_a_refused_reply_draft_still_sends(self, session, account):
+        """The fallback covers the PATCH too: five failed attempts would park
+        the send job and lose the step."""
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient(patch_fails=True)
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        result = sender.send(self._email(thread_native_id="graph-parent"))
+
+        assert result.ok
+        assert fake.sent_ids == ["graph-1"]
+
+    def test_a_first_send_is_a_plain_draft(self, session, account):
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient()
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        sender.send(self._email(thread_native_id="", in_reply_to="", references=""))
+
+        assert fake.replied_to == []
+        assert len(fake.drafts) == 1
 
 
 class TestSenderResolution:

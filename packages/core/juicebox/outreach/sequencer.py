@@ -398,6 +398,67 @@ def _thread_parent(db: Session, enrollment_id: str) -> Message | None:
     )
 
 
+def _reference_chain(db: Session, enrollment_id: str) -> str:
+    """Every Message-ID on this conversation so far, oldest first.
+
+    References is a chain, not a pointer: a client that never saw the message
+    In-Reply-To names walks back through the rest of it to find the thread. Two
+    steps in, a References holding only the immediate parent is exactly the
+    case where that walk fails, and the follow-up opens as its own
+    conversation.
+
+    Inbound messages count -- a candidate's reply is part of the thread we are
+    continuing.
+    """
+    ids = db.scalars(
+        select(Message.internet_message_id)
+        .where(
+            Message.enrollment_id == enrollment_id,
+            Message.internet_message_id != "",
+            Message.sent_at.is_not(None),
+        )
+        .order_by(Message.sent_at.asc())
+    ).all()
+    seen: list[str] = []
+    for value in ids:
+        if value not in seen:
+            seen.append(value)
+    return " ".join(seen)
+
+
+def _thread_subject(subject: str, parent: Message | None) -> str:
+    """The subject a threaded follow-up goes out under.
+
+    Gmail and Outlook both split a conversation when the subject changes, so a
+    step whose template renders the same line as the first email is asking to
+    be a reply and gets the "Re:" that makes it read as one. A step that
+    renders something genuinely different is a deliberate change of subject and
+    is left alone -- it still threads on the headers, it just keeps the wording
+    somebody chose.
+    """
+    if parent is None or not subject:
+        return subject
+    previous = (parent.subject or "").strip()
+    if not previous:
+        return subject
+    if _bare_subject(subject) != _bare_subject(previous):
+        return subject
+    return previous if previous.lower().startswith("re:") else f"Re: {previous}"
+
+
+def _bare_subject(subject: str) -> str:
+    """A subject with any reply/forward prefixes stripped, for comparison."""
+    value = (subject or "").strip()
+    while True:
+        lowered = value.lower()
+        for prefix in ("re:", "fw:", "fwd:"):
+            if lowered.startswith(prefix):
+                value = value[len(prefix) :].strip()
+                break
+        else:
+            return value.casefold()
+
+
 def _finish_enrollment(enrollment: Enrollment, status: str, reason: str = "") -> None:
     enrollment.status = status
     enrollment.stopped_reason = reason
@@ -505,6 +566,10 @@ def send_step(
         enrollment.personalization = context
 
     plain_body = templates.to_text(body)
+    # Before the Message row: the parent decides the subject, and the row has
+    # to record what actually went out.
+    parent = _thread_parent(db, enrollment.id)
+    subject = _thread_subject(subject, parent)
     message = existing
     if message is None:
         message = Message(
@@ -553,7 +618,19 @@ def send_step(
 
     # Follow-ups thread off the previous send. Providers that cannot express
     # these headers ignore them and send a fresh message rather than failing.
-    parent = _thread_parent(db, enrollment.id)
+    #
+    # thread_native_id only when the parent left from the mailbox that is
+    # sending now: replying on a thread means asking that mailbox for one of
+    # its own messages, and another mailbox's id is not a message it has.
+    # Pinning normally guarantees this, but a re-pin or a fixed-mode change can
+    # move an in-flight enrollment.
+    connection = getattr(resolved, "connection", None)
+    same_mailbox = (
+        parent is not None
+        and connection is not None
+        and parent.mailbox_id == connection.id
+        and bool(parent.provider_native_id)
+    )
     email = OutboundEmail(
         to=to_address,
         subject=subject,
@@ -563,7 +640,8 @@ def send_step(
         from_name=sequence.from_name or settings.outreach_from_name,
         headers={"X-Juicebox-Message-Id": message.id},
         in_reply_to=parent.internet_message_id if parent is not None else "",
-        references=parent.internet_message_id if parent is not None else "",
+        references=_reference_chain(db, enrollment.id) if parent is not None else "",
+        thread_native_id=parent.provider_native_id if same_mailbox else "",
     )
 
     if dry_run:

@@ -16,6 +16,7 @@ from typing import Any
 
 from ..config import settings
 from ..embed.model import embed_query, to_halfvec_literal
+from ..llm import Chat
 from ..rank import (
     BlendWeights,
     Page,
@@ -341,10 +342,11 @@ async def run_search(
     offset: int = 0,
     use_llm: bool | None = None,
     has_contact: bool = False,
+    chat: Chat | None = None,
 ) -> SearchResult:
     policy = _policy()
     window = clamp_window(offset, limit or 0, policy)
-    parsed, parser = await parse_query(conn, query, use_llm=use_llm)
+    parsed, parser = await parse_query(conn, query, use_llm=use_llm, chat=chat)
     qvec = to_halfvec_literal(embed_query(parsed.free_text or query))
 
     arch = load_archetypes().get(parsed.archetype_id) if parsed.archetype_id else None

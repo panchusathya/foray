@@ -8,6 +8,8 @@ requests instead (see score/run.py).
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import httpx
 from tenacity import (
     retry,
@@ -23,6 +25,18 @@ _HEADERS_EXTRA = {
     "HTTP-Referer": "https://app.goforay.io",
     "X-Title": "Foray sourcing engine",
 }
+
+
+class Chat(Protocol):
+    def complete(
+        self, system: str, user: str, *, model: str, max_tokens: int = 1600
+    ) -> str: ...
+
+
+class AsyncChat(Protocol):
+    async def complete(
+        self, system: str, user: str, *, model: str, max_tokens: int = 1600
+    ) -> str: ...
 
 
 def _retryable(exc: BaseException) -> bool:
@@ -95,3 +109,44 @@ async def achat(
     )
     resp.raise_for_status()
     return _extract_text(resp.json())
+
+
+class OpenRouterChat:
+    """Synchronous adapter; construction performs no I/O."""
+
+    def complete(
+        self, system: str, user: str, *, model: str, max_tokens: int = 1600
+    ) -> str:
+        return chat(system, user, model=model, max_tokens=max_tokens)
+
+
+class AsyncOpenRouterChat:
+    """Async adapter owning one shared client for a scoring fan-out."""
+
+    def __init__(self, *, timeout: float = 90.0) -> None:
+        self._timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> AsyncOpenRouterChat:
+        self._client = httpx.AsyncClient(
+            base_url=settings.openrouter_base_url, timeout=self._timeout
+        )
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    async def complete(
+        self, system: str, user: str, *, model: str, max_tokens: int = 1600
+    ) -> str:
+        if self._client is None:
+            raise RuntimeError("AsyncOpenRouterChat must be used as an async context manager")
+        return await achat(
+            self._client,
+            system,
+            user,
+            model=model,
+            max_tokens=max_tokens,
+        )

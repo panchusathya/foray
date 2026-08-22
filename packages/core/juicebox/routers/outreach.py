@@ -30,6 +30,7 @@ from ..outreach.sequencer import (
     preview_step,
     process_enrollment,
     record_reply,
+    reply_subject,
     run_due,
     suggested_date_context,
 )
@@ -386,9 +387,15 @@ def preview(
             ),
             **suggested_date_context(db, enrollment=enrollment, step=step, now=utcnow()),
         }
+        # Follow-ups take the first step's line here too, or the degraded
+        # preview would show a blank subject for every step whose own box the
+        # editor no longer offers.
+        subject_source = steps[0] if steps and step is not steps[0] else step
         subject = templates.render(
-            templates.mark_directives(step.subject_template or ""), context
+            templates.mark_directives(subject_source.subject_template or ""), context
         ).strip()
+        if subject_source is not step:
+            subject = reply_subject(subject)
         body = templates.render(
             templates.mark_directives(step.body_template or ""), context
         ).strip()

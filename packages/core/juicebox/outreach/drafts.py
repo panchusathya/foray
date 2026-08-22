@@ -40,7 +40,9 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
         "delay_unit": "business_days",
     },
     {
-        "subject_template": "Re: {{subject_hint|your next move}}",
+        # Follow-ups carry no subject of their own: they reply on step 1's
+        # thread and inherit its line at send time.
+        "subject_template": "",
         "body_template": (
             "Hi {{first_name|there}},\n\n"
             "Following up in case my last note got buried. The {{role_title|role}} is "
@@ -53,7 +55,7 @@ _TEMPLATE_STEPS: list[dict[str, Any]] = [
         "delay_unit": "business_days",
     },
     {
-        "subject_template": "Closing the loop",
+        "subject_template": "",
         "body_template": (
             "Hi {{first_name|there}},\n\n"
             "Last note from me. If the timing is wrong or this isn't interesting, no "
@@ -119,6 +121,11 @@ def _coerce_steps(raw: Any, num_steps: int) -> list[dict[str, Any]]:
         )
     if steps:
         steps[0]["delay_days"] = 0
+    # Only step 1 has a subject. Anything the model wrote for a follow-up is
+    # dropped rather than stored unused: the send path inherits step 1's line,
+    # and the editor has no box to show a second one in.
+    for step in steps[1:]:
+        step["subject_template"] = ""
     return steps
 
 

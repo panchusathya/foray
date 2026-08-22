@@ -343,6 +343,23 @@ def preview_step(
         enrollment=enrollment,
         connection=connection,
     )
+    if step is not steps[0]:
+        # Follow-ups inherit the first step's line -- show the recruiter the
+        # subject the candidate will actually see, not one this step's own
+        # (now hidden, possibly stale) template would have produced.
+        #
+        # A live enrollment has the real thing on its first sent message. With
+        # no enrollment there is nothing sent yet, so the first step's template
+        # is rendered instead, with any {{ai:}} directive left as a visible
+        # marker: resolving one here would mean a second model round-trip for a
+        # subject the send path never renders at all.
+        root = _root_subject(db, enrollment.id) if enrollment is not None else ""
+        if not root:
+            root = templates.render(
+                templates.mark_directives(steps[0].subject_template or ""), context
+            ).strip()
+        if root:
+            subject = reply_subject(root)
     return subject, body, context
 
 
@@ -426,37 +443,53 @@ def _reference_chain(db: Session, enrollment_id: str) -> str:
     return " ".join(seen)
 
 
-def _thread_subject(subject: str, parent: Message | None) -> str:
-    """The subject a threaded follow-up goes out under.
+def _root_subject(db: Session, enrollment_id: str) -> str:
+    """The subject the first email on this enrollment actually went out under.
 
-    Gmail and Outlook both split a conversation when the subject changes, so a
-    step whose template renders the same line as the first email is asking to
-    be a reply and gets the "Re:" that makes it read as one. A step that
-    renders something genuinely different is a deliberate change of subject and
-    is left alone -- it still threads on the headers, it just keeps the wording
-    somebody chose.
+    Read off the sent Message rather than re-rendered from a template: it is
+    the literal line sitting in the candidate's client, so a template edited
+    between steps cannot move a live conversation. Deliberately not restricted
+    to messages carrying an internetMessageId the way ``_thread_parent`` is --
+    subject continuity is worth having on providers that give us no RFC id.
     """
-    if parent is None or not subject:
-        return subject
-    previous = (parent.subject or "").strip()
-    if not previous:
-        return subject
-    if _bare_subject(subject) != _bare_subject(previous):
-        return subject
-    return previous if previous.lower().startswith("re:") else f"Re: {previous}"
+    return (
+        db.scalar(
+            select(Message.subject)
+            .where(
+                Message.enrollment_id == enrollment_id,
+                Message.direction == "outbound",
+                Message.status == "sent",
+            )
+            .order_by(Message.sent_at.asc())
+        )
+        or ""
+    ).strip()
 
 
-def _bare_subject(subject: str) -> str:
-    """A subject with any reply/forward prefixes stripped, for comparison."""
-    value = (subject or "").strip()
-    while True:
-        lowered = value.lower()
-        for prefix in ("re:", "fw:", "fwd:"):
-            if lowered.startswith(prefix):
-                value = value[len(prefix) :].strip()
-                break
-        else:
-            return value.casefold()
+def reply_subject(root: str) -> str:
+    """``root`` as a reply subject, without stacking a second "Re:"."""
+    root = (root or "").strip()
+    if not root:
+        return ""
+    return root if root.lower().startswith("re:") else f"Re: {root}"
+
+
+def _thread_subject(subject: str, root: str) -> str:
+    """The subject a follow-up goes out under.
+
+    Every step after the first inherits the first one's line, full stop. Gmail
+    and Outlook both split a conversation on a changed subject, so a follow-up
+    free to render its own was free to break the thread no matter how correct
+    the RFC headers were -- and the recruiter who typed two slightly different
+    lines into two steps had no way to know that is what they had done. The
+    step editor no longer offers the choice; this is the same rule on the send
+    side, where it also covers sequences authored before that.
+
+    Falls back to the step's own subject only when nothing has been sent on the
+    enrollment yet, which is the first step and any provider-level retry of it.
+    """
+    root = (root or "").strip()
+    return reply_subject(root) if root else subject
 
 
 def _finish_enrollment(enrollment: Enrollment, status: str, reason: str = "") -> None:
@@ -615,7 +648,7 @@ def send_step(
     # Before the Message row: the parent decides the subject, and the row has
     # to record what actually went out.
     parent = _thread_parent(db, enrollment.id)
-    subject = _thread_subject(subject, parent)
+    subject = _thread_subject(subject, _root_subject(db, enrollment.id))
     message = existing
     if message is None:
         message = Message(

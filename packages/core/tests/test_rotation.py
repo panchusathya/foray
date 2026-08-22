@@ -456,12 +456,12 @@ class TestThreadingHeaders:
         assert not first.subject.lower().startswith("re:")
         assert second.subject == f"Re: {first.subject}"
 
-    def test_a_deliberately_different_subject_is_left_alone(self, session, pool):
+    def _run_two_steps(self, session, pool, follow_up_subject):
         candidate = pool["candidates"][0]
         for connection in pool["connections"]:
             connection.daily_send_cap = 5
         steps = sorted(pool["sequence"].steps, key=lambda s: s.step_order)
-        steps[1].subject_template = "A different question"
+        steps[1].subject_template = follow_up_subject
         session.flush()
 
         enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
@@ -474,11 +474,66 @@ class TestThreadingHeaders:
         run_due(session, org_id=pool["sequence"].org_id)
         session.commit()
 
-        second = (
+        return (
             session.query(Message)
             .filter_by(direction="outbound", status="sent")
             .order_by(Message.sent_at)
-            .all()[1]
+            .all()
         )
-        assert second.subject == "A different question"
+
+    def test_a_follow_up_ignores_a_subject_of_its_own(self, session, pool):
+        """A different subject splits the conversation in Gmail and Outlook
+        however correct the headers are, so a follow-up does not get to have
+        one. The step editor stopped offering the box; this covers the
+        sequences written before it did, whose step 2 still holds text.
+        """
+        first, second = self._run_two_steps(session, pool, "A different question")
+
+        assert second.subject == f"Re: {first.subject}"
+
+    def test_a_follow_up_with_no_subject_inherits_rather_than_going_out_blank(
+        self, session, pool
+    ):
+        """What the editor now saves for a follow-up. Without inheritance this
+        would fall through to the generic "Quick note for ..." subject, which
+        is exactly the changed line that breaks the thread."""
+        first, second = self._run_two_steps(session, pool, "")
+
+        assert second.subject == f"Re: {first.subject}"
+        assert "Quick note" not in second.subject
+
+    def test_a_third_step_says_re_once_not_twice(self, session, pool):
+        """Every step inherits the ROOT subject, so the "Re:" never stacks."""
+        candidate = pool["candidates"][0]
+        for connection in pool["connections"]:
+            connection.daily_send_cap = 5
+        session.add(
+            SequenceStep(
+                sequence_id=pool["sequence"].id,
+                step_order=2,
+                delay_days=3,
+                subject_template="",
+                body_template="Last note, {{ first_name }}.",
+            )
+        )
+        session.commit()
+        session.refresh(pool["sequence"])
+
+        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
+        session.commit()
+        for _ in range(3):
+            enrollment = session.query(Enrollment).one()
+            enrollment.next_send_at = utcnow() - timedelta(minutes=1)
+            session.flush()
+            run_due(session, org_id=pool["sequence"].org_id)
+            session.commit()
+
+        first, second, third = (
+            session.query(Message)
+            .filter_by(direction="outbound", status="sent")
+            .order_by(Message.sent_at)
+            .all()
+        )
+        assert second.subject == f"Re: {first.subject}"
+        assert third.subject == f"Re: {first.subject}"
 

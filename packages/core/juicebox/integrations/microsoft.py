@@ -372,6 +372,14 @@ class GraphSender:
         ]
 
         if email.thread_native_id:
+            # No internetMessageHeaders here. Graph accepts that property only
+            # on message *creation*; PATCHing it onto a createReply draft is
+            # rejected with 400 ErrorInvalidPropertySet ("Set action is invalid
+            # for property"), which took the whole patch down with it and sent
+            # every single follow-up as a fresh, unthreaded conversation. The
+            # x- header is write-only telemetry -- nothing reads it back -- so
+            # losing it on threaded sends costs nothing, and a threaded send is
+            # the entire point of this branch.
             patch = {
                 # createReply addresses the reply to the parent's From, which
                 # on a message we sent is this mailbox. Left alone, the
@@ -384,8 +392,6 @@ class GraphSender:
                 # the email before it.
                 "body": body,
             }
-            if headers:
-                patch["internetMessageHeaders"] = headers
             try:
                 reply = self.client.create_reply_draft(email.thread_native_id, "")
                 updated = self.client.update_draft(reply["id"], patch) or {}

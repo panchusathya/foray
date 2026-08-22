@@ -405,7 +405,9 @@ export function SequenceEditorPage() {
   }
 
   function insertVariable(snippet) {
-    if (lastFocused.current !== 'subject') {
+    // Follow-up steps have no subject box, so a chip there can only mean the
+    // body -- without this it would type into step 1's hidden template.
+    if (lastFocused.current !== 'subject' || selected !== 0) {
       lastFocused.current = 'body';
       bodyRef.current?.insert(snippet);
       return;
@@ -533,6 +535,15 @@ export function SequenceEditorPage() {
   }
 
   const step = steps[selected] ?? steps[0];
+  // What a follow-up will go out as. Mirrors reply_subject() on the send side,
+  // which reads the subject off step 1's sent message rather than re-rendering
+  // it -- the variables are still unresolved here, so this shows the template.
+  const rootSubject = (steps[0]?.subject_template ?? '').trim();
+  const followUpSubject = rootSubject
+    ? rootSubject.toLowerCase().startsWith('re:')
+      ? rootSubject
+      : `Re: ${rootSubject}`
+    : 'set a subject on step 1';
 
   return (
     <div className="stack">
@@ -637,16 +648,30 @@ export function SequenceEditorPage() {
                   </button>
                 ))}
               </div>
-              <input
-                ref={subjectRef}
-                type="text"
-                placeholder="Subject"
-                value={step.subject_template}
-                onFocus={() => {
-                  lastFocused.current = 'subject';
-                }}
-                onChange={(event) => updateStep(selected, { subject_template: event.target.value })}
-              />
+              {/* Only step 1 owns a subject. Every later step replies on its
+                  thread, and Gmail and Outlook both split a conversation the
+                  moment the subject changes -- so a box here was an invitation
+                  to break threading with a one-word edit. The line below shows
+                  what the follow-up will actually go out as. */}
+              {selected === 0 ? (
+                <input
+                  ref={subjectRef}
+                  type="text"
+                  placeholder="Subject"
+                  value={step.subject_template}
+                  onFocus={() => {
+                    lastFocused.current = 'subject';
+                  }}
+                  onChange={(event) =>
+                    updateStep(selected, { subject_template: event.target.value })
+                  }
+                />
+              ) : (
+                <div className="muted small">
+                  Subject: <strong>{followUpSubject}</strong> — follow-ups continue step 1&apos;s
+                  thread.
+                </div>
+              )}
               <EmailBodyEditor
                 key={selected}
                 ref={bodyRef}

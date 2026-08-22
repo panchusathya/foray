@@ -252,8 +252,12 @@ class TestGenerateSequence:
         draft = body["draft"]
         assert len(draft["steps"]) == 2
         assert draft["steps"][0]["delay_days"] == 0
-        # The trimmed draft keeps the close-out as the final step.
-        assert "Closing the loop" in draft["steps"][-1]["subject_template"]
+        # The trimmed draft keeps the close-out as the final step. Identified
+        # by its body: only step 1 carries a subject now, because follow-ups
+        # reply on its thread and inherit its line.
+        assert "Last note from me" in draft["steps"][-1]["body_template"]
+        assert draft["steps"][0]["subject_template"]
+        assert draft["steps"][-1]["subject_template"] == ""
 
     def test_draft_is_directly_creatable(self, client, loaded_org):
         headers = loaded_org["headers"]

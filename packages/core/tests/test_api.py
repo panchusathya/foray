@@ -390,7 +390,7 @@ class TestOutreachApi:
                     },
                     {
                         "delay_days": 3,
-                        "subject_template": "Re: Hi",
+                        "subject_template": "",
                         "body_template": "Following up.",
                     },
                 ],
@@ -411,6 +411,15 @@ class TestOutreachApi:
         ).json()
         assert preview["subject"] == "Hi Ada"
         assert "Modal" in preview["body"]
+
+        # Step 2 has no subject of its own: the preview shows the line it will
+        # really go out under, which is step 1's, as a reply.
+        follow_up = client.post(
+            f"/v1/sequences/{sequence['id']}/preview",
+            json={"candidate_id": candidate["id"], "step_order": 1},
+            headers=headers,
+        ).json()
+        assert follow_up["subject"] == "Re: Hi Ada"
 
         enrolled = client.post(
             f"/v1/sequences/{sequence['id']}/enroll",

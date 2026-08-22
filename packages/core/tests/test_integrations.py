@@ -434,9 +434,25 @@ class TestGraphThreading:
         # previous step's tracking pixel.
         assert patch["body"]["content"] == "<p>Following up</p>"
         assert "quoted original" not in patch["body"]["content"]
-        assert patch["internetMessageHeaders"] == [
-            {"name": "X-Juicebox-Message-Id", "value": "msg_2"}
-        ]
+
+    def test_the_reply_patch_never_carries_internet_message_headers(self, session, account):
+        """Graph takes internetMessageHeaders on create only.
+
+        PATCHing it onto a createReply draft returns 400
+        ErrorInvalidPropertySet, and because one bad property fails the whole
+        request the send fell back to a fresh draft -- a new conversation for
+        every follow-up. Verified against the live tenant.
+        """
+        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
+        fake = FakeGraphClient()
+        sender = microsoft.GraphSender(session, connection, client=fake)
+
+        sender.send(self._email(thread_native_id="graph-parent"))
+
+        [(_, patch)] = fake.patches
+        assert "internetMessageHeaders" not in patch
+        # Still a reply on the parent's thread, not a new draft.
+        assert fake.drafts == []
 
     def test_a_missing_parent_still_sends(self, session, account):
         """Deleted parent: unthreaded beats not sending at all."""

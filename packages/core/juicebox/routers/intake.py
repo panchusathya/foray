@@ -24,9 +24,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..deps import CommittingRoute, get_db
+from ..deps import CommittingRoute, Principal, get_db, require_write
 from ..intake.providers import (
     EVENT_ANALYZED,
     EVENT_ENDED,
@@ -36,10 +37,12 @@ from ..intake.providers import (
     loads,
 )
 from ..intake.service import (
+    CallRequestError,
     coverage_snapshot,
     empty_coverage,
     find_call,
     record_call_event,
+    request_intake_call,
     resolve_org_id,
     schedule_extraction,
 )
@@ -124,6 +127,52 @@ def intake_webhook(
         "intake_call_id": call.id,
         "created": created,
         "extraction_queued": queued,
+    }
+
+
+class CallMeRequest(BaseModel):
+    phone: str = Field(min_length=5, max_length=32)
+    name: str = Field(default="", max_length=200)
+    email: str = Field(default="", max_length=255)
+    source: str = Field(default="website", max_length=40)
+
+
+@router.post("/call-me", status_code=status.HTTP_202_ACCEPTED)
+def call_me(
+    payload: CallMeRequest,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Dial a candidate who asked to be called from the website.
+
+    **Authenticated, unlike the other two routes.** This one turns a single HTTP
+    request into a ringing phone at a number of the caller's choosing, which is
+    a harassment tool and a metered one. There is no signature to lean on here
+    because the request originates with us rather than the provider, so the
+    marketing site's own backend calls this with an API key and the browser never
+    touches it. A public version of this endpoint would need a per-page signed
+    token and a CAPTCHA before it could exist at all.
+    """
+    try:
+        call = request_intake_call(
+            db,
+            org_id=principal.org_id,
+            phone=payload.phone,
+            name=payload.name,
+            email=payload.email,
+            source=payload.source,
+        )
+    except CallRequestError as exc:
+        # The message is written for a website form, so it is returned as-is.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return {
+        "status": "calling",
+        "intake_call_id": call.id,
+        "candidate_id": call.candidate_id,
+        "to_number": call.to_number,
     }
 
 

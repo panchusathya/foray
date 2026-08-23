@@ -22,10 +22,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import httpx
+
 from ..config import get_settings
 from .phones import lookup_key
 
 logger = logging.getLogger(__name__)
+
+RETELL_API_BASE = "https://api.retellai.com"
 
 # What we do with each provider event. Retell emits more than this (transcript
 # updates, the whole transfer lifecycle); anything unmapped becomes "ignored"
@@ -89,6 +93,18 @@ class SignatureError(RuntimeError):
     """The request did not come from the provider, or came too long ago."""
 
 
+class ProviderCallError(RuntimeError):
+    """The provider refused to place the call."""
+
+
+@dataclass(frozen=True)
+class PlacedCall:
+    provider_call_id: str
+    agent_id: str = ""
+    status: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 class VoiceProvider(Protocol):
     name: str
 
@@ -100,6 +116,17 @@ class VoiceProvider(Protocol):
 
     def parse_function_call(self, payload: dict[str, Any]) -> tuple[CallEvent, dict[str, Any]]:
         """Normalise a mid-call tool request into (event, args)."""
+
+    def place_call(
+        self,
+        *,
+        from_number: str,
+        to_number: str,
+        agent_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        dynamic_variables: dict[str, str] | None = None,
+    ) -> PlacedCall:
+        """Dial out. Raises ``ProviderCallError`` rather than returning a failure."""
 
 
 # --------------------------------------------------------------------------
@@ -195,6 +222,61 @@ class RetellProvider:
         args = args if isinstance(args, dict) else {}
         return self._call_to_event(EVENT_IGNORED, call), args
 
+    def place_call(
+        self,
+        *,
+        from_number: str,
+        to_number: str,
+        agent_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        dynamic_variables: dict[str, str] | None = None,
+    ) -> PlacedCall:
+        """Dial a candidate.
+
+        ``override_agent_id`` is used rather than relying on the number having an
+        agent attached, because attaching one is what makes a bot answer real
+        inbound callers. Outbound should not require taking that step.
+        """
+        if not self._api_key:
+            raise ProviderCallError("no Retell API key configured")
+
+        body: dict[str, Any] = {"from_number": from_number, "to_number": to_number}
+        if agent_id:
+            body["override_agent_id"] = agent_id
+        if metadata:
+            body["metadata"] = metadata
+        if dynamic_variables:
+            # Retell requires these to be strings.
+            body["retell_llm_dynamic_variables"] = {
+                str(k): str(v) for k, v in dynamic_variables.items()
+            }
+
+        try:
+            response = httpx.post(
+                f"{RETELL_API_BASE}/v2/create-phone-call",
+                json=body,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:
+            raise ProviderCallError(f"cannot reach Retell: {exc}") from exc
+
+        if response.status_code >= 400:
+            # Surfaced verbatim: the useful part is always in the body ("number
+            # not owned", "destination not supported"), never the status line.
+            raise ProviderCallError(f"retell {response.status_code}: {response.text[:300]}")
+
+        payload = response.json() if response.content else {}
+        call_id = str(payload.get("call_id") or "")
+        if not call_id:
+            raise ProviderCallError("retell accepted the call but returned no call_id")
+        return PlacedCall(
+            provider_call_id=call_id,
+            agent_id=str(payload.get("agent_id") or ""),
+            status=str(payload.get("call_status") or ""),
+            raw=payload,
+        )
+
     def _call_to_event(self, kind: str, call: dict[str, Any]) -> CallEvent:
         started = _from_millis(call.get("start_timestamp"))
         ended = _from_millis(call.get("end_timestamp"))
@@ -237,9 +319,11 @@ class FakeVoiceProvider:
 
     name = "fake"
 
-    def __init__(self, *, accept: bool = True) -> None:
+    def __init__(self, *, accept: bool = True, dial_error: str = "") -> None:
         self.accept = accept
+        self.dial_error = dial_error
         self.verified: list[bytes] = []
+        self.placed: list[dict[str, Any]] = []
 
     def verify(self, *, raw_body: bytes, signature: str) -> None:
         self.verified.append(raw_body)
@@ -251,6 +335,32 @@ class FakeVoiceProvider:
 
     def parse_function_call(self, payload: dict[str, Any]) -> tuple[CallEvent, dict[str, Any]]:
         return RetellProvider(api_key="unused").parse_function_call(payload)
+
+    def place_call(
+        self,
+        *,
+        from_number: str,
+        to_number: str,
+        agent_id: str = "",
+        metadata: dict[str, Any] | None = None,
+        dynamic_variables: dict[str, str] | None = None,
+    ) -> PlacedCall:
+        self.placed.append(
+            {
+                "from_number": from_number,
+                "to_number": to_number,
+                "agent_id": agent_id,
+                "metadata": metadata or {},
+                "dynamic_variables": dynamic_variables or {},
+            }
+        )
+        if self.dial_error:
+            raise ProviderCallError(self.dial_error)
+        return PlacedCall(
+            provider_call_id=f"fake_call_{len(self.placed)}",
+            agent_id=agent_id,
+            status="registered",
+        )
 
 
 _PROVIDERS: dict[str, Any] = {"retell": RetellProvider, "fake": FakeVoiceProvider}

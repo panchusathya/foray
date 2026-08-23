@@ -13,15 +13,18 @@ that runs inline turns one slow model call into four duplicate conversations.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..enrich.normalize import split_name
 from ..jobs import KIND_INTAKE_EXTRACT, enqueue
 from ..models import (
     Candidate,
+    CandidateEmail,
     CandidatePhone,
     CandidatePreference,
     IntakeCall,
@@ -29,8 +32,18 @@ from ..models import (
     record_event,
     utcnow,
 )
+from ..outreach.suppressions import is_suppressed
+from ..repository import sync_candidate_emails, sync_candidate_phones
 from .extract import ExtractionResult, extract_intake, known_context
-from .providers import EVENT_ANALYZED, EVENT_ENDED, EVENT_STARTED, CallEvent
+from .phones import lookup_key
+from .providers import (
+    EVENT_ANALYZED,
+    EVENT_ENDED,
+    EVENT_STARTED,
+    CallEvent,
+    ProviderCallError,
+    get_voice_provider,
+)
 from .schema import SCHEMA_VERSION, coverage
 
 logger = logging.getLogger(__name__)
@@ -422,6 +435,185 @@ def _snapshot(state, *, covered_count: int) -> dict[str, Any]:
         "already_covered": covered_count,
         "guidance": _WRAP_UP_GUIDANCE if complete else _NEEDED_GUIDANCE,
     }
+
+
+class CallRequestError(RuntimeError):
+    """We will not place this call. The message is safe to return to a caller."""
+
+
+# How long before the same number may be dialled again. This endpoint turns one
+# HTTP request into a ringing phone, so without a window it is a harassment tool
+# and a metered one: a loop pointed at a stranger's number costs us per minute
+# and costs them their afternoon.
+REDIAL_COOLDOWN_MINUTES = 30
+
+
+def request_intake_call(
+    db: Session,
+    *,
+    org_id: str,
+    phone: str,
+    name: str = "",
+    email: str = "",
+    source: str = "website",
+) -> IntakeCall:
+    """Dial a candidate who asked to be called, and record the call up front.
+
+    The row is written *before* the provider's first webhook arrives, which is
+    what lets a web or outbound call resolve its org at all: there is no dialled
+    number to look up, so the trusted source has to be a row we already own.
+    Same shape as ``routers/track.py`` reading ``message.org_id``.
+
+    Every refusal raises with a message intended for the caller, because the
+    thing on the other end is a website form and "no" needs a reason.
+    """
+    target = lookup_key(phone)
+    if not target:
+        raise CallRequestError(
+            "That does not look like a phone number we can dial. "
+            "Please include the country code, e.g. +1 415 555 0123."
+        )
+
+    number = db.scalar(
+        select(IntakeNumber).where(
+            IntakeNumber.org_id == org_id, IntakeNumber.active.is_(True)
+        )
+    )
+    if number is None:
+        raise CallRequestError("No intake number is configured for this workspace.")
+    if target == number.phone:
+        # Dialling ourselves connects the agent to the agent.
+        raise CallRequestError("That is our own number.")
+
+    candidate = _find_or_create_candidate(
+        db, org_id=org_id, phone=target, name=name, email=email, source=source
+    )
+
+    # Do-not-contact is keyed on email, which is all the list has. It covers the
+    # case that matters here -- a person already on it must not be dialled -- but
+    # NOT an unknown number that has asked us to stop calling. That needs a
+    # phone-aware suppression list before outbound volume starts.
+    for address in candidate.emails or []:
+        if is_suppressed(db, org_id=org_id, email=address):
+            raise CallRequestError("This contact is on the do-not-contact list.")
+
+    recent = db.scalar(
+        select(IntakeCall)
+        .where(
+            IntakeCall.org_id == org_id,
+            IntakeCall.to_number == target,
+            IntakeCall.created_at >= utcnow() - timedelta(minutes=REDIAL_COOLDOWN_MINUTES),
+        )
+        .order_by(IntakeCall.created_at.desc())
+    )
+    if recent is not None:
+        raise CallRequestError(
+            "We already called this number recently. Please try again in a little while."
+        )
+
+    provider = get_voice_provider()
+    try:
+        placed = provider.place_call(
+            from_number=number.phone,
+            to_number=target,
+            agent_id=number.outbound_agent_id,
+            metadata={"org_id": org_id, "candidate_id": candidate.id, "source": source},
+            dynamic_variables={"candidate_first_name": candidate.first_name or ""},
+        )
+    except ProviderCallError as exc:
+        logger.warning("intake dial failed for org %s: %s", org_id, exc)
+        raise CallRequestError("We could not place the call just now. Please try again.") from exc
+
+    call = IntakeCall(
+        org_id=org_id,
+        candidate_id=candidate.id,
+        provider=provider.name,
+        provider_call_id=placed.provider_call_id,
+        entry_point="outbound",
+        from_number=number.phone,
+        to_number=target,
+        status=STATUS_IN_PROGRESS,
+        raw={"placed": placed.raw, "agent_id": placed.agent_id, "source": source},
+    )
+    db.add(call)
+    db.flush()
+    record_event(
+        db,
+        org_id=org_id,
+        type="intake.call_requested",
+        subject_type="intake_call",
+        subject_id=call.id,
+        payload={"candidate_id": candidate.id, "source": source},
+    )
+    return call
+
+
+def _find_or_create_candidate(
+    db: Session, *, org_id: str, phone: str, name: str, email: str, source: str
+) -> Candidate:
+    """Match the requester, or create them.
+
+    Creating a Candidate here is right, and it is the opposite of the rule for a
+    cold inbound call: this person filled in a form asking to be phoned. On the
+    dial-in line we refuse to create anyone, because a stranger dialling a
+    number has not asked to be in the CRM.
+    """
+    existing_id = resolve_candidate_id(db, org_id=org_id, phone=phone)
+    if existing_id:
+        candidate = db.get(Candidate, existing_id)
+        if candidate is not None:
+            _merge_contact_details(db, candidate, phone=phone, email=email, name=name)
+            return candidate
+
+    address = (email or "").strip().lower()
+    if address:
+        owner = db.scalar(
+            select(CandidateEmail).where(
+                CandidateEmail.org_id == org_id, CandidateEmail.email == address
+            )
+        )
+        if owner is not None:
+            candidate = db.get(Candidate, owner.candidate_id)
+            if candidate is not None:
+                _merge_contact_details(db, candidate, phone=phone, email=address, name=name)
+                return candidate
+
+    first, last = split_name(name)
+    candidate = Candidate(
+        org_id=org_id,
+        source=f"intake-{source}",
+        # Unique per person under uq_candidate_source, and stable, so a second
+        # request from the same number updates rather than duplicating.
+        source_id=phone,
+        full_name=name.strip() or phone,
+        first_name=first,
+        last_name=last,
+        emails=[address] if address else [],
+        phones=[phone],
+    )
+    db.add(candidate)
+    db.flush()
+    sync_candidate_emails(db, candidate)
+    sync_candidate_phones(db, candidate)
+    return candidate
+
+
+def _merge_contact_details(
+    db: Session, candidate: Candidate, *, phone: str, email: str, name: str
+) -> None:
+    """Add what the form told us without overwriting what we knew."""
+    changed = False
+    if phone and phone not in (candidate.phones or []):
+        candidate.phones = [*(candidate.phones or []), phone]
+        sync_candidate_phones(db, candidate)
+        changed = True
+    address = (email or "").strip().lower()
+    if address and address not in (candidate.emails or []):
+        candidate.emails = [*(candidate.emails or []), address]
+        sync_candidate_emails(db, candidate)
+        changed = True
+    if changed:
+        db.flush()
 
 
 def coverage_snapshot(transcript: str, *, known: str = "", fast: bool = True) -> dict[str, Any]:

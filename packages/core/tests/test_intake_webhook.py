@@ -298,6 +298,51 @@ class TestLifecycle:
         assert len(session.scalars(select(IntakeCall)).all()) == 1
         assert len(session.scalars(select(Job).where(Job.kind == KIND_INTAKE_EXTRACT)).all()) == 1
 
+    def test_a_racing_insert_recovers_instead_of_500ing(
+        self, session, account, owned_number
+    ):
+        """Two webhooks for one call, landing at once. Our SELECT sees nothing,
+        then the INSERT collides.
+
+        This is the path Retell's retries actually hit, and it has to recover
+        silently: a 500 here makes the provider retry, which makes it collide
+        again. `db.add` therefore belongs inside the savepoint, as in
+        `jobs.enqueue` -- outside it, a colliding flush poisons the outer
+        transaction and the recovery path itself raises.
+        """
+        from juicebox.intake import service
+
+        org = account["org_id"]
+        # The row another worker inserted a microsecond ago.
+        session.add(IntakeCall(org_id=org, provider="retell", provider_call_id="call_race"))
+        session.commit()
+
+        event = RetellProvider(api_key=API_KEY).parse_event(
+            call_payload(call_id="call_race")
+        )
+
+        seen = {"n": 0}
+        real = service.find_call
+
+        def stale_then_real(db, *, provider, provider_call_id):
+            seen["n"] += 1
+            if seen["n"] == 1:
+                return None  # the stale read that loses the race
+            return real(db, provider=provider, provider_call_id=provider_call_id)
+
+        service.find_call = stale_then_real
+        try:
+            call, created = service.record_call_event(
+                session, org_id=org, provider="retell", event=event
+            )
+        finally:
+            service.find_call = real
+
+        assert created is False
+        assert call.provider_call_id == "call_race"
+        assert call.transcript == TRANSCRIPT  # the losing event still applied
+        assert len(session.scalars(select(IntakeCall)).all()) == 1
+
     def test_a_retried_webhook_is_a_no_op(self, client, session, signer, owned_number):
         """Providers retry. Three deliveries must not be three conversations."""
         for _ in range(3):

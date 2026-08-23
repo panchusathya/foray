@@ -148,13 +148,21 @@ def record_call_event(
             provider_call_id=event.provider_call_id,
             entry_point=_entry_point(event),
         )
-        db.add(call)
         try:
+            # `add` belongs INSIDE the savepoint, exactly as in `jobs.enqueue`.
+            # Added outside it, a colliding flush poisons the outer transaction
+            # instead of just the savepoint, and the next statement raises
+            # PendingRollbackError -- so the recovery path cannot recover.
             with db.begin_nested():
+                db.add(call)
                 db.flush()
         except IntegrityError:
-            # Two webhooks for the same call landed at once. The other one won.
-            db.expunge(call)
+            # Two webhooks for the same call landed at once and the other one
+            # won. Rolling the savepoint back has already expunged our pending
+            # row, so do not expunge it again -- that raises InvalidRequestError
+            # and turns a benign race into a 500, which the provider answers by
+            # retrying. `jobs.enqueue` handles the identical collision the same
+            # way: re-read and use the winner.
             found = find_call(db, provider=provider, provider_call_id=event.provider_call_id)
             if found is None:
                 raise

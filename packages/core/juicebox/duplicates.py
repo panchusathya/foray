@@ -408,10 +408,13 @@ def merge(
 
     db.flush()
 
-    from .repository import sync_candidate_emails
+    from .repository import sync_candidate_emails, sync_candidate_phones
     from .search.index import invalidate
 
     sync_candidate_emails(db, primary)
+    # The loser's rows went with them on delete; the survivor now owns the
+    # union of both phone lists and needs the numbers that just freed up.
+    sync_candidate_phones(db, primary)
     invalidate(org_id)
     primary.updated_at = utcnow()
     db.flush()

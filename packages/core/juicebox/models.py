@@ -1048,3 +1048,215 @@ class JobScrapeQuery(Base, TimestampMixin):
     total_found: Mapped[int] = mapped_column(Integer, default=0)
     # explicit | auto (title-family similar-jobs)
     origin: Mapped[str] = mapped_column(String(32), default="explicit")
+
+
+# --------------------------------------------------------------------------
+# voice intake
+# --------------------------------------------------------------------------
+
+# Where a call came from. The dial-in line is a different conversation from a
+# first intake -- it updates a record that already exists -- so the entry point
+# is stored rather than inferred from whether we recognised the number.
+INTAKE_ENTRY_POINTS = ("web", "dial_in", "outbound")
+
+# in_progress -> completed -> extracted, or failed/abandoned. "completed" means
+# the call ended; "extracted" means we got data out of it. A call can complete
+# and still yield nothing, and the two must be tellable apart when measuring.
+INTAKE_CALL_STATUSES = (
+    "in_progress",
+    "completed",
+    "extracted",
+    "failed",
+    "abandoned",
+)
+
+
+class IntakeCall(Base, TimestampMixin):
+    """One voice intake call, and what came out of it.
+
+    ``candidate_id`` is nullable because a stranger dialling the public number
+    has no candidate row until we decide to create one, and the call has to be
+    recorded before that decision -- otherwise a call we could not attribute
+    leaves no trace at all, which is exactly the call worth looking at.
+
+    ``org_id`` is resolved from the number that was dialled, or from a signed
+    widget token, and never from the webhook body: the caller is unauthenticated
+    and voice minutes are metered, so a payload-supplied org is both a
+    cross-tenant write and somebody else's bill.
+    """
+
+    __tablename__ = "intake_calls"
+    __table_args__ = (
+        # The provider's own call id is the idempotency key. A webhook that is
+        # retried -- and they are all retried -- must not extract twice.
+        UniqueConstraint("provider", "provider_call_id", name="uq_intake_call_provider_id"),
+        Index("ix_intake_calls_org_created", "org_id", "created_at"),
+        Index("ix_intake_calls_org_review", "org_id", "review_needed"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("icall"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    provider: Mapped[str] = mapped_column(String(32), default="retell")
+    provider_call_id: Mapped[str] = mapped_column(String(200))
+    entry_point: Mapped[str] = mapped_column(String(16), default="web")
+
+    # E.164 where we could produce one. ``to_number`` is what resolves the org
+    # on an inbound call, so it is stored even when the caller is unknown.
+    from_number: Mapped[str] = mapped_column(String(32), default="")
+    to_number: Mapped[str] = mapped_column(String(32), default="")
+
+    status: Mapped[str] = mapped_column(String(32), default="in_progress")
+    # Recorded before any substantive question. Stored per call, not per person:
+    # consent is given to a conversation, and two-party-consent jurisdictions
+    # make "they agreed last time" the wrong answer.
+    consent_recording: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    recording_url: Mapped[str] = mapped_column(Text, default="")
+
+    # The provider payload, kept so an extraction can be replayed against a
+    # better prompt without asking the person to call back.
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)
+    extracted: Mapped[dict] = mapped_column(JSON, default=dict)
+    extractor: Mapped[str] = mapped_column(String(32), default="")
+    schema_version: Mapped[str] = mapped_column(String(32), default="")
+
+    # Snapshot of the gate at hangup. Kept on the call rather than recomputed
+    # from the record, because the record gets edited afterwards and this is
+    # evidence about the call itself.
+    required_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    fields_missing: Mapped[list] = mapped_column(JSON, default=list)
+    low_confidence: Mapped[list] = mapped_column(JSON, default=list)
+    review_needed: Mapped[bool] = mapped_column(Boolean, default=True)
+    review_reason: Mapped[str] = mapped_column(String(400), default="")
+
+    error: Mapped[str] = mapped_column(String(400), default="")
+
+
+class CandidatePreference(Base, TimestampMixin):
+    """What a candidate says they want, in the vocabulary a job is parsed into.
+
+    The mirror of ``JobPosting.parsed_spec``: ``spec`` holds the same
+    ``ParsedQuery`` shape, normalised through the same taxonomy, so
+    ``jobmatch.engine`` can score a posting's requirements against a person's
+    stated wants instead of only the other way round.
+
+    Its own table rather than columns on ``Candidate`` for two reasons.
+    ``repository._apply`` re-applies ``manual_fields`` over imported data
+    specifically so a nightly Foray refresh cannot overwrite a human
+    correction; preferences need that same immunity, and widening
+    ``manual_fields`` to cover twenty more columns makes an already subtle
+    mechanism carry weight it was not built for. And a preference is a
+    statement made at a point in time by a person, not a fact about them --
+    ``source_call_id`` says which conversation it came from.
+
+    Booleans here are nullable on purpose. ``Candidate.open_to_remote`` cannot
+    tell "wants an office" from "never asked", and that ambiguity is the reason
+    a filter on it is untrustworthy. Three states, always.
+    """
+
+    __tablename__ = "candidate_preferences"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_candidate_preference"),
+        Index("ix_candidate_preferences_org", "org_id"),
+        Index("ix_candidate_preferences_org_review", "org_id", "review_needed"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cpref"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    source_call_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_calls.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # ParsedQuery-shaped, same as JobPosting.parsed_spec.
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    schema_version: Mapped[str] = mapped_column(String(32), default="")
+
+    employment_status: Mapped[str] = mapped_column(String(32), default="")
+    reason_for_looking: Mapped[str] = mapped_column(Text, default="")
+    timeline: Mapped[str] = mapped_column(String(32), default="")
+    urgency_driver: Mapped[str] = mapped_column(Text, default="")
+
+    target_base: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # "UNKNOWN" when a figure was given without one. Assuming USD silently is
+    # how a 90k GBP expectation becomes a 90k USD shortlist.
+    comp_currency: Mapped[str] = mapped_column(String(8), default="")
+    comp_flexibility_notes: Mapped[str] = mapped_column(Text, default="")
+    equity_importance: Mapped[str] = mapped_column(String(16), default="")
+
+    work_authorization: Mapped[str] = mapped_column(String(120), default="")
+    willing_to_relocate: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    active_processes: Mapped[list] = mapped_column(JSON, default=list)
+    offers_in_hand: Mapped[list] = mapped_column(JSON, default=list)
+    # Verbatim: a client responds to the candidate's own words, and the point of
+    # asking was to get phrasing a resume does not have.
+    highlights: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Never rendered in a client-facing view. Stored so a recruiter knows what
+    # not to say, which means the guard belongs at every read site.
+    confidential_items: Mapped[list] = mapped_column(JSON, default=list)
+    ok_to_share_with_clients: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # Asked and refused. Distinct from empty: it stops the agent asking again on
+    # the next call, and stops a recruiter reading silence as an oversight.
+    declined: Mapped[list] = mapped_column(JSON, default=list)
+    low_confidence: Mapped[list] = mapped_column(JSON, default=list)
+    fields_missing: Mapped[list] = mapped_column(JSON, default=list)
+    review_needed: Mapped[bool] = mapped_column(Boolean, default=True)
+    review_reason: Mapped[str] = mapped_column(String(400), default="")
+    # Set when a human -- recruiter or the candidate on the review page -- has
+    # confirmed the record. Until then it is a machine reading of a phone call.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(32), default="")
+    captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CandidatePhone(Base):
+    """One row per number a candidate owns: a projection of ``Candidate.phones``.
+
+    The same shape as ``CandidateEmail`` and for the same reason -- ``phones`` is
+    a JSON list, so "who is calling?" cannot be a join -- but with a sharper
+    failure mode. A wrong email lookup finds nobody. A wrong *phone* lookup
+    finds the wrong person, and the dial-in agent then reads their comp
+    expectations and interview pipeline to whoever dialled.
+
+    So the key is E.164 from ``intake.phones.lookup_key``, which is stricter
+    than ``clean_phones``: it refuses to guess a country code rather than
+    approximate one. A stored number that cannot produce a key simply has no row
+    here, which makes this projection a strict subset of the JSON in the same way
+    ``candidate_emails`` is.
+
+    ``UniqueConstraint(org_id, phone)`` states the rule the lookup depends on:
+    one number belongs to one person. Existing data can violate it, so the
+    backfill is first-writer-wins and the loser keeps their JSON copy with no
+    row here.
+    """
+
+    __tablename__ = "candidate_phones"
+    __table_args__ = (
+        UniqueConstraint("org_id", "phone", name="uq_candidate_phone_org"),
+        Index("ix_candidate_phones_candidate", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cph"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # E.164, e.g. +14155550123.
+    phone: Mapped[str] = mapped_column(String(32))
+    # 0 is the number Candidate.phones lists first.
+    position: Mapped[int] = mapped_column(Integer, default=0)

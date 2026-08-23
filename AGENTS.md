@@ -137,3 +137,74 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
   (plus `migrate.sh` against both `foray` and `foray_staging`). The embedding
   similarity test is marked `model` and is skipped in CI (no Hugging Face
   fetch); the foray Docker image still bakes the model on every push.
+
+## Voice intake (`packages/core/juicebox/intake`)
+
+Candidate-side intake by phone: a web widget places a call, and a dial-in number
+takes process updates. Retell is the agent platform, on a Twilio number
+imported into it (+1 888 260-0142). Plan and phasing live in
+`VOICE_INTAKE_PLAN.md`. Non-obvious points:
+
+- **The gate is data, not an instruction.** `schema.coverage()` decides when a
+  call may end and `schema.next_questions()` decides what to ask; both read the
+  record. This is what makes a cooperative call two or three minutes and an
+  evasive one longer. Do **not** move that judgement into the system prompt — an
+  agent asked to decide whether it has "covered enough" guesses, and the failure
+  is invisible because the transcript always looks like a complete conversation.
+- **A declined field counts as covered.** A candidate who will not discuss comp
+  has resolved it. If refusal left the field unanswered the gate could never
+  close and the agent would ask forever, so `declined` is load-bearing, not
+  bookkeeping. It is also why an empty field is not evidence nobody asked --
+  read `declined` before concluding a call missed something.
+- **A preference has to stay in `ParsedQuery`'s vocabulary.** `spec` is
+  normalised by routing it through `ParsedQuery.normalized()`, the same call
+  `jobmatch.spec` makes for a job description, so the two sides cannot drift.
+  Adding a bespoke key to `spec` produces a field `jobmatch.engine` cannot score
+  and quietly turns intake back into notes. `SPEC_FIELDS` is deliberately a
+  subset: a candidate has no stated opinion about which school they attended.
+- **`prompts._INTAKE_FIELD_KEYS` is a copy.** `intake` imports `llm.prompts`, so
+  importing back would be a cycle. `test_the_prompt_enum_matches_the_field_set`
+  is what keeps the copy honest -- if you add a field, that test tells you where
+  the second edit goes.
+- **The heuristic path is deliberately incomplete.** It never fills
+  `must_have_skills` (a regex cannot tell "I want to keep writing Rust" from "I
+  did some Rust once", and must-haves are what `search.scoring.assess` penalises
+  hardest), never fills `highlights` (the value is the verbatim phrasing), and
+  never sets `ok_to_share_with_clients` -- the one field where a wrong guess is a
+  permission we did not have. Every heuristic extraction is flagged for review.
+  Filling these in "since we already have the transcript" is the regression to
+  watch for.
+- **Negation is checked, not assumed.** "fully remote isn't what I want"
+  contains "fully remote". `_asserted()` suppresses a phrase that appears only
+  inside a negation, and conflicting signals record nothing rather than
+  guessing. A pattern added without going through `_asserted` will read
+  preferences backwards.
+- **`candidate_phones` refuses to guess a country code.** The key comes from
+  `intake.phones.lookup_key`, which is stricter than
+  `enrich.normalize.clean_phones`: E.164 or North-American-shaped only, no row
+  otherwise. A wrong email lookup finds nobody; a wrong *phone* lookup finds the
+  wrong person and the dial-in agent reads their comp and pipeline to whoever
+  dialled. Do not add a region default to widen coverage -- unknown caller costs
+  one question, a wrong match is a disclosure. `repository.sync_candidate_phones`
+  is the only writer; call it wherever `Candidate.phones` changes.
+- **Caller ID authorises accepting an update, never disclosing one.** ANI is
+  spoofable, so the dial-in agent must confirm something only the candidate knows
+  before reading existing state back. Phase 4 owns this; the constraint is
+  recorded here because it is easy to lose while making the call feel personal.
+- **`IntakeCall.org_id` comes from the dialled number or a signed widget token,
+  never from the webhook body.** The caller is unauthenticated -- there is no
+  principal on a phone call -- and voice minutes are metered, so a
+  payload-supplied org is both a cross-tenant write and somebody else's bill.
+  `routers/track.py` is the pattern to copy: HMAC-signed token, org read off the
+  server-side row.
+- **`(provider, provider_call_id)` is the idempotency key.** Voice webhooks are
+  always retried. Without it a retry extracts the same conversation twice.
+- **Nullable booleans are deliberate.** `willing_to_relocate`, `remote_ok` and
+  `ok_to_share_with_clients` have three states, because
+  `Candidate.open_to_remote` cannot tell "wants an office" from "never asked" and
+  that is precisely why filtering on it is untrustworthy.
+- **Preferences live off `Candidate` on purpose.** `repository._apply` re-applies
+  `manual_fields` over imported data so a nightly Foray refresh cannot overwrite
+  a human correction. Preferences need that immunity, and widening
+  `manual_fields` across twenty more columns makes an already subtle mechanism
+  carry weight it was not built for.

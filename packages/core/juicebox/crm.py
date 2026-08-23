@@ -29,7 +29,7 @@ from .enrich.normalize import clean_emails, clean_phones, split_name
 from .enrich.taxonomy import normalize_seniority, normalize_skills, normalize_title
 from .models import Candidate, CandidateNote, CandidateTag, utcnow
 from .outreach.suppressions import suppress, unsuppress
-from .repository import sync_candidate_emails
+from .repository import sync_candidate_emails, sync_candidate_phones
 
 # Everything a person can edit by hand. Deliberately narrow: experiences and
 # educations are child rows with their own identity, and emails are the key
@@ -187,6 +187,9 @@ def patch_candidate(
                     reason="manual",
                     source="crm_status",
                 )
+
+    if "phones" in touched:
+        sync_candidate_phones(db, candidate)
 
     db.flush()
     return candidate

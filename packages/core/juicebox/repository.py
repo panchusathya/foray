@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from .enrich.normalize import NormalizedCandidate, build_doc_text, normalize_candidate
 from .enrich.taxonomy import normalize_seniority, normalize_title
+from .intake.phones import lookup_key
 from .llm.embeddings import get_embedder
-from .models import Candidate, CandidateEmail, Education, Experience, utcnow
+from .models import Candidate, CandidateEmail, CandidatePhone, Education, Experience, utcnow
 from .search.index import invalidate
 
 
@@ -71,6 +72,64 @@ def sync_candidate_emails(db: Session, candidate: Candidate) -> None:
                 org_id=candidate.org_id,
                 candidate_id=candidate.id,
                 email=email,
+                position=position,
+            )
+        )
+    db.flush()
+
+
+def sync_candidate_phones(db: Session, candidate: Candidate) -> None:
+    """Rebuild a candidate's rows in the phone projection.
+
+    The only writer, same contract as ``sync_candidate_emails``: call it
+    wherever ``Candidate.phones`` changes or the projection drifts from the
+    column it projects.
+
+    Two differences from the address version, both from ``lookup_key`` being
+    stricter than the column. A stored number whose country cannot be
+    determined yields no key and therefore no row, so the projection is a
+    subset for that reason as well as first-writer-wins. And two stored numbers
+    can normalise to the same key ("(415) 555-0123" and "+1 415 555 0123"),
+    which is one row, not an integrity error -- so the loop dedupes on the key
+    before it looks at what is already claimed.
+    """
+    existing = {
+        row.phone: row
+        for row in db.scalars(
+            select(CandidatePhone).where(CandidatePhone.candidate_id == candidate.id)
+        ).all()
+    }
+
+    wanted: list[str] = []
+    for raw in candidate.phones or []:
+        key = lookup_key(raw)
+        if key and key not in wanted:
+            wanted.append(key)
+
+    for phone, row in existing.items():
+        if phone not in wanted:
+            db.delete(row)
+
+    for position, phone in enumerate(wanted):
+        row = existing.get(phone)
+        if row is not None:
+            row.position = position
+            continue
+        claimed = db.scalar(
+            select(CandidatePhone).where(
+                CandidatePhone.org_id == candidate.org_id, CandidatePhone.phone == phone
+            )
+        )
+        if claimed is not None:
+            # Someone else owns this number. Taking it would point the dial-in
+            # line at the wrong person, which is worse than not knowing who
+            # called, so the first claim stands.
+            continue
+        db.add(
+            CandidatePhone(
+                org_id=candidate.org_id,
+                candidate_id=candidate.id,
+                phone=phone,
                 position=position,
             )
         )
@@ -239,6 +298,7 @@ def upsert_candidates(
             result.updated += 1
         _replace_children(db, candidate, data)
         sync_candidate_emails(db, candidate)
+        sync_candidate_phones(db, candidate)
         touched.append(candidate)
         result.ids.append(candidate.id)
 

@@ -44,7 +44,13 @@ from ..rank import (
     widen_message,
 )
 from ..score.archetypes import load_archetypes
-from ..search_doc import RANK_NORMALIZATION, RANK_WEIGHTS, TS_CONFIG, build_websearch_or
+from ..search_doc import (
+    HAS_LEXICAL_DOC_SQL,
+    RANK_NORMALIZATION,
+    RANK_WEIGHTS,
+    TS_CONFIG,
+    build_websearch_or,
+)
 from .parse import ParsedFilter, parse_query
 
 log = get_logger("api.search")
@@ -243,12 +249,23 @@ def _filter_clauses(
     *,
     has_contact: bool = False,
     gate_sql: str | None = None,
+    require_embedding: bool = False,
 ) -> str:
+    # `c.embedding is not null` used to sit in the shared list, which coupled
+    # keyword search to the embed pipeline: a row the lexical arm could match
+    # was invisible everywhere until the embed backfill reached it, and the
+    # count / lexical / score / enrich queries silently excluded it too. Only
+    # the vector arm dereferences the embedding (its ORDER BY), so only it
+    # passes require_embedding=True. Consequence to know when reading numbers:
+    # total_matched now counts unembedded rows as well, so it GROWS on corpora
+    # with an embed backlog — widen_message reads it unchanged, which is
+    # correct (those rows really are retrievable, via the lexical arm).
     clauses = [
         "c.merged_into is null",
         f"s.activity_at > now() - interval '{int(settings.activity_floor_months)} months'",
-        "c.embedding is not null",
     ]
+    if require_embedding:
+        clauses.append("c.embedding is not null")
     if has_contact:
         clauses.append(
             "(c.linkedin_url is not null or exists ("
@@ -260,7 +277,21 @@ def _filter_clauses(
         clauses.append(f"c.location_raw ilike any({placeholder}::text[])")
     if parsed.languages:
         placeholder = params.add([lang.lower() for lang in parsed.languages])
-        clauses.append(f"s.primary_language = any({placeholder}::text[])")
+        if parsed.strict_language:
+            # Opt-in exact predicate: "known to write X", accepting that
+            # language is only observed on GitHub-derived rows.
+            clauses.append(f"s.primary_language = any({placeholder}::text[])")
+        else:
+            # Three-valued by default. primary_language is GitHub-only and
+            # NULL on all 196,778 LinkedIn rows, so the hard equality matched
+            # 550 of 204,535 rows (0.3%) — a source filter in disguise, not a
+            # language filter. Admitting NULL keeps "python" as a preference
+            # the ranking arms express (tsvector B-weight, embedding) rather
+            # than a gate that silently drops 96% of the corpus.
+            clauses.append(
+                f"(s.primary_language = any({placeholder}::text[])"
+                " or s.primary_language is null)"
+            )
     if parsed.experience_min is not None:
         placeholder = params.add(float(parsed.experience_min))
         clauses.append(f"s.est_experience_years >= {placeholder}")
@@ -507,7 +538,7 @@ async def run_search(
         count_sql = f"""
             select
               count(*)::int as n_matched,
-              count(*) filter (where s.search_tsv is not null)::int as n_lexical_indexed,
+              count(*) filter (where {HAS_LEXICAL_DOC_SQL})::int as n_lexical_indexed,
               count(*) filter (where a.score is not null)::int as n_scored
             from candidates c
             join candidate_signals s on s.candidate_id = c.id
@@ -522,7 +553,13 @@ async def run_search(
 
         if n_matched and "vector" in live_arms:
             vparams = Params()
-            vwhere = _filter_clauses(parsed, vparams, has_contact=has_contact, gate_sql=gate)
+            # require_embedding: only this arm orders by c.embedding, and HNSW
+            # cannot return a NULL-embedding row anyway; stating it in the
+            # WHERE keeps the plan honest if the index is ever missing.
+            vwhere = _filter_clauses(
+                parsed, vparams, has_contact=has_contact, gate_sql=gate,
+                require_embedding=True,
+            )
             qph = vparams.add(qvec)
             lim = vparams.add(settings.vector_k)
             vector_ids = [
@@ -641,6 +678,11 @@ async def run_search(
         enrich_by_id[cid] = PoolRow(
             key=cid,
             score=score,
+            # NULL cos_sim is an EXPECTED state, not a data error: since the
+            # shared filters stopped requiring an embedding, the lexical arm
+            # can pool rows the embed pipeline has not reached, and the enrich
+            # query's `1 - (c.embedding <=> ...)` is NULL for them. `or 0.0`
+            # ranks such rows on RRF (+ archetype score) alone.
             cos_sim=float(row["cos_sim"] or 0.0),
             # PoolRow.highlight_count feeds the min_evidence veto, so it now
             # carries the SUBSTANTIVE evidence count (highlights minus the

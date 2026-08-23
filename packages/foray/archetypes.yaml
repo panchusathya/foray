@@ -106,7 +106,7 @@ archetypes:
     gate: >-
       s.est_experience_years >= 5
       and ((s.evidence_kind = 'github'
-            and s.primary_language in ('go','rust','java','python','scala','cpp')
+            and s.primary_language in ('go','rust','java','python','scala','c++')
             and s.non_fork_repo_count >= 2)
            or (s.evidence_kind <> 'github'
                and s.title ~* '(back.?end|platform|infrastructure|software engineer|\mswe\M)'))

@@ -9,8 +9,13 @@ import argparse
 import asyncio
 
 from .db import close_pool, get_pool
+from .search_doc import HAS_LEXICAL_DOC_SQL
 
-_COUNTS_SQL = """
+# f-string only for HAS_LEXICAL_DOC_SQL — "has a lexical document" is defined
+# once in search_doc so status, the count query, and the health probes cannot
+# drift (a bare `search_tsv is not null` counted indexed-but-EMPTY tsvectors).
+# The constant assumes the `s` alias, hence `candidate_signals s` below.
+_COUNTS_SQL = f"""
 select
   (select count(*) from candidates where merged_into is null)             as candidates,
   (select count(*) from candidates where source in ('linkedin','both')
@@ -18,7 +23,7 @@ select
   (select count(*) from raw_profiles where source = 'github')             as enriched,
   (select count(*) from candidate_signals)                                 as derived,
   (select count(*) from candidates where embedding is not null)            as embedded,
-  (select count(*) from candidate_signals where search_tsv is not null)    as lexical_indexed,
+  (select count(*) from candidate_signals s where {HAS_LEXICAL_DOC_SQL})   as lexical_indexed,
   (select count(distinct candidate_id) from archetype_scores)              as scored_candidates,
   (select count(*) from archetype_scores)                                  as scored_pairs,
   (select count(distinct candidate_id) from candidate_emails

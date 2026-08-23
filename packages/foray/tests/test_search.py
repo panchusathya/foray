@@ -56,6 +56,67 @@ def test_filter_clauses_append_the_archetype_gate():
     assert "domain_markers @> array['ml']" in where
 
 
+def test_embedding_requirement_is_vector_arm_only():
+    """Keyword search must not depend on the embed pipeline: the shared
+    filters (count / lexical / score / enrich) no longer require an embedding,
+    only the vector arm does — it is the only query that dereferences
+    c.embedding, and a NULL-embedding row is retrievable via the lexical arm
+    while the embed backfill catches up."""
+    shared = _filter_clauses(ParsedFilter(), Params())
+    assert "embedding is not null" not in shared
+    vector = _filter_clauses(ParsedFilter(), Params(), require_embedding=True)
+    assert "c.embedding is not null" in vector
+    # The flag adds no bind parameters, so arm WHEREs stay numbering-compatible.
+    params = Params()
+    _filter_clauses(ParsedFilter(metros=["SF"]), params, require_embedding=True)
+    assert len(params.values) == 1
+
+
+def test_language_filter_admits_null_by_default():
+    """primary_language is GitHub-only (NULL on all 196,778 LinkedIn rows), so
+    the old hard equality matched 550 of 204,535 rows — a source filter in
+    disguise. Default: three-valued (match OR unknown)."""
+    params = Params()
+    where = _filter_clauses(ParsedFilter(languages=["Python"]), params)
+    assert "(s.primary_language = any($1::text[]) or s.primary_language is null)" in where
+    assert params.values == [["python"]]
+
+
+def test_strict_language_restores_the_exact_predicate():
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(languages=["go"], strict_language=True), params
+    )
+    assert "s.primary_language = any($1::text[])" in where
+    assert "s.primary_language is null" not in where
+    assert params.values == [["go"]]
+
+
+def test_parsed_filter_from_dict_drops_unknown_keys():
+    """A version rollback replays cached dicts with keys this build lacks;
+    ParsedFilter(**data) would TypeError and 500 the search. from_dict must
+    degrade to defaults instead (the PARSER_VERSION bump is the primary
+    protection; this is the belt-and-braces)."""
+    parsed = ParsedFilter.from_dict(
+        {"archetype_id": "founding_ml", "languages": ["python"], "from_the_future": 1}
+    )
+    assert parsed.archetype_id == "founding_ml"
+    assert parsed.languages == ["python"]
+    assert parsed.strict_language is False  # default, not the unknown key
+
+
+def test_parsed_filter_from_dict_round_trips_to_dict():
+    original = ParsedFilter(
+        archetype_id="senior_backend",
+        metros=["SF"],
+        languages=["go"],
+        experience_min=5.0,
+        free_text="senior backend in go",
+        strict_language=True,
+    )
+    assert ParsedFilter.from_dict(original.to_dict()) == original
+
+
 def test_gate_does_not_disturb_placeholder_numbering():
     parsed = ParsedFilter(metros=["SF"], languages=["go"], experience_min=5)
     gated = Params()

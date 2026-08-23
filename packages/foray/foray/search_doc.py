@@ -86,6 +86,21 @@ update candidate_signals s
    and s.candidate_id = any($1::bigint[])
 """
 
+# "Has a lexical document", the single source for COUNTING, for the same
+# reason this module is the single source for deriving and querying: a
+# definition that drifts across call sites does not error, it silently
+# reports a different corpus. A bare ``search_tsv is not null`` overcounts:
+# an admitted profile with no title/employer/topics — and an empty name —
+# still gets a non-NULL tsvector from the setweight concatenation above,
+# it is just EMPTY, i.e. "was indexed", not "is findable". The lexical arm
+# (``@@``) can never match such a row, so health probes and n_lexical_indexed
+# must not count it either. The ``s`` alias is baked in because every SQL
+# fragment in this module already assumes s = candidate_signals (see the
+# alias note above SEARCH_TSV_SQL); count-only call sites add the alias to
+# their query rather than this module keeping a second alias-free variant
+# that could drift from this one.
+HAS_LEXICAL_DOC_SQL = "s.search_tsv is not null and s.search_tsv <> ''::tsvector"
+
 # Function words and recruiter-generic tokens that match nearly every document
 # in this corpus. Years/counts are already structured filters.
 #

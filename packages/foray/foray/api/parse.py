@@ -11,20 +11,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 from ..config import settings
-from ..harvest.shards import LANGUAGES, load_metros
+from ..harvest.shards import load_metros
 from ..llm import Chat, OpenRouterChat
 from ..log import get_logger
 from ..score.archetypes import load_archetypes
+from ..vocab import match_languages
 
 log = get_logger("api.parse")
 
-# Bumped when ARCHETYPE_KEYWORDS or heuristic extraction changes. Folded into
-# the cache key so parse_query cannot serve a row that was written under an
-# older vocabulary. Orphan rows in query_parse_cache are harmless.
-PARSER_VERSION = 2
+# Bumped when ARCHETYPE_KEYWORDS or heuristic extraction changes — or when the
+# ParsedFilter dict shape changes (v3 added strict_language): the cache stores
+# to_dict() output, so a shape change without a bump would hydrate old rows
+# into the new dataclass (and, on rollback, new rows into the old one). Folded
+# into the cache key so parse_query cannot serve a row that was written under
+# an older vocabulary or shape. Orphan rows in query_parse_cache are harmless.
+PARSER_VERSION = 3
 
 # Keyword -> archetype id (first match wins, order matters: specific before broad).
 ARCHETYPE_KEYWORDS: list[tuple[str, str]] = [
@@ -64,9 +68,34 @@ class ParsedFilter:
     experience_min: float | None = None
     experience_max: float | None = None
     free_text: str = ""
+    # Policy switch, never extracted from the query text — neither parser sets
+    # it and the LLM schema prompt deliberately does not advertise it yet.
+    # Measured on prod (2026-08): `primary_language = any(['python'])` matched
+    # 550 of 204,535 rows (0.3%) because primary_language is a GitHub-derived
+    # column, populated on ZERO of the 196,778 LinkedIn-only rows — the hard
+    # equality was a source filter in disguise ("and is a GitHub row"). The
+    # default False therefore emits three-valued matching in _filter_clauses
+    # (language matches OR is unknown); True restores the strict predicate for
+    # callers that genuinely mean "known to write X", accepting the collapse.
+    strict_language: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ParsedFilter:
+        """Hydrate from a cached to_dict(), dropping keys this build lacks.
+
+        The PARSER_VERSION bump on shape changes is the primary protection
+        (a bumped version hashes to a different cache key, so old rows are
+        simply never read). This is the belt-and-braces for the case the bump
+        does not cover: a rollback, or a shape change that forgot to bump —
+        there ``ParsedFilter(**data)`` raises TypeError on the unknown key and
+        500s every search for that cached query. Unknown keys degrade to
+        defaults instead; a stale parse is strictly better than no search.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 def _query_hash(query: str) -> str:
@@ -84,7 +113,12 @@ def heuristic_parse(query: str) -> ParsedFilter:
             break
 
     metros = [m for m in load_metros() if m.lower() in q]
-    languages = [lang for lang in LANGUAGES if re.search(rf"\b{re.escape(lang)}\b", q)]
+    # vocab.match_languages returns STORED forms (what derive writes, what the
+    # SQL filter compares against). The previous implementation matched the
+    # query against harvest's GitHub-qualifier list with rf"\b{lang}\b", which
+    # was dead twice over: it emitted "cpp" where the column holds "c++", and
+    # \b after '+' can never match "c++" at end-of-token anyway.
+    languages = match_languages(q)
 
     experience_min = experience_max = None
     if (m := _EXPERIENCE_RANGE.search(q)) is not None:
@@ -152,7 +186,7 @@ async def parse_query(
     )
     if cached is not None:
         data = json.loads(cached) if isinstance(cached, str) else cached
-        parsed = ParsedFilter(**data)
+        parsed = ParsedFilter.from_dict(data)
         return parsed, ("cache" if parsed.archetype_id else "vector-fallback")
 
     want_llm = bool(settings.openrouter_api_key) if use_llm is None else use_llm

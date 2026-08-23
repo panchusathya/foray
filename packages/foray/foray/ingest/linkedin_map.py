@@ -28,6 +28,42 @@ _MONTHS = {
 # position values that are noise, not titles (lowercased comparison).
 _JUNK_TITLES = {"", "--", "-", "set at linkedin", "retired", "n/a", "none"}
 
+# Real 2-3 char titles that appear in this corpus and must survive the
+# short-title junk rule below. The trade-off is deliberate: legitimate
+# ultra-short titles exist ("SWE at Google", a bare "CTO"), so we name the
+# ones the corpus actually uses; everything else that short ("SET", "N/A",
+# "..", "-") is export noise, and an unlisted-but-real rarity (say "CIO")
+# costs only a NULL title on that row, not a dropped candidate.
+_SHORT_TITLE_ALLOWLIST = {
+    "swe", "sde", "cto", "ceo", "coo", "cfo", "vp", "sre", "ml", "qa",
+    "pm", "em", "dev",
+}
+
+
+def _junk_role_title(title: str, company: str) -> bool:
+    """True when a title string is export noise rather than a real job title.
+
+    Applied to BOTH structured role titles and the ``position`` fallback —
+    _JUNK_TITLES alone only ever caught the fallback: the phrase
+    "set at linkedin" lives in ``position``, while the same artifact arrives
+    structurally as ``{"title": "SET", "company": "LinkedIn"}`` and used to
+    sail through best_title into candidate_signals.title, the weight-A
+    tsvector and the embed blob.
+    """
+    lowered = title.strip().lower()
+    if lowered in _JUNK_TITLES:
+        return True
+    # The Bright Data test-bot artifact: 5,462 prod rows carry title='SET'
+    # with employer='LinkedIn' (which is how 'LinkedIn' became the corpus's
+    # #1 employer at 6,180 rows, ahead of Google's 2,630). In the sample
+    # these records are literal bot fixtures ("Johnxxxxx Doe"), the phantom
+    # role is always undated, and 43/44 have it as their ONLY experience.
+    if lowered == "set" and company.strip().lower() == "linkedin":
+        return True
+    # General net for the same class of noise: ultra-short titles are junk
+    # unless the corpus-validated allowlist says otherwise.
+    return len(lowered) <= 3 and lowered not in _SHORT_TITLE_ALLOWLIST
+
 # current_company names that are placeholders, not employers (lowercased
 # comparison). Deliberately minimal: "stealth" / "stealth startup",
 # "self-employed" and "freelance" are NOT junk -- they carry real signal (a
@@ -196,20 +232,22 @@ def flatten_experience(record: dict) -> list[Role]:
 def best_title(record: dict, roles: list[Role] | None = None) -> str | None:
     roles = flatten_experience(record) if roles is None else roles
     for role in roles:
-        if role.title and role.title.lower() not in _JUNK_TITLES:
+        # Each role's own company feeds the junk check so the structured
+        # SET/LinkedIn artifact is caught here, not just in the fallback.
+        if role.title and not _junk_role_title(role.title, role.company):
             return role.title[:200]
     position = (record.get("position") or "").strip()
     company = (record.get("current_company_name") or "").strip()
     if (
         position
-        and position.lower() not in _JUNK_TITLES
+        and not _junk_role_title(position, company)
         and position.lower() != company.lower()
     ):
         return position[:200]
     return None
 
 
-def employer_of(record: dict) -> str | None:
+def employer_of(record: dict, roles: list[Role] | None = None) -> str | None:
     current = record.get("current_company") or {}
     name = (current.get("name") if isinstance(current, dict) else "") or ""
     name = name.strip() or (record.get("current_company_name") or "").strip()
@@ -217,6 +255,23 @@ def employer_of(record: dict) -> str | None:
     # never reaches candidate_signals, the tsvector or the embedding blob.
     if name.lower() in _JUNK_EMPLOYERS:
         return None
+    # The SET/LinkedIn phantom rows carry current_company={"name":"LinkedIn"}
+    # from the same Bright Data test fixture that wrote the junk title
+    # (sample: 44/44 phantom records had it) — the employer claim has the
+    # same provenance as the junk title, so it falls with it. Genuine
+    # LinkedIn employees in the export are distinguishable by at least one
+    # LinkedIn role with a real (non-junk) title, usually dated; the phantom
+    # records' only LinkedIn-attributed role is the undated SET entry.
+    if name.lower() == "linkedin":
+        roles = flatten_experience(record) if roles is None else roles
+        linkedin_roles = [r for r in roles if r.company.strip().lower() == "linkedin"]
+        has_phantom = any(r.title.strip().lower() == "set" for r in linkedin_roles)
+        has_real_role = any(
+            r.title and not _junk_role_title(r.title, r.company)
+            for r in linkedin_roles
+        )
+        if has_phantom and not has_real_role:
+            return None
     return name[:200] or None
 
 
@@ -312,6 +367,6 @@ def to_import_row(record: dict) -> ImportRow | None:
         location_raw=(record.get("city") or "").strip() or None,
         linkedin_url=url,
         title=best_title(record, roles),
-        employer=employer_of(record),
+        employer=employer_of(record, roles),
         emails=business_emails(record),
     )

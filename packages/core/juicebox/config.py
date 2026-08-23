@@ -294,6 +294,17 @@ class Settings:
     intake_coverage_fast_model: bool = field(
         default_factory=lambda: _env_bool("INTAKE_COVERAGE_FAST_MODEL", True)
     )
+    # Stated minutes at or below this close the gate on CORE_KEYS only.
+    # A larger budget does not add questions; no budget is today's full set.
+    intake_core_only_minutes: int = field(
+        default_factory=lambda: _env_int("INTAKE_CORE_ONLY_MINUTES", 4)
+    )
+    # Flips one spoken close sentence. The SMS sender itself lives on
+    # feat/messaging-intake; this flag must not promise a text that cannot send.
+    sms_enabled: bool = field(default_factory=lambda: _env_bool("SMS_ENABLED", False))
+    sms_from_number: str = field(
+        default_factory=lambda: _env("SMS_FROM_NUMBER", "+18882600142")
+    )
 
     @property
     def resolved_llm_provider(self) -> str:

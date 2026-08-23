@@ -151,6 +151,20 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   evasive one longer. Do **not** move that judgement into the system prompt — an
   agent asked to decide whether it has "covered enough" guesses, and the failure
   is invisible because the transcript always looks like a complete conversation.
+- **A stated time budget may only narrow the gate.** `minutes_available` is
+  persisted on first sight and `coverage(core_only=)` closes on `CORE_KEYS`
+  when the budget is at or under `intake_core_only_minutes`. Twenty minutes
+  does not add questions. No budget (`None`) is today's full required set.
+  `spec.must_have_skills` is asked early but is **not** in `CORE_KEYS` — the
+  heuristic cannot fill it, and putting it on the short-call gate would run
+  every model-less pass to the 15-minute ceiling. Skipped required keys land
+  on `deferred_fields` so they do not look forgotten.
+- **Reactions land on the domain, never the person.** The agent may remark once
+  on the field ("backend infrastructure — that's an area with real movement
+  right now") and must never react to compensation, notice period, work
+  authorisation, or anything protected; never say they are strong or in demand;
+  never name a client or quote a number of roles. `progress_line` is composed
+  in code at milestones `{5, 3, 1}` so the agent cannot invent a count.
 - **A declined field counts as covered.** A candidate who will not discuss comp
   has resolved it. If refusal left the field unanswered the gate could never
   close and the agent would ask forever, so `declined` is load-bearing, not

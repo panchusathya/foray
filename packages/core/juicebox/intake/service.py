@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..enrich.normalize import split_name
 from ..jobs import KIND_INTAKE_EXTRACT, enqueue
 from ..models import (
@@ -44,7 +45,7 @@ from .providers import (
     ProviderCallError,
     get_voice_provider,
 )
-from .schema import SCHEMA_VERSION, coverage
+from .schema import SCHEMA_VERSION, coverage, deferred_required
 
 logger = logging.getLogger(__name__)
 
@@ -413,8 +414,70 @@ _WRAP_UP_GUIDANCE = (
     "sounds ready. If they still sound willing, ask at most one topic from "
     "optional_topics first -- the projects question is the most valuable. Then "
     "recap the two or three most important facts for confirmation, tell them "
-    "they will get a link to review their profile, and end the call."
+    "a recruiter will follow up from a number they will recognise, thank them, "
+    "and end the call."
 )
+
+_WRAP_UP_GUIDANCE_SMS = (
+    "Everything required is covered, so you may close whenever the candidate "
+    "sounds ready. If they still sound willing, ask at most one topic from "
+    "optional_topics first -- the projects question is the most valuable. Then "
+    "recap the two or three most important facts for confirmation, tell them "
+    "they will get a text from the number they were called from, thank them, "
+    "and end the call."
+)
+
+# Spoken only at these remaining-counts. Composed in code so the agent cannot
+# invent a number, and left empty otherwise so it cannot nag.
+PROGRESS_MILESTONES = frozenset({5, 3, 1})
+
+
+def progress_line(questions_left: int) -> str:
+    """Exact sentence to speak, or empty off-milestone."""
+    if questions_left not in PROGRESS_MILESTONES:
+        return ""
+    if questions_left == 1:
+        return "One more quick one and I'll let you go."
+    words = {5: "Five", 3: "Three"}
+    return f"{words[questions_left]} more quick ones and I'll let you go."
+
+
+def core_only_for(minutes_available: int | None) -> bool:
+    """A stated budget may only narrow the gate. None is today's full set."""
+    if minutes_available is None:
+        return False
+    return minutes_available <= get_settings().intake_core_only_minutes
+
+
+def parse_minutes_available(args: dict[str, Any] | None) -> int | None:
+    if not args:
+        return None
+    raw = args.get("minutes_available")
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def apply_budget(call: IntakeCall, minutes_available: int | None) -> None:
+    """Persist the budget on first sight. Later values do not overwrite."""
+    if minutes_available is None:
+        return
+    if call.minutes_available is None:
+        call.minutes_available = minutes_available
+    if core_only_for(call.minutes_available):
+        call.gate_mode = "core"
+    else:
+        call.gate_mode = "full"
+
+
+def _wrap_up_guidance() -> str:
+    return _WRAP_UP_GUIDANCE_SMS if get_settings().sms_enabled else _WRAP_UP_GUIDANCE
 
 
 def _question(key: str) -> dict[str, str]:
@@ -424,24 +487,38 @@ def _question(key: str) -> dict[str, str]:
     return {"topic": spec.key, "ask_about": spec.asks, "why_it_matters": spec.client_question}
 
 
-def _snapshot(state, *, covered_count: int) -> dict[str, Any]:
+def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None) -> dict[str, Any]:
     """Render a coverage state for a language model to act on.
 
     ``still_needed`` is required-tier only. Once the gate closes it goes empty
     and enrichment moves to ``optional_topics`` — reporting enrichment as
     "needed" would keep a finished call alive, which is the exact failure the
     tiering exists to prevent.
+
+    ``progress_line`` is the exact sentence to speak, or empty. Composed here
+    so the agent cannot invent a count.
     """
     complete = state.required_complete
     needed = [] if complete else list(state.required_missing[:COVERAGE_QUESTION_LIMIT])
-    optional = list(state.enrichment_missing[:COVERAGE_QUESTION_LIMIT]) if complete else []
+    optional: list[str] = []
+    if complete:
+        # Under a core trim, ask must-have skills first if they never landed —
+        # strongest retrieval signal, but not allowed to keep the gate open.
+        if record is not None:
+            leftover = deferred_required(record)
+            if "spec.must_have_skills" in leftover:
+                optional.append("spec.must_have_skills")
+        optional.extend(state.enrichment_missing)
+        optional = optional[:COVERAGE_QUESTION_LIMIT]
+    outstanding = len(state.required_missing)
     return {
         "wrap_up": complete,
         "still_needed": [_question(k) for k in needed],
         "optional_topics": [_question(k) for k in optional],
-        "required_outstanding": len(state.required_missing),
+        "required_outstanding": outstanding,
         "already_covered": covered_count,
-        "guidance": _WRAP_UP_GUIDANCE if complete else _NEEDED_GUIDANCE,
+        "progress_line": "" if complete else progress_line(outstanding),
+        "guidance": _wrap_up_guidance() if complete else _NEEDED_GUIDANCE,
     }
 
 
@@ -526,7 +603,13 @@ def request_intake_call(
             to_number=target,
             agent_id=number.outbound_agent_id,
             metadata={"org_id": org_id, "candidate_id": candidate.id, "source": source},
-            dynamic_variables={"candidate_first_name": candidate.first_name or ""},
+            dynamic_variables={
+                "candidate_first_name": candidate.first_name or "",
+                "recruiter_name": "Vivian",
+                "sms_number_spoken": (
+                    "eight eight eight, two six zero, zero one four two"
+                ),
+            },
         )
     except ProviderCallError as exc:
         logger.warning("intake dial failed for org %s: %s", org_id, exc)
@@ -624,15 +707,35 @@ def _merge_contact_details(
         db.flush()
 
 
-def coverage_snapshot(transcript: str, *, known: str = "", fast: bool = True) -> dict[str, Any]:
+def coverage_snapshot(
+    transcript: str,
+    *,
+    known: str = "",
+    fast: bool = True,
+    minutes_available: int | None = None,
+    call: IntakeCall | None = None,
+) -> dict[str, Any]:
     """What the agent still owes us, computed from what has actually been said.
 
     ``wrap_up`` is the whole point: it lets a cooperative call end in two or
     three minutes without the model having to guess how long it has been
     talking, and keeps an evasive one going without a timer forcing it shut.
     """
+    if call is not None:
+        apply_budget(call, minutes_available)
+        minutes_available = call.minutes_available
+    core_only = core_only_for(minutes_available)
     result = extract_intake(transcript, known=known, fast=fast)
-    return _snapshot(result.coverage, covered_count=len(result.coverage.covered))
+    state = coverage(result.record, core_only=core_only)
+    if call is not None and core_only and state.required_complete:
+        skipped = list(deferred_required(result.record))
+        call.deferred_fields = skipped
+        if skipped:
+            call.review_needed = True
+            call.review_reason = _join_reasons(
+                call.review_reason, "core-mode trim; deferred fields unasked"
+            )
+    return _snapshot(state, covered_count=len(state.covered), record=result.record)
 
 
 def empty_coverage() -> dict[str, Any]:

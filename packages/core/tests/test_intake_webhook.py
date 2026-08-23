@@ -578,11 +578,14 @@ class TestExtraction:
 
 
 class TestCoverageEndpoint:
-    def _function_call(self, transcript, call_id="call_abc123"):
+    def _function_call(self, transcript, call_id="call_abc123", minutes=None):
+        args = {}
+        if minutes is not None:
+            args["minutes_available"] = minutes
         return {
             "name": "check_coverage",
             "call": {"call_id": call_id, "transcript": transcript, "agent_id": "agent_1"},
-            "args": {},
+            "args": args,
         }
 
     def test_an_empty_transcript_asks_the_gate_first(self, client, signer):
@@ -645,6 +648,106 @@ class TestCoverageEndpoint:
         assert body["optional_topics"]
         assert body["optional_topics"][0]["topic"] == "highlights"
         assert "may close" in body["guidance"]
+        assert body["progress_line"] == ""
+
+    def test_a_three_minute_budget_closes_on_the_core_set(
+        self, client, session, signer, owned_number, account, monkeypatch
+    ):
+        from juicebox.intake import service
+        from juicebox.intake.schema import deferred_required
+        from juicebox.models import IntakeCall
+
+        def _core(transcript, *, known="", fast=True):
+            from juicebox.intake.extract import ExtractionResult
+            from juicebox.intake.schema import coverage
+
+            record = _filled_core()
+            return ExtractionResult(
+                record=record, extractor="heuristic", coverage=coverage(record)
+            )
+
+        monkeypatch.setattr(service, "extract_intake", _core)
+        post(client, signer, call_payload(event="call_started"))
+        response = post(
+            client,
+            signer,
+            self._function_call(TRANSCRIPT, minutes=3),
+            path="/v1/intake/coverage",
+        )
+        body = response.json()
+        assert body["wrap_up"] is True
+        assert "spec.must_have_skills" in deferred_required(_filled_core())
+        session.expire_all()
+        call = session.scalar(select(IntakeCall))
+        assert call is not None
+        assert call.minutes_available == 3
+        assert call.gate_mode == "core"
+        assert "spec.must_have_skills" in (call.deferred_fields or [])
+        assert call.review_needed is True
+
+    def test_a_twenty_minute_budget_does_not_widen(
+        self, client, session, signer, owned_number, account, monkeypatch
+    ):
+        from juicebox.intake import service
+        from juicebox.models import IntakeCall
+
+        def _core(transcript, *, known="", fast=True):
+            from juicebox.intake.extract import ExtractionResult
+            from juicebox.intake.schema import coverage
+
+            record = _filled_core()
+            return ExtractionResult(
+                record=record, extractor="heuristic", coverage=coverage(record)
+            )
+
+        monkeypatch.setattr(service, "extract_intake", _core)
+        post(client, signer, call_payload(event="call_started"))
+        response = post(
+            client,
+            signer,
+            self._function_call(TRANSCRIPT, minutes=20),
+            path="/v1/intake/coverage",
+        )
+        assert response.json()["wrap_up"] is False
+        session.expire_all()
+        call = session.scalar(select(IntakeCall))
+        assert call.minutes_available == 20
+        assert call.gate_mode == "full"
+        assert call.deferred_fields in (None, [], {}) or call.deferred_fields == []
+
+    def test_no_budget_is_todays_full_gate(self, client, signer, monkeypatch):
+        from juicebox.intake import service
+
+        def _core(transcript, *, known="", fast=True):
+            from juicebox.intake.extract import ExtractionResult
+            from juicebox.intake.schema import coverage
+
+            record = _filled_core()
+            return ExtractionResult(
+                record=record, extractor="heuristic", coverage=coverage(record)
+            )
+
+        monkeypatch.setattr(service, "extract_intake", _core)
+        response = post(
+            client, signer, self._function_call(TRANSCRIPT), path="/v1/intake/coverage"
+        )
+        assert response.json()["wrap_up"] is False
+
+
+def _filled_core() -> dict:
+    from juicebox.intake import empty_record
+
+    record = empty_record()
+    record["spec"].update(
+        {
+            "job_titles": ["machine learning engineer"],
+            "seniority": ["senior"],
+            "locations": ["san francisco"],
+            "remote_ok": False,
+        }
+    )
+    record["target_base"] = 240000.0
+    return record
 
 
 def _filled_required() -> dict:

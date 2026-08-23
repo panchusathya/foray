@@ -1138,6 +1138,15 @@ class IntakeCall(Base, TimestampMixin):
     review_needed: Mapped[bool] = mapped_column(Boolean, default=True)
     review_reason: Mapped[str] = mapped_column(String(400), default="")
 
+    # Stated time budget, persisted on first sight of check_coverage's
+    # minutes_available. None means today's full gate. A budget may only
+    # narrow the required set (gate_mode=core); it never adds questions.
+    minutes_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gate_mode: Mapped[str] = mapped_column(String(8), default="full", server_default="full")
+    # Required keys skipped by a core-mode trim. Empty is "never trimmed";
+    # a listed key is unasked-on-purpose, not forgotten.
+    deferred_fields: Mapped[list] = mapped_column(JSON, default=list)
+
     error: Mapped[str] = mapped_column(String(400), default="")
 
 

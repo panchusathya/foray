@@ -38,9 +38,11 @@ from ..intake.providers import (
 )
 from ..intake.service import (
     CallRequestError,
+    apply_budget,
     coverage_snapshot,
     empty_coverage,
     find_call,
+    parse_minutes_available,
     record_call_event,
     request_intake_call,
     resolve_org_id,
@@ -193,14 +195,17 @@ def intake_coverage(
     from the transcript alone.
     """
     provider = _verified(raw, x_retell_signature)
-    event, _args = provider.parse_function_call(loads(raw))
+    event, args = provider.parse_function_call(loads(raw))
+    minutes_available = parse_minutes_available(args)
 
     transcript = (event.transcript or "").strip()
+    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
     if not transcript:
+        if call is not None:
+            apply_budget(call, minutes_available)
         return empty_coverage()
 
     known = ""
-    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
     if call is not None and call.candidate_id:
         # Pre-call facts must not count as call answers, or the gate closes on
         # questions nobody asked.
@@ -208,4 +213,6 @@ def intake_coverage(
         if candidate is not None:
             known = f"name: {candidate.full_name}"
 
-    return coverage_snapshot(transcript, known=known)
+    return coverage_snapshot(
+        transcript, known=known, minutes_available=minutes_available, call=call
+    )

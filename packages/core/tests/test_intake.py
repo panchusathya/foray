@@ -27,6 +27,7 @@ from intake_fixtures import (
 from sqlalchemy import select
 
 from juicebox.intake import (
+    CORE_KEYS,
     ENRICHMENT_KEYS,
     EXTRACTOR_HEURISTIC,
     EXTRACTOR_LLM,
@@ -35,6 +36,7 @@ from juicebox.intake import (
     REQUIRED_KEYS,
     SPEC_FIELDS,
     coverage,
+    deferred_required,
     diff_records,
     empty_record,
     extract_intake,
@@ -44,6 +46,7 @@ from juicebox.intake import (
     normalize_record,
 )
 from juicebox.intake.schema import TIER_REQUIRED, is_filled
+from juicebox.intake.service import progress_line
 from juicebox.llm.client import FakeTransport, LLMClient, LLMUnavailable, set_llm
 from juicebox.llm.prompts import _INTAKE_FIELD_KEYS
 from juicebox.models import Candidate, CandidatePhone
@@ -137,6 +140,51 @@ class TestCoverageGate:
         record = _filled_required()
         record["declined"] = list(ENRICHMENT_KEYS)
         assert next_questions(record) == []
+
+    def test_core_only_closes_without_must_have_skills(self):
+        """The heuristic cannot fill must-haves; requiring them on a short call
+        would run every model-less pass to the 15-minute ceiling."""
+        record = _filled_core()
+        assert "spec.must_have_skills" not in coverage(record, core_only=True).covered
+        assert coverage(record, core_only=True).required_complete
+        assert not coverage(record).required_complete
+        assert "spec.must_have_skills" in deferred_required(record)
+
+    def test_a_long_budget_does_not_widen_the_gate(self):
+        record = _filled_required()
+        assert coverage(record, core_only=False).required_complete
+        assert coverage(record).required_missing == ()
+
+    def test_no_budget_matches_today(self):
+        empty = empty_record()
+        assert coverage(empty).required_missing == coverage(empty, core_only=False).required_missing
+        assert set(coverage(empty).required_missing) == set(REQUIRED_KEYS)
+
+    def test_core_keys_are_the_retrieval_set(self):
+        assert CORE_KEYS == (
+            "spec.job_titles",
+            "spec.seniority",
+            "spec.locations",
+            "spec.remote_ok",
+            "compensation",
+        )
+        assert "spec.must_have_skills" not in CORE_KEYS
+        assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
+
+
+class TestProgressLine:
+    def test_empty_off_milestone(self):
+        assert progress_line(4) == ""
+        assert progress_line(2) == ""
+        assert progress_line(0) == ""
+        assert progress_line(11) == ""
+
+    def test_states_the_true_count_on_milestone(self):
+        assert progress_line(5) == "Five more quick ones and I'll let you go."
+        assert progress_line(3) == "Three more quick ones and I'll let you go."
+        assert progress_line(1) == "One more quick one and I'll let you go."
+        assert "4" not in progress_line(5)
+        assert "2" not in progress_line(3)
 
 
 class TestFieldDefinitions:
@@ -676,6 +724,22 @@ class TestPhoneProjection:
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+
+def _filled_core() -> dict:
+    """The five gate-closing fields, and nothing else. Skills deliberately empty."""
+    record = empty_record()
+    record["spec"].update(
+        {
+            "job_titles": ["machine learning engineer"],
+            "seniority": ["senior"],
+            "locations": ["san francisco"],
+            "remote_ok": False,
+        }
+    )
+    record["target_base"] = 240000.0
+    record["comp_currency"] = "USD"
+    return record
 
 
 def _filled_required() -> dict:

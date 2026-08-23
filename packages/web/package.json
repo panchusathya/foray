@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/build-widget.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

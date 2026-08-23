@@ -369,6 +369,29 @@ class TestHeuristicExtraction:
         record = extract_intake(f"Candidate: {said}").record
         assert record["spec"]["remote_ok"] is expected
 
+    def test_a_negation_does_not_cross_a_clause_boundary(self, no_llm):
+        """From a real call. "Hybrid is fine, fully remote isn't what I want"
+        asserts one thing and denies another eleven characters apart, so a
+        character-radius negation window swallows the assertion and records
+        nothing. Negation is scoped to its clause."""
+        record = extract_intake(
+            "Candidate: Austin. Hybrid is fine, fully remote isn't what I want."
+        ).record
+        assert record["spec"]["remote_ok"] is False
+
+    def test_an_explicit_level_beats_the_one_inferred_from_the_title(self, no_llm):
+        """Also from a real call. infer_seniority_from_title answers "mid" for
+        any unmarked title, so merging produced ["mid", "staff"] — a level the
+        candidate never said, on a field clients filter hard against."""
+        record = extract_intake(
+            "Candidate: I'm after a staff backend engineer role, staying hands-on in Go."
+        ).record
+        assert record["spec"]["seniority"] == ["staff"]
+
+    def test_an_unstated_level_still_falls_back_to_the_title(self, no_llm):
+        record = extract_intake("Candidate: I'm looking for a backend engineer role.").record
+        assert record["spec"]["seniority"] == ["mid"]
+
     def test_talking_about_both_records_neither(self, no_llm):
         result = extract_intake(
             "Candidate: I'd do fully remote or hybrid, whichever. Both work for me."

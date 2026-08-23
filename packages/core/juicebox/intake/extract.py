@@ -252,11 +252,11 @@ _NEGATION = re.compile(
     r"\b(not|isn'?t|aren'?t|no|never|don'?t|doesn'?t|won'?t|wouldn'?t|rather not|"
     r"as long as it'?s not|other than)\b"
 )
-# How far either side of a phrase a negation still applies. Wide enough for
-# "remote isn't what I want", narrow enough that the next sentence's "not" does
-# not reach back.
-_NEGATION_WINDOW_BEFORE = 24
-_NEGATION_WINDOW_AFTER = 32
+# A negation belongs to its clause, not to a radius of characters. "Hybrid is
+# fine, fully remote isn't what I want" carries an assertion and a denial eleven
+# characters apart, and any window wide enough to catch "remote isn't what I
+# want" also swallows "hybrid is fine" and loses it.
+_CLAUSE_SPLIT = re.compile(r"[,;.!?\n]|\bbut\b|\bthough\b|\bhowever\b|\bwhereas\b")
 
 _RELOCATE_FALSE = r"\b(not willing to relocate|won'?t relocate|can'?t relocate|cannot relocate|no relocation|not moving)\b"
 _RELOCATE_TRUE = r"\b(willing to relocate|happy to relocate|would relocate|open to relocating|open to moving)\b"
@@ -386,11 +386,8 @@ def _asserted(text: str, pattern: str) -> bool:
     reading is not flipped into a positive for the opposite field — "not fully
     remote" does not establish that they want an office five days a week.
     """
-    for match in re.finditer(pattern, text):
-        window = text[
-            max(0, match.start() - _NEGATION_WINDOW_BEFORE) : match.end() + _NEGATION_WINDOW_AFTER
-        ]
-        if not _NEGATION.search(window):
+    for clause in _CLAUSE_SPLIT.split(text):
+        if re.search(pattern, clause) and not _NEGATION.search(clause):
             return True
     return False
 
@@ -455,15 +452,24 @@ def _heuristic_titles(text: str) -> list[str]:
 
 
 def _heuristic_seniority(text: str, titles: list[str]) -> list[str]:
-    found: list[str] = []
+    """What they said, or failing that what their target title implies.
+
+    Stated wins outright rather than merging with the inferred value.
+    ``infer_seniority_from_title`` answers "mid" for any title carrying no
+    marker, so merging turned "a staff backend engineer role" into
+    ``["mid", "staff"]`` — two levels, one of which the candidate never said, on
+    a field clients filter hard against.
+    """
+    stated = [word for word in tx.SENIORITY_ORDER if re.search(rf"\b{re.escape(word)}\b", text)]
+    if stated:
+        return stated[:3]
+
+    inferred: list[str] = []
     for title in titles:
-        inferred = tx.infer_seniority_from_title(title)
-        if inferred and inferred != "unknown" and inferred not in found:
-            found.append(inferred)
-    for word in tx.SENIORITY_ORDER:
-        if re.search(rf"\b{re.escape(word)}\b", text) and word not in found:
-            found.append(word)
-    return found[:3]
+        level = tx.infer_seniority_from_title(title)
+        if level and level != "unknown" and level not in inferred:
+            inferred.append(level)
+    return inferred[:3]
 
 
 # Place names that are also ordinary English. "let us know" and "tell us" are

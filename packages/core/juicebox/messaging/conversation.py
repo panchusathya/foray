@@ -456,7 +456,7 @@ def _wrap_up(db: Session, *, thread: IntakeThread, state: Coverage) -> TurnResul
     _capture(db, thread=thread, force=True)
     if not thread.candidate_id:
         thread.review_needed = True
-        thread.review_reason = "no contact details, preferences not attached to a candidate"
+        thread.review_reason = identity.UNATTRIBUTED_REASON
 
     close_thread(db, thread=thread, status=STATUS_COMPLETE)
     return TurnResult(

@@ -24,7 +24,7 @@ import re
 
 from sqlalchemy.orm import Session
 
-from ..models import IntakeThread
+from ..models import Candidate, IntakeThread
 from ..repository import owner_of_email, upsert_candidates
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,11 @@ ASKS = {
     CONTACT_NAME: "First things first — what name should I put on this?",
     CONTACT_EMAIL: "And the best email to reach you on?",
 }
+
+# Set by _wrap_up when a conversation ends with nobody to attach it to, and
+# cleared by attribute_thread when a human says who it was. One constant so the
+# writer and the reader cannot drift into two different strings.
+UNATTRIBUTED_REASON = "no contact details, preferences not attached to a candidate"
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # "I'm", "my name is", "it's", "this is", "name:" and friends.
@@ -170,3 +175,46 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         return None
     thread.candidate_id = result.ids[0]
     return thread.candidate_id
+
+
+class AttributionError(RuntimeError):
+    """We will not attach this thread to that person. Safe to show a recruiter."""
+
+
+def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) -> IntakeThread:
+    """A human says who an unidentified conversation was.
+
+    The counterpart of ``intake.service.attribute_call``, with one guard a call
+    does not need: a thread often knows an email, and an address already owned
+    by somebody else means the recruiter is about to staple this conversation to
+    the wrong person. Refusing is the same rule ``AGENTS.md`` records for phone
+    lookups -- a wrong match is a disclosure, not a miss.
+    """
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None or candidate.org_id != thread.org_id:
+        raise AttributionError("That candidate is not in this workspace.")
+
+    email = (thread.contact_email or "").strip().lower()
+    if email:
+        owner = owner_of_email(db, org_id=thread.org_id, email=email)
+        if owner and owner != candidate.id:
+            raise AttributionError(
+                f"{email} already belongs to somebody else. Merge the duplicate first."
+            )
+
+    thread.candidate_id = candidate.id
+
+    # Whatever the conversation captured now has a person to hang off. Guarded
+    # on there being something: attributing an empty thread must not write an
+    # empty preference over a record another channel filled in.
+    from ..intake.schema import coverage as coverage_of
+    from .records import persist_preference
+
+    if coverage_of(thread.record or {}).covered:
+        persist_preference(db, thread=thread, candidate_id=candidate.id)
+
+    if thread.review_reason == UNATTRIBUTED_REASON:
+        thread.review_needed = False
+        thread.review_reason = ""
+    db.flush()
+    return thread

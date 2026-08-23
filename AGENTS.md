@@ -449,3 +449,43 @@ package owns only what is different about text. Plan and phasing live in
   after voice landed; that reason is gone and the self-contained boundary is
   better. Do not re-litigate the move.
 
+- **Two paths write `candidate_preferences`, and a clean merge hid both gaps.**
+  `messaging.records.persist_preference` and `intake.service.upsert_preference`
+  upsert the same row and never conflicted textually, so the divergence was
+  invisible until someone read both. Whatever either one grows, check the other:
+
+  - **A thread write enqueues a rescore.** Without it a chat intake wrote a
+    preference nothing ever scored, so the match term fired for callers and
+    silently not for texters. Both paths key idempotency on
+    `preference.updated_at`, never `Candidate.updated_at`.
+  - **A thread may change a confirmed record; the confirmation does not
+    survive it.** Voice *refuses* to overwrite once `confirmed_at` is set. A
+    thread is the candidate's own words, which outrank a recruiter's
+    transcription — so it writes, then clears `confirmed_at`/`confirmed_by` and
+    goes back on the review queue. The state to never ship is the third one: a
+    row still claiming a confirmation over content the confirmer never saw,
+    because everything downstream trusts that flag.
+
+- **A number's opt-out is written *and* read.** `handle_stop` now suppresses
+  `from_address` and the candidate's known numbers through the phone column
+  voice added, not just their emails -- and `is_blocked` checks
+  `is_suppressed(phone=...)`, because writing a row nothing reads is theatre.
+  `stopped_thread_exists` stays as the second read: `lookup_key` refuses to
+  guess a country code, so a number it cannot parse has no `Suppression` row
+  and the stopped thread is the only trace of the opt-out.
+
+- **Attributing a thread refuses an address somebody else owns.** The guard
+  `attribute_call` does not need: a thread usually knows an email, and
+  attaching it to a different person is the disclosure failure, not a missed
+  match. `UNATTRIBUTED_REASON` is one shared constant so the code that sets the
+  flag and the code that clears it cannot drift, and attribution only writes a
+  preference when the record actually captured something -- an empty thread
+  must not blank a record another channel filled in.
+
+- **The review queue reads threads as well as calls.** `IntakeThread.review_needed`
+  defaults to `true`, so a queue that only knew about `IntakeCall` flagged every
+  chat and displayed none of them. `GET /v1/intake/threads` is a deliberate
+  sibling of `/calls` rather than a widened response: a thread has no duration or
+  recording and a call has no message counts. Merging them is the `IntakeSession`
+  refactor, which a review queue should not force.
+

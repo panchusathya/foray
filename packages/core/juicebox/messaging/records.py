@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..intake.schema import SCHEMA_VERSION, SPEC_FIELDS, empty_record, is_filled
-from ..models import CandidatePreference, IntakeThread, record_event, utcnow
+from ..models import Candidate, CandidatePreference, IntakeThread, record_event, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,13 @@ def persist_preference(
     conversation last wrote this row*, so a thread write sets
     ``source_thread_id`` and clears ``source_call_id`` -- keeping exactly one
     of the pair set, while the merged content keeps everything the call found.
+
+    Unlike ``intake.service.upsert_preference``, a confirmed row is written
+    rather than refused: the candidate's own words outrank a recruiter's
+    transcription of them. But the confirmation does not survive it. Leaving
+    ``confirmed_at`` set over content the confirmer never saw is the one
+    outcome worse than either overwriting or refusing, because every reader
+    downstream trusts that flag.
     """
     pref = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
@@ -123,6 +130,7 @@ def persist_preference(
     else:
         merged = merge_record(record_from_preference(pref), thread.record)
 
+    invalidated = pref.confirmed_at is not None
     pref.source_thread_id = thread.id
     pref.source_call_id = None
     pref.spec = merged["spec"]
@@ -134,6 +142,16 @@ def persist_preference(
     pref.fields_missing = list(thread.fields_missing or [])
     pref.review_needed = bool(thread.review_needed)
     pref.review_reason = (thread.review_reason or "")[:400]
+    if invalidated:
+        # The row no longer says what the confirmer confirmed, so it must stop
+        # claiming their sign-off. Back into the review queue, not silently
+        # trusted.
+        pref.confirmed_at = None
+        pref.confirmed_by = ""
+        pref.review_needed = True
+        pref.review_reason = _join_reasons(
+            pref.review_reason, f"thread {thread.id} changed a confirmed record"
+        )
     pref.captured_at = utcnow()
     db.flush()
 
@@ -148,6 +166,36 @@ def persist_preference(
             "channel": thread.channel,
             "required_complete": bool(thread.required_complete),
             "review_needed": bool(thread.review_needed),
+            "confirmation_cleared": invalidated,
         },
     )
+    _enqueue_preference_match(db, thread, preference=pref, candidate_id=candidate_id)
     return pref
+
+
+def _join_reasons(existing: str, addition: str) -> str:
+    parts = [p for p in [(existing or "").strip(), addition] if p]
+    return "; ".join(parts)[:400]
+
+
+def _enqueue_preference_match(
+    db: Session,
+    thread: IntakeThread,
+    *,
+    preference: CandidatePreference,
+    candidate_id: str,
+) -> None:
+    """Rescore against the jobs book, exactly as the voice path does.
+
+    Without this a chat intake writes a preference nothing ever scores, so the
+    match term fires for callers and silently not for texters. Imported inside
+    the function because ``jobmatch.engine`` reaches back into ``intake``, and
+    the stamp is ``preference.updated_at`` -- writing this row does not touch
+    ``Candidate.updated_at``, which is what the candidate clock would key on.
+    """
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None:
+        return
+    from ..jobmatch.engine import enqueue_match_for_candidate
+
+    enqueue_match_for_candidate(db, candidate, preference=preference)

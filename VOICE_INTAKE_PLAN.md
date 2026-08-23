@@ -5,6 +5,13 @@ first for repo-wide conventions.
 
 ## Status
 
+**Next wave (slices 0–3) is the work after Phases 1–3.** Human-feeling
+calls, the recruiter read path, and preference-aware matching. These slices
+are numbered separately on purpose — this file already owns Phases 1–6.
+Phase 5 below is delivered by slice 3. Open decision 2 is closed: the agent
+is **Vivian**, AI disclosure retained, firm name Foray. SMS is not built
+here; that belongs to `feat/messaging-intake`.
+
 **Phase 0 (recon) complete.** Findings below changed five things in the original plan.
 
 **Phase 1 complete.** Provider is **Retell**. Schema, models, migration and
@@ -353,10 +360,12 @@ diff-mode update conversation; unknown caller falls through to full intake;
 recruiter alert on material change (offer, deadline, accepted elsewhere). Respect
 the existing `Suppression` / do-not-contact list.
 
-**Phase 5 — Match-engine integration (the payoff).** Feed `CandidatePreference`
-into `score_pair` as a second direction, so a `JobMatch` reflects both what the
-company asked for and what the candidate said they want. Surface intake state on
-`CandidateDetail.jsx`; review queue for flagged extractions.
+**Phase 5 — Match-engine integration (the payoff). Delivered by next-wave
+slice 3.** `preference_term` is a third weighted term in `score_pair`
+(`None` / scored / veto). Enqueue and the match tick key off
+`preference.updated_at` and `JobMatchWatermark.engine_version`. Intake
+state and the review queue landed with slice 2 (`/intake`, Contacts
+`voice_intake` scope, candidate Intake tab).
 
 **Phase 6 — Hardening.** Persona eval suite (evasive, rambling, hurried, hostile,
 non-native speaker, exploding offer) graded per field, in the style of
@@ -399,7 +408,9 @@ gives legal or visa advice.
 
 1. ~~Vapi or Retell~~ — **decided: Retell.** The `VoiceProvider` adapter still
    goes in, so the choice stays reversible and tests get a `fake` provider.
-2. **Firm name and branding** the agent uses on calls; human-handoff destination.
+2. ~~Firm name and branding the agent uses on calls~~ — **decided: Vivian**,
+   an AI recruiting assistant with Foray. Disclosure stays in the opening.
+   Human-handoff destination is still open.
 3. **Outbound caller identity** — the "call me" flow needs a verified/branded number
    with STIR-SHAKEN attestation and CNAM registration or it gets spam-labelled.
    Days of lead time; start it during Phase 2, not Phase 4.

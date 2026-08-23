@@ -261,6 +261,9 @@ class Settings:
     job_match_vector_weight: float = field(
         default_factory=lambda: _env_float("JOB_MATCH_VECTOR_WEIGHT", 0.30)
     )
+    job_match_preference_weight: float = field(
+        default_factory=lambda: _env_float("JOB_MATCH_PREFERENCE_WEIGHT", 0.40)
+    )
     job_match_min_score: float = field(
         default_factory=lambda: _env_float("JOB_MATCH_MIN_SCORE", 0.55)
     )

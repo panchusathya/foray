@@ -1051,6 +1051,9 @@ class JobMatchWatermark(Base):
         ForeignKey("candidates.id", ondelete="CASCADE"), index=True
     )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Bumped with JOB_MATCH_ENGINE_VERSION so a new term rescores the book
+    # without nulling watermarks or touching Candidate.updated_at.
+    engine_version: Mapped[str] = mapped_column(String(32), default="", server_default="")
 
 
 class JobScrapeQuery(Base, TimestampMixin):

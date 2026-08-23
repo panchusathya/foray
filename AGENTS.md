@@ -176,6 +176,15 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   Adding a bespoke key to `spec` produces a field `jobmatch.engine` cannot score
   and quietly turns intake back into notes. `SPEC_FIELDS` is deliberately a
   subset: a candidate has no stated opinion about which school they attended.
+- **A finished call rescores off `preference.updated_at`, not `Candidate.updated_at`.**
+  Writing `CandidatePreference` touches neither the candidate row nor today's
+  watermark by itself. `enqueue_match_for_candidate` keys idempotency on the
+  preference clock plus `JOB_MATCH_ENGINE_VERSION`; the match tick also
+  enqueues when `preference.updated_at > watermark.computed_at` or the stored
+  `engine_version` is stale. Do not bump `Candidate.updated_at` to force a
+  rescore — that ripples into `repository._apply` and the contacts grid sorts.
+  A veto is `0.0` with a veto criterion, not `None`: `None` would keep the old
+  score. Comp is only a veto when the posting states a figure.
 - **`prompts._INTAKE_FIELD_KEYS` is a copy.** `intake` imports `llm.prompts`, so
   importing back would be a cycle. `test_the_prompt_enum_matches_the_field_set`
   is what keeps the copy honest -- if you add a field, that test tells you where

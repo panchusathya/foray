@@ -374,7 +374,22 @@ def upsert_preference(
     row.review_reason = result.review_reason[:400]
     row.captured_at = call.ended_at or utcnow()
     db.flush()
+    _enqueue_preference_match(db, call, preference=row)
     return row
+
+
+def _enqueue_preference_match(
+    db: Session, call: IntakeCall, *, preference: CandidatePreference
+) -> None:
+    """Rescore against the jobs book. Uses preference.updated_at as the stamp."""
+    if not call.candidate_id:
+        return
+    candidate = db.get(Candidate, call.candidate_id)
+    if candidate is None:
+        return
+    from ..jobmatch.engine import enqueue_match_for_candidate
+
+    enqueue_match_for_candidate(db, candidate, preference=preference)
 
 
 def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResult) -> None:

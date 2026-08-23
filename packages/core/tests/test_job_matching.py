@@ -449,3 +449,195 @@ class TestABorrowedPostingOutlivesTheMandate:
         assert posting.jd_text == "Six kilobytes of real JD."
         assert posting.company == "Acme"
         assert posting.location == "Remote"
+
+
+class TestPreferenceTerm:
+    def test_no_preference_scores_like_today(self, session, account, sample_candidates):
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(session, account["org_id"], source_id="nopref")
+        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
+        spec = ParsedQuery.from_dict(posting.parsed_spec or {})
+        from juicebox.search.index import candidate_to_doc
+
+        doc = candidate_to_doc(ada)
+        kwargs = dict(
+            cand_embedding=ada.embedding,
+            cand_embedding_model=ada.embedding_model or "",
+            posting_embedding=posting.embedding,
+            posting_embedding_model=posting.embedding_model or "",
+        )
+        today = score_pair(doc, spec, **kwargs)
+        with_none = score_pair(doc, spec, preference=None, posting=posting, **kwargs)
+        assert with_none.score == today.score
+        assert with_none.criteria == today.criteria
+
+    def test_excluded_company_drops_new_leaves_shortlisted(
+        self, session, account, sample_candidates
+    ):
+        from juicebox.models import CandidatePreference
+
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(session, account["org_id"], source_id="veto-co")
+        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
+        match_posting(session, posting)
+        session.commit()
+        row = session.query(JobMatch).filter_by(
+            job_posting_id=posting.id, candidate_id=ada.id
+        ).one()
+        row.status = "shortlisted"
+        session.commit()
+
+        other = _parsed_posting(
+            session,
+            account["org_id"],
+            source_id="veto-co-2",
+            title="Senior Machine Learning Engineer",
+            company="OtherCo",
+            jd_text="Python and machine learning in production.",
+        )
+        match_posting(session, other)
+        session.commit()
+        assert (
+            session.query(JobMatch)
+            .filter_by(job_posting_id=other.id, candidate_id=ada.id)
+            .one()
+            .status
+            == "new"
+        )
+
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=ada.id,
+                spec={"excluded_companies": ["Acme", "OtherCo"]},
+            )
+        )
+        session.commit()
+        match_posting(session, posting)
+        match_posting(session, other)
+        session.commit()
+        kept = session.query(JobMatch).filter_by(
+            job_posting_id=posting.id, candidate_id=ada.id
+        ).one()
+        assert kept.status == "shortlisted"
+        assert kept.score == 0.0
+        assert (
+            session.query(JobMatch)
+            .filter_by(job_posting_id=other.id, candidate_id=ada.id)
+            .one_or_none()
+            is None
+        )
+
+    def test_comp_floor_vetoes_only_when_the_posting_states_comp(
+        self, session, account, sample_candidates
+    ):
+        from juicebox.models import CandidatePreference
+
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(session, account["org_id"], source_id="comp-silent")
+        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=ada.id,
+                spec={"job_titles": ["machine learning engineer"]},
+                target_total=400000,
+            )
+        )
+        session.commit()
+        match_posting(session, posting)
+        session.commit()
+        assert (
+            session.query(JobMatch)
+            .filter_by(job_posting_id=posting.id, candidate_id=ada.id)
+            .one_or_none()
+            is not None
+        )
+
+        posting.parsed_spec = {**(posting.parsed_spec or {}), "compensation_min": 150000}
+        session.commit()
+        match_posting(session, posting)
+        session.commit()
+        assert (
+            session.query(JobMatch)
+            .filter_by(job_posting_id=posting.id, candidate_id=ada.id)
+            .one_or_none()
+            is None
+        )
+
+    def test_upsert_preference_enqueues_a_rescore(self, session, account, sample_candidates):
+        from juicebox.intake.extract import ExtractionResult
+        from juicebox.intake.schema import coverage
+        from juicebox.intake.service import upsert_preference
+        from juicebox.jobs import KIND_JOBS_MATCH_ONE
+        from juicebox.models import IntakeCall, Job
+
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
+        call = IntakeCall(
+            org_id=account["org_id"],
+            candidate_id=ada.id,
+            provider="fake",
+            provider_call_id="pref-enqueue",
+            transcript="done",
+            status="completed",
+        )
+        session.add(call)
+        session.flush()
+        record = {
+            "spec": {"job_titles": ["machine learning engineer"], "locations": ["San Francisco"]},
+            "target_total": 250000,
+        }
+        result = ExtractionResult(
+            record=record,
+            extractor="test",
+            coverage=coverage(record),
+            review_needed=True,
+            review_reason="test",
+        )
+        upsert_preference(session, call=call, result=result)
+        session.commit()
+        jobs = session.query(Job).filter_by(kind=KIND_JOBS_MATCH_ONE).all()
+        assert any(job.payload.get("candidate_id") == ada.id for job in jobs)
+
+    def test_tick_sees_preference_updated_at(self, session, account, sample_candidates):
+        from juicebox.jobmatch.preference import JOB_MATCH_ENGINE_VERSION
+        from juicebox.jobs import KIND_JOBS_MATCH_ONE
+        from juicebox.models import CandidatePreference, Job
+
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        _parsed_posting(session, account["org_id"], source_id="tick-pref")
+        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
+        match_candidate(session, ada)
+        session.commit()
+        before = session.query(Job).filter_by(kind=KIND_JOBS_MATCH_ONE).count()
+
+        pref = CandidatePreference(
+            org_id=account["org_id"],
+            candidate_id=ada.id,
+            spec={"job_titles": ["machine learning engineer"]},
+        )
+        session.add(pref)
+        session.flush()
+        # Preference is newer than the watermark; the candidate row is not.
+        ada.updated_at = utcnow() - timedelta(days=2)
+        pref.updated_at = utcnow() + timedelta(minutes=1)
+        session.commit()
+
+        dispatch_match_tick(session, account["org_id"])
+        session.commit()
+        after = session.query(Job).filter_by(kind=KIND_JOBS_MATCH_ONE).count()
+        assert after > before
+
+        mark = session.query(JobMatchWatermark).filter_by(candidate_id=ada.id).one()
+        mark.engine_version = "old"
+        mark.computed_at = utcnow() + timedelta(hours=1)
+        ada.updated_at = utcnow() - timedelta(days=2)
+        pref.updated_at = utcnow() - timedelta(days=2)
+        session.commit()
+        # Same stamp would collide with the job we just queued; the tick
+        # still reports the enqueue so a lost job is retried.
+        result = dispatch_match_tick(session, account["org_id"])
+        session.commit()
+        assert result["queued"] >= 1
+        assert JOB_MATCH_ENGINE_VERSION

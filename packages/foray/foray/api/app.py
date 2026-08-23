@@ -7,6 +7,7 @@ and highlights are precomputed, and query embedding is a local model.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -208,9 +209,17 @@ async def _startup() -> None:
         log.warning("search.health_probe_failed", error=str(exc))
     if settings.rerank_enabled and settings.rerank_warmup:
         try:
-            from ..rerank.model import get_cross_encoder
+            # A forward pass, not just a constructor: loading the weights leaves
+            # torch's first-inference cost on the request path, which on prod
+            # meant the first search after every deploy timed out and took the
+            # next one down with it (queue_full). See warm_cross_encoder.
+            from ..rerank.model import warm_cross_encoder
 
-            get_cross_encoder()
+            started = time.perf_counter()
+            warm_cross_encoder()
+            log.info(
+                "rerank.warmed", elapsed_ms=round((time.perf_counter() - started) * 1000)
+            )
         except Exception as exc:  # noqa: BLE001 - never fail startup for a missing model
             log.warning("rerank.warmup_failed", error=str(exc))
 

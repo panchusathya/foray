@@ -151,6 +151,20 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   evasive one longer. Do **not** move that judgement into the system prompt — an
   agent asked to decide whether it has "covered enough" guesses, and the failure
   is invisible because the transcript always looks like a complete conversation.
+- **A stated time budget may only narrow the gate.** `minutes_available` is
+  persisted on first sight and `coverage(core_only=)` closes on `CORE_KEYS`
+  when the budget is at or under `intake_core_only_minutes`. Twenty minutes
+  does not add questions. No budget (`None`) is today's full required set.
+  `spec.must_have_skills` is asked early but is **not** in `CORE_KEYS` — the
+  heuristic cannot fill it, and putting it on the short-call gate would run
+  every model-less pass to the 15-minute ceiling. Skipped required keys land
+  on `deferred_fields` so they do not look forgotten.
+- **Reactions land on the domain, never the person.** The agent may remark once
+  on the field ("backend infrastructure — that's an area with real movement
+  right now") and must never react to compensation, notice period, work
+  authorisation, or anything protected; never say they are strong or in demand;
+  never name a client or quote a number of roles. `progress_line` is composed
+  in code at milestones `{5, 3, 1}` so the agent cannot invent a count.
 - **A declined field counts as covered.** A candidate who will not discuss comp
   has resolved it. If refusal left the field unanswered the gate could never
   close and the agent would ask forever, so `declined` is load-bearing, not
@@ -162,6 +176,42 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   Adding a bespoke key to `spec` produces a field `jobmatch.engine` cannot score
   and quietly turns intake back into notes. `SPEC_FIELDS` is deliberately a
   subset: a candidate has no stated opinion about which school they attended.
+- **A finished call rescores off `preference.updated_at`, not `Candidate.updated_at`.**
+  Writing `CandidatePreference` touches neither the candidate row nor today's
+  watermark by itself. `enqueue_match_for_candidate` keys idempotency on the
+  preference clock plus `JOB_MATCH_ENGINE_VERSION`; the match tick also
+  enqueues when `preference.updated_at > watermark.computed_at` or the stored
+  `engine_version` is stale. Do not bump `Candidate.updated_at` to force a
+  rescore — that ripples into `repository._apply` and the contacts grid sorts.
+  A veto is `0.0` with a veto criterion, not `None`: `None` would keep the old
+  score.
+- **A key `ParsedQuery` cannot emit is a dead branch with a green test.** The
+  comp veto originally read `parsed_spec["compensation_min"]` and five other
+  guessed spellings. `parsed_spec` is `ParsedQuery.to_dict()`, which had no
+  compensation field at all, so it was unreachable on every real posting — and
+  its test passed because the test hand-wrote the key. `min_compensation` /
+  `max_compensation` / `compensation_currency` are real fields now, filled by
+  `search.parser.parse_compensation` on both JD paths. Two rules survive the
+  fix: probe one key you can point at in the dataclass, never a list of
+  candidate spellings; and drive a spec test through `parse_posting`, because a
+  hand-planted `parsed_spec` proves nothing the parser would produce.
+- **The veto compares the posting's ceiling, not its floor.** `max_compensation`
+  is what a candidate's floor has to clear. "From 180k" states no ceiling and
+  could pay 450k, so it is never a veto; neither is a silent posting, nor one
+  quoted in a different currency (converting needs a rate, and a guessed rate
+  drops real roles). `parse_compensation` is deliberately conservative for the
+  same reason a false positive here silently removes a good role: it ignores
+  clauses about the company's money (`raised`, `revenue`, `arr`) and strips
+  `401k`, which is in half of all job descriptions and parses as $401,000.
+- **The agent's persona exists twice and a test keeps it honest.**
+  `RECRUITER_NAME` / `SMS_NUMBER_SPOKEN` in `deploy/retell_agents.py` and
+  `intake_recruiter_name` / `intake_sms_number_spoken` in `config.py`. `deploy/`
+  is stdlib-only and cannot import the app, so the copy is structural, not
+  laziness. If they drift the agent greets as one name and refers to itself by
+  another mid-call; `test_the_persona_matches_the_deploy_script` is what catches
+  it. Do not name a server-side setting in the prompt either — the agent cannot
+  see `sms_enabled`, so the close defers to `guidance`, which is composed
+  server-side from the flag.
 - **`prompts._INTAKE_FIELD_KEYS` is a copy.** `intake` imports `llm.prompts`, so
   importing back would be a cycle. `test_the_prompt_enum_matches_the_field_set`
   is what keeps the copy honest -- if you add a field, that test tells you where

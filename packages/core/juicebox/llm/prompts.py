@@ -26,6 +26,7 @@ Conventions:
 - Put seniority in `seniority`, never in `job_titles`. Allowed values: intern, junior, mid, senior, staff, principal, director, vp, cxo.
 - `must_have_skills` is for requirements the recruiter framed as non-negotiable ("must know", "required", "strong X"). Everything else that is a skill goes in `nice_to_have_skills`.
 - `keywords` is for meaningful domain terms that are not skills, titles, or companies.
+- Compensation only from an explicit figure the recruiter gave ("paying over 200k"). Never infer a budget from seniority.
 - `freeform_criteria` holds qualitative requirements a keyword filter cannot express, one short phrase each ("has scaled a team from 5 to 50").
 - `search_text` is a dense keyword-rich restatement of the query used for embedding retrieval. No filler words.
 """
@@ -41,6 +42,9 @@ QUERY_PARSER_SCHEMA: dict[str, Any] = {
         "seniority",
         "min_years_experience",
         "max_years_experience",
+        "min_compensation",
+        "max_compensation",
+        "compensation_currency",
         "locations",
         "remote_ok",
         "industries",
@@ -79,6 +83,25 @@ QUERY_PARSER_SCHEMA: dict[str, Any] = {
         "max_years_experience": {
             "type": ["number", "null"],
             "description": "Maximum total years of experience, or null.",
+        },
+        "min_compensation": {
+            "type": ["number", "null"],
+            "description": (
+                "Bottom of the stated annual pay range, as a plain number in the "
+                "stated currency. Null unless a figure is actually stated."
+            ),
+        },
+        "max_compensation": {
+            "type": ["number", "null"],
+            "description": (
+                "Top of the stated annual pay range. Null unless stated. For "
+                "'up to X' this is X and min is null; for 'at least X' the "
+                "reverse; a single figure fills both."
+            ),
+        },
+        "compensation_currency": {
+            "type": "string",
+            "description": "ISO code for the pay figures, e.g. USD. Empty if none stated.",
         },
         "locations": _string_array("Cities, regions or countries the person should be in."),
         "remote_ok": {
@@ -509,6 +532,7 @@ skill goes in `nice_to_have_skills`.
 junior, mid, senior, staff, principal, director, vp, cxo.
 - Do not copy the hiring company's name into `target_companies`.
 - Ignore EEO, benefits, visa, and "no agencies" boilerplate.
+- Compensation only when the JD states a figure. "Competitive salary" is not a figure, a 401k match is not pay, and the company's funding or revenue is not the role's salary. A wrong figure here removes the role from a candidate's matches, so leave it null when in doubt. Annualise hourly or monthly rates.
 - `search_text` is a dense keyword restatement of the role for embedding retrieval.
 """
 
@@ -652,11 +676,11 @@ _INTAKE_FIELD_KEYS = [
     "spec.seniority",
     "spec.locations",
     "spec.remote_ok",
-    "spec.must_have_skills",
-    "employment_status",
-    "timeline",
     "compensation",
+    "spec.must_have_skills",
     "work_authorization",
+    "timeline",
+    "employment_status",
     "active_processes",
     "ok_to_share_with_clients",
     "highlights",

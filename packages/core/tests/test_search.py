@@ -11,7 +11,7 @@ from juicebox.search.fusion import (
     reciprocal_rank_fusion,
 )
 from juicebox.search.index import get_index
-from juicebox.search.parser import ParsedQuery, heuristic_parse
+from juicebox.search.parser import ParsedQuery, heuristic_parse, parse_compensation
 from juicebox.search.scoring import assess, requirement_list
 
 # --------------------------------------------------------------------------
@@ -67,6 +67,68 @@ class TestHeuristicParser:
 # --------------------------------------------------------------------------
 # retrieval primitives
 # --------------------------------------------------------------------------
+
+
+class TestStatedCompensation:
+    """``jobmatch.preference`` vetoes on the ceiling, so a false positive here
+    silently drops a real role. These cases are the ones that cost us that."""
+
+    def test_a_range_fills_both_ends(self):
+        assert parse_compensation("Base salary 180,000 to 220,000 USD.") == (
+            180000.0,
+            220000.0,
+            "USD",
+        )
+
+    def test_a_single_figure_fills_both_ends(self):
+        low, high, _ = parse_compensation("The salary is $200,000 per year.")
+        assert (low, high) == (200000.0, 200000.0)
+
+    def test_up_to_states_a_ceiling_only(self):
+        assert parse_compensation("Compensation: up to £150k.") == (None, 150000.0, "GBP")
+
+    def test_at_least_states_a_floor_only(self):
+        assert parse_compensation("Salary at least 180k.") == (180000.0, None, "")
+
+    def test_a_401k_match_is_not_pay(self):
+        assert parse_compensation("Competitive salary, 401k match, unlimited PTO.") == (
+            None,
+            None,
+            "",
+        )
+
+    def test_a_funding_round_is_not_pay(self):
+        assert parse_compensation("We raised $200 million. Salary is competitive.") == (
+            None,
+            None,
+            "",
+        )
+
+    def test_revenue_is_not_pay(self):
+        assert parse_compensation("A $5B revenue business with a great salary.") == (
+            None,
+            None,
+            "",
+        )
+
+    def test_a_clause_with_no_pay_cue_is_ignored(self):
+        assert parse_compensation("Offices in 12 cities and 40,000 customers.") == (
+            None,
+            None,
+            "",
+        )
+
+    def test_competitive_salary_is_not_a_figure(self):
+        assert parse_compensation("Competitive salary and equity.") == (None, None, "")
+
+    def test_the_band_carries_through_normalisation(self):
+        parsed = ParsedQuery(
+            min_compensation=180000.0, max_compensation=220000.0, compensation_currency="usd"
+        ).normalized()
+        assert parsed.max_compensation == 220000.0
+        assert parsed.compensation_currency == "USD"
+        # normalized() rebuilds every field by hand; an omission drops it silently.
+        assert ParsedQuery.from_dict(parsed.to_dict()).min_compensation == 180000.0
 
 
 class TestBM25:

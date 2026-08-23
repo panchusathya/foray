@@ -35,6 +35,13 @@ class ParsedQuery:
     max_years_experience: float | None = None
     locations: list[str] = field(default_factory=list)
     remote_ok: bool | None = None
+    # Stated pay, annualised. A range keeps both ends because the ceiling is
+    # what a candidate's floor has to clear -- see jobmatch.preference. A
+    # posting stating only a floor has no ceiling to test, which is why these
+    # are two fields rather than one number.
+    min_compensation: float | None = None
+    max_compensation: float | None = None
+    compensation_currency: str = ""
     industries: list[str] = field(default_factory=list)
     company_stages: list[str] = field(default_factory=list)
     company_sizes: list[str] = field(default_factory=list)
@@ -70,6 +77,9 @@ class ParsedQuery:
             max_years_experience=self.max_years_experience,
             locations=_dedupe(tx.normalize_location(loc) for loc in self.locations),
             remote_ok=self.remote_ok,
+            min_compensation=self.min_compensation,
+            max_compensation=self.max_compensation,
+            compensation_currency=(self.compensation_currency or "").strip().upper(),
             industries=_dedupe(tx.normalize_industry(i) for i in self.industries),
             company_stages=_dedupe(tx.normalize_company_stage(s) for s in self.company_stages),
             company_sizes=_dedupe(tx.normalize_company_size(s) for s in self.company_sizes),
@@ -126,6 +136,8 @@ class ParsedQuery:
                 self.keywords,
                 self.freeform_criteria,
                 self.min_years_experience,
+                self.min_compensation,
+                self.max_compensation,
             ]
         )
 
@@ -137,6 +149,107 @@ def _dedupe(values) -> list[str]:
         if cleaned:
             seen.setdefault(cleaned, None)
     return list(seen)
+
+
+# --------------------------------------------------------------------------
+# stated compensation
+# --------------------------------------------------------------------------
+
+# A money amount only counts inside a clause that is about pay. Same rule as
+# ``intake.extract._heuristic_comp``, for the same reason: "we raised $200
+# million" and "$5B in revenue" appear in job descriptions constantly.
+_COMP_CUE = re.compile(
+    r"\b(base|salary|salaries|comp|compensation|package|remuneration|ote"
+    r"|all[- ]in|pays?|paying|paid|earn(?:ing)?s?)\b",
+    re.I,
+)
+# Clauses about the company's money, not the role's. A funding round lands in
+# the plausible-salary band often enough that the band alone is not a filter.
+_COMP_NOISE = re.compile(
+    r"\b(raised|raising|funding|valuation|valued|revenue|arr|acquisition"
+    r"|market cap|assets under management|aum)\b",
+    re.I,
+)
+# "401k match" is in half of all job descriptions and parses as $401,000.
+_RETIREMENT_PLAN = re.compile(r"\b40[13]\s*\(?\s*[kb]\s*\)?", re.I)
+_COMP_CLAUSE = re.compile(r"[.!?\n;]+")
+_COMP_MONEY = re.compile(
+    r"(?:(?P<sym>[$£€])\s?)?"
+    r"(?P<num>\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+    r"\s*(?P<unit>k\b|thousand\b|m\b|million\b)?",
+    re.I,
+)
+_CURRENCY_CODE = re.compile(r"\b(usd|gbp|eur|cad|aud|inr|sgd|chf|sek|nok)\b", re.I)
+_SYMBOL_CURRENCY = {"$": "USD", "£": "GBP", "€": "EUR"}
+# "up to 220k" states a ceiling and no floor; "at least 180k" the reverse.
+_CEILING_ONLY = re.compile(
+    r"\b(up to|as much as|max(?:imum)?(?: of)?|not exceeding|capped at)\b", re.I
+)
+_FLOOR_ONLY = re.compile(
+    r"\b(at least|starting at|start(?:ing)? from|minimum(?: of)?|north of"
+    r"|upwards of|or more|and up)\b",
+    re.I,
+)
+# Annual pay outside this band is a typo, an hourly rate, or not pay at all.
+_COMP_FLOOR_BOUND = 20_000.0
+_COMP_CEILING_BOUND = 10_000_000.0
+
+
+def parse_compensation(text: str) -> tuple[float | None, float | None, str]:
+    """Stated annual pay from prose. Returns ``(minimum, maximum, currency)``.
+
+    Only the first pay clause yielding a plausible figure is used. A single
+    stated figure fills both ends, because "the salary is $200,000" states a
+    ceiling as much as a floor; "up to" and "at least" fill one end only.
+
+    Conservative by construction: ``jobmatch.preference`` vetoes a match on a
+    stated ceiling, so a false positive here silently drops a real role.
+    """
+    for clause in _COMP_CLAUSE.split(text or ""):
+        if not _COMP_CUE.search(clause) or _COMP_NOISE.search(clause):
+            continue
+        amounts, currency = _pay_amounts(clause)
+        if not amounts:
+            continue
+        low, high = min(amounts), max(amounts)
+        if len(amounts) == 1:
+            if _CEILING_ONLY.search(clause):
+                return None, high, currency
+            if _FLOOR_ONLY.search(clause):
+                return low, None, currency
+        return low, high, currency
+    return None, None, ""
+
+
+def _pay_amounts(clause: str) -> tuple[list[float], str]:
+    cleaned = _RETIREMENT_PLAN.sub(" ", clause)
+    code = _CURRENCY_CODE.search(cleaned)
+    currency = code.group(1).upper() if code else ""
+    amounts: list[float] = []
+    for match in _COMP_MONEY.finditer(cleaned):
+        symbol = match.group("sym")
+        if symbol and not currency:
+            currency = _SYMBOL_CURRENCY.get(symbol, "")
+        value = _annualise(match.group("num"), match.group("unit"))
+        if value is not None:
+            amounts.append(value)
+    return amounts, currency
+
+
+def _annualise(raw: str, unit: str | None) -> float | None:
+    try:
+        value = float(raw.replace(",", ""))
+    except ValueError:
+        return None
+    suffix = (unit or "").lower()
+    if suffix.startswith(("k", "thousand")):
+        value *= 1_000
+    elif suffix.startswith(("m", "million")):
+        value *= 1_000_000
+    elif value < 1_000:
+        # "paying 180" means 180k. Below 1000 with no unit is shorthand or noise.
+        value *= 1_000
+    return value if _COMP_FLOOR_BOUND <= value <= _COMP_CEILING_BOUND else None
 
 
 # --------------------------------------------------------------------------

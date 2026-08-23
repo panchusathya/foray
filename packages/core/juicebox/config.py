@@ -261,6 +261,9 @@ class Settings:
     job_match_vector_weight: float = field(
         default_factory=lambda: _env_float("JOB_MATCH_VECTOR_WEIGHT", 0.30)
     )
+    job_match_preference_weight: float = field(
+        default_factory=lambda: _env_float("JOB_MATCH_PREFERENCE_WEIGHT", 0.40)
+    )
     job_match_min_score: float = field(
         default_factory=lambda: _env_float("JOB_MATCH_MIN_SCORE", 0.55)
     )
@@ -293,6 +296,33 @@ class Settings:
     # sitting in silence while it runs. `json_fast` exists for exactly this.
     intake_coverage_fast_model: bool = field(
         default_factory=lambda: _env_bool("INTAKE_COVERAGE_FAST_MODEL", True)
+    )
+    # Stated minutes at or below this close the gate on CORE_KEYS only.
+    # A larger budget does not add questions; no budget is today's full set.
+    intake_core_only_minutes: int = field(
+        default_factory=lambda: _env_int("INTAKE_CORE_ONLY_MINUTES", 4)
+    )
+    # Who the agent says it is, and the number it reads out. The other half of
+    # this pair is RECRUITER_NAME / SMS_NUMBER_SPOKEN in deploy/retell_agents.py,
+    # which cannot import this module (deploy/ is stdlib-only, by design). The
+    # prompt and the dynamic variable have to agree or the agent greets as one
+    # name and refers to itself by another, so
+    # test_the_persona_matches_the_deploy_script keeps the copy honest.
+    intake_recruiter_name: str = field(
+        default_factory=lambda: _env("INTAKE_RECRUITER_NAME", "Vivian")
+    )
+    # Digit-grouped: TTS reads "+18882600142" as noise, and the whole point is
+    # that the candidate recognises the sender.
+    intake_sms_number_spoken: str = field(
+        default_factory=lambda: _env(
+            "INTAKE_SMS_NUMBER_SPOKEN", "eight eight eight, two six zero, zero one four two"
+        )
+    )
+    # Flips one spoken close sentence. The SMS sender itself lives on
+    # feat/messaging-intake; this flag must not promise a text that cannot send.
+    sms_enabled: bool = field(default_factory=lambda: _env_bool("SMS_ENABLED", False))
+    sms_from_number: str = field(
+        default_factory=lambda: _env("SMS_FROM_NUMBER", "+18882600142")
     )
 
     @property

@@ -15,7 +15,7 @@ from datetime import datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from ..models import Message
+from ..models import Event, IntakeCall, Message
 
 
 @dataclass
@@ -144,3 +144,30 @@ def candidate_timeline(
     for thread in threads.values():
         thread.messages.sort(key=lambda m: (m.sent_at or m.created_at))
     return stats, [threads[key] for key in order]
+
+
+def intake_events_for_candidate(
+    db: Session, *, org_id: str, candidate_id: str, limit: int = 50
+) -> list[Event]:
+    """Intake events whose subject is a call attributed to this person.
+
+    ``record_event`` already writes ``intake.call_requested`` and
+    ``intake.extracted`` against the call id. The rendered timeline just
+    needs to find them.
+    """
+    call_ids = select(IntakeCall.id).where(
+        IntakeCall.org_id == org_id,
+        IntakeCall.candidate_id == candidate_id,
+    )
+    return list(
+        db.scalars(
+            select(Event)
+            .where(
+                Event.org_id == org_id,
+                Event.type.like("intake.%"),
+                Event.subject_id.in_(call_ids),
+            )
+            .order_by(Event.created_at.desc())
+            .limit(limit)
+        ).all()
+    )

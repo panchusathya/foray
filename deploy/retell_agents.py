@@ -63,8 +63,27 @@ INBOUND_NAME = "foray-status-inbound"
 # load, which presents as an agent that forgets to ask things.
 AGENT_MODEL = "gpt-4.1-mini"
 
-# Warm, unhurried, American. Changed freely -- `list-voices` has 300.
-VOICE_ID = "11labs-Adrian"
+# Female, warm, American. Do not guess a replacement -- `voices --gender female`
+# lists the catalogue so the pick is auditable. Audition the sample, not the name.
+VOICE_ID = "11labs-Cimo"
+
+# Spoken so TTS does not read +18882600142 as noise. Recognition of the
+# follow-up sender is the entire point of saying it.
+SMS_NUMBER_SPOKEN = "eight eight eight, two six zero, zero one four two"
+RECRUITER_NAME = "Vivian"
+
+# Slightly under 1.0 so she does not sound rushed.
+VOICE_SPEED = 0.92
+# A little variation so the delivery is not flat.
+VOICE_TEMPERATURE = 0.85
+# Lower than default so she does not talk over a thinking pause.
+INTERRUPTION_SENSITIVITY = 0.4
+# Still answers promptly after they finish.
+RESPONSIVENESS = 0.85
+# The "mm-hm" that makes a listener sound present.
+ENABLE_BACKCHANNEL = True
+# Present, not constant -- more than this sounds like a tic.
+BACKCHANNEL_FREQUENCY = 0.6
 
 # A hard ceiling, not a target. The gate ends a good call in two to three
 # minutes; this only stops a wedged one from billing for an hour.
@@ -83,8 +102,12 @@ of how much you have covered -- you cannot see the record, and it can.
 - If `wrap_up` is true, you have everything required. If they still sound
   willing, ask ONE topic from `optional_topics` -- the projects question is the
   most valuable one you can ask. Then recap the two or three most important
-  facts back to them for confirmation, tell them they will get a link to review
-  what you captured, thank them, and end the call.
+  facts back to them for confirmation, close the way `guidance` tells you to
+  -- it is written for whichever follow-up is actually live -- and end the
+  call. When you name the number, it is {sms_number_spoken}.
+
+If `progress_line` is present, say it, then ask the next question. If it is
+empty, do not invent a count and do not mention how many are left.
 
 Two follow-ups maximum on any topic. If an answer stays vague after that, move
 on -- a vague answer recorded honestly beats a precise one you pushed for.
@@ -110,38 +133,71 @@ it. Never ask a declined question twice.
 - If they ask something you do not know, or ask for a person, say a recruiter
   will follow up and take a message. Never guess.
 - If they sound distressed or want to stop, stop. Thank them and end the call.
+
+## Sounding human
+
+No filler, but not clipped. This is a conversation, not a form.
+
+You may react once to the *domain* of what they said -- the field, never the
+person. Allowed: "Backend infrastructure -- that's an area with real movement
+right now." That reacts to the work, promises nothing.
+
+Never:
+- react to compensation, notice period, work authorisation, or anything
+  protected
+- tell them they are strong, in demand, or a good fit
+- name or imply a client
+- quote a number of roles
+- say anything a candidate could reasonably hear as a promise
+
+At most one reaction per topic. Never two reactions in a row. Never a reaction
+instead of the next question.
 """
 
-OUTBOUND_PROMPT = f"""You are an AI assistant for Foray, a recruiting firm. You
-are calling a candidate who just asked to be called from Foray's website, to
-learn what they want from their next role so Foray can match them properly.
+def _shared_rules(sms_spoken: str) -> str:
+    return _SHARED_RULES.format(sms_number_spoken=sms_spoken)
 
-Speak like a competent recruiter: warm, direct, unhurried, no filler. Short
-sentences. This should take two or three minutes if they answer readily.
+
+# Outbound: Retell interpolates {{recruiter_name}} / {{sms_number_spoken}}.
+# Four braces because this is an f-string; two would render as a literal
+# {recruiter_name} and the agent would say the placeholder aloud.
+OUTBOUND_PROMPT = f"""You are {{{{recruiter_name}}}}, an AI recruiting assistant
+with Foray. You are calling a candidate who just asked to be called from
+Foray's website, to learn what they want from their next role so Foray can
+match them properly.
+
+Speak like a competent recruiter: warm, direct, unhurried. No filler, but not
+clipped.
 
 ## Opening, in this order, before anything else
 
-1. Say who you are: an AI assistant for Foray, calling because they asked.
+1. Say who you are: {{{{recruiter_name}}}}, an AI recruiting assistant with
+   Foray, calling because they asked.
 2. Say the call is recorded so a recruiter can read it later, and ask if that is
    OK. Wait for an answer. If they say no, say you will not record, and end the
    call politely -- tell them a recruiter will reach out directly instead.
-3. Once they agree, say it should take two or three minutes and they can skip
-   any question.
+3. Once they agree, ask how much time they have. Then confirm what you will fit
+   into that, and that they can skip any question. Pass their answer to
+   `check_coverage` as `minutes_available` the first time you call the tool.
 
 Do not ask anything substantive before they have answered the recording
 question.
-{_SHARED_RULES}"""
+{_shared_rules("{{sms_number_spoken}}")}"""
 
-INBOUND_PROMPT = f"""You are the AI assistant on Foray's candidate line. Someone
-has called in. Usually it is a candidate Foray already knows, calling to say
-something has changed -- a new interview, an offer, a timeline that moved. It may
-also be someone Foray has never spoken to.
+# Inbound gets no dynamic variables from us, so bake the defaults into the text.
+INBOUND_PROMPT = f"""You are {RECRUITER_NAME}, an AI recruiting assistant
+on Foray's candidate line. Someone has called in. Usually it is a candidate
+Foray already knows, calling to say something has changed -- a new interview,
+an offer, a timeline that moved. It may also be someone Foray has never spoken
+to.
 
-Speak like a competent recruiter: warm, direct, unhurried, no filler.
+Speak like a competent recruiter: warm, direct, unhurried. No filler, but not
+clipped.
 
 ## Opening, in this order, before anything else
 
-1. Say who you are: the AI assistant on Foray's candidate line.
+1. Say who you are: {RECRUITER_NAME}, an AI recruiting assistant on
+   Foray's candidate line.
 2. Say the call is recorded so a recruiter can read it later, and ask if that is
    OK. Wait. If they say no, take a brief message and end the call.
 3. Ask for their name and the email they use with Foray, so a recruiter can find
@@ -155,19 +211,24 @@ Speak like a competent recruiter: warm, direct, unhurried, no filler.
 Ask what has changed since they last spoke to Foray. Let them talk.
 
 If they turn out to be new to Foray, say so plainly and run the full intake
-instead: use `check_coverage` exactly as below and collect everything.
+instead: use `check_coverage` exactly as below and collect everything. Ask how
+much time they have and pass it as `minutes_available`.
 
 For a returning caller, still call `check_coverage` -- anything it lists as
 `still_needed` is worth asking while you have them.
-{_SHARED_RULES}"""
+{_shared_rules(SMS_NUMBER_SPOKEN)}"""
 
 COVERAGE_TOOL_DESCRIPTION = (
     "Check what this intake call still needs and whether you may wrap up. Call "
     "this after every two or three answers, and before you consider ending the "
-    "call. Returns wrap_up (true when everything required is covered), "
-    "still_needed (topics to ask next, in order), optional_topics (worth asking "
-    "only once wrap_up is true) and guidance. Takes no arguments."
+    "call. Pass minutes_available (integer) once the candidate has said how "
+    "long they have -- omit it if they have not. Returns wrap_up (true when "
+    "everything required is covered), still_needed (topics to ask next, in "
+    "order), optional_topics (worth asking only once wrap_up is true), "
+    "progress_line (say it if present, then ask; if empty do not invent a "
+    "count) and guidance."
 )
+
 
 # Post-call analysis is how consent reaches the record: the agent cannot set a
 # dynamic variable mid-call, so the platform reads it back out of the transcript
@@ -235,9 +296,39 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 "speak_during_execution": False,
                 # The whole point: the result decides the next question.
                 "speak_after_execution": True,
-                "parameters": {"type": "object", "properties": {}, "required": []},
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "minutes_available": {
+                            "type": "integer",
+                            "description": (
+                                "How many minutes the candidate said they have. "
+                                "Pass once they have answered. Omit if they "
+                                "have not said."
+                            ),
+                        }
+                    },
+                    "required": [],
+                },
             }
         ],
+    }
+
+
+def delivery_body() -> dict:
+    """Voice and delivery knobs. Used on create AND update.
+
+    Leaving these off the PATCH body is how changing VOICE_ID used to be a
+    no-op against the live agent.
+    """
+    return {
+        "voice_id": VOICE_ID,
+        "voice_speed": VOICE_SPEED,
+        "voice_temperature": VOICE_TEMPERATURE,
+        "interruption_sensitivity": INTERRUPTION_SENSITIVITY,
+        "responsiveness": RESPONSIVENESS,
+        "enable_backchannel": ENABLE_BACKCHANNEL,
+        "backchannel_frequency": BACKCHANNEL_FREQUENCY,
     }
 
 
@@ -245,11 +336,11 @@ def agent_body(*, llm_id: str, name: str, base_url: str) -> dict:
     return {
         "agent_name": name,
         "response_engine": {"type": "retell-llm", "llm_id": llm_id},
-        "voice_id": VOICE_ID,
         "language": "en-US",
         "webhook_url": f"{base_url.rstrip('/')}/v1/intake/webhook",
         "post_call_analysis_data": POST_CALL_ANALYSIS,
         "max_call_duration_ms": MAX_CALL_MS,
+        **delivery_body(),
     }
 
 
@@ -258,9 +349,9 @@ SPECS = [
         "name": OUTBOUND_NAME,
         "prompt": OUTBOUND_PROMPT,
         "begin_message": (
-            "Hi, this is the assistant for Foray, calling because you asked us to "
-            "get in touch. Before we start -- this call is recorded so a recruiter "
-            "can read it later. Is that OK with you?"
+            f"Hi, this is {RECRUITER_NAME}, an AI recruiting assistant with Foray, "
+            "calling because you asked us to get in touch. Before we start -- this "
+            "call is recorded so a recruiter can read it later. Is that OK with you?"
         ),
     },
     {
@@ -281,6 +372,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
     have = existing_agents()
     print(f"base url : {args.base_url.rstrip('/')}")
     print(f"model    : {AGENT_MODEL}   voice: {VOICE_ID}")
+    print(f"persona  : {RECRUITER_NAME}")
+    print(f"spoken # : {SMS_NUMBER_SPOKEN}")
     print(f"coverage : {args.base_url.rstrip('/')}/v1/intake/coverage")
     print(f"webhook  : {args.base_url.rstrip('/')}/v1/intake/webhook")
     print()
@@ -322,6 +415,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 "webhook_url": f"{args.base_url.rstrip('/')}/v1/intake/webhook",
                 "post_call_analysis_data": POST_CALL_ANALYSIS,
                 "max_call_duration_ms": MAX_CALL_MS,
+                **delivery_body(),
             },
         )
         print(f"updated {name}: agent={current['agent_id']} llm={llm_id}")
@@ -348,6 +442,26 @@ def cmd_list(_args: argparse.Namespace) -> int:
             f"{n['phone_number']}  inbound={n.get('inbound_agent_id') or '-'}  "
             f"outbound={n.get('outbound_agent_id') or '-'}"
         )
+    return 0
+
+
+def cmd_voices(args: argparse.Namespace) -> int:
+    """List the Retell catalogue so a voice pick is auditable."""
+    voices = request("GET", "/list-voices") or []
+    gender = (args.gender or "").strip().lower()
+    shown = 0
+    for voice in voices:
+        if not isinstance(voice, dict):
+            continue
+        raw_gender = str(voice.get("gender") or voice.get("voice_gender") or "")
+        if gender and raw_gender.lower() != gender:
+            continue
+        vid = voice.get("voice_id") or voice.get("id") or ""
+        name = voice.get("voice_name") or voice.get("voice_type") or voice.get("name") or ""
+        mark = "  <-- current" if vid == VOICE_ID else ""
+        print(f"{vid:<28} {raw_gender:<8} {name}{mark}")
+        shown += 1
+    print(f"\n{shown} voices" + (f" (gender={gender})" if gender else ""))
     return 0
 
 
@@ -392,6 +506,10 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Public origin serving /v1/intake/* (tunnel or app.goforay.io)",
             )
         p.set_defaults(func=func)
+
+    voices = sub.add_parser("voices", help="list the Retell voice catalogue")
+    voices.add_argument("--gender", default="", help="filter, e.g. female")
+    voices.set_defaults(func=cmd_voices)
 
     attach = sub.add_parser("attach", help="point a number at the agents (GOES LIVE)")
     attach.add_argument("--number", required=True)

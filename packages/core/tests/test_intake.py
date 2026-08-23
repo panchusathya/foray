@@ -27,6 +27,7 @@ from intake_fixtures import (
 from sqlalchemy import select
 
 from juicebox.intake import (
+    CORE_KEYS,
     ENRICHMENT_KEYS,
     EXTRACTOR_HEURISTIC,
     EXTRACTOR_LLM,
@@ -35,6 +36,7 @@ from juicebox.intake import (
     REQUIRED_KEYS,
     SPEC_FIELDS,
     coverage,
+    deferred_required,
     diff_records,
     empty_record,
     extract_intake,
@@ -44,6 +46,7 @@ from juicebox.intake import (
     normalize_record,
 )
 from juicebox.intake.schema import TIER_REQUIRED, is_filled
+from juicebox.intake.service import progress_line
 from juicebox.llm.client import FakeTransport, LLMClient, LLMUnavailable, set_llm
 from juicebox.llm.prompts import _INTAKE_FIELD_KEYS
 from juicebox.models import Candidate, CandidatePhone
@@ -137,6 +140,51 @@ class TestCoverageGate:
         record = _filled_required()
         record["declined"] = list(ENRICHMENT_KEYS)
         assert next_questions(record) == []
+
+    def test_core_only_closes_without_must_have_skills(self):
+        """The heuristic cannot fill must-haves; requiring them on a short call
+        would run every model-less pass to the 15-minute ceiling."""
+        record = _filled_core()
+        assert "spec.must_have_skills" not in coverage(record, core_only=True).covered
+        assert coverage(record, core_only=True).required_complete
+        assert not coverage(record).required_complete
+        assert "spec.must_have_skills" in deferred_required(record)
+
+    def test_a_long_budget_does_not_widen_the_gate(self):
+        record = _filled_required()
+        assert coverage(record, core_only=False).required_complete
+        assert coverage(record).required_missing == ()
+
+    def test_no_budget_matches_today(self):
+        empty = empty_record()
+        assert coverage(empty).required_missing == coverage(empty, core_only=False).required_missing
+        assert set(coverage(empty).required_missing) == set(REQUIRED_KEYS)
+
+    def test_core_keys_are_the_retrieval_set(self):
+        assert CORE_KEYS == (
+            "spec.job_titles",
+            "spec.seniority",
+            "spec.locations",
+            "spec.remote_ok",
+            "compensation",
+        )
+        assert "spec.must_have_skills" not in CORE_KEYS
+        assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
+
+
+class TestProgressLine:
+    def test_empty_off_milestone(self):
+        assert progress_line(4) == ""
+        assert progress_line(2) == ""
+        assert progress_line(0) == ""
+        assert progress_line(11) == ""
+
+    def test_states_the_true_count_on_milestone(self):
+        assert progress_line(5) == "Five more quick ones and I'll let you go."
+        assert progress_line(3) == "Three more quick ones and I'll let you go."
+        assert progress_line(1) == "One more quick one and I'll let you go."
+        assert "4" not in progress_line(5)
+        assert "2" not in progress_line(3)
 
 
 class TestFieldDefinitions:
@@ -678,6 +726,22 @@ class TestPhoneProjection:
 # --------------------------------------------------------------------------
 
 
+def _filled_core() -> dict:
+    """The five gate-closing fields, and nothing else. Skills deliberately empty."""
+    record = empty_record()
+    record["spec"].update(
+        {
+            "job_titles": ["machine learning engineer"],
+            "seniority": ["senior"],
+            "locations": ["san francisco"],
+            "remote_ok": False,
+        }
+    )
+    record["target_base"] = 240000.0
+    record["comp_currency"] = "USD"
+    return record
+
+
 def _filled_required() -> dict:
     """A record with every required field answered and no enrichment."""
     record = empty_record()
@@ -708,3 +772,31 @@ def _clone(payload: dict) -> dict:
     import copy
 
     return copy.deepcopy(payload)
+
+
+class TestPersonaCopy:
+    """``deploy/`` is stdlib-only and cannot import ``juicebox.config``, so the
+    persona exists twice. The prompt and the dynamic variable have to agree, or
+    the agent greets as one name and refers to itself by another mid-call.
+    Same idiom as ``test_the_prompt_enum_matches_the_field_set``."""
+
+    def _deploy_constants(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        text = (root / "deploy" / "retell_agents.py").read_text(encoding="utf-8")
+        found = {}
+        for name in ("RECRUITER_NAME", "SMS_NUMBER_SPOKEN"):
+            match = re.search(rf'^{name} = "([^"]*)"', text, re.M)
+            assert match, f"{name} not found in deploy/retell_agents.py"
+            found[name] = match.group(1)
+        return found
+
+    def test_the_persona_matches_the_deploy_script(self):
+        from juicebox.config import get_settings
+
+        settings = get_settings()
+        deploy = self._deploy_constants()
+        assert deploy["RECRUITER_NAME"] == settings.intake_recruiter_name
+        assert deploy["SMS_NUMBER_SPOKEN"] == settings.intake_sms_number_spoken

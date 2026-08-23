@@ -95,7 +95,7 @@ export function ContactHistory({ candidateId, onCount }) {
   if (timeline.loading) return <Loading label="Loading contact history…" />;
   if (timeline.error) return <ErrorBox error={timeline.error} />;
 
-  const { stats, threads } = timeline.data;
+  const { stats, threads, events = [] } = timeline.data;
   return (
     <div className="stack" data-testid="contact-history">
       <div className="grid four">
@@ -118,6 +118,17 @@ export function ContactHistory({ candidateId, onCount }) {
           <div className="label">sent / replies</div>
         </div>
       </div>
+
+      {events.length ? (
+        <div className="stack" style={{ gap: 6 }} data-testid="intake-events">
+          {events.map((event) => (
+            <div key={event.id} className="card row spread small">
+              <span>{event.type.replace('intake.', '').replaceAll('_', ' ')}</span>
+              <span className="muted">{when(event.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {threads.length ? (
         threads.map((thread, index) => (

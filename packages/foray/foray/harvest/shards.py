@@ -16,23 +16,17 @@ import asyncio
 from ..config import settings
 from ..db import close_pool, get_pool
 from ..log import get_logger
+from ..vocab import GITHUB_SEARCH_LANGUAGES
 
 log = get_logger("harvest.shards")
 
-LANGUAGES = [
-    "python",
-    "go",
-    "rust",
-    "typescript",
-    "javascript",
-    "java",
-    "kotlin",
-    "swift",
-    "scala",
-    "ruby",
-    "elixir",
-    "cpp",
-]
+# Deprecated re-export: vocab.py is now the single source of truth for
+# language naming (this list used to live here in GitHub-qualifier spelling,
+# and api/parse.py matching queries against it is how "c++" searches went
+# dead — derive stores "c++", shard queries need "cpp"). Kept as LANGUAGES so
+# existing importers (tests, ad-hoc scripts) keep working; new code should
+# import from foray.vocab and pick the spelling it actually needs.
+LANGUAGES = list(GITHUB_SEARCH_LANGUAGES)
 
 FOLLOWER_BUCKETS = ["10..24", "25..49", "50..99", "100..249", "250..999", ">=1000"]
 

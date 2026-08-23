@@ -9,6 +9,11 @@ source_modules =
     foray.rank
     foray.search_doc
     foray.evidence
+    # foray.recency is one pure SQL-string builder. Listed here so the
+    # "caller passes the numbers" contract is enforced rather than remembered:
+    # importing foray.config would make it un-unit-testable and would let the
+    # archetype gates and the search filter drift apart via settings.
+    foray.recency
 forbidden_modules =
     asyncpg
     httpx

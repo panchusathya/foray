@@ -2,12 +2,46 @@ from __future__ import annotations
 
 import pytest
 
-from foray.search_doc import RANK_WEIGHTS, TS_CONFIG, build_websearch_or
+from foray.search_doc import (
+    HAS_LEXICAL_DOC_SQL,
+    RANK_WEIGHTS,
+    TS_CONFIG,
+    UPDATE_SEARCH_TSV_FAST_SQL,
+    UPDATE_SEARCH_TSV_SQL,
+    build_websearch_or,
+)
+
+
+def test_both_tsv_updates_gate_on_search_eligible() -> None:
+    """An inadmissible row gets a NULL tsvector, so the lexical arm's existing
+    `search_tsv is not null` test (and HAS_LEXICAL_DOC_SQL) excludes it for
+    free -- no second copy of the eligibility rule in the query path.
+    enrich/derive.py's admission() owns the rule; this module only tests the
+    flag. Both statements must carry the gate, or the fast backfill would
+    quietly re-admit every row it touches."""
+    for sql in (UPDATE_SEARCH_TSV_SQL, UPDATE_SEARCH_TSV_FAST_SQL):
+        assert "case when s.search_eligible then" in sql
+        assert "else null end" in sql
 
 
 def test_config_is_english() -> None:
     assert TS_CONFIG == "english"
     assert RANK_WEIGHTS.startswith("{")
+
+
+def test_has_lexical_doc_sql_excludes_empty_tsvectors() -> None:
+    """Pinned exactly: this string is the single "has a lexical document"
+    definition shared by status, the search count query, and both /health
+    probes. `is not null` alone overcounts — an admitted profile with no
+    indexable fields gets a non-NULL but EMPTY tsvector, which `@@` can never
+    match, so it must not be counted as lexically findable either."""
+    assert HAS_LEXICAL_DOC_SQL == (
+        "s.search_tsv is not null and s.search_tsv <> ''::tsvector"
+    )
+    # Both halves are load-bearing: NULL (never indexed) and empty (indexed,
+    # nothing to find) are different states and both must be excluded.
+    assert "is not null" in HAS_LEXICAL_DOC_SQL
+    assert "<> ''::tsvector" in HAS_LEXICAL_DOC_SQL
 
 
 def test_or_builder_drops_noise_and_digits() -> None:

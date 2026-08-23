@@ -150,3 +150,27 @@ def test_ttl_lru_expires() -> None:
 
     time.sleep(0.02)
     assert cache.get("a") is None
+
+
+def test_warm_cross_encoder_runs_a_forward_pass_not_just_a_load(monkeypatch):
+    """The regression this exists for: warmup used to call get_cross_encoder()
+    only, which loads weights but leaves torch's first-inference cost on the
+    request path. On prod that made the first search after every deploy spend
+    1287 ms in rank, exceed the 1200 ms budget, log rerank.timeout, and keep the
+    single threadpool worker busy long enough for the NEXT search to get
+    queue_full. Warm is a predict(), not a constructor."""
+    from foray.rerank import model as model_mod
+
+    calls: list[list[tuple[str, str]]] = []
+
+    class _FakeCE:
+        def predict(self, pairs, **kwargs):
+            calls.append(list(pairs))
+            return [0.0 for _ in pairs]
+
+    monkeypatch.setattr(model_mod, "get_cross_encoder", lambda: _FakeCE())
+    model_mod.warm_cross_encoder()
+
+    assert len(calls) == 1, "warmup must run exactly one forward pass"
+    assert len(calls[0]) == 1, "one throwaway pair is enough to warm torch"
+    assert all(isinstance(part, str) for part in calls[0][0])

@@ -65,9 +65,16 @@ async def candidates_to_score(
         -- never rescored. Never score a candidate before it is embedded.
         where c.merged_into is null
           and ({arch.gate}) and ({clause}) and c.embed_blob is not null
-          -- LinkedIn rows without even a title are unrankable stubs; spending
-          -- a model call on them buys nothing.
-          and (s.evidence_kind = 'github' or s.title is not null)
+          -- Unrankable stubs; spending a model call on them buys nothing.
+          -- This used to be the literal `(s.evidence_kind = 'github' or
+          -- s.title is not null)` — the ONLY place the admission rule lived,
+          -- which is how 24,698 title-less, about-less, role-less LinkedIn
+          -- rows still earned an embedding and a tsvector: nothing outside the
+          -- scoring queue could see it. enrich/derive.py's admission() owns
+          -- the rule now (a title plus one corroborating fact, or GitHub
+          -- evidence with >=1 non-fork repo) and stores the verdict; every
+          -- other layer, this one included, only tests the flag.
+          and s.search_eligible
         order by c.id
         {'limit $3' if limit else ''}
         """,
@@ -94,11 +101,17 @@ def build_user_content(row: Any) -> str:
         activity_str = activity.strftime("%Y-%m") if activity else "unknown"
         tenure = row["tenure_months"]
         tenure_str = f"{tenure // 12}y {tenure % 12}m" if tenure else "unknown"
+        # est_experience_years is NULL when the profile has no dated role. Say
+        # "unknown", never "~Noney" and never a fabricated 0 — the same reason
+        # activity/tenure already say unknown above: this string is a prompt,
+        # and a model told "0 years" scores a senior as a junior.
+        years = row["est_experience_years"]
+        years_str = f"~{years}y experience" if years is not None else "experience unknown"
         return (
             "Evidence type: LinkedIn profile only — no public code is available "
             "for this person.\n\n"
             f"{row['embed_blob'] or row['login']}\n\n"
-            f"Signals: ~{row['est_experience_years']}y experience "
+            f"Signals: {years_str} "
             f"({row['experience_confidence']} confidence); "
             f"current title {row['title'] or 'unknown'}; "
             f"employer {row['employer'] or 'unknown'} "
@@ -162,6 +175,24 @@ def _months_since(dt: datetime | None) -> float:
     return (datetime.now(UTC) - dt).days / 30.44
 
 
+def _years(row: Any) -> float:
+    """est_experience_years for scoring, with unknown read as 0.
+
+    The column is nullable now: a LinkedIn profile with no dated role stores
+    NULL rather than the 0.0 that 134,536 prod rows carried and that every
+    consumer misread as "zero years". Both call sites below add years as a
+    seniority BONUS, so the honest reading of unknown is "award nothing" — a
+    missing year count is not evidence of seniority, and inventing a midpoint
+    would hand a bare profile the same credit as a dated one. It is equally not
+    evidence of juniority, but this heuristic has no way to express that, which
+    is a reason to keep it where it is: an explicit --offline demo scorer, not
+    the retrieval path. The retrieval path expresses unknown as unknown (see
+    foray/recency.py and the est_experience predicates in _filter_clauses).
+    """
+    years = row["est_experience_years"]
+    return 0.0 if years is None else float(years)
+
+
 def heuristic_score(row: Any, arch: Archetype) -> int:
     """A spread-out, spend-free proxy for the real LLM score (demos/tests only)."""
     markers = set(row["domain_markers"])
@@ -172,7 +203,7 @@ def heuristic_score(row: Any, arch: Archetype) -> int:
         score = 25.0
         if arch.gate_markers() & markers:
             score += 25
-        score += min(20.0, float(row["est_experience_years"]))
+        score += min(20.0, _years(row))
         if row["experience_confidence"] == "high":
             score += 10
         title = row.get("title")
@@ -182,7 +213,7 @@ def heuristic_score(row: Any, arch: Archetype) -> int:
     score = 20.0
     if arch.gate_markers() & markers:
         score += 20
-    score += min(15.0, float(row["est_experience_years"]))
+    score += min(15.0, _years(row))
     score += min(20.0, math.log10(max(1, row["total_stars"])) * 7)
     if row["oss_maintainer"]:
         score += 10

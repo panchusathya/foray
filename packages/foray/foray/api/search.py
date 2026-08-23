@@ -43,8 +43,16 @@ from ..rank import (
     sort_key,
     widen_message,
 )
+from ..recency import recency_clause
 from ..score.archetypes import load_archetypes
-from ..search_doc import RANK_NORMALIZATION, RANK_WEIGHTS, TS_CONFIG, build_websearch_or
+from ..search_doc import (
+    HAS_LEXICAL_DOC_SQL,
+    RANK_NORMALIZATION,
+    RANK_WEIGHTS,
+    TS_CONFIG,
+    build_websearch_or,
+)
+from ..vocab import canonical_employer, metro_like_patterns
 from .parse import ParsedFilter, parse_query
 
 log = get_logger("api.search")
@@ -243,12 +251,39 @@ def _filter_clauses(
     *,
     has_contact: bool = False,
     gate_sql: str | None = None,
+    require_embedding: bool = False,
 ) -> str:
+    # `c.embedding is not null` used to sit in the shared list, which coupled
+    # keyword search to the embed pipeline: a row the lexical arm could match
+    # was invisible everywhere until the embed backfill reached it, and the
+    # count / lexical / score / enrich queries silently excluded it too. Only
+    # the vector arm dereferences the embedding (its ORDER BY), so only it
+    # passes require_embedding=True. Consequence to know when reading numbers:
+    # total_matched now counts unembedded rows as well, so it GROWS on corpora
+    # with an embed backlog — widen_message reads it unchanged, which is
+    # correct (those rows really are retrievable, via the lexical arm).
     clauses = [
         "c.merged_into is null",
-        f"s.activity_at > now() - interval '{int(settings.activity_floor_months)} months'",
-        "c.embedding is not null",
+        # Was the literal `s.activity_at > now() - interval 'N months'`, which
+        # was a no-op for 96% of the corpus: activity_at for LinkedIn rows was
+        # the import wall-clock, so 196,778 / 196,778 of them passed the
+        # 24-month floor, all stamped 'snapshot' inside one month. activity_at
+        # is evidence-or-NULL now, and foray/recency.py is the one three-valued
+        # predicate — real activity in-window passes, UNKNOWN activity passes
+        # only while profile_asof is fresh. Same literal-interpolation contract
+        # as the gate below: config values, int()-coerced, never user input.
+        recency_clause(settings.activity_floor_months, settings.snapshot_floor_months),
+        # The admission flag enrich/derive.py computes and stores: a title plus
+        # one corroborating fact, or GitHub evidence with >=1 non-fork repo.
+        # Tested, never re-derived here — the rule lives in exactly one place
+        # (it used to live only inside score/common.py's scoring queue, which
+        # is why 24,698 contentless rows were retrievable). It sits in the
+        # SHARED list on purpose: an inadmissible row must be invisible to the
+        # count, the lexical arm and the vector arm alike.
+        "s.search_eligible",
     ]
+    if require_embedding:
+        clauses.append("c.embedding is not null")
     if has_contact:
         clauses.append(
             "(c.linkedin_url is not null or exists ("
@@ -256,17 +291,225 @@ def _filter_clauses(
             " where e.candidate_id = c.id and e.source <> 'guess'))"
         )
     if parsed.metros:
-        placeholder = params.add([f"%{m}%" for m in parsed.metros])
-        clauses.append(f"c.location_raw ilike any({placeholder}::text[])")
+        # Two arms, because metro evidence is stored in two places:
+        #   * s.location_metro holds the canonical key (vocab.canonical_metro,
+        #     the same function the parser calls, so a stored value and a
+        #     searched value cannot disagree) — an equality on an indexed
+        #     column, which is the whole point of canonicalising at all.
+        #   * c.location_raw is the free text, and is what covers the rows the
+        #     key column cannot: every row derived before this stage (where
+        #     location_metro is still a verbatim city or NULL — derive only
+        #     started filling BOTH sources in 013, and a re-derive is minutes
+        #     of lag, not zero), and multi-city strings like "SF / NYC" where
+        #     canonical_metro necessarily returns one key.
+        # Cost, stated so the follow-up is a measurement and not a rediscovery:
+        # this is a cross-table OR, so the planner cannot bitmap-OR the two
+        # arms into one scan and the metro facet contributes no selectivity to
+        # the access path. Worst case is 8 metros x ~14 aliases of LIKE arms;
+        # in practice a query names one or two, and each is a trigram index
+        # scan rather than the seq scan `ilike any()` forced (measured:
+        # 219 ms, 38k buffers, ONE predicate, x4 statements per request). Once
+        # the re-derive has filled location_metro for both sources, EXPLAIN the
+        # two shapes on prod: if the equality alone holds recall, deleting this
+        # loop makes metro an index access path again.
+        parts = [f"s.location_metro = any({params.add(list(parsed.metros))}::text[])"]
+        for key in parsed.metros:
+            for alias in metro_like_patterns(key):
+                parts.append(f"lower(c.location_raw) like {params.add(f'%{alias}%')}")
+        # No unknown arm and no policy switch: unlike title/topics/tenure,
+        # location text is populated on BOTH source populations, so a metro
+        # predicate is not a source filter in disguise. A row with no location
+        # at all genuinely cannot be shown to satisfy "in SF", and admitting
+        # unknowns would make the recruiter's hardest constraint a no-op.
+        clauses.append("(" + " or ".join(parts) + ")")
+    if parsed.titles:
+        # OR-chain, never `ilike any(array[...])`. `ilike any()` is a
+        # ScalarArrayOp, which cannot use a trigram GIN index: EXPLAIN on prod
+        # measured a seq scan, 38k buffers, 219 ms for ONE metro predicate —
+        # and _filter_clauses is rebuilt for the count + vector + lexical +
+        # enrich statements, so ~4x that per request. A chain of individual
+        # LIKEs can bitmap-OR the index instead. Same shape for every text
+        # facet below; if you are tempted to collapse one back into `any()`,
+        # read this comment again.
+        parts = [
+            f"lower(s.title) like {params.add(f'%{t.lower()}%')}" for t in parsed.titles
+        ]
+        joined = " or ".join(parts)
+        # title is NULL on all 7,757 GitHub rows. Strict would mean "and is a
+        # LinkedIn row" (see ParsedFilter.strict_titles).
+        clauses.append(
+            f"({joined})" if parsed.strict_titles else f"({joined} or s.title is null)"
+        )
+    if parsed.title_exclude:
+        parts = [
+            f"lower(s.title) like {params.add(f'%{t.lower()}%')}"
+            for t in parsed.title_exclude
+        ]
+        joined = " or ".join(parts)
+        # The three-valued NOT trap, spelled out because it is silent: for a
+        # NULL title `not (null like '%recruiter%')` evaluates to NULL, not
+        # TRUE, so a bare NOT would drop every GitHub row from a filter whose
+        # only job is to remove recruiters. The `is null` arm is what keeps
+        # this an EXCLUSION rather than a source filter.
+        clauses.append(
+            f"(s.title is not null and not ({joined}))"
+            if parsed.strict_titles
+            else f"(s.title is null or not ({joined}))"
+        )
+    if parsed.employers:
+        # Canonical equality FIRST: infer_employer maps "@google", "googlers"
+        # and "alphabet" to exactly "Google" before storing, so for the ~44
+        # companies in company_aliases.yaml an equality is both correct and
+        # btree-index-backed (ix_signals_employer_lower). Only the values
+        # canonical_employer could not resolve fall through to a trigram
+        # OR-chain — "UCSF" and "University of California, San Francisco" are
+        # separate employers in the corpus today, and no alias table entry
+        # makes them one.
+        exact: list[str] = []
+        fuzzy: list[str] = []
+        for value in parsed.employers:
+            canonical = canonical_employer(value)
+            (exact if canonical else fuzzy).append(canonical or value.lower())
+        parts = []
+        if exact:
+            parts.append(f"lower(s.employer) = any({params.add(exact)}::text[])")
+        parts.extend(
+            f"lower(s.employer) like {params.add(f'%{value}%')}" for value in fuzzy
+        )
+        # No unknown arm: employer is populated on both source populations
+        # (infer_employer for GitHub, the LinkedIn company field for LinkedIn),
+        # so a NULL is a genuine unknown rather than a missing source, and
+        # admitting it would make "at Stripe" match the whole corpus.
+        clauses.append("(" + " or ".join(parts) + ")")
+    if parsed.markers:
+        # domain_markers is populated on BOTH sources (detect_markers runs over
+        # repo text for GitHub and over headline/about for LinkedIn), so this
+        # is the one text facet that needs no unknown policy — an empty marker
+        # array is a real negative, not a missing column. `&&` uses the
+        # existing GIN index on domain_markers.
+        clauses.append(f"s.domain_markers && {params.add(list(parsed.markers))}::text[]")
+    if parsed.topics:
+        placeholder = params.add([t.lower() for t in parsed.topics])
+        overlap = f"s.topics && {placeholder}::text[]"
+        if parsed.strict_topics:
+            clauses.append(overlap)
+        else:
+            # topics is GitHub-derived and populated on ZERO of the 196,778
+            # LinkedIn rows — the same shape as the primary_language collapse
+            # (which matched 550 of 204,535 rows). cardinality() covers NULL
+            # and '{}' alike: derive writes an empty array for LinkedIn rows,
+            # so `is null` alone would still delete them.
+            clauses.append(f"({overlap} or coalesce(cardinality(s.topics), 0) = 0)")
     if parsed.languages:
         placeholder = params.add([lang.lower() for lang in parsed.languages])
-        clauses.append(f"s.primary_language = any({placeholder}::text[])")
+        if parsed.strict_language:
+            # Opt-in exact predicate: "known to write X", accepting that
+            # language is only observed on GitHub-derived rows.
+            clauses.append(f"s.primary_language = any({placeholder}::text[])")
+        else:
+            # Three-valued by default. primary_language is GitHub-only and
+            # NULL on all 196,778 LinkedIn rows, so the hard equality matched
+            # 550 of 204,535 rows (0.3%) — a source filter in disguise, not a
+            # language filter. Admitting NULL keeps "python" as a preference
+            # the ranking arms express (tsvector B-weight, embedding) rather
+            # than a gate that silently drops 96% of the corpus.
+            clauses.append(
+                f"(s.primary_language = any({placeholder}::text[])"
+                " or s.primary_language is null)"
+            )
+    # est_experience_years is nullable now (NULL = no dated role in the
+    # profile, previously stored as 0.0 on 134,536 rows). Both predicates
+    # therefore EXCLUDE unknowns, which is a real behaviour change on the max
+    # side: `<= 8` used to admit every unknown as a 0-year candidate, and now
+    # drops them. That is the correct default — a stated experience band is a
+    # hard requirement and we cannot evidence it for these rows — but it is a
+    # recall cost, and the loose reading (`or s.est_experience_years is null`)
+    # needs an explicit `include_unknown_experience` parser field rather than
+    # being the silent default. Not added here: it is a ParsedFilter change
+    # that lands with the facet wave.
+    # est_experience_years is NULL for the 134,536 rows whose profile states no
+    # dated role, so these comparisons are three-valued: an unknown row fails
+    # both bounds by default. That is the correct default — before the column
+    # was nullable those rows held 0, which made every one of them answer "yes"
+    # to any `<= N` and "no" to any `>= N`, i.e. it asserted "no experience"
+    # from an absence of data. include_unknown_experience is the opt-out for a
+    # caller that would rather keep the unknowns (see ParsedFilter).
+    unknown_ok = parsed.include_unknown_experience
     if parsed.experience_min is not None:
         placeholder = params.add(float(parsed.experience_min))
-        clauses.append(f"s.est_experience_years >= {placeholder}")
+        bound = f"s.est_experience_years >= {placeholder}"
+        clauses.append(
+            f"({bound} or s.est_experience_years is null)" if unknown_ok else bound
+        )
     if parsed.experience_max is not None:
         placeholder = params.add(float(parsed.experience_max))
-        clauses.append(f"s.est_experience_years <= {placeholder}")
+        bound = f"s.est_experience_years <= {placeholder}"
+        clauses.append(
+            f"({bound} or s.est_experience_years is null)" if unknown_ok else bound
+        )
+    # seniority_rank is derived from title, so it is NULL for all 7,757 GitHub
+    # rows AND for every LinkedIn title with no level word ("Software
+    # Engineer"). include_unknown_seniority DEFAULTS TRUE for that reason: the
+    # commonest query in the product ("senior backend engineer") sets
+    # seniority_min=3 automatically, and a strict predicate there would delete
+    # a majority of the corpus the way the language filter deleted 96% of it.
+    seniority_unknown_ok = parsed.include_unknown_seniority
+    if parsed.seniority_min is not None:
+        placeholder = params.add(int(parsed.seniority_min))
+        bound = f"s.seniority_rank >= {placeholder}"
+        clauses.append(
+            f"({bound} or s.seniority_rank is null)" if seniority_unknown_ok else bound
+        )
+    if parsed.seniority_max is not None:
+        placeholder = params.add(int(parsed.seniority_max))
+        bound = f"s.seniority_rank <= {placeholder}"
+        clauses.append(
+            f"({bound} or s.seniority_rank is null)" if seniority_unknown_ok else bound
+        )
+    # tenure_months is NULL on all 7,757 GitHub rows (derive sets it None
+    # there) and on LinkedIn rows with no dated current role. Strict by
+    # default, following include_unknown_experience: an absence of dates is not
+    # evidence of time in seat. The cost — those 7,757 rows whenever a tenure
+    # bound is stated — is the documented trade, and one flag reverses it.
+    tenure_unknown_ok = parsed.include_unknown_tenure
+    if parsed.tenure_min_months is not None:
+        placeholder = params.add(int(parsed.tenure_min_months))
+        bound = f"s.tenure_months >= {placeholder}"
+        clauses.append(
+            f"({bound} or s.tenure_months is null)" if tenure_unknown_ok else bound
+        )
+    if parsed.tenure_max_months is not None:
+        placeholder = params.add(int(parsed.tenure_max_months))
+        bound = f"s.tenure_months <= {placeholder}"
+        clauses.append(
+            f"({bound} or s.tenure_months is null)" if tenure_unknown_ok else bound
+        )
+    if parsed.source:
+        # The one facet that is ALLOWED to be a source filter, because it says
+        # so out loud. Everything else in this function exists to stop a facet
+        # becoming one by accident.
+        clauses.append(f"s.evidence_kind = {params.add(parsed.source)}")
+    if parsed.require_code_evidence:
+        # Literal, not a bind param: the value set is the evidence_kind CHECK
+        # constraint from migration 005, not user input. 'both' must be
+        # included or this reads as "GitHub-only rows", which would drop every
+        # cross-linked profile — the strongest evidence in the corpus.
+        clauses.append("s.evidence_kind in ('github','both')")
+    if parsed.is_manager is not None:
+        # mgmt_rank's NULL is a NEGATIVE ("not management"), not an unknown, so
+        # the §9 unknown policy does not apply and there is no switch to add.
+        # Consequence worth stating: mgmt_rank is derived from title, so
+        # is_manager=True is implicitly LinkedIn-only. is_manager=False reads
+        # as "IC or unknown", which is the recall-preserving direction.
+        clauses.append(
+            "s.mgmt_rank is not null" if parsed.is_manager else "s.mgmt_rank is null"
+        )
+    if parsed.is_founder is not None:
+        # is_founder is `boolean not null default false`, so there is no
+        # unknown state to admit — and for the same reason a False is only
+        # evidence of "no founder title", which is why heuristic_parse never
+        # sets is_founder=False.
+        clauses.append("s.is_founder" if parsed.is_founder else "not s.is_founder")
     if gate_sql:
         # The archetype gate is the relevance predicate: without it any Bay
         # Area person with the right experience band is retrievable for an ML
@@ -507,7 +750,7 @@ async def run_search(
         count_sql = f"""
             select
               count(*)::int as n_matched,
-              count(*) filter (where s.search_tsv is not null)::int as n_lexical_indexed,
+              count(*) filter (where {HAS_LEXICAL_DOC_SQL})::int as n_lexical_indexed,
               count(*) filter (where a.score is not null)::int as n_scored
             from candidates c
             join candidate_signals s on s.candidate_id = c.id
@@ -522,7 +765,13 @@ async def run_search(
 
         if n_matched and "vector" in live_arms:
             vparams = Params()
-            vwhere = _filter_clauses(parsed, vparams, has_contact=has_contact, gate_sql=gate)
+            # require_embedding: only this arm orders by c.embedding, and HNSW
+            # cannot return a NULL-embedding row anyway; stating it in the
+            # WHERE keeps the plan honest if the index is ever missing.
+            vwhere = _filter_clauses(
+                parsed, vparams, has_contact=has_contact, gate_sql=gate,
+                require_embedding=True,
+            )
             qph = vparams.add(qvec)
             lim = vparams.add(settings.vector_k)
             vector_ids = [
@@ -641,6 +890,11 @@ async def run_search(
         enrich_by_id[cid] = PoolRow(
             key=cid,
             score=score,
+            # NULL cos_sim is an EXPECTED state, not a data error: since the
+            # shared filters stopped requiring an embedding, the lexical arm
+            # can pool rows the embed pipeline has not reached, and the enrich
+            # query's `1 - (c.embedding <=> ...)` is NULL for them. `or 0.0`
+            # ranks such rows on RRF (+ archetype score) alone.
             cos_sim=float(row["cos_sim"] or 0.0),
             # PoolRow.highlight_count feeds the min_evidence veto, so it now
             # carries the SUBSTANTIVE evidence count (highlights minus the
@@ -754,6 +1008,14 @@ async def run_search(
         "ce_rejected": sum(1 for row in pool if row.band == 2),
         "timings_ms": clock.marks,
         "arms": list(live_arms),
+        # Which facets actually became SQL, with the COERCED values. Two
+        # consumers: a human asking "why did this junk match?" (the parse is
+        # cached and the LLM output is gone by the time anyone asks), and the
+        # eval harness's filter_violations@k, which has nothing else to read.
+        # Facet name -> value; see ParsedFilter.to_predicate_summary for the
+        # NULL-admission caveat that keeps unknown-policy rows from counting as
+        # violations.
+        "predicates": parsed.to_predicate_summary(),
     }
 
     message = widen_message(

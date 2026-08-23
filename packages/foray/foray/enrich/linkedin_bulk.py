@@ -34,6 +34,13 @@ join archetype_scores  a on a.candidate_id = c.id
 where c.linkedin_url is null
   and ($4 or c.linkedin_checked_at is null
        or c.linkedin_checked_at < now() - make_interval(days => $2))
+-- Deliberately NOT foray.recency's three-valued clause. This is a PAID-spend
+-- gate on candidates that have no linkedin_url yet, i.e. GitHub identities,
+-- whose activity_at is last_push_at and therefore never the unknown the
+-- snapshot arm exists to rescue. Spending only on rows with a real, dated
+-- activity claim is the conservative reading and the right default for money;
+-- if the unknown arm is ever wanted here it must be an explicit, measured
+-- widening of the spend surface, not a side effect of the search predicate.
   and s.activity_at > now() - make_interval(months => $3)
   and ($5::text is null or a.archetype_id = $5)
 group by c.id, c.login

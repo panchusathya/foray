@@ -6,8 +6,22 @@ from foray.search_doc import (
     HAS_LEXICAL_DOC_SQL,
     RANK_WEIGHTS,
     TS_CONFIG,
+    UPDATE_SEARCH_TSV_FAST_SQL,
+    UPDATE_SEARCH_TSV_SQL,
     build_websearch_or,
 )
+
+
+def test_both_tsv_updates_gate_on_search_eligible() -> None:
+    """An inadmissible row gets a NULL tsvector, so the lexical arm's existing
+    `search_tsv is not null` test (and HAS_LEXICAL_DOC_SQL) excludes it for
+    free -- no second copy of the eligibility rule in the query path.
+    enrich/derive.py's admission() owns the rule; this module only tests the
+    flag. Both statements must carry the gate, or the fast backfill would
+    quietly re-admit every row it touches."""
+    for sql in (UPDATE_SEARCH_TSV_SQL, UPDATE_SEARCH_TSV_FAST_SQL):
+        assert "case when s.search_eligible then" in sql
+        assert "else null end" in sql
 
 
 def test_config_is_english() -> None:

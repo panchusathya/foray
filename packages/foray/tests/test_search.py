@@ -72,6 +72,39 @@ def test_embedding_requirement_is_vector_arm_only():
     assert len(params.values) == 1
 
 
+def test_recency_clause_is_the_shared_module_not_a_literal():
+    """The old literal `s.activity_at > now() - interval 'N months'` was a
+    no-op for 96% of the corpus: activity_at for LinkedIn rows was the import
+    wall-clock, so 196,778/196,778 passed the 24-month floor. One three-valued
+    predicate now, shared with all 15 archetype gates."""
+    from foray.recency import recency_clause
+
+    where = _filter_clauses(ParsedFilter(), Params())
+    expected = recency_clause(
+        settings.activity_floor_months, settings.snapshot_floor_months
+    )
+    assert expected in where
+    # The unknown arm must be present: without it the ~51% of LinkedIn rows
+    # with no decodable activity id silently vanish from every search.
+    assert "s.activity_at is null" in where
+    assert "s.profile_asof" in where
+    # No bind parameters: the clause is literal SQL so arm WHEREs stay
+    # $N-numbering-compatible.
+    params = Params()
+    _filter_clauses(ParsedFilter(), params)
+    assert params.values == []
+
+
+def test_search_eligible_is_in_the_shared_clause_list():
+    """Admission control is one stored flag, computed by enrich/derive.py's
+    admission(). It sits in the SHARED list so an inadmissible row is invisible
+    to the count, the lexical arm and the vector arm alike."""
+    for kwargs in ({}, {"require_embedding": True}, {"has_contact": True}):
+        assert "s.search_eligible" in _filter_clauses(
+            ParsedFilter(), Params(), **kwargs
+        )
+
+
 def test_language_filter_admits_null_by_default():
     """primary_language is GitHub-only (NULL on all 196,778 LinkedIn rows), so
     the old hard equality matched 550 of 204,535 rows — a source filter in

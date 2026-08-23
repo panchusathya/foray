@@ -1,9 +1,25 @@
 from __future__ import annotations
 
-from foray.enrich.derive import compute_language_mix, derive_signals, normalize_repos
+from datetime import UTC, datetime
+
+from foray.enrich.derive import (
+    admission,
+    compute_language_mix,
+    derive_linkedin_signals,
+    derive_signals,
+    merge_signals,
+    normalize_repos,
+)
 from foray.enrich.employer import infer_employer
 from foray.enrich.markers import detect_markers
+from foray.ingest.activity import URN_TIMESTAMP_SHIFT
 from tests.fixtures import FRONTEND_NODE, ML_ENGINEER_NODE
+
+ASOF = datetime(2026, 8, 1, tzinfo=UTC)
+
+
+def _urn(dt: datetime) -> str:
+    return str(int(dt.timestamp() * 1000) << URN_TIMESTAMP_SHIFT)
 
 
 def test_language_mix_normalizes_to_fractions():
@@ -130,3 +146,195 @@ def test_employer_falls_through_to_org_then_email():
 def test_community_org_is_not_employer():
     node = {"company": "", "organizations": {"nodes": [{"login": "freecodecamp", "name": "freeCodeCamp"}]}}
     assert infer_employer(node) == (None, None)
+
+
+# ------------------------------------------------- the LinkedIn activity ladder --
+
+
+def _li_record(**kw) -> dict:
+    base = {
+        "name": "Dana Rivera",
+        "id": "dana-rivera",
+        "city": "San Francisco",
+        "about": "x" * 200,
+        "current_company": {"name": "Stripe"},
+        "experience": [
+            {"title": "Staff Engineer", "company": "Stripe", "start_date": "Jan 2020"},
+            {
+                "title": "Software Engineer",
+                "company": "Acme",
+                "start_date": "Mar 2016",
+                "end_date": "Dec 2019",
+            },
+        ],
+    }
+    base.update(kw)
+    return base
+
+
+def test_activity_at_is_a_decoded_feed_date_not_the_import_clock():
+    """The whole point of stage 2: activity_at was `asof` (raw_profiles
+    .fetched_at = the import wall-clock), which let 196,778/196,778 LinkedIn
+    rows pass the 24-month floor stamped 'snapshot'."""
+    post_dt = datetime(2025, 5, 17, tzinfo=UTC)
+    signals = derive_linkedin_signals(
+        _li_record(activity=[{"id": _urn(post_dt)}, {"id": "junk"}]), asof=ASOF
+    )
+    assert signals["activity_kind"] == "linkedin_activity"
+    assert signals["activity_at"].date() == post_dt.date()
+    assert signals["activity_at"] != ASOF
+    # The snapshot claim survives, but only where it belongs.
+    assert signals["profile_asof"] == ASOF
+
+
+def test_activity_at_falls_back_to_posts_then_to_null():
+    posts = [
+        {"created_at": "Wed Apr 05 2023 13:45:09 GMT+0000 (Coordinated Universal Time)"}
+    ]
+    signals = derive_linkedin_signals(_li_record(posts=posts), asof=ASOF)
+    assert signals["activity_kind"] == "linkedin_post"
+    assert signals["activity_at"].year == 2023
+
+    bare = derive_linkedin_signals(_li_record(), asof=ASOF)
+    assert bare["activity_at"] is None
+    assert bare["activity_kind"] is None
+    assert bare["profile_asof"] == ASOF  # recency now rests on the snapshot arm
+
+
+def test_est_experience_years_is_none_when_unknown():
+    """134,536 prod rows stored 0 meaning UNKNOWN, and every consumer read it
+    as 'zero years'."""
+    undated = derive_linkedin_signals(
+        _li_record(experience=[{"title": "Engineer", "company": "Acme"}]), asof=ASOF
+    )
+    assert undated["est_experience_years"] is None
+
+    dated = derive_linkedin_signals(_li_record(), asof=ASOF)
+    assert dated["est_experience_years"] is not None
+    assert dated["est_experience_years"] > 9  # earliest dated role: Mar 2016
+
+
+def test_github_experience_keeps_the_account_age_proxy():
+    """The asymmetry is deliberate: every GitHub node has a createdAt, so this
+    path is never NULL; LinkedIn has no proxy of comparable strength."""
+    s = derive_signals(ML_ENGINEER_NODE)
+    assert s["est_experience_years"] is not None
+    assert s["est_experience_years"] > 0
+
+
+def test_merge_prefers_the_freshest_dated_claim_and_keeps_none_when_both_none():
+    push = datetime(2024, 2, 2, tzinfo=UTC)
+    github = derive_signals(ML_ENGINEER_NODE)
+    github["activity_at"], github["activity_kind"] = push, "push"
+
+    # A LinkedIn snapshot can no longer mask a stale GitHub push: with no
+    # decodable feed activity the LinkedIn side contributes nothing.
+    li_bare = derive_linkedin_signals(_li_record(), asof=ASOF)
+    merged = merge_signals(github, li_bare)
+    assert merged["activity_at"] == push
+    assert merged["activity_kind"] == "push"
+
+    # Real LinkedIn activity that IS fresher wins.
+    fresh = datetime(2026, 1, 9, tzinfo=UTC)
+    li_active = derive_linkedin_signals(
+        _li_record(activity=[{"id": _urn(fresh)}]), asof=ASOF
+    )
+    merged2 = merge_signals(github, li_active)
+    assert merged2["activity_kind"] == "linkedin_activity"
+    assert merged2["activity_at"].date() == fresh.date()
+
+    # Both unknown stays unknown.
+    github["activity_at"], github["activity_kind"] = None, None
+    merged3 = merge_signals(github, li_bare)
+    assert merged3["activity_at"] is None
+    assert merged3["activity_kind"] is None
+
+
+# ---------------------------------------------------------- admission control --
+
+
+def test_admission_admits_a_corroborated_title():
+    signals = derive_linkedin_signals(_li_record(), asof=ASOF)
+    assert signals["search_eligible"] is True
+    assert signals["ineligible_reason"] is None
+
+
+def test_admission_rejects_the_contentless_linkedin_row():
+    """The 24,698-row prod population: no title, no about-text, no experience
+    entries -- yet each holds a signals row, an embedding and a tsvector."""
+    empty = derive_linkedin_signals(
+        {"name": "Nobody", "id": "nobody", "experience": []}, asof=ASOF
+    )
+    assert empty["search_eligible"] is False
+    assert empty["ineligible_reason"] == "no_title"
+
+
+def test_admission_rejects_a_bare_title():
+    bare = derive_linkedin_signals(
+        {
+            "name": "Solo",
+            "id": "solo",
+            "position": "Coordinator",
+            "experience": [],
+            "about": "short",
+        },
+        asof=ASOF,
+    )
+    assert bare["title"] == "Coordinator"
+    assert bare["search_eligible"] is False
+    assert bare["ineligible_reason"] == "bare_title"
+
+
+def test_admission_corroborating_facts_are_each_sufficient():
+    base = {"evidence_kind": "linkedin", "title": "Engineer", "domain_markers": []}
+    assert admission(base, about_chars=0, role_count=1) == (False, "bare_title")
+    assert admission(base, about_chars=80, role_count=1)[0] is True
+    assert admission(base, about_chars=0, role_count=2)[0] is True
+    assert admission({**base, "employer": "Stripe"}, about_chars=0, role_count=1)[0]
+    assert admission(
+        {**base, "current_role_start_at": ASOF}, about_chars=0, role_count=1
+    )[0]
+    assert admission({**base, "domain_markers": ["ml"]}, about_chars=0, role_count=1)[0]
+
+
+def test_admission_github_needs_a_non_fork_repo_not_a_title():
+    """title is NULL on all 7,757 prod GitHub rows, so requiring it here would
+    delete the whole GitHub population."""
+    ok = admission(
+        {"evidence_kind": "github", "title": None, "non_fork_repo_count": 1},
+        about_chars=0,
+        role_count=0,
+    )
+    assert ok == (True, None)
+    empty = admission(
+        {"evidence_kind": "github", "title": None, "non_fork_repo_count": 0},
+        about_chars=0,
+        role_count=0,
+    )
+    assert empty == (False, "no_code_evidence")
+
+
+def test_admission_reasons_partition_the_ineligible_population():
+    reasons = {
+        admission(
+            {"evidence_kind": k, "title": t, "non_fork_repo_count": n, "domain_markers": []},
+            about_chars=0,
+            role_count=1,
+        )[1]
+        for k, t, n in (
+            ("linkedin", None, 0),
+            ("linkedin", "Coordinator", 0),
+            ("github", None, 0),
+            ("both", None, 0),
+        )
+    }
+    assert reasons == {"no_title", "bare_title", "no_code_evidence"}
+
+
+def test_merged_row_recomputes_admission_on_the_merged_facts():
+    github = derive_signals(ML_ENGINEER_NODE)
+    li = derive_linkedin_signals(_li_record(), asof=ASOF)
+    merged = merge_signals(github, li)
+    assert merged["evidence_kind"] == "both"
+    assert merged["search_eligible"] is True
+    assert merged["ineligible_reason"] is None

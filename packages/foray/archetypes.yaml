@@ -6,6 +6,23 @@
 #   gate    - a SQL boolean over candidate_signals (alias s) / candidates (alias c).
 #             Gates are deliberately LOOSE (recall over precision); the LLM is the
 #             precision layer. Only columns that exist may be referenced.
+#             {{recency}} expands to foray.recency.recency_clause(...) at load
+#             time (score/archetypes.load_archetypes), the same placeholder
+#             pattern search_doc.py uses for TS_CONFIG. validate_gates EXPLAINs
+#             the EXPANDED sql at sync, so a bad expansion still fails fast.
+#
+# ONE RECENCY POLICY, and it is not written here.
+# Every gate used to carry its own literal `s.activity_at > now() - interval
+# 'N months'`, at 18 months in 10 gates and 24 in 5. That variation was noise:
+# no gate documented why a mobile engineer may be 24 months quiet and a
+# frontend specialist only 18, nothing measured the difference, and the clause
+# was DEAD anyway -- activity_at for LinkedIn rows was the import wall-clock,
+# so 196,778 / 196,778 of them passed the 24-month floor. Collapsed to a single
+# config-driven policy (FORAY_ACTIVITY_FLOOR_MONTHS + the snapshot arm's
+# FORAY_SNAPSHOT_FLOOR_MONTHS). If a per-archetype floor ever earns its keep,
+# it arrives as a measured per-gate override, not as 15 hand-typed literals.
+# Expect gate COUNTS and scoring spend to move materially on the first
+# re-derive: run `python -m foray.score.gate --count` before and after.
 #   rubric  - the scoring prompt. The EFFECTIVE rubric the model sees is
 #             (rubric + "\n\n" + shared_rubric_tail); rubric_hash is sha256 of that.
 #
@@ -44,7 +61,7 @@ archetypes:
     label: Founding ML Engineer
     gate: >-
       s.domain_markers @> array['ml'] and s.est_experience_years >= 2
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a FOUNDING machine learning engineer at an early-stage startup:
       someone who has built ML training or inference systems end to end, not just used
@@ -59,7 +76,7 @@ archetypes:
       and ((s.evidence_kind = 'github' and (s.oss_maintainer or s.total_stars >= 200))
            or (s.evidence_kind <> 'github'
                and s.title ~* '(research|scientist|\mml\M|machine learning|\mai\M)'))
-      and s.activity_at > now() - interval '24 months'
+      and {{recency}}
     rubric: |
       Score fit for an ML RESEARCH engineer: someone who implements novel methods and
       contributes reusable research artifacts. Reward: well-starred ML libraries, model
@@ -71,7 +88,7 @@ archetypes:
     gate: >-
       (s.domain_markers @> array['ml'] or s.domain_markers @> array['gpu'])
       and s.domain_markers && array['infra','data','sre']
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for an ML PLATFORM / MLOps engineer who runs ML in production: training
       orchestration, feature stores, GPU scheduling, model registries, serving infra.
@@ -82,7 +99,7 @@ archetypes:
     label: Applied ML Engineer
     gate: >-
       s.domain_markers @> array['ml'] and s.est_experience_years between 2 and 10
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for an APPLIED ML engineer who ships ML features into products: fine-tuning,
       RAG, recommendation, or classification wired into an app. Reward: end-to-end applied
@@ -94,7 +111,7 @@ archetypes:
     label: Infrastructure / Platform Engineer
     gate: >-
       s.domain_markers @> array['infra'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for an INFRASTRUCTURE / platform engineer: Kubernetes, Terraform, service
       meshes, internal developer platforms. Reward: operators/controllers, IaC modules,
@@ -110,7 +127,7 @@ archetypes:
             and s.non_fork_repo_count >= 2)
            or (s.evidence_kind <> 'github'
                and s.title ~* '(back.?end|platform|infrastructure|software engineer|\mswe\M)'))
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a SENIOR backend engineer: distributed services, APIs, data-intensive
       systems in a compiled or server language. Reward: substantial services, concurrency,
@@ -121,7 +138,7 @@ archetypes:
     label: Site Reliability Engineer
     gate: >-
       s.domain_markers @> array['sre'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a SITE RELIABILITY engineer: observability, on-call tooling, SLOs,
       incident automation. Reward: Prometheus/OpenTelemetry/Grafana work, alerting/reliability
@@ -131,7 +148,7 @@ archetypes:
     label: Data Engineer
     gate: >-
       s.domain_markers @> array['data'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a DATA engineer: batch/stream pipelines, warehouses, orchestration.
       Reward: Spark/dbt/Airflow/Flink/Kafka work, pipeline reliability, schema/modeling.
@@ -141,7 +158,7 @@ archetypes:
     label: Database / Storage Engineer
     gate: >-
       s.domain_markers @> array['db'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '24 months'
+      and {{recency}}
     rubric: |
       Score fit for a DATABASE / storage systems engineer: storage engines, consensus,
       query engines. Reward: RocksDB/ClickHouse/Raft/WAL/LSM work, low-level storage or
@@ -152,7 +169,7 @@ archetypes:
     label: Full-stack Product Engineer
     gate: >-
       s.domain_markers @> array['frontend'] and s.est_experience_years between 2 and 12
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a FULL-STACK product engineer who ships user-facing features end to end.
       Reward: front-end plus a backend/API in the same projects, shipped products, breadth.
@@ -162,7 +179,7 @@ archetypes:
     label: Frontend Specialist
     gate: >-
       s.domain_markers @> array['frontend'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '18 months'
+      and {{recency}}
     rubric: |
       Score fit for a FRONTEND specialist: complex React/Vue/Svelte apps, design systems,
       performance, accessibility, WebGL. Reward: reusable component libraries, non-trivial
@@ -172,7 +189,7 @@ archetypes:
     label: Mobile Engineer
     gate: >-
       s.domain_markers @> array['mobile'] and s.est_experience_years >= 2
-      and s.activity_at > now() - interval '24 months'
+      and {{recency}}
     rubric: |
       Score fit for a MOBILE engineer: native iOS/Android or cross-platform apps. Reward:
       shipped apps, SwiftUI/Jetpack Compose/React Native depth, platform APIs. Penalize:
@@ -183,7 +200,7 @@ archetypes:
     label: Security Engineer
     gate: >-
       s.domain_markers @> array['security'] and s.est_experience_years >= 3
-      and s.activity_at > now() - interval '24 months'
+      and {{recency}}
     rubric: |
       Score fit for a SECURITY engineer: fuzzing, SAST, vuln research, supply-chain and
       auth. Reward: CVEs, security tooling, fuzzers, sigstore/semgrep/OWASP work. Penalize:
@@ -192,7 +209,7 @@ archetypes:
   - id: gpu_systems
     label: GPU / Systems Engineer
     gate: >-
-      s.domain_markers @> array['gpu'] and s.activity_at > now() - interval '24 months'
+      s.domain_markers @> array['gpu'] and {{recency}}
     rubric: |
       Score fit for a GPU / high-performance systems engineer: CUDA/Triton kernels,
       inference runtimes, low-level performance. Reward: kernel code, vLLM/TensorRT/NCCL
@@ -202,7 +219,7 @@ archetypes:
     label: Embedded / Robotics Engineer
     gate: >-
       s.domain_markers @> array['embedded'] and s.est_experience_years >= 2
-      and s.activity_at > now() - interval '24 months'
+      and {{recency}}
     rubric: |
       Score fit for an EMBEDDED / robotics engineer: firmware, RTOS, robotics stacks.
       Reward: ROS2/FreeRTOS/STM32/SLAM work, hardware-in-the-loop, real device evidence.

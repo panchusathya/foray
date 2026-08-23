@@ -43,6 +43,7 @@ from ..rank import (
     sort_key,
     widen_message,
 )
+from ..recency import recency_clause
 from ..score.archetypes import load_archetypes
 from ..search_doc import (
     HAS_LEXICAL_DOC_SQL,
@@ -262,7 +263,23 @@ def _filter_clauses(
     # correct (those rows really are retrievable, via the lexical arm).
     clauses = [
         "c.merged_into is null",
-        f"s.activity_at > now() - interval '{int(settings.activity_floor_months)} months'",
+        # Was the literal `s.activity_at > now() - interval 'N months'`, which
+        # was a no-op for 96% of the corpus: activity_at for LinkedIn rows was
+        # the import wall-clock, so 196,778 / 196,778 of them passed the
+        # 24-month floor, all stamped 'snapshot' inside one month. activity_at
+        # is evidence-or-NULL now, and foray/recency.py is the one three-valued
+        # predicate — real activity in-window passes, UNKNOWN activity passes
+        # only while profile_asof is fresh. Same literal-interpolation contract
+        # as the gate below: config values, int()-coerced, never user input.
+        recency_clause(settings.activity_floor_months, settings.snapshot_floor_months),
+        # The admission flag enrich/derive.py computes and stores: a title plus
+        # one corroborating fact, or GitHub evidence with >=1 non-fork repo.
+        # Tested, never re-derived here — the rule lives in exactly one place
+        # (it used to live only inside score/common.py's scoring queue, which
+        # is why 24,698 contentless rows were retrievable). It sits in the
+        # SHARED list on purpose: an inadmissible row must be invisible to the
+        # count, the lexical arm and the vector arm alike.
+        "s.search_eligible",
     ]
     if require_embedding:
         clauses.append("c.embedding is not null")
@@ -292,6 +309,16 @@ def _filter_clauses(
                 f"(s.primary_language = any({placeholder}::text[])"
                 " or s.primary_language is null)"
             )
+    # est_experience_years is nullable now (NULL = no dated role in the
+    # profile, previously stored as 0.0 on 134,536 rows). Both predicates
+    # therefore EXCLUDE unknowns, which is a real behaviour change on the max
+    # side: `<= 8` used to admit every unknown as a 0-year candidate, and now
+    # drops them. That is the correct default — a stated experience band is a
+    # hard requirement and we cannot evidence it for these rows — but it is a
+    # recall cost, and the loose reading (`or s.est_experience_years is null`)
+    # needs an explicit `include_unknown_experience` parser field rather than
+    # being the silent default. Not added here: it is a ParsedFilter change
+    # that lands with the facet wave.
     if parsed.experience_min is not None:
         placeholder = params.add(float(parsed.experience_min))
         clauses.append(f"s.est_experience_years >= {placeholder}")

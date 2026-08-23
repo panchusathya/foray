@@ -67,9 +67,22 @@ SEARCH_TSV_SQL_FAST = f"""(
     || setweight(to_tsvector('{TS_CONFIG}'::regconfig, coalesce(c.name, '')), 'D')
 )"""
 
+# Both UPDATE statements gate the assignment on s.search_eligible: an
+# inadmissible row gets a NULL tsvector, never an empty-or-populated one. Two
+# consequences worth knowing:
+#   * the lexical arm's existing `search_tsv is not null` test (and
+#     HAS_LEXICAL_DOC_SQL below) then excludes these rows for free — no second
+#     copy of the eligibility rule in the query path;
+#   * NULL is also the state the re-derive must be able to restore, which is
+#     why this is `case when ... else null end` and not a WHERE filter: a row
+#     that LOSES eligibility on a later derive must have its stale tsvector
+#     cleared, not left behind as a ghost document.
+# enrich/derive.py's admission() OWNS the rule. This file only tests the flag —
+# re-deriving the predicate in tsvector SQL is precisely the drift the stored
+# flag exists to prevent.
 UPDATE_SEARCH_TSV_SQL = f"""
 update candidate_signals s
-   set search_tsv = {SEARCH_TSV_SQL}
+   set search_tsv = case when s.search_eligible then {SEARCH_TSV_SQL} else null end
   from candidates c
   left join raw_profiles gh on gh.candidate_id = c.id and gh.source = 'github'
   left join raw_profiles li on li.candidate_id = c.id and li.source = 'linkedin'
@@ -77,9 +90,14 @@ update candidate_signals s
    and s.candidate_id = any($1::bigint[])
 """
 
+# Same gate. This variant only touches never-indexed rows (`search_tsv is
+# null`), so an ineligible row writes NULL over NULL — a no-op the backfill
+# re-attempts each run. That is cheaper than adding a second eligibility
+# predicate to the WHERE, and it keeps the two statements' assigned expression
+# identical, which is the property this module exists to guarantee.
 UPDATE_SEARCH_TSV_FAST_SQL = f"""
 update candidate_signals s
-   set search_tsv = {SEARCH_TSV_SQL_FAST}
+   set search_tsv = case when s.search_eligible then {SEARCH_TSV_SQL_FAST} else null end
   from candidates c
  where s.candidate_id = c.id
    and s.search_tsv is null

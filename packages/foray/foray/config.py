@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     )
     display_floor: int = Field(default=20, validation_alias="FORAY_DISPLAY_FLOOR")
     activity_floor_months: int = Field(default=24, validation_alias="FORAY_ACTIVITY_FLOOR_MONTHS")
+    # The second arm of foray.recency.recency_clause: how long a row whose
+    # activity date is UNKNOWN (activity_at is null — ~51% of LinkedIn records
+    # carry no decodable feed URN) stays retrievable on the strength of its
+    # snapshot alone. Not a recency claim about the person, a staleness bound on
+    # our own scrape: past this, "we saw them once" stops counting as "they are
+    # around". Kept separate from activity_floor_months because the two answer
+    # different questions and will be tuned against different numbers — the
+    # floor against real activity dates, this against re-import cadence.
+    snapshot_floor_months: int = Field(
+        default=24, ge=1, le=120, validation_alias="FORAY_SNAPSHOT_FLOOR_MONTHS"
+    )
     min_results_before_widen: int = Field(default=12, validation_alias="FORAY_MIN_RESULTS")
 
     # --- cross-encoder rerank (query path, local) ---

@@ -22,6 +22,15 @@ packages/web/playwright-report/
 .env
 .env.local
 .env.staging
+# Operator backups of the live .env, made in place on the prod VM before an
+# edit (.env.bak-<date>, .env.bak.<epoch>). They sit in the deploy checkout at
+# /opt/juicebox, so without this a single `git add -A` on the VM commits a
+# full set of production secrets -- and gitleaks in CI would not catch it,
+# because the leak arrives as a new file nobody reviewed. Ignore the shape,
+# not the three that exist today.
+.env.bak*
+.env.*.bak
+.env.save
 data/*.db
 data/*.db-wal
 data/*.db-shm

@@ -691,6 +691,7 @@ def request_intake_call(
             "We already called this number recently. Please try again in a little while."
         )
 
+    settings = get_settings()
     provider = get_voice_provider()
     try:
         placed = provider.place_call(
@@ -700,10 +701,8 @@ def request_intake_call(
             metadata={"org_id": org_id, "candidate_id": candidate.id, "source": source},
             dynamic_variables={
                 "candidate_first_name": candidate.first_name or "",
-                "recruiter_name": "Vivian",
-                "sms_number_spoken": (
-                    "eight eight eight, two six zero, zero one four two"
-                ),
+                "recruiter_name": settings.intake_recruiter_name,
+                "sms_number_spoken": settings.intake_sms_number_spoken,
             },
         )
     except ProviderCallError as exc:

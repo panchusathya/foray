@@ -772,3 +772,31 @@ def _clone(payload: dict) -> dict:
     import copy
 
     return copy.deepcopy(payload)
+
+
+class TestPersonaCopy:
+    """``deploy/`` is stdlib-only and cannot import ``juicebox.config``, so the
+    persona exists twice. The prompt and the dynamic variable have to agree, or
+    the agent greets as one name and refers to itself by another mid-call.
+    Same idiom as ``test_the_prompt_enum_matches_the_field_set``."""
+
+    def _deploy_constants(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        text = (root / "deploy" / "retell_agents.py").read_text(encoding="utf-8")
+        found = {}
+        for name in ("RECRUITER_NAME", "SMS_NUMBER_SPOKEN"):
+            match = re.search(rf'^{name} = "([^"]*)"', text, re.M)
+            assert match, f"{name} not found in deploy/retell_agents.py"
+            found[name] = match.group(1)
+        return found
+
+    def test_the_persona_matches_the_deploy_script(self):
+        from juicebox.config import get_settings
+
+        settings = get_settings()
+        deploy = self._deploy_constants()
+        assert deploy["RECRUITER_NAME"] == settings.intake_recruiter_name
+        assert deploy["SMS_NUMBER_SPOKEN"] == settings.intake_sms_number_spoken

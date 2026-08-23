@@ -6,7 +6,7 @@ Three states, not two:
 - scored 0-1 plus criteria — titles, seniority, location/remote, stage/size/
   industry, comp band
 - veto at ``0.0`` with a veto criterion — ``excluded_companies``, or a
-  stated posting comp that cannot clear the candidate's floor
+  stated posting *ceiling* below the candidate's floor
 
 ``None`` on a hard miss would silently keep the old score. ``0.0`` lets
 ``_upsert_match`` drop ``new`` rows below the floor while leaving
@@ -14,6 +14,13 @@ shortlisted and dismissed rows in place.
 
 Most postings do not state compensation. Vetoing on absence would empty
 the board, so a missing figure is not a veto.
+
+The comparison is against ``ParsedQuery.max_compensation`` — the top of the
+stated band — because that is the number a candidate's floor has to clear. A
+posting that states only a floor ("from 180k") could pay more, so it has no
+ceiling to fail and is never vetoed. Mismatched currencies are not compared at
+all: converting them would need a rate, and guessing one turns a bad rate into
+a dropped role.
 """
 
 from __future__ import annotations
@@ -24,7 +31,12 @@ from ..enrich import taxonomy as tx
 from ..models import CandidatePreference, JobPosting
 from ..search.parser import ParsedQuery
 
-JOB_MATCH_ENGINE_VERSION = "pref-v1"
+# Bumped whenever the term changes shape, so every posting rescores rather
+# than keeping a score the current code would not produce. v2: the comp
+# comparison reads ParsedQuery.max_compensation, which the JD parser now
+# actually fills -- under v1 it read keys ParsedQuery cannot emit, so the
+# comp veto never fired.
+JOB_MATCH_ENGINE_VERSION = "pref-v2"
 
 
 def preference_term(
@@ -45,14 +57,14 @@ def preference_term(
         return 0.0, [excluded]
 
     floor = pref.target_total or pref.target_base
-    stated = _stated_comp(posting)
-    if floor and stated is not None and stated < float(floor):
+    ceiling = _posting_ceiling(pref, have)
+    if floor and ceiling is not None and ceiling < float(floor):
         return 0.0, [
             _criterion(
                 "comp_floor",
                 "Compensation floor",
                 0.0,
-                f"Prefers {floor:.0f}; posting states {stated:.0f}",
+                f"Prefers {floor:.0f}; posting tops out at {ceiling:.0f}",
                 veto=True,
             )
         ]
@@ -84,10 +96,10 @@ def preference_term(
         if score is not None:
             parts.append(score)
             criteria.append(_criterion(name, label, score, ""))
-    if floor and stated is not None and stated >= float(floor):
+    if floor and ceiling is not None and ceiling >= float(floor):
         parts.append(1.0)
         criteria.append(
-            _criterion("pref_comp", "Compensation", 1.0, f"Posting states {stated:.0f}")
+            _criterion("pref_comp", "Compensation", 1.0, f"Posting tops out at {ceiling:.0f}")
         )
 
     if not parts:
@@ -131,21 +143,30 @@ def _exclusion_veto(wanted: ParsedQuery, posting: JobPosting | None) -> dict | N
     return None
 
 
-def _stated_comp(posting: JobPosting | None) -> float | None:
-    if posting is None:
+def _posting_ceiling(pref: CandidatePreference, have: ParsedQuery) -> float | None:
+    """Top of the posting's stated band, or ``None`` when it cannot be compared.
+
+    ``None`` for three distinct reasons, all of which must not veto: the posting
+    states no pay, it states only a floor, or its currency differs from the
+    candidate's.
+    """
+    if not _currency_comparable(pref.comp_currency, have.compensation_currency):
         return None
-    spec = posting.parsed_spec or {}
-    for key in ("compensation_min", "min_compensation", "salary_min", "comp_min", "min_total"):
-        value = _as_number(spec.get(key))
-        if value is not None:
-            return value
-    blob = spec.get("compensation")
-    if isinstance(blob, dict):
-        for key in ("min", "max", "base", "total"):
-            value = _as_number(blob.get(key))
-            if value is not None:
-                return value
-    return _as_number(blob)
+    return _as_number(have.max_compensation)
+
+
+def _currency_comparable(left: str, right: str) -> bool:
+    """Blank on either side means unknown, which we treat as comparable.
+
+    Most records say nothing, and refusing to compare those would make the
+    ceiling test dead again. Two *different* stated currencies is the case worth
+    refusing.
+    """
+    a = (left or "").strip().upper()
+    b = (right or "").strip().upper()
+    if not a or not b:
+        return True
+    return a == b
 
 
 def _as_number(value: Any) -> float | None:

@@ -528,13 +528,9 @@ class TestPreferenceTerm:
             is None
         )
 
-    def test_comp_floor_vetoes_only_when_the_posting_states_comp(
-        self, session, account, sample_candidates
-    ):
+    def _wants_400k(self, session, account, **spec):
         from juicebox.models import CandidatePreference
 
-        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
-        posting = _parsed_posting(session, account["org_id"], source_id="comp-silent")
         ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
         session.add(
             CandidatePreference(
@@ -542,28 +538,91 @@ class TestPreferenceTerm:
                 candidate_id=ada.id,
                 spec={"job_titles": ["machine learning engineer"]},
                 target_total=400000,
+                **spec,
             )
         )
         session.commit()
+        return ada
+
+    def _match_exists(self, session, posting, candidate_id):
         match_posting(session, posting)
         session.commit()
-        assert (
+        return (
             session.query(JobMatch)
-            .filter_by(job_posting_id=posting.id, candidate_id=ada.id)
+            .filter_by(job_posting_id=posting.id, candidate_id=candidate_id)
             .one_or_none()
             is not None
         )
 
-        posting.parsed_spec = {**(posting.parsed_spec or {}), "compensation_min": 150000}
-        session.commit()
-        match_posting(session, posting)
-        session.commit()
-        assert (
-            session.query(JobMatch)
-            .filter_by(job_posting_id=posting.id, candidate_id=ada.id)
-            .one_or_none()
-            is None
+    def test_comp_veto_reads_a_spec_the_jd_parser_actually_produces(
+        self, session, account, sample_candidates
+    ):
+        """The band comes from the JD, not from a hand-planted key.
+
+        The first version of this test wrote ``compensation_min`` into
+        ``parsed_spec`` directly. ``ParsedQuery`` has no such field, so the
+        veto passed its test and could never fire in production. Driving it
+        through ``parse_posting`` is what makes the test worth anything.
+        """
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(
+            session,
+            account["org_id"],
+            source_id="comp-capped",
+            jd_text="Machine learning in production. Base salary 140,000 to 150,000 USD.",
         )
+        assert posting.parsed_spec["max_compensation"] == 150000.0
+        ada = self._wants_400k(session, account)
+        assert not self._match_exists(session, posting, ada.id)
+
+    def test_a_silent_posting_is_not_vetoed(self, session, account, sample_candidates):
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(session, account["org_id"], source_id="comp-silent")
+        assert posting.parsed_spec["max_compensation"] is None
+        ada = self._wants_400k(session, account)
+        assert self._match_exists(session, posting, ada.id)
+
+    def test_a_posting_stating_only_a_floor_is_not_vetoed(
+        self, session, account, sample_candidates
+    ):
+        """"From 180k" has no ceiling to fail -- it could pay 450k."""
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(
+            session,
+            account["org_id"],
+            source_id="comp-floor-only",
+            jd_text="Machine learning in production. Salary starting at 180,000 USD.",
+        )
+        assert posting.parsed_spec["min_compensation"] == 180000.0
+        assert posting.parsed_spec["max_compensation"] is None
+        ada = self._wants_400k(session, account)
+        assert self._match_exists(session, posting, ada.id)
+
+    def test_a_different_currency_is_not_compared(self, session, account, sample_candidates):
+        """Converting would need a rate, and a guessed rate drops real roles."""
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(
+            session,
+            account["org_id"],
+            source_id="comp-inr",
+            jd_text="Machine learning in production. Base salary 150,000 INR.",
+        )
+        assert posting.parsed_spec["compensation_currency"] == "INR"
+        ada = self._wants_400k(session, account, comp_currency="USD")
+        assert self._match_exists(session, posting, ada.id)
+
+    def test_a_401k_match_is_not_a_stated_salary(self, session, account, sample_candidates):
+        """The single most common false positive in a job description."""
+        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
+        posting = _parsed_posting(
+            session,
+            account["org_id"],
+            source_id="comp-401k",
+            jd_text="Machine learning in production. Competitive salary, 401k match, PTO.",
+        )
+        assert posting.parsed_spec["max_compensation"] is None
+        ada = self._wants_400k(session, account)
+        assert self._match_exists(session, posting, ada.id)
 
     def test_upsert_preference_enqueues_a_rescore(self, session, account, sample_candidates):
         from juicebox.intake.extract import ExtractionResult

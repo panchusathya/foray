@@ -302,6 +302,22 @@ class Settings:
     intake_core_only_minutes: int = field(
         default_factory=lambda: _env_int("INTAKE_CORE_ONLY_MINUTES", 4)
     )
+    # Who the agent says it is, and the number it reads out. The other half of
+    # this pair is RECRUITER_NAME / SMS_NUMBER_SPOKEN in deploy/retell_agents.py,
+    # which cannot import this module (deploy/ is stdlib-only, by design). The
+    # prompt and the dynamic variable have to agree or the agent greets as one
+    # name and refers to itself by another, so
+    # test_the_persona_matches_the_deploy_script keeps the copy honest.
+    intake_recruiter_name: str = field(
+        default_factory=lambda: _env("INTAKE_RECRUITER_NAME", "Vivian")
+    )
+    # Digit-grouped: TTS reads "+18882600142" as noise, and the whole point is
+    # that the candidate recognises the sender.
+    intake_sms_number_spoken: str = field(
+        default_factory=lambda: _env(
+            "INTAKE_SMS_NUMBER_SPOKEN", "eight eight eight, two six zero, zero one four two"
+        )
+    )
     # Flips one spoken close sentence. The SMS sender itself lives on
     # feat/messaging-intake; this flag must not promise a text that cannot send.
     sms_enabled: bool = field(default_factory=lambda: _env_bool("SMS_ENABLED", False))

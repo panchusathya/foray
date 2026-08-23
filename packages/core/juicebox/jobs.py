@@ -58,6 +58,13 @@ KIND_CRM_DISCOVERY_IMPORT = "crm.discovery.import"
 # resolves to the job that already ran.
 KIND_INTAKE_TURN = "intake.thread.turn"
 
+# Reading a finished intake call into a preference record. A job rather than
+# inline work in the webhook: the provider times out at 10s and retries three
+# times, so an extraction on the request path turns one slow model call into
+# four copies of the same conversation. Never added to ensure_ticks -- it is
+# enqueued by a call ending, not on a schedule.
+KIND_INTAKE_EXTRACT = "intake.extract"
+
 OPEN_STATUSES = ("queued", "running")
 
 

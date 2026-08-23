@@ -6,6 +6,11 @@ It is NOT a real export (guardrail-safe): every login is ``synth_*`` and every
 field is generated deterministically from a fixed seed.
 
     uv run python scripts/seed_synthetic.py --count 300 --reset
+
+For the eval corpus use ``--source both``: eval/run_eval.py judges Boolean
+facets, and every wave-1 facet sits on a source-partial column, so a
+single-source corpus cannot express "this predicate deleted the other
+population" — there is no other population in it to lose.
 """
 
 from __future__ import annotations
@@ -36,6 +41,108 @@ COMPANIES = ["@stripe", "@google", "@databricks", "", "", "@openai", "@cloudflar
 FIRST = ["Ada", "Lin", "Sam", "Noor", "Kai", "Ravi", "Mei", "Ivan", "Zoe", "Omar"]
 LAST = ["Kaur", "Rossi", "Novak", "Chen", "Silva", "Khan", "Park", "Diaz", "Ito", "Nguyen"]
 
+# Human-readable form of each theme key, for titles. "Founding Ml Engineer" is
+# not a title anyone holds; the seniority ladder below is only useful as an eval
+# fixture if the strings look like the ones derive will meet in prod.
+THEME_LABELS = {
+    "ml": "ML",
+    "gpu": "GPU",
+    "infra": "Infrastructure",
+    "sre": "Reliability",
+    "db": "Database",
+    "data": "Data",
+    "frontend": "Frontend",
+    "security": "Security",
+    "mobile": "Mobile",
+    "backend": "Backend",
+}
+
+# Canonical metro key -> the raw CITY strings a Bright Data export actually
+# ships for it. The seed writes the CITY, never the key: canonicalisation lives
+# in derive/vocab, and a corpus pre-stamped with `sf_bay_area` would bypass the
+# one code path every metro facet depends on. Four+ metros because with every
+# row in "San Francisco Bay Area" (what this file used to do) a metro query
+# matches EVERYONE — the ground truth is the whole corpus and the query cannot
+# fail, which is precisely why the harness never caught a metro leak.
+#
+# Every string here was checked against vocab.canonical_metro and maps to its
+# key (the _unmapped_gb entry excepted, deliberately). That check matters: the
+# eval reads metro ground truth from the derived column, so a city the alias
+# table misses does not fail loudly — it silently shrinks that metro's
+# ground-truth set. Two earlier picks, "Jersey City" and "Round Rock", mapped to
+# NULL for exactly that reason. Re-run the check when adding a city.
+METRO_CITIES = {
+    "sf_bay_area": [
+        "San Francisco Bay Area",
+        "Palo Alto, California",
+        "Mountain View, California",
+        "Oakland, California",
+    ],
+    "nyc": ["New York, New York", "Brooklyn, New York", "Manhattan, New York"],
+    "seattle": ["Seattle, Washington", "Bellevue, Washington", "Redmond, Washington"],
+    "austin": ["Austin, Texas"],
+    # Deliberately OUTSIDE the four canonical keys, and the corpus's only
+    # non-US country_code. Two paths need it: a metro the vocabulary is not
+    # required to map (so location_metro stays NULL and the metro-unknown
+    # policy runs on a LinkedIn row rather than only on GitHub rows), and a
+    # country facet with something to exclude.
+    "_unmapped_gb": ["London, England, United Kingdom"],
+}
+METRO_KEYS = list(METRO_CITIES)
+# Only the exceptions; everything else is US. Keyed on the metro, not drawn, so
+# country and city can never disagree on a row.
+METRO_COUNTRY = {"_unmapped_gb": "GB"}
+
+# The IC / management / founder ladder, expressed as TITLES — the only thing
+# derive gets to read, since seniority_rank / mgmt_rank / is_founder are all
+# computed from s.title. The four templates this replaced topped out at
+# "Senior", so `seniority_min = staff` matched NOBODY: the filter looked correct
+# because nothing in the corpus could contradict it. `{label}` is the theme.
+# A None rung is a row with NO TITLE AT ALL (see make_linkedin_record): the
+# 24,698-row prod population that admission control is supposed to delete, and
+# the seniority-unknown path's only input on the LinkedIn side.
+# Ranks below are what foray.seniority.parse_seniority ACTUALLY returns for
+# these exact strings, verified rung by rung — not what the wording suggests.
+SENIORITY_LADDER = [
+    "{label} Engineering Intern",         # rank 1
+    "Junior Software Engineer",           # rank 2
+    "Associate {label} Engineer",         # rank 2, different wording
+    # No level word, so seniority_rank is NULL — and parse.py notes this is the
+    # single most common title shape in the corpus. These two rungs are the
+    # seniority-UNKNOWN population, which is the one the unknown policy exists
+    # for: include_unknown_seniority defaults True precisely so a `>= senior`
+    # filter does not delete them. Without them in the corpus that default is
+    # untested.
+    "Software Engineer",                  # rank NULL
+    "{label} Engineer",                   # rank NULL
+    "Senior {label} Engineer",            # rank 4
+    "Staff Software Engineer, {label}",   # rank 5 — the `>= staff` edge
+    "Principal {label} Engineer",         # rank 5 (principal is the IC staff rung)
+    "Engineering Manager, {label}",       # mgmt 1, rank NULL — NOT a senior IC,
+    "Director of {label} Engineering",    # mgmt 2, rank NULL   the whole reason
+    "VP of Engineering",                  # mgmt 3, rank NULL   mgmt_rank exists
+    "Founding {label} Engineer",          # is_founder True, rank NULL
+    None,                                 # no title (admission control's target)
+]
+
+# Current employers. Named constants because eval/queries.yaml asserts on one of
+# them (`employer_any: [stripe]`) and a silent rename here would turn that
+# query's ground truth into the empty set rather than failing.
+EMPLOYERS = ["Stripe", "Databricks", "Cloudflare", "Acme Labs", "OpenAI"]
+# Prior employers, so past_employers has spread. "Initech" for every row (the
+# old value) makes an employer facet indistinguishable from a constant.
+PAST_EMPLOYERS = ["Initech", "Google", "Amazon", "Palantir", "Two Sigma", "Shopify"]
+
+SCHOOLS = [
+    "Stanford University",
+    "Carnegie Mellon University",
+    "University of California, Berkeley",
+    "Georgia Institute of Technology",
+    "State University",
+]
+DEGREES = ["BSc", "MS", "PhD", "BEng"]
+FIELDS = ["Computer Science", "Electrical Engineering", "Mathematics", "Physics"]
+
 # Non-engineering personas seeded alongside the THEMES engineers so the eval can
 # EXPRESS a ranking mistake: with an all-engineer corpus, "personal trainer beats
 # ML engineer" (the prod incident) is literally unrepresentable. Each persona is
@@ -47,6 +154,15 @@ LAST = ["Kaur", "Rossi", "Novak", "Chen", "Silva", "Khan", "Park", "Diaz", "Ito"
 #   * recruiter               — the hardest class: the profile NAMES the tech
 #                               ("python developers", "machine learning
 #                               engineers") without the person doing any of it
+# The last two are FACET-shaped rather than prose-shaped, and they are a
+# different failure class from the five above: those are false positives a
+# RANKER admits, these are false positives a BOOLEAN FILTER admits. A Senior
+# Personal Training Counselor satisfies `seniority_min >= senior` on a literal
+# reading of the title (the prod incident, in facet form), and a Technical
+# Recruiter at Stripe satisfies `employers = [stripe]` exactly — right company,
+# wrong human — while naming technologies in its about-text on purpose so the
+# lexical arm helps it along. Both carry the same "-distr" marker, so junk@10
+# already counts them and filter_violations@10 can be checked against them.
 # Deliberate interplay with ingest: distractors are PEOPLE with junk-job titles.
 # Their person names still come from FIRST/LAST (the company strings below —
 # incl. the "LLC" one — appear only in company fields), so they pass the
@@ -106,6 +222,36 @@ DISTRACTORS = [
         "about": (
             "Enterprise account executive consistently exceeding quota; pipeline "
             "generation, discovery calls, and multi-year SaaS renewals."
+        ),
+    },
+    {
+        # Facet-shaped: "Senior" is a real seniority word in a real title, so a
+        # seniority filter that reads the title as a bag of words admits this
+        # row at rank 1. Kept ALONGSIDE the plain "Personal Training Counselor"
+        # above rather than replacing it — the plain one tests the ranker, this
+        # one tests the filter, and losing either loses a distinct regression.
+        "title": "Senior Personal Training Counselor",
+        "company": "LA Fitness",
+        "prior_title": "Personal Training Manager",
+        "prior_company": "Equinox",
+        "about": (
+            "Senior personal training counselor leading a team of trainers; built our "
+            "onboarding program, shipped a new client assessment process, and ran "
+            "quarterly staff training for six locations."
+        ),
+    },
+    {
+        # Facet-shaped: an employer facet on Stripe pulls this in exactly, and
+        # the about-text names the technologies on purpose. `employer_any` and
+        # `titles` disagree about this row, which is the point.
+        "title": "Technical Recruiter",
+        "company": "Stripe",
+        "prior_title": "Technical Sourcer",
+        "prior_company": "Robert Half",
+        "about": (
+            "Technical recruiter at Stripe hiring senior and staff engineers across "
+            "payments infrastructure. I place people who write python, go, kubernetes "
+            "and pytorch — I do not write any of it myself."
         ),
     },
 ]
@@ -183,9 +329,13 @@ def make_node(rng: random.Random, i: int) -> dict:
         "login": f"synth_{i:05d}_distr" if distractor else f"synth_{i:05d}",
         "email": rng.choice(["", f"user{i}@acmecorp.com", "user@gmail.com"]),
         "company": rng.choice(COMPANIES),
-        "location": rng.choice(
-            ["San Francisco, CA", "Seattle, WA", "New York, NY", "Austin, TX", "Remote, US"]
-        ),
+        # Same metro vocabulary as the LinkedIn side so a metro query is not
+        # secretly a source query — but note derive_signals hardcodes
+        # location_metro = None for GitHub rows, so this string only ever reaches
+        # candidates.location_raw. That asymmetry is deliberately left visible:
+        # a strict metro facet deletes the entire GitHub population, and the
+        # corpus has to be able to show that.
+        "location": METRO_CITIES[METRO_KEYS[i % len(METRO_KEYS)]][0],
         # Distractor bios carry no domain terms and no "engineer" — junk accounts
         # rarely self-describe; the "_distr" login is the eval marker, not the bio.
         "bio": "dotfiles and interview prep" if distractor else f"{theme_names[0]} engineer",
@@ -214,11 +364,21 @@ async def amain(args: argparse.Namespace) -> int:
                 "truncate candidates, raw_profiles, candidate_signals, archetype_scores, "
                 "shortlist_events restart identity cascade"
             )
-        if args.source == "linkedin":
+        parts: list[str] = []
+        # `both` exists for the eval, not for convenience. Every facet in wave 1
+        # sits on a source-PARTIAL column (title NULL on all 7,757 GitHub rows,
+        # primary_language/topics NULL on all 196,778 LinkedIn rows), so a
+        # predicate over one of them silently deletes the other population. A
+        # single-source corpus cannot express that failure at all: there is no
+        # other population to lose. Both arms draw from the same rng in a fixed
+        # order, so the corpus stays a pure function of the seed.
+        if args.source in ("linkedin", "both"):
             await seed_linkedin(conn, rng, args.count)
-            summary = f"seeded {args.count} synthetic LinkedIn candidates + raw_profiles"
-        else:
-            summary, labels = await _seed_github(conn, rng, args.count)
+            parts.append(f"{args.count} LinkedIn")
+        if args.source in ("github", "both"):
+            _, labels = await _seed_github(conn, rng, args.count)
+            parts.append(f"{args.count} GitHub")
+        summary = f"seeded {' + '.join(parts)} synthetic candidates + raw_profiles"
     # Outside the acquire: close_pool() waits for every connection to be
     # released, so calling it while `conn` is still held deadlocks forever.
     if args.write_labels:
@@ -265,6 +425,29 @@ def make_linkedin_record(rng: random.Random, i: int) -> dict:
     last = LAST[(i * 7) % len(LAST)]
     slug = f"{first.lower()}-{last.lower()}-synth{i:05d}"
     start_year = rng.randint(2012, 2023)
+
+    # Structural facets come from `i`; only incidental variation comes from rng.
+    # WHY: `i` guarantees COVERAGE — every ladder rung and every metro is
+    # present for any --count >= len(SENIORITY_LADDER) * len(METRO_KEYS) (65) —
+    # whereas rng.choice leaves "was the staff rung seeded at all?" to luck, and
+    # an empty ground-truth set reports nDCG 0.000, which reads as a ranking
+    # regression rather than as a missing fixture. The strides are the ladder
+    # length so the two facets sweep independently instead of correlating.
+    rung = SENIORITY_LADDER[i % len(SENIORITY_LADDER)]
+    metro_key = METRO_KEYS[(i // len(SENIORITY_LADDER)) % len(METRO_KEYS)]
+    city = rng.choice(METRO_CITIES[metro_key])
+
+    # Education variety with holes in it: `i % 4` / `i % 5` leave ~25% of rows
+    # with no degree and ~20% with no field, deterministically, so the
+    # unknown-degree / unknown-field branches are exercised at any --count
+    # rather than only on a corpus that happens to contain a gap. Bright Data's
+    # education entries use `title` / `degree` / `field`.
+    education: dict = {"title": SCHOOLS[(i * 3) % len(SCHOOLS)]}
+    if i % 4:
+        education["degree"] = DEGREES[i % len(DEGREES)]
+    if i % 5:
+        education["field"] = FIELDS[i % len(FIELDS)]
+
     # ~30% distractors, drawn from the same seeded rng as everything else so the
     # corpus stays deterministic. The "-distr" slug suffix is the eval's ground-
     # truth marker: to_import_row keeps the slug verbatim (login = "li:"+slug),
@@ -278,19 +461,28 @@ def make_linkedin_record(rng: random.Random, i: int) -> dict:
         title, company, about = persona["title"], persona["company"], persona["about"]
         prior_title, prior_company = persona["prior_title"], persona["prior_company"]
     else:
-        theme_names = rng.sample(list(THEMES), k=1)
-        theme = THEMES[theme_names[0]]
-        title = rng.choice(
-            [
-                f"Senior {theme_names[0].title()} Engineer",
-                f"Staff Software Engineer, {theme_names[0]}",
-                "Software Engineer",
-                f"{theme_names[0].title()} Engineer",
-            ]
+        theme_name = rng.sample(list(THEMES), k=1)[0]
+        theme = THEMES[theme_name]
+        title = rung.format(label=THEME_LABELS[theme_name]) if rung else None
+        company = rng.choice(EMPLOYERS)
+        # The theme's LANGUAGE goes into the prose deliberately. A LinkedIn row
+        # names "Python" in its about-text while s.primary_language is NULL on
+        # every one of the 196,778 prod LinkedIn rows — so `language = 'python'`
+        # matches 550 people out of 204,535 and the recruiter cannot tell. That
+        # source-disjointness is only observable if the corpus contains a row
+        # that clearly SHOULD match a language facet but structurally cannot.
+        about = (
+            f"{title or 'Engineer'} working on {', '.join(theme['terms'])}; "
+            f"mostly {theme['lang']}."
         )
-        company = rng.choice(["Stripe", "Databricks", "Cloudflare", "Acme Labs", "OpenAI"])
-        about = f"{title} working on {', '.join(theme['terms'])}."
-        prior_title, prior_company = "Software Engineer", "Initech"
+        prior_title = "Software Engineer"
+        prior_company = rng.choice(PAST_EMPLOYERS)
+    # A None rung means NO title anywhere: `position` empty AND both experience
+    # titles empty, because best_title scans every role (including past ones)
+    # and a prior title would quietly re-title the row. Companies stay, so this
+    # is a title-less row that an EMPLOYER facet can still reach — admission
+    # control should nonetheless keep it out of the index entirely.
+    no_title = title is None
     return {
         "id": slug,
         "linkedin_id": slug,
@@ -299,29 +491,32 @@ def make_linkedin_record(rng: random.Random, i: int) -> dict:
         "name": f"{first} {last}",
         "first_name": first,
         "last_name": last,
-        "city": "San Francisco Bay Area",
-        "country_code": "US",
-        "position": title,
+        "city": city,
+        "country_code": METRO_COUNTRY.get(metro_key, "US"),
+        "position": "" if no_title else title,
         "about": about,
         "current_company": {"company_id": company.lower().replace(" ", "-"), "name": company},
         "current_company_name": company,
         "experience": [
             {
-                "title": title,
+                "title": "" if no_title else title,
                 "company": company,
                 "start_date": f"Jan {start_year + 2}",
                 "end_date": None,
                 "positions": None,
             },
+            # The second, ENDED entry is what past_employers is derived from —
+            # without a non-current role the column would be empty on every row
+            # and an employer facet could not tell "works at" from "worked at".
             {
-                "title": prior_title,
+                "title": "" if no_title else prior_title,
                 "company": prior_company,
                 "start_date": f"Jun {start_year}",
                 "end_date": f"Dec {start_year + 1}",
                 "positions": None,
             },
         ],
-        "education": [{"title": "State University", "degree": "BSc"}],
+        "education": [education],
         "certifications": None,
         "followers": rng.randint(50, 3000),
         "connections": rng.randint(50, 500),
@@ -361,9 +556,9 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=300)
     ap.add_argument(
         "--source",
-        choices=("github", "linkedin"),
+        choices=("github", "linkedin", "both"),
         default="github",
-        help="which evidence kind to fabricate",
+        help="which evidence kind to fabricate ('both' = the eval corpus; see amain)",
     )
     ap.add_argument("--reset", action="store_true", help="truncate foray tables first")
     ap.add_argument("--write-labels", help="write login/bio labels as JSONL")

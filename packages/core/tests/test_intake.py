@@ -27,6 +27,7 @@ from intake_fixtures import (
 from sqlalchemy import select
 
 from juicebox.intake import (
+    CORE_KEYS,
     ENRICHMENT_KEYS,
     EXTRACTOR_HEURISTIC,
     EXTRACTOR_LLM,
@@ -35,6 +36,7 @@ from juicebox.intake import (
     REQUIRED_KEYS,
     SPEC_FIELDS,
     coverage,
+    deferred_required,
     diff_records,
     empty_record,
     extract_intake,
@@ -44,6 +46,7 @@ from juicebox.intake import (
     normalize_record,
 )
 from juicebox.intake.schema import TIER_REQUIRED, is_filled
+from juicebox.intake.service import progress_line
 from juicebox.llm.client import FakeTransport, LLMClient, LLMUnavailable, set_llm
 from juicebox.llm.prompts import _INTAKE_FIELD_KEYS
 from juicebox.models import Candidate, CandidatePhone
@@ -138,6 +141,51 @@ class TestCoverageGate:
         record["declined"] = list(ENRICHMENT_KEYS)
         assert next_questions(record) == []
 
+    def test_core_only_closes_without_must_have_skills(self):
+        """The heuristic cannot fill must-haves; requiring them on a short call
+        would run every model-less pass to the 15-minute ceiling."""
+        record = _filled_core()
+        assert "spec.must_have_skills" not in coverage(record, core_only=True).covered
+        assert coverage(record, core_only=True).required_complete
+        assert not coverage(record).required_complete
+        assert "spec.must_have_skills" in deferred_required(record)
+
+    def test_a_long_budget_does_not_widen_the_gate(self):
+        record = _filled_required()
+        assert coverage(record, core_only=False).required_complete
+        assert coverage(record).required_missing == ()
+
+    def test_no_budget_matches_today(self):
+        empty = empty_record()
+        assert coverage(empty).required_missing == coverage(empty, core_only=False).required_missing
+        assert set(coverage(empty).required_missing) == set(REQUIRED_KEYS)
+
+    def test_core_keys_are_the_retrieval_set(self):
+        assert CORE_KEYS == (
+            "spec.job_titles",
+            "spec.seniority",
+            "spec.locations",
+            "spec.remote_ok",
+            "compensation",
+        )
+        assert "spec.must_have_skills" not in CORE_KEYS
+        assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
+
+
+class TestProgressLine:
+    def test_empty_off_milestone(self):
+        assert progress_line(4) == ""
+        assert progress_line(2) == ""
+        assert progress_line(0) == ""
+        assert progress_line(11) == ""
+
+    def test_states_the_true_count_on_milestone(self):
+        assert progress_line(5) == "Five more quick ones and I'll let you go."
+        assert progress_line(3) == "Three more quick ones and I'll let you go."
+        assert progress_line(1) == "One more quick one and I'll let you go."
+        assert "4" not in progress_line(5)
+        assert "2" not in progress_line(3)
+
 
 class TestFieldDefinitions:
     def test_every_field_names_the_client_question_it_answers(self):
@@ -221,10 +269,38 @@ class TestModelExtraction:
         result = extract_intake(SPARSE_TRANSCRIPT)
         assert "permission" in result.review_reason
 
-    def test_a_complete_consenting_call_needs_no_review(self, scripted_llm):
+    def test_a_claimed_sharing_permission_does_not_clear_review(self, scripted_llm):
+        """The one field authorising us to put a person in front of employers is
+        also the one a model will invent. Asked about a transcript where sharing
+        never came up, GLM 5.2 asserted true 3/5 and gpt-oss-120b 2/5. So a
+        claim is evidence, not permission -- it still closes the coverage gate,
+        because the call did its job, but a human confirms before it counts."""
         scripted_llm(default=COMPLETE_PAYLOAD)
         result = extract_intake(COMPLETE_TRANSCRIPT)
-        assert not result.review_needed, result.review_reason
+        assert result.record["ok_to_share_with_clients"] is True
+        assert result.coverage.required_complete
+        assert result.review_needed
+        assert "not yet confirmed" in result.review_reason
+
+    def test_the_timeline_bucket_comes_from_the_quote_not_the_model(self, scripted_llm):
+        """Sorting a duration into five buckets is arithmetic. Left to the
+        model it was non-deterministic on a required field: five runs on "two
+        weeks if the right thing came up" gave GLM 1_3_months three times,
+        3_6_months once and immediate once."""
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "3_6_months"          # what the model chose
+        payload["timeline_verbatim"] = "two weeks"  # what the candidate said
+        scripted_llm(default=payload)
+        record = extract_intake(COMPLETE_TRANSCRIPT).record
+        assert record["timeline"] == "under_1_month"
+        assert record["timeline_verbatim"] == "two weeks"
+
+    def test_an_unquotable_timeline_falls_back_to_the_model_bucket(self, scripted_llm):
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "1_3_months"
+        payload["timeline_verbatim"] = ""
+        scripted_llm(default=payload)
+        assert extract_intake(COMPLETE_TRANSCRIPT).record["timeline"] == "1_3_months"
 
     def test_must_haves_are_capped(self, scripted_llm):
         payload = _clone(COMPLETE_PAYLOAD)
@@ -257,6 +333,111 @@ class TestModelExtraction:
         result = extract_intake(COMPLETE_TRANSCRIPT)
         assert result.extractor == EXTRACTOR_HEURISTIC
         assert result.review_needed
+
+
+class TestTimelineBucketing:
+    """One definition of what "two weeks" means, shared by both paths, so the
+    model path and the no-model path cannot disagree about a required field."""
+
+    @pytest.mark.parametrize(
+        ("said", "bucket"),
+        [
+            ("two weeks", "under_1_month"),
+            ("within a month", "under_1_month"),
+            ("next quarter", "1_3_months"),
+            ("right away", "immediate"),
+            ("six months", "3_6_months"),
+            ("no rush", "exploratory"),
+            ("", ""),
+            ("someday", ""),
+        ],
+    )
+    def test_phrases_map_deterministically(self, said, bucket):
+        from juicebox.intake.extract import _bucket_timeline
+
+        assert _bucket_timeline(said) == bucket
+
+
+class TestFromARealCall:
+    """Regressions from the first live call, 2026-08-22, 223 seconds.
+
+    Every one is a cheap model filling a field it had no evidence for, or a
+    taxonomy gap that made a real answer unmatchable. The transcript is the
+    specification here: these are not hypotheticals.
+    """
+
+    def test_a_placeholder_does_not_close_a_required_field(self):
+        """The agent never asked about work authorisation. The model wrote
+        "unknown", which `is_filled` counts as present, so the gate closed on an
+        unasked question -- and a client-blocking one."""
+        record = normalize_record({"work_authorization": "unknown"})
+        assert record["work_authorization"] == ""
+        assert "work_authorization" in coverage(record).required_missing
+
+    @pytest.mark.parametrize(
+        "placeholder", ["unknown", "N/A", "not specified", "Not discussed", "-", "null"]
+    )
+    def test_placeholder_spellings_are_all_rejected(self, placeholder):
+        assert normalize_record({"work_authorization": placeholder})["work_authorization"] == ""
+
+    def test_a_real_answer_is_not_mistaken_for_a_placeholder(self):
+        assert normalize_record({"work_authorization": "us citizen"})[
+            "work_authorization"
+        ] == "us citizen"
+
+    def test_consent_without_a_quote_is_discarded(self):
+        """Sharing permission was never discussed and the model returned true
+        anyway. Quote or it did not happen."""
+        record = normalize_record({"ok_to_share_with_clients": True})
+        assert record["ok_to_share_with_clients"] is None
+        assert "ok_to_share_with_clients" in coverage(record).required_missing
+
+    def test_consent_with_a_quote_is_kept(self):
+        record = normalize_record(
+            {"ok_to_share_with_clients": True, "ok_to_share_verbatim": "Yes, go ahead."}
+        )
+        assert record["ok_to_share_with_clients"] is True
+
+    def test_an_explicit_refusal_needs_no_quote(self):
+        """False is never the convenient answer, so nothing is gained by
+        fabricating it -- and demanding a quote would lose a real refusal."""
+        assert normalize_record({"ok_to_share_with_clients": False})[
+            "ok_to_share_with_clients"
+        ] is False
+
+    def test_a_conditional_timeline_is_exploratory(self):
+        """Verbatim from the call. The model answered under_1_month, which puts a
+        browsing candidate in front of a client hiring now."""
+        record = normalize_record(
+            {
+                "timeline": "under_1_month",
+                "timeline_verbatim": (
+                    "If I find the right role, I might wanna start soon. "
+                    "But if not, I'm okay to stay."
+                ),
+            }
+        )
+        assert record["timeline"] == "exploratory"
+
+    def test_member_of_technical_staff_is_matchable(self):
+        """Noise-stripping reduced it to "member technical", which matches no
+        posting -- losing the whole point of sharing a vocabulary with the JD
+        parser, for a title a real candidate actually said."""
+        from juicebox.enrich import taxonomy as tx
+
+        assert tx.normalize_title("Member of technical staff") == "software engineer"
+        assert tx.normalize_title("MTS") == "software engineer"
+
+    def test_a_model_chosen_timeline_bucket_is_flagged(self, scripted_llm):
+        """When the quote maps to nothing, the model's bucket is used and nothing
+        deterministic vouches for it. Say so."""
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "1_3_months"
+        payload["timeline_verbatim"] = "sometime after the reorg settles"
+        scripted_llm(default=payload)
+        result = extract_intake(COMPLETE_TRANSCRIPT)
+        assert result.record["timeline"] == "1_3_months"
+        assert "timeline" in result.low_confidence
 
 
 class TestDefensiveCoercion:
@@ -369,6 +550,29 @@ class TestHeuristicExtraction:
         record = extract_intake(f"Candidate: {said}").record
         assert record["spec"]["remote_ok"] is expected
 
+    def test_a_negation_does_not_cross_a_clause_boundary(self, no_llm):
+        """From a real call. "Hybrid is fine, fully remote isn't what I want"
+        asserts one thing and denies another eleven characters apart, so a
+        character-radius negation window swallows the assertion and records
+        nothing. Negation is scoped to its clause."""
+        record = extract_intake(
+            "Candidate: Austin. Hybrid is fine, fully remote isn't what I want."
+        ).record
+        assert record["spec"]["remote_ok"] is False
+
+    def test_an_explicit_level_beats_the_one_inferred_from_the_title(self, no_llm):
+        """Also from a real call. infer_seniority_from_title answers "mid" for
+        any unmarked title, so merging produced ["mid", "staff"] — a level the
+        candidate never said, on a field clients filter hard against."""
+        record = extract_intake(
+            "Candidate: I'm after a staff backend engineer role, staying hands-on in Go."
+        ).record
+        assert record["spec"]["seniority"] == ["staff"]
+
+    def test_an_unstated_level_still_falls_back_to_the_title(self, no_llm):
+        record = extract_intake("Candidate: I'm looking for a backend engineer role.").record
+        assert record["spec"]["seniority"] == ["mid"]
+
     def test_talking_about_both_records_neither(self, no_llm):
         result = extract_intake(
             "Candidate: I'd do fully remote or hybrid, whichever. Both work for me."
@@ -398,10 +602,15 @@ class TestDisagreement:
         assert diff_records(record, record) == {}
 
     def test_a_changed_field_is_reported_with_both_readings(self):
+        # Deliberately not `timeline`: that one is derived from the quote, so two
+        # extractions of the same call agree no matter what bucket each chose.
         a = normalize_record(COMPLETE_PAYLOAD)
-        b = normalize_record({**COMPLETE_PAYLOAD, "timeline": "immediate"})
+        b = normalize_record({**COMPLETE_PAYLOAD, "employment_status": "employed_open"})
         diff = diff_records(a, b)
-        assert diff["timeline"] == {"a": "under_1_month", "b": "immediate"}
+        assert diff["employment_status"] == {
+            "a": "employed_searching",
+            "b": "employed_open",
+        }
 
     def test_list_order_is_not_a_disagreement(self):
         a = normalize_record(COMPLETE_PAYLOAD)
@@ -517,6 +726,22 @@ class TestPhoneProjection:
 # --------------------------------------------------------------------------
 
 
+def _filled_core() -> dict:
+    """The five gate-closing fields, and nothing else. Skills deliberately empty."""
+    record = empty_record()
+    record["spec"].update(
+        {
+            "job_titles": ["machine learning engineer"],
+            "seniority": ["senior"],
+            "locations": ["san francisco"],
+            "remote_ok": False,
+        }
+    )
+    record["target_base"] = 240000.0
+    record["comp_currency"] = "USD"
+    return record
+
+
 def _filled_required() -> dict:
     """A record with every required field answered and no enrichment."""
     record = empty_record()
@@ -547,3 +772,31 @@ def _clone(payload: dict) -> dict:
     import copy
 
     return copy.deepcopy(payload)
+
+
+class TestPersonaCopy:
+    """``deploy/`` is stdlib-only and cannot import ``juicebox.config``, so the
+    persona exists twice. The prompt and the dynamic variable have to agree, or
+    the agent greets as one name and refers to itself by another mid-call.
+    Same idiom as ``test_the_prompt_enum_matches_the_field_set``."""
+
+    def _deploy_constants(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        text = (root / "deploy" / "retell_agents.py").read_text(encoding="utf-8")
+        found = {}
+        for name in ("RECRUITER_NAME", "SMS_NUMBER_SPOKEN"):
+            match = re.search(rf'^{name} = "([^"]*)"', text, re.M)
+            assert match, f"{name} not found in deploy/retell_agents.py"
+            found[name] = match.group(1)
+        return found
+
+    def test_the_persona_matches_the_deploy_script(self):
+        from juicebox.config import get_settings
+
+        settings = get_settings()
+        deploy = self._deploy_constants()
+        assert deploy["RECRUITER_NAME"] == settings.intake_recruiter_name
+        assert deploy["SMS_NUMBER_SPOKEN"] == settings.intake_sms_number_spoken

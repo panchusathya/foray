@@ -20,6 +20,7 @@ from .routers import (
     auth,
     candidates,
     crm,
+    intake,
     integrations,
     job_discovery,
     job_matches,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(crm.router)
     app.include_router(integrations.router)
+    app.include_router(intake.router)
     app.include_router(track.router)
     app.include_router(messaging.router)
     # Unauthenticated by design, like track: a candidate on a careers page

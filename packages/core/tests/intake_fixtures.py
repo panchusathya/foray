@@ -103,6 +103,10 @@ COMPLETE_PAYLOAD: dict = {
     ],
     "confidential_items": ["Do not tell anyone they are looking; their manager does not know."],
     "ok_to_share_with_clients": True,
+    # Quoted, because a claimed permission with nothing to quote is discarded --
+    # see TestFromARealCall. The transcript above does contain the exchange.
+    "ok_to_share_verbatim": "Yes, go ahead.",
+    "timeline_verbatim": "Within a month if the right thing came up.",
     "declined": [],
     "low_confidence": [],
 }
@@ -155,6 +159,8 @@ SPARSE_PAYLOAD: dict = {
     "highlights": [],
     "confidential_items": [],
     "ok_to_share_with_clients": None,
+    "ok_to_share_verbatim": "",
+    "timeline_verbatim": "",
     "declined": ["compensation"],
     "low_confidence": [],
 }

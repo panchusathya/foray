@@ -164,6 +164,26 @@ function Cell({ column, row }) {
       );
     case 'created_at':
       return <DateCell value={row.created_at} />;
+    case 'intake_timeline':
+      return row.intake_timeline ? (
+        <span>{row.intake_timeline.replaceAll('_', ' ')}</span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'intake_target_comp':
+      return row.intake_target_comp != null ? (
+        <span>
+          {row.intake_target_comp >= 1000
+            ? `$${Math.round(row.intake_target_comp / 1000)}k`
+            : `$${row.intake_target_comp}`}
+        </span>
+      ) : (
+        <span className="muted">—</span>
+      );
+    case 'intake_match_count':
+      return <span>{row.intake_match_count ?? 0}</span>;
+    case 'intake_confirmed':
+      return row.intake_confirmed ? <span className="badge">confirmed</span> : <span className="muted">review</span>;
     default:
       return null;
   }

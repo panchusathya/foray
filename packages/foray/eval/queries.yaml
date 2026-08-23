@@ -1,13 +1,30 @@
 # Foray-native relevance queries. Ground truth is a rule over the synthetic
 # THEMES corpus (scripts/seed_synthetic.py), not a frozen id list.
 #
-# theme          the seed theme that must be present on the candidate
+# theme_any      the seed theme that must be present on the candidate
 # terms_any      at least one of these tokens in the bio/repo description
+# seniority_min  rung name (intern|entry|mid|senior|staff|principal|fellow);
+#                UNKNOWN seniority is NOT relevant, deliberately stricter than
+#                the filter's unknown-passes policy — see is_relevant
+# employer_any   current OR past employer (past_employers is why the column exists)
+# metro_any      canonical metro key, as derive canonicalised it
+# is_founder     the derived boolean
+#
+# expect_facets  NOT ground truth: the facets this query is supposed to compile
+#                into SQL. run_eval WARNs when one is absent from
+#                diagnostics.predicate_summary, because a facet that never
+#                became a predicate cannot be violated and therefore cannot be
+#                caught — fv@10 would read a clean 0.000 for a filter that is
+#                not running at all.
 #
 # Rules are source-agnostic: themes come from candidate_signals.domain_markers,
 # which derive fills for GitHub and LinkedIn rows alike. Seeded distractors
 # (the "-distr"/"_distr" login suffix) are excluded in run_eval.is_relevant and
 # additionally measured by junk@10 — no rule here can mark one relevant.
+#
+# Every facet query below names the leak it catches. The five archetype-shaped
+# queries at the top cannot catch any of them: none states a hard constraint, so
+# no predicate runs, so fv@10 is structurally 0 for all five.
 
 queries:
   - id: founding-ml-vlm
@@ -36,3 +53,77 @@ queries:
     query: founding ML engineer, shipped training infrastructure, 3-8 years
     relevant:
       theme_any: [ml, gpu]
+
+  # ---------------------------------------------------------------- facets --
+  # LEAK: seniority read as a bag of words. The corpus seeds a "Senior Personal
+  # Training Counselor" whose title contains a real seniority word, and a full
+  # IC ladder up to Principal + VP. A seniority_rank that scores off substrings
+  # ranks the trainer as senior; one that never fires returns interns. Both show
+  # here and nowhere else: before this query the corpus topped out at "Senior",
+  # so `>= staff` matched nobody and the filter looked correct by vacuity.
+  #
+  # Ground truth uses the STORED column's scale, via the constants imported from
+  # foray/seniority.py (staff = 5) — never a number typed here. This query is
+  # the tripwire for the parser and the column disagreeing about what "staff"
+  # means: an earlier parser scale read "1=junior 2=mid 3=senior 4=staff", one
+  # rung below the column, which made `staff` filter at rank >= senior and
+  # admitted the Senior Personal Training Counselor (rank 4) as compliant. Note
+  # the signature that catches it, because it is not fv@10: the returned rows
+  # satisfy the predicate the system actually emitted, so fv@10 stays 0.000
+  # while P@10 falls. fv@10 clean + P@10 down localises the bug in the PARSER;
+  # fv@10 up localises it in the filter. Two label streams, two diagnoses.
+  - id: seniority-staff-ml
+    query: staff or above ML engineer
+    expect_facets: [seniority_min]
+    relevant:
+      theme_any: [ml, gpu]
+      seniority_min: staff
+
+  # LEAK: the metro predicate. Two ways to fail — matching everyone (the old
+  # corpus put every row in "San Francisco Bay Area", so a metro filter was
+  # indistinguishable from no filter) or matching nobody (city strings like
+  # "Palo Alto" never canonicalised to sf_bay_area). Note GitHub rows carry
+  # location_metro = NULL, so a STRICT reading here deletes that whole
+  # population — which is what total_matched is printed to expose.
+  - id: metro-nyc-backend
+    query: backend engineer in New York
+    expect_facets: [metros]
+    relevant:
+      theme_any: [backend, infra, sre]
+      metro_any: [nyc]
+
+  # LEAK: employer matching the company instead of the person. A "Technical
+  # Recruiter at Stripe" satisfies employers=[stripe] exactly, is excluded from
+  # ground truth as a distractor, and is counted by junk@10 — so a leak lands as
+  # a P@10 drop AND a junk@10 rise. Ground truth accepts past employers because
+  # past_employers exists for exactly that reading; the fv@10 checker does NOT,
+  # because past_employers reaches no SQL in wave 1.
+  #
+  # KNOWN STATE, measured: heuristic_parse extracts no employers from any
+  # phrasing, so on the default no-LLM path this query WARNs ("expected facets
+  # ['employers'] never became SQL") and fv@10 cannot fail for it. The warning
+  # is the finding, not noise — it says the employers facet is LLM-only today.
+  # It becomes a live violation test the moment either parser emits the facet.
+  - id: employer-stripe
+    query: engineers who worked at Stripe
+    expect_facets: [employers]
+    relevant:
+      employer_any: [stripe]
+
+  # LEAK: is_founder derived from prose rather than from the title. If the
+  # founder framing reaches the tsquery instead of becoming a predicate, this
+  # returns everyone whose about-text says "founding team" and the column goes
+  # unread. Distinct from founding-ml-infra above, which states no hard
+  # constraint and so tests the ranker rather than the filter.
+  #
+  # Phrased with founder NOUNS on purpose: parse.py excludes "founding" from
+  # _FOUNDER by design ("founding ML engineer" is a stage descriptor — employee
+  # number three, not the incorporator), so "founding engineer" alone compiles
+  # to no predicate at all. Verified: this phrasing emits is_founder=True.
+  # The seeded "Founding {theme} Engineer" rows derive is_founder=True, which is
+  # what makes the ground truth non-empty.
+  - id: founder-only
+    query: founders and founding engineers
+    expect_facets: [is_founder]
+    relevant:
+      is_founder: true

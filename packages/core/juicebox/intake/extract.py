@@ -89,18 +89,26 @@ def extract_intake(
     *,
     known: str = "",
     use_llm: bool | None = None,
+    fast: bool = False,
 ) -> ExtractionResult:
     """Extract preferences from ``transcript``, degrading to heuristics.
 
     ``use_llm=False`` forces the heuristic path, which is how the tests exercise
     it without unsetting the key.
+
+    ``fast=True`` is for the mid-call coverage check, where a candidate is
+    sitting in silence waiting for the agent's next question. It routes to
+    ``json_fast`` — the fast model, a short timeout, no retries — because a
+    slower and more careful reading of a half-finished conversation is the wrong
+    trade: the gate only has to decide what to ask next, and it will be asked
+    again on the next turn.
     """
     llm = get_llm()
     want_llm = llm.available if use_llm is None else use_llm
 
     if want_llm and llm.available:
         try:
-            return _llm_extract(transcript, known=known)
+            return _llm_extract(transcript, known=known, fast=fast)
         except Exception as exc:  # noqa: BLE001 - degrade, never fail an extraction
             logger.warning("llm intake extraction failed, using heuristics: %s", exc)
 
@@ -112,9 +120,10 @@ def extract_intake(
 # --------------------------------------------------------------------------
 
 
-def _llm_extract(transcript: str, *, known: str) -> ExtractionResult:
+def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> ExtractionResult:
     llm = get_llm()
-    result = llm.json(
+    call = llm.json_fast if fast else llm.json
+    result = call(
         system=INTAKE_EXTRACT_SYSTEM,
         prompt=intake_extract_prompt(transcript=transcript, known=known),
         schema=INTAKE_EXTRACT_SCHEMA,
@@ -126,6 +135,15 @@ def _llm_extract(transcript: str, *, known: str) -> ExtractionResult:
 
     record = normalize_record(result.data)
     low = _valid_keys(result.data.get("low_confidence"))
+    # The model's own bucket was used because the quote did not map to one, so
+    # nothing deterministic vouches for this value. Say so rather than let a
+    # required field look as solid as the ones we derived.
+    if (
+        record["timeline"]
+        and not _bucket_timeline(record["timeline_verbatim"])
+        and "timeline" not in low
+    ):
+        low = (*low, "timeline")
     state = coverage(record)
     review, reason = _review_verdict(
         extractor=EXTRACTOR_LLM, low_confidence=low, state=state, record=record
@@ -154,20 +172,48 @@ def normalize_record(payload: dict[str, Any]) -> dict[str, Any]:
     record["spec"] = _normalize_spec(payload.get("spec"))
 
     record["employment_status"] = _enum(payload.get("employment_status"), EMPLOYMENT_STATUSES)
-    record["timeline"] = _enum(payload.get("timeline"), TIMELINES)
     record["equity_importance"] = _enum(payload.get("equity_importance"), EQUITY_IMPORTANCE)
+
+    # Bucketed here, not by the model. Measured over five runs each on "two
+    # weeks if the right thing came up": GLM 5.2 answered 1_3_months three
+    # times, 3_6_months once and immediate once; gpt-oss-120b was no steadier.
+    # Sorting a duration phrase into five buckets is arithmetic, and asking a
+    # cheap model to do it makes a required field non-deterministic. The model
+    # quotes what was said; the mapping is code, and the same patterns the
+    # heuristic path already uses.
+    record["timeline_verbatim"] = _text(payload.get("timeline_verbatim"))
+    record["timeline"] = _bucket_timeline(record["timeline_verbatim"]) or _enum(
+        payload.get("timeline"), TIMELINES
+    )
 
     record["reason_for_looking"] = _text(payload.get("reason_for_looking"))
     record["urgency_driver"] = _text(payload.get("urgency_driver"))
     record["comp_flexibility_notes"] = _text(payload.get("comp_flexibility_notes"))
-    record["work_authorization"] = _text(payload.get("work_authorization")).lower()
+    # A placeholder is not an answer. In a real call the agent never asked about
+    # work authorisation and the model wrote "unknown", which `is_filled` counts
+    # as present -- so the gate closed on a required question nobody had asked,
+    # and a client-blocking one at that ("can I hire them without a visa?").
+    record["work_authorization"] = _no_placeholder(
+        _text(payload.get("work_authorization")).lower()
+    )
     record["comp_currency"] = _text(payload.get("comp_currency")).upper()[:8]
 
     record["target_base"] = _money(payload.get("target_base"))
     record["target_total"] = _money(payload.get("target_total"))
 
     record["willing_to_relocate"] = _tribool(payload.get("willing_to_relocate"))
-    record["ok_to_share_with_clients"] = _tribool(payload.get("ok_to_share_with_clients"))
+
+    # Quote or it did not happen. In a real call the agent never asked for
+    # permission to share and the model returned `true` anyway -- the third time
+    # a cheap model has filled a field it was never given evidence for, and the
+    # costliest one to get wrong. Requiring the exchange to be quotable turns
+    # "the model asserted it" into "the transcript contains it", which is the
+    # only version of consent worth storing.
+    record["ok_to_share_verbatim"] = _text(payload.get("ok_to_share_verbatim"))
+    claimed = _tribool(payload.get("ok_to_share_with_clients"))
+    record["ok_to_share_with_clients"] = (
+        claimed if (claimed is False or record["ok_to_share_verbatim"]) else None
+    )
 
     record["active_processes"] = _dicts(
         payload.get("active_processes"), ("company", "stage", "expected_decision")
@@ -211,7 +257,16 @@ _TIMELINE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("under_1_month", r"\b(two weeks|2 weeks|couple of weeks|few weeks|within a month|next month|this month)\b"),
     ("1_3_months", r"\b(next quarter|couple of months|two months|three months|few months|2-3 months)\b"),
     ("3_6_months", r"\b(six months|6 months|end of the year|later this year|next year)\b"),
-    ("exploratory", r"\b(just looking|no rush|not in a hurry|keeping an eye|exploring|casually looking|testing the waters)\b"),
+    # Conditional and non-committal answers are exploratory, not urgent. "If I
+    # find the right role I might start soon, but if not I'm okay to stay" came
+    # from a real call, and the model bucketed it as under_1_month -- which puts
+    # a browsing candidate in front of a client who is hiring now.
+    (
+        "exploratory",
+        r"\b(just looking|no rush|not in a hurry|keeping an eye|exploring|casually looking"
+        r"|testing the waters|it depends|okay to stay|ok to stay|happy where i am"
+        r"|not sure yet|no timeline|if i find the right|for the right (role|thing|one))\b",
+    ),
 )
 
 # Ordered: the first match wins, so the least ambiguous statements come first.
@@ -243,11 +298,11 @@ _NEGATION = re.compile(
     r"\b(not|isn'?t|aren'?t|no|never|don'?t|doesn'?t|won'?t|wouldn'?t|rather not|"
     r"as long as it'?s not|other than)\b"
 )
-# How far either side of a phrase a negation still applies. Wide enough for
-# "remote isn't what I want", narrow enough that the next sentence's "not" does
-# not reach back.
-_NEGATION_WINDOW_BEFORE = 24
-_NEGATION_WINDOW_AFTER = 32
+# A negation belongs to its clause, not to a radius of characters. "Hybrid is
+# fine, fully remote isn't what I want" carries an assertion and a denial eleven
+# characters apart, and any window wide enough to catch "remote isn't what I
+# want" also swallows "hybrid is fine" and loses it.
+_CLAUSE_SPLIT = re.compile(r"[,;.!?\n]|\bbut\b|\bthough\b|\bhowever\b|\bwhereas\b")
 
 _RELOCATE_FALSE = r"\b(not willing to relocate|won'?t relocate|can'?t relocate|cannot relocate|no relocation|not moving)\b"
 _RELOCATE_TRUE = r"\b(willing to relocate|happy to relocate|would relocate|open to relocating|open to moving)\b"
@@ -362,6 +417,16 @@ def _heuristic_extract(transcript: str) -> ExtractionResult:
     )
 
 
+def _bucket_timeline(verbatim: str) -> str:
+    """Map a quoted timing phrase onto a bucket, deterministically.
+
+    Shared with the heuristic path on purpose: one definition of what "two
+    weeks" means, exercised by both, so the model path and the no-model path
+    cannot disagree about a required field.
+    """
+    return _first_match((verbatim or "").lower(), _TIMELINE_PATTERNS)
+
+
 def _first_match(text: str, patterns: tuple[tuple[str, str], ...]) -> str:
     for value, pattern in patterns:
         if re.search(pattern, text):
@@ -377,11 +442,8 @@ def _asserted(text: str, pattern: str) -> bool:
     reading is not flipped into a positive for the opposite field — "not fully
     remote" does not establish that they want an office five days a week.
     """
-    for match in re.finditer(pattern, text):
-        window = text[
-            max(0, match.start() - _NEGATION_WINDOW_BEFORE) : match.end() + _NEGATION_WINDOW_AFTER
-        ]
-        if not _NEGATION.search(window):
+    for clause in _CLAUSE_SPLIT.split(text):
+        if re.search(pattern, clause) and not _NEGATION.search(clause):
             return True
     return False
 
@@ -446,15 +508,24 @@ def _heuristic_titles(text: str) -> list[str]:
 
 
 def _heuristic_seniority(text: str, titles: list[str]) -> list[str]:
-    found: list[str] = []
+    """What they said, or failing that what their target title implies.
+
+    Stated wins outright rather than merging with the inferred value.
+    ``infer_seniority_from_title`` answers "mid" for any title carrying no
+    marker, so merging turned "a staff backend engineer role" into
+    ``["mid", "staff"]`` — two levels, one of which the candidate never said, on
+    a field clients filter hard against.
+    """
+    stated = [word for word in tx.SENIORITY_ORDER if re.search(rf"\b{re.escape(word)}\b", text)]
+    if stated:
+        return stated[:3]
+
+    inferred: list[str] = []
     for title in titles:
-        inferred = tx.infer_seniority_from_title(title)
-        if inferred and inferred != "unknown" and inferred not in found:
-            found.append(inferred)
-    for word in tx.SENIORITY_ORDER:
-        if re.search(rf"\b{re.escape(word)}\b", text) and word not in found:
-            found.append(word)
-    return found[:3]
+        level = tx.infer_seniority_from_title(title)
+        if level and level != "unknown" and level not in inferred:
+            inferred.append(level)
+    return inferred[:3]
 
 
 # Place names that are also ordinary English. "let us know" and "tell us" are
@@ -505,6 +576,16 @@ def _review_verdict(
         # Not a data-quality problem — a permission we do not have. Anything
         # that reaches a client must pass a human first.
         reasons.append("no explicit permission to share with clients")
+    elif extractor == EXTRACTOR_LLM:
+        # A *claimed* permission is not a permission. Asked for a transcript
+        # where sharing never came up, GLM 5.2 asserted `true` three times in
+        # five and gpt-oss-120b twice — so the one field authorising us to put
+        # a person in front of employers is also the one a model will invent.
+        # It stays on the record as evidence and it still closes the coverage
+        # gate, because the *call* did its job; what it must not do is clear
+        # review on its own. A human or the candidate's own review page
+        # confirms it, and `confirmed_at` is what makes it real.
+        reasons.append("sharing permission read from the transcript, not yet confirmed")
     return bool(reasons), "; ".join(reasons)
 
 
@@ -549,6 +630,35 @@ def _comparable(value: Any) -> Any:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+# Things a model writes into a free-text field instead of leaving it empty.
+# Every one of these reads as "filled" to the coverage gate, which is how a
+# required question stops being asked.
+_PLACEHOLDERS = frozenset(
+    {
+        "-",
+        "n/a",
+        "na",
+        "none",
+        "none specified",
+        "not asked",
+        "not discussed",
+        "not mentioned",
+        "not provided",
+        "not specified",
+        "not stated",
+        "null",
+        "unclear",
+        "undisclosed",
+        "unknown",
+        "unspecified",
+    }
+)
+
+
+def _no_placeholder(value: str) -> str:
+    return "" if value.strip().lower() in _PLACEHOLDERS else value
 
 
 def _enum(value: Any, allowed: tuple[str, ...]) -> str:

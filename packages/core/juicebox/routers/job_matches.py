@@ -1,7 +1,7 @@
 """Per-contact job matches and the rematch queue.
 
-GET /rematch-queue is declared before /{match_id} so FastAPI does not treat
-the literal as an id.
+GET /rematch-queue and POST /rematch are declared before /{match_id} so
+FastAPI does not treat the literals as an id.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..jobmatch.engine import match_candidate
 from ..jobmatch.queue import rematch_queue
 from ..models import Candidate, JobMatch, JobPosting
 from ..schemas import CandidateSummary, JobMatchOut, JobMatchPatch, JobPostingOut, RematchQueueRow
@@ -40,6 +41,22 @@ def get_rematch_queue(
             )
         )
     return out
+
+
+@router.post("/rematch", response_model=dict)
+def rematch_one_candidate(
+    candidate_id: str = Query(...),
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    candidate = db.scalar(
+        select(Candidate).where(
+            Candidate.id == candidate_id, Candidate.org_id == principal.org_id
+        )
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    return match_candidate(db, candidate)
 
 
 @router.get("", response_model=list[JobMatchOut])

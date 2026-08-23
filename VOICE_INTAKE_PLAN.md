@@ -5,6 +5,13 @@ first for repo-wide conventions.
 
 ## Status
 
+**Next wave (slices 0–3) is the work after Phases 1–3.** Human-feeling
+calls, the recruiter read path, and preference-aware matching. These slices
+are numbered separately on purpose — this file already owns Phases 1–6.
+Phase 5 below is delivered by slice 3. Open decision 2 is closed: the agent
+is **Vivian**, AI disclosure retained, firm name Foray. SMS is not built
+here; that belongs to `feat/messaging-intake`.
+
 **Phase 0 (recon) complete.** Findings below changed five things in the original plan.
 
 **Phase 1 complete.** Provider is **Retell**. Schema, models, migration and
@@ -44,9 +51,32 @@ Outstanding on the number, none of which block Phase 2 code:
 - Buy Verified Phone Number and Branded Call; both have lead time.
 - Leave both webhook fields blank until the Phase 2 routes exist.
 
-Next: Phase 2 — the Retell webhook receiver (post-call), org resolution from the
-dialled number, the `intake.extract` job, and the mid-call `check_coverage` tool
-that closes the gate.
+**Phase 2 complete.** 45 new tests, full suite 853 passed, ruff clean. Shipped:
+
+- `intake/providers.py` — `VoiceProvider` protocol, `RetellProvider` (signature
+  verification + event normalisation), `FakeVoiceProvider`, and `CallEvent` as
+  the shape nothing downstream sees past.
+- `routers/intake.py` — `POST /v1/intake/webhook` (verify → record → queue →
+  return) and `POST /v1/intake/coverage` (the mid-call gate). Unauthenticated,
+  signature-verified, following `routers/track.py`.
+- `intake/service.py` — org and caller resolution, event recording, extraction,
+  preference upsert, coverage snapshots. Shared by the router and the worker so
+  neither owns domain logic.
+- `IntakeNumber` + migration `d2b8c31f9e47` — the number-to-org map that makes
+  org resolution possible without trusting the payload.
+- `KIND_INTAKE_EXTRACT` + worker handler, idempotent on the call row.
+- `juicebox intake-number` CLI to register a number.
+- Retell settings in `config.py`; `RETELL_API_KEY` doubles as the webhook secret.
+
+Exit criteria met: a replayed webhook produces an `IntakeCall` and a
+`CandidatePreference` via the worker; forged, unsigned, stale and re-serialised
+requests are all refused; duplicate deliveries are a no-op.
+
+Next: **Phase 3** — author the two agents (inbound status-line, outbound intake),
+register `check_coverage` as a custom function against them, and build the
+website widget. Blocked on one thing: the two endpoints must be publicly
+reachable before an agent can call them, so `app.goforay.io` needs to be serving
+this branch (or a tunnel for development).
 
 ---
 
@@ -330,10 +360,12 @@ diff-mode update conversation; unknown caller falls through to full intake;
 recruiter alert on material change (offer, deadline, accepted elsewhere). Respect
 the existing `Suppression` / do-not-contact list.
 
-**Phase 5 — Match-engine integration (the payoff).** Feed `CandidatePreference`
-into `score_pair` as a second direction, so a `JobMatch` reflects both what the
-company asked for and what the candidate said they want. Surface intake state on
-`CandidateDetail.jsx`; review queue for flagged extractions.
+**Phase 5 — Match-engine integration (the payoff). Delivered by next-wave
+slice 3.** `preference_term` is a third weighted term in `score_pair`
+(`None` / scored / veto). Enqueue and the match tick key off
+`preference.updated_at` and `JobMatchWatermark.engine_version`. Intake
+state and the review queue landed with slice 2 (`/intake`, Contacts
+`voice_intake` scope, candidate Intake tab).
 
 **Phase 6 — Hardening.** Persona eval suite (evasive, rambling, hurried, hostile,
 non-native speaker, exploding offer) graded per field, in the style of
@@ -376,7 +408,9 @@ gives legal or visa advice.
 
 1. ~~Vapi or Retell~~ — **decided: Retell.** The `VoiceProvider` adapter still
    goes in, so the choice stays reversible and tests get a `fake` provider.
-2. **Firm name and branding** the agent uses on calls; human-handoff destination.
+2. ~~Firm name and branding the agent uses on calls~~ — **decided: Vivian**,
+   an AI recruiting assistant with Foray. Disclosure stays in the opening.
+   Human-handoff destination is still open.
 3. **Outbound caller identity** — the "call me" flow needs a verified/branded number
    with STIR-SHAKEN attestation and CNAM registration or it gets spam-labelled.
    Days of lead time; start it during Phase 2, not Phase 4.

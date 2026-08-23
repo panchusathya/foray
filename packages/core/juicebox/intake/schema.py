@@ -36,7 +36,7 @@ TIER_ENRICHMENT = "enrichment"
 # Bumped when the field set changes, so a stored record can be told apart from
 # one captured under a different definition of "complete". Mirrors the
 # spec_version convention on JobPosting.
-SCHEMA_VERSION = "intake-v1"
+SCHEMA_VERSION = "intake-v2"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,12 @@ class IntakeField:
     answer shape: a comp expectation is covered by a base number *or* a total,
     and demanding both would stall the gate on a candidate who only thinks in
     one of them.
+
+    ``core`` is gate membership under a short stated time budget, not
+    ask-priority. Ask-priority is this tuple's order. A field can be required
+    and asked early without being allowed to keep a three-minute call open —
+    ``spec.must_have_skills`` is that case, because the heuristic extractor is
+    forbidden from filling it.
     """
 
     key: str
@@ -54,22 +60,24 @@ class IntakeField:
     paths: tuple[str, ...]
     asks: str
     client_question: str
+    core: bool = False
 
     def satisfied_by(self, record: Mapping[str, Any]) -> bool:
         return any(is_filled(read_path(record, path)) for path in self.paths)
 
 
 # Ordered. `next_questions` hands these back in sequence, so this is also the
-# default running order of the conversation: identity-shaping facts first,
-# because a wrong answer there makes every later answer worth less.
+# default running order of the conversation: retrieval signal first under a
+# short budget, because the goal is matching as many relevant roles as we can.
 FIELDS: tuple[IntakeField, ...] = (
-    # --- the gate ---------------------------------------------------------
+    # --- core gate (short-call ceiling) ----------------------------------
     IntakeField(
         key="spec.job_titles",
         tier=TIER_REQUIRED,
         paths=("spec.job_titles",),
         asks="Which roles they are actually going after.",
         client_question="Is this person applying for the job I have open?",
+        core=True,
     ),
     IntakeField(
         key="spec.seniority",
@@ -77,6 +85,7 @@ FIELDS: tuple[IntakeField, ...] = (
         paths=("spec.seniority",),
         asks="What level they expect to come in at, IC or management.",
         client_question="Am I looking at a senior IC or someone who wants my manager slot?",
+        core=True,
     ),
     IntakeField(
         key="spec.locations",
@@ -84,6 +93,7 @@ FIELDS: tuple[IntakeField, ...] = (
         paths=("spec.locations",),
         asks="Where they are and which places they would work in.",
         client_question="Can they work where this role sits?",
+        core=True,
     ),
     IntakeField(
         key="spec.remote_ok",
@@ -91,7 +101,19 @@ FIELDS: tuple[IntakeField, ...] = (
         paths=("spec.remote_ok",),
         asks="Whether they will go onsite, hybrid, or remote only.",
         client_question="Will they come into our office, or is this remote-only?",
+        core=True,
     ),
+    IntakeField(
+        key="compensation",
+        tier=TIER_REQUIRED,
+        paths=("target_base", "target_total"),
+        asks="Base or total compensation they are targeting.",
+        client_question="What will it cost me to hire them, and is that in my band?",
+        core=True,
+    ),
+    # Asked early (strongest retrieval signal) but not gate-closing: the
+    # heuristic path must not invent must-haves, so requiring this on a short
+    # call would run every model-less pass to the 15-minute ceiling.
     IntakeField(
         key="spec.must_have_skills",
         tier=TIER_REQUIRED,
@@ -100,11 +122,11 @@ FIELDS: tuple[IntakeField, ...] = (
         client_question="Can they do the actual work?",
     ),
     IntakeField(
-        key="employment_status",
+        key="work_authorization",
         tier=TIER_REQUIRED,
-        paths=("employment_status",),
-        asks="Employed and browsing, employed and serious, or actively searching.",
-        client_question="How available are they, and how hard will they be to close?",
+        paths=("work_authorization",),
+        asks="Their right to work where the role is, and whether sponsorship is needed.",
+        client_question="Can I legally hire them without sponsoring a visa?",
     ),
     IntakeField(
         key="timeline",
@@ -114,18 +136,11 @@ FIELDS: tuple[IntakeField, ...] = (
         client_question="Could they start inside my hiring window?",
     ),
     IntakeField(
-        key="compensation",
+        key="employment_status",
         tier=TIER_REQUIRED,
-        paths=("target_base", "target_total"),
-        asks="Base or total compensation they are targeting.",
-        client_question="What will it cost me to hire them, and is that in my band?",
-    ),
-    IntakeField(
-        key="work_authorization",
-        tier=TIER_REQUIRED,
-        paths=("work_authorization",),
-        asks="Their right to work where the role is, and whether sponsorship is needed.",
-        client_question="Can I legally hire them without sponsoring a visa?",
+        paths=("employment_status",),
+        asks="Employed and browsing, employed and serious, or actively searching.",
+        client_question="How available are they, and how hard will they be to close?",
     ),
     IntakeField(
         key="active_processes",
@@ -244,6 +259,7 @@ FIELDS: tuple[IntakeField, ...] = (
 
 FIELDS_BY_KEY: dict[str, IntakeField] = {f.key: f for f in FIELDS}
 REQUIRED_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_REQUIRED)
+CORE_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.core)
 ENRICHMENT_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_ENRICHMENT)
 
 # The ParsedQuery fields intake is allowed to populate. The rest of
@@ -341,15 +357,20 @@ class Coverage:
         }
 
 
-def coverage(record: Mapping[str, Any]) -> Coverage:
+def coverage(record: Mapping[str, Any], *, core_only: bool = False) -> Coverage:
     """Which fields are answered, refused, or still owed.
 
     A key in ``record["declined"]`` counts as covered: the candidate was asked
     and said no, which is a resolved field and must not keep the call alive.
+
+    ``core_only`` may only *narrow* the gate. It never adds questions. ``False``
+    (the default, and the value when no budget was stated) is today's
+    behaviour: every required field keeps the call open.
     """
     declined = {
         key for key in (record.get("declined") or []) if isinstance(key, str) and key in FIELDS_BY_KEY
     }
+    gate_keys = set(CORE_KEYS) if core_only else None
     required_missing: list[str] = []
     enrichment_missing: list[str] = []
     covered: list[str] = []
@@ -357,9 +378,9 @@ def coverage(record: Mapping[str, Any]) -> Coverage:
     for spec in FIELDS:
         if spec.key in declined or spec.satisfied_by(record):
             covered.append(spec.key)
-        elif spec.tier == TIER_REQUIRED:
+        elif spec.tier == TIER_REQUIRED and (gate_keys is None or spec.key in gate_keys):
             required_missing.append(spec.key)
-        else:
+        elif spec.tier != TIER_REQUIRED:
             enrichment_missing.append(spec.key)
 
     return Coverage(
@@ -370,13 +391,36 @@ def coverage(record: Mapping[str, Any]) -> Coverage:
     )
 
 
-def next_questions(record: Mapping[str, Any], limit: int = 3) -> list[dict[str, str]]:
+def deferred_required(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Required keys left unasked by a core-mode trim, not forgotten.
+
+    Distinct from ``required_missing`` on a full-gate ``coverage()``: those are
+    still owed. These were deliberately skipped so a short call could close.
+    """
+    state = coverage(record, core_only=True)
+    if not state.required_complete:
+        return ()
+    skipped = []
+    declined = set(state.declined)
+    covered = set(state.covered)
+    for spec in FIELDS:
+        if spec.tier != TIER_REQUIRED or spec.core:
+            continue
+        if spec.key in declined or spec.key in covered:
+            continue
+        skipped.append(spec.key)
+    return tuple(skipped)
+
+
+def next_questions(
+    record: Mapping[str, Any], limit: int = 3, *, core_only: bool = False
+) -> list[dict[str, str]]:
     """What to ask next, gate first.
 
     Returned to the agent mid-call, so an empty list for the required tier is
     the signal to start closing rather than to invent another question.
     """
-    state = coverage(record)
+    state = coverage(record, core_only=core_only)
     ordered = [*state.required_missing, *state.enrichment_missing]
     out: list[dict[str, str]] = []
     for key in ordered[: max(0, limit)]:
@@ -404,6 +448,7 @@ def empty_record() -> dict[str, Any]:
         "employment_status": "",
         "reason_for_looking": "",
         "timeline": "",
+        "timeline_verbatim": "",
         "urgency_driver": "",
         "target_base": None,
         "target_total": None,
@@ -417,6 +462,7 @@ def empty_record() -> dict[str, Any]:
         "highlights": [],
         "confidential_items": [],
         "ok_to_share_with_clients": None,
+        "ok_to_share_verbatim": "",
         "declined": [],
     }
 

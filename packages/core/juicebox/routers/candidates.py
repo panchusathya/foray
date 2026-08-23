@@ -16,8 +16,11 @@ from ..models import (
     CRM_STATUSES,
     Candidate,
     CandidateNote,
+    CandidatePreference,
     CandidateTag,
     Enrollment,
+    IntakeCall,
+    JobMatch,
     Message,
     ProjectCandidate,
     new_id,
@@ -28,6 +31,7 @@ from ..outreach.history import (
     candidate_history_stats,
     candidate_timeline,
     contact_rollup_subquery,
+    intake_events_for_candidate,
 )
 from ..repository import owner_of_email, upsert_candidates
 from ..schemas import (
@@ -40,6 +44,7 @@ from ..schemas import (
     CandidatePatch,
     CandidateSummary,
     CandidateTimelineOut,
+    EventOut,
     HistoryStatsOut,
     MessageOut,
     ThreadOut,
@@ -148,10 +153,10 @@ def _actor_name(db: Session, principal: Principal) -> str:
 
 
 def _validate_grid_params(scope, sort, direction, relationship):
-    if scope not in ("all", "crm"):
+    if scope not in ("all", "crm", "voice_intake"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="scope must be one of: all, crm",
+            detail="scope must be one of: all, crm, voice_intake.",
         )
     if sort not in SORT_KEYS:
         raise HTTPException(
@@ -168,6 +173,50 @@ def _validate_grid_params(scope, sort, direction, relationship):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"relationship must be one of: {', '.join(RELATIONSHIPS)}",
         )
+
+
+def _in_voice_intake_scope():
+    """Anyone with a preference or an attributed intake call.
+
+    Preference is the matching record; a call without one still belongs on
+    this grid because a human has to attribute or review it. Sourced-pool
+    contacts who were never called stay out.
+    """
+    return exists(
+        select(CandidatePreference.id).where(CandidatePreference.candidate_id == Candidate.id)
+    ) | exists(select(IntakeCall.id).where(IntakeCall.candidate_id == Candidate.id))
+
+
+def _decorate_intake(db: Session, org_id: str, summaries: list[CandidateSummary]) -> None:
+    ids = [row.id for row in summaries]
+    prefs = {
+        pref.candidate_id: pref
+        for pref in db.scalars(
+            select(CandidatePreference).where(
+                CandidatePreference.org_id == org_id,
+                CandidatePreference.candidate_id.in_(ids),
+            )
+        )
+    }
+    counts: dict[str, int] = dict(
+        db.execute(
+            select(JobMatch.candidate_id, func.count())
+            .where(
+                JobMatch.org_id == org_id,
+                JobMatch.candidate_id.in_(ids),
+                JobMatch.status != "dismissed",
+            )
+            .group_by(JobMatch.candidate_id)
+        ).all()
+    )
+    for summary in summaries:
+        pref = prefs.get(summary.id)
+        if pref is None:
+            continue
+        summary.intake_timeline = pref.timeline or None
+        summary.intake_target_comp = pref.target_total or pref.target_base
+        summary.intake_confirmed = pref.confirmed_at is not None
+        summary.intake_match_count = int(counts.get(summary.id, 0))
 
 
 def _in_crm_scope():
@@ -245,6 +294,8 @@ def _candidate_query(
         stmt = stmt.where(Candidate.seniority.in_(seniority))
     if scope == "crm":
         stmt = stmt.where(_in_crm_scope())
+    elif scope == "voice_intake":
+        stmt = stmt.where(_in_voice_intake_scope())
     if needs_name:
         # Promotion falls back to the address when nothing carried a name, so
         # an @ in the full name is exactly "we never learned who this is".
@@ -335,7 +386,7 @@ def list_candidates(
     q: str | None = Query(default=None, description="Substring match on name, title or company"),
     skill: list[str] | None = Query(default=None),
     seniority: list[str] | None = Query(default=None),
-    scope: str = Query(default="all", description="all (sourced pool) | crm"),
+    scope: str = Query(default="all", description="all (sourced pool) | crm | voice_intake"),
     sort: str = Query(default="name"),
     dir: str = Query(default="asc", description="asc | desc"),
     relationship: str | None = Query(default=None),
@@ -408,6 +459,8 @@ def list_candidates(
             found = stats.get(summary.id)
             if found is not None:
                 summary.history = HistoryStatsOut(**found.__dict__)
+    if scope == "voice_intake" and summaries:
+        _decorate_intake(db, principal.org_id, summaries)
     return summaries
 
 
@@ -669,6 +722,9 @@ def get_candidate_timeline(
     stats, threads = candidate_timeline(
         db, org_id=principal.org_id, candidate_id=candidate_id, limit=limit
     )
+    events = intake_events_for_candidate(
+        db, org_id=principal.org_id, candidate_id=candidate_id
+    )
     return CandidateTimelineOut(
         stats=HistoryStatsOut(**stats.__dict__),
         threads=[
@@ -680,6 +736,7 @@ def get_candidate_timeline(
             )
             for thread in threads
         ],
+        events=[EventOut.model_validate(row) for row in events],
     )
 
 

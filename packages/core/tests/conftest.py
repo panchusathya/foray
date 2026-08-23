@@ -111,6 +111,10 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("EXA_API_KEY", "")
+    # Doubles as the voice webhook signing secret. A real key here would make
+    # the signature tests depend on whoever ran them.
+    monkeypatch.setenv("RETELL_API_KEY", "")
+    monkeypatch.setenv("VOICE_PROVIDER", "retell")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
     # Retry logic is asserted by call counts, so don't actually sleep for it.
@@ -118,6 +122,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
+    from juicebox.intake.providers import set_voice_provider
     from juicebox.integrations.foray import reset_foray, set_foray
     from juicebox.integrations.providers import reset_providers
     from juicebox.jobmatch.exa import reset_exa
@@ -142,6 +147,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_providers()
     reset_channels()
     reset_foray()
+    set_voice_provider(None)
 
     if TEST_DATABASE_URL:
         # One shared database, so wipe it between tests instead of relying on a
@@ -172,6 +178,8 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     # think enrichment is configured when the deployment has no token.
     set_foray(None)
     reset_foray()
+    # A test that injected a fake voice provider must not leak it forward.
+    set_voice_provider(None)
 
 
 @pytest.fixture

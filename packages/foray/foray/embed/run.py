@@ -99,6 +99,22 @@ async def amain(args: argparse.Namespace) -> int:
             left join raw_profiles rg on rg.candidate_id = c.id and rg.source = 'github'
             left join raw_profiles rl on rl.candidate_id = c.id and rl.source = 'linkedin'
             where c.merged_into is null
+              -- An inadmissible row never earns a vector. enrich/derive.py's
+              -- admission() owns the rule (a title plus one corroborating
+              -- fact, or GitHub evidence with >=1 non-fork repo); this query
+              -- only tests the stored flag. Prod scale of the leak: 24,698
+              -- LinkedIn rows with no title, no about-text and no experience
+              -- entries hold an embedding today, and every one of them is a
+              -- neighbour the HNSW graph can return for any query.
+              --
+              -- This clause only stops NEW work. Cleaning up the rows that are
+              -- ALREADY embedded — nulling embedding/embed_blob, then
+              -- `reindex index concurrently ix_candidates_embedding` because
+              -- HNSW does not reclaim deleted vectors until rebuilt — is a
+              -- prod runbook step in a maintenance window (it needs the
+              -- /dev/shm bump), deliberately NOT something this code does: a
+              -- reindex triggered by a nightly embed run is an outage.
+              and s.search_eligible
             {"" if args.all else changed}
             order by c.id
             """

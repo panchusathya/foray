@@ -11,6 +11,28 @@ repos:
         # per-file-ignores paths correctly. Forcing one config from the repo
         # root breaks both.
         files: ^(packages/core|packages/foray|eval)/.*\.py$
+  - repo: local
+    hooks:
+      # CI type-checks foray's pure ranking core, but nothing did so locally,
+      # so the repo's verify-locally-then-push-with-[skip ci] flow type-checked
+      # nothing unless someone remembered to run mypy by hand. e9b962c shipped
+      # 7 strict-mode errors that way and left main red until an unrelated PR
+      # ran CI and inherited them.
+      - id: mypy-foray
+        name: mypy (foray ranking core)
+        language: python
+        # Keep in step with the mypy pinned in packages/foray/uv.lock, for the
+        # same reason as ruff above: a version skew makes the hook and the CI
+        # type-check step disagree about what is an error.
+        additional_dependencies: ["mypy==2.3.1"]
+        # `files` and `strict` live in packages/foray/pyproject.toml with paths
+        # relative to it, and there is no config at the repo root, so cd there
+        # and pass no filenames -- the exact invocation of the CI mypy step.
+        # The three modules are stdlib-only (import-linter keeps them that
+        # way), so the hook env needs no project dependencies.
+        entry: bash -c 'cd packages/foray && exec mypy'
+        pass_filenames: false
+        files: ^packages/foray/foray/(rank|search_doc|evidence)\.py$
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.27.2
     hooks:

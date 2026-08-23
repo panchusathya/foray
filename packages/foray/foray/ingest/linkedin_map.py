@@ -28,6 +28,42 @@ _MONTHS = {
 # position values that are noise, not titles (lowercased comparison).
 _JUNK_TITLES = {"", "--", "-", "set at linkedin", "retired", "n/a", "none"}
 
+# Real 2-3 char titles that appear in this corpus and must survive the
+# short-title junk rule below. The trade-off is deliberate: legitimate
+# ultra-short titles exist ("SWE at Google", a bare "CTO"), so we name the
+# ones the corpus actually uses; everything else that short ("SET", "N/A",
+# "..", "-") is export noise, and an unlisted-but-real rarity (say "CIO")
+# costs only a NULL title on that row, not a dropped candidate.
+_SHORT_TITLE_ALLOWLIST = {
+    "swe", "sde", "cto", "ceo", "coo", "cfo", "vp", "sre", "ml", "qa",
+    "pm", "em", "dev",
+}
+
+
+def _junk_role_title(title: str, company: str) -> bool:
+    """True when a title string is export noise rather than a real job title.
+
+    Applied to BOTH structured role titles and the ``position`` fallback —
+    _JUNK_TITLES alone only ever caught the fallback: the phrase
+    "set at linkedin" lives in ``position``, while the same artifact arrives
+    structurally as ``{"title": "SET", "company": "LinkedIn"}`` and used to
+    sail through best_title into candidate_signals.title, the weight-A
+    tsvector and the embed blob.
+    """
+    lowered = title.strip().lower()
+    if lowered in _JUNK_TITLES:
+        return True
+    # The Bright Data test-bot artifact: 5,462 prod rows carry title='SET'
+    # with employer='LinkedIn' (which is how 'LinkedIn' became the corpus's
+    # #1 employer at 6,180 rows, ahead of Google's 2,630). In the sample
+    # these records are literal bot fixtures ("Johnxxxxx Doe"), the phantom
+    # role is always undated, and 43/44 have it as their ONLY experience.
+    if lowered == "set" and company.strip().lower() == "linkedin":
+        return True
+    # General net for the same class of noise: ultra-short titles are junk
+    # unless the corpus-validated allowlist says otherwise.
+    return len(lowered) <= 3 and lowered not in _SHORT_TITLE_ALLOWLIST
+
 # current_company names that are placeholders, not employers (lowercased
 # comparison). Deliberately minimal: "stealth" / "stealth startup",
 # "self-employed" and "freelance" are NOT junk -- they carry real signal (a
@@ -196,20 +232,22 @@ def flatten_experience(record: dict) -> list[Role]:
 def best_title(record: dict, roles: list[Role] | None = None) -> str | None:
     roles = flatten_experience(record) if roles is None else roles
     for role in roles:
-        if role.title and role.title.lower() not in _JUNK_TITLES:
+        # Each role's own company feeds the junk check so the structured
+        # SET/LinkedIn artifact is caught here, not just in the fallback.
+        if role.title and not _junk_role_title(role.title, role.company):
             return role.title[:200]
     position = (record.get("position") or "").strip()
     company = (record.get("current_company_name") or "").strip()
     if (
         position
-        and position.lower() not in _JUNK_TITLES
+        and not _junk_role_title(position, company)
         and position.lower() != company.lower()
     ):
         return position[:200]
     return None
 
 
-def employer_of(record: dict) -> str | None:
+def employer_of(record: dict, roles: list[Role] | None = None) -> str | None:
     current = record.get("current_company") or {}
     name = (current.get("name") if isinstance(current, dict) else "") or ""
     name = name.strip() or (record.get("current_company_name") or "").strip()
@@ -217,6 +255,23 @@ def employer_of(record: dict) -> str | None:
     # never reaches candidate_signals, the tsvector or the embedding blob.
     if name.lower() in _JUNK_EMPLOYERS:
         return None
+    # The SET/LinkedIn phantom rows carry current_company={"name":"LinkedIn"}
+    # from the same Bright Data test fixture that wrote the junk title
+    # (sample: 44/44 phantom records had it) — the employer claim has the
+    # same provenance as the junk title, so it falls with it. Genuine
+    # LinkedIn employees in the export are distinguishable by at least one
+    # LinkedIn role with a real (non-junk) title, usually dated; the phantom
+    # records' only LinkedIn-attributed role is the undated SET entry.
+    if name.lower() == "linkedin":
+        roles = flatten_experience(record) if roles is None else roles
+        linkedin_roles = [r for r in roles if r.company.strip().lower() == "linkedin"]
+        has_phantom = any(r.title.strip().lower() == "set" for r in linkedin_roles)
+        has_real_role = any(
+            r.title and not _junk_role_title(r.title, r.company)
+            for r in linkedin_roles
+        )
+        if has_phantom and not has_real_role:
+            return None
     return name[:200] or None
 
 
@@ -242,6 +297,156 @@ def tenure_months(roles: list[Role], *, asof: datetime) -> int | None:
     if start is None:
         return None
     return max(0, int((asof - start).days / 30.44))
+
+
+# ------------------------------------------------------- the derived facets --
+#
+# Everything below exposes facts this module ALREADY computed and threw away.
+# ``Role.current`` in particular has been computed in flatten_experience since
+# day one and read by nobody: current_role_start uses it, and the complement --
+# the roles a person is NOT in any more, i.e. their career history -- was
+# discarded on every one of 196,778 profiles. ``past_employers`` is that fix.
+#
+# Caps are per-column, not one shared number, because the columns have very
+# different real fan-out (measured on data/in/linkedin_sample.jsonl, 2,000
+# records): 2,118 education entries across 1,129 records is ~1.9 each, while
+# experience routinely runs past 10 roles. The caps exist so a GIN index entry
+# stays bounded and one pathological profile cannot dominate an index page.
+MAX_PAST_EMPLOYERS = 12
+MAX_ROLE_TITLES = 12
+MAX_SCHOOLS = 6
+MAX_DEGREES = 6
+MAX_FIELDS_OF_STUDY = 6
+
+# Same 200-char clamp best_title/employer_of apply, for the same reason: the
+# export puts whole headlines in title fields.
+_FACET_MAX_CHARS = 200
+
+
+def _dedupe_capped(values, cap: int) -> list[str]:
+    """Order-stable, case-insensitive dedupe, then cap. Order is STABLE on
+    purpose: experience arrives newest-first, so a truncated past_employers
+    keeps the recent employers a recruiter is actually asking about, and the
+    parse echo shows the list in the order the profile states it."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = (raw or "").strip()[:_FACET_MAX_CHARS]
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def past_employers(roles: list[Role]) -> list[str]:
+    """Companies from NON-current roles — the career history.
+
+    Current employer already has its own column (``employer``); this is the
+    complement, which is what makes "ex-Google" answerable at all. A role with
+    no end_date is current by flatten_experience's rule, so the *current*
+    employer is excluded here even when a person holds several roles at once.
+
+    _JUNK_EMPLOYERS is applied for the same reason employer_of applies it: a
+    "Confidential Company" entry would otherwise become a searchable employer
+    on a GIN index.
+    """
+    return _dedupe_capped(
+        (
+            role.company
+            for role in roles
+            if not role.current and role.company.strip().lower() not in _JUNK_EMPLOYERS
+        ),
+        MAX_PAST_EMPLOYERS,
+    )
+
+
+def role_titles(roles: list[Role]) -> list[str]:
+    """EVERY title held, junk-filtered. ``title`` on candidate_signals is only
+    the best ONE, so a search for "was a data engineer before moving into
+    management" had nothing to match. Reuses _junk_role_title rather than
+    re-filtering, so the SET/LinkedIn phantom cannot come back through a
+    second door."""
+    return _dedupe_capped(
+        (
+            role.title
+            for role in roles
+            if role.title and not _junk_role_title(role.title, role.company)
+        ),
+        MAX_ROLE_TITLES,
+    )
+
+
+def current_titles(roles: list[Role]) -> list[str]:
+    """Titles of CURRENT roles only. Separate from role_titles because "is a
+    staff engineer" and "has ever been a staff engineer" are different
+    questions and a single column cannot answer both. Plural because
+    concurrent roles are common (advisor + operator, contractor at two
+    clients)."""
+    return _dedupe_capped(
+        (
+            role.title
+            for role in roles
+            if role.current
+            and role.title
+            and not _junk_role_title(role.title, role.company)
+        ),
+        MAX_ROLE_TITLES,
+    )
+
+
+def education(record: dict) -> tuple[list[str], list[str], list[str]]:
+    """``(schools, degrees, fields_of_study)`` from ``record["education"][]``.
+
+    MEASURED COVERAGE on data/in/linkedin_sample.jsonl (2,000 records, 2,118
+    education entries) — the three lists are NOT equally fillable and the
+    facets built on them must not pretend otherwise:
+
+      * ``education[]`` non-empty: 56.5% of records
+      * ``.title`` (the school name) non-empty: 58.7% of entries
+        -> at least one school on 55.1% of RECORDS
+      * ``.degree`` non-empty: 11.2% of entries -> 6.5% of records
+      * ``.field`` non-empty:  7.5% of entries -> 5.2% of records
+
+    So schools is a real facet and degrees/fields_of_study are, on this export,
+    close to empty. They are still derived and stored because they cost one
+    array each and a richer future export fills them for free, but a
+    degree/field FILTER would be a source filter in disguise on today's data:
+    a hard predicate matching 6% of the corpus deletes the 94% that simply
+    never had the field, exactly as ``primary_language = any(...)`` deletes
+    every LinkedIn row. Unknown must pass by default.
+
+    Note the shape trap: the school NAME lives in ``.title``, not ``.school``
+    or ``.name``. ``.degree`` is free text as typed ("Bachelor's degree",
+    "Bachelor of Science - BS", "BS", "MBA") — canonicalising that is
+    vocab.py's job, not this module's.
+    """
+    entries = [e for e in (record.get("education") or []) if isinstance(e, dict)]
+    schools = _dedupe_capped((e.get("title") for e in entries), MAX_SCHOOLS)
+    degrees = _dedupe_capped((e.get("degree") for e in entries), MAX_DEGREES)
+    fields = _dedupe_capped((e.get("field") for e in entries), MAX_FIELDS_OF_STUDY)
+    return schools, degrees, fields
+
+
+def country_code(record: dict) -> str | None:
+    """ISO-3166 alpha-2, uppercased, or None.
+
+    Present on 100% of the sample (US 98.8%, then MX/AR/CR/DO) — which is the
+    same field is_target_geo already uses to tell the US San Francisco from the
+    San Franciscos in Mexico, Argentina and Costa Rica. Exposing it as a column
+    means a metro filter no longer has to carry that disambiguation itself.
+
+    Anything that is not exactly two letters returns None rather than being
+    stored: a truncated or free-text value in an equality-filtered column is
+    worse than an honest unknown.
+    """
+    code = (record.get("country_code") or "").strip().upper()
+    return code if len(code) == 2 and code.isalpha() else None
 
 
 def is_target_geo(record: dict) -> bool:
@@ -312,6 +517,6 @@ def to_import_row(record: dict) -> ImportRow | None:
         location_raw=(record.get("city") or "").strip() or None,
         linkedin_url=url,
         title=best_title(record, roles),
-        employer=employer_of(record),
+        employer=employer_of(record, roles),
         emails=business_emails(record),
     )

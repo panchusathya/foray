@@ -282,3 +282,31 @@ intake extractor, five runs each, that generalise past this subsystem:
   `json_schema` request and `provider.require_parameters`. The heuristic fallback
   is load-bearing, not decoration -- which is also why it must never fill
   `must_have_skills`, `highlights`, or consent.
+
+### What the first live call taught us
+
+223 seconds, real candidate, 2026-08-22. The mechanism worked -- the gate drove
+the questions, the agent wrapped up when it closed, a mid-call comp retraction
+("five hundred k... actually, I won't tell you") was correctly recorded as
+declined rather than as $500k, and asked to read back the caller's own details
+the agent refused. Four things were wrong, and three are the same thing:
+
+- **A model fills required fields it was never given evidence for.** Nobody
+  asked about work authorisation; the model wrote `"unknown"`, which `is_filled`
+  counts as present, so the gate closed on an unasked and client-blocking
+  question. Nobody asked for permission to share; the model returned `true`.
+  Free-text fields now reject placeholders (`_PLACEHOLDERS`), and consent
+  requires `ok_to_share_verbatim` -- **quote or it did not happen**. Apply that
+  pattern to any field where fabrication is worse than absence.
+- **The fallback is where wrong answers live.** `timeline_verbatim` is bucketed
+  in code, but when the quote maps to no bucket the model's own choice is used --
+  and on "if I find the right role I might start soon, but if not I'm okay to
+  stay" it chose `under_1_month`, which puts a browsing candidate in front of a
+  client hiring now. Conditional phrasing is now explicitly exploratory, and a
+  bucket that came from the model rather than the mapping is flagged low
+  confidence so it never looks as solid as a derived one.
+- **A real title has to survive the taxonomy.** "Member of technical staff"
+  noise-stripped to `member technical`, which matches no posting -- losing the
+  entire point of sharing a vocabulary with the JD parser. Aliased to `software
+  engineer`. When intake meets a title the taxonomy mangles, fix
+  `TITLE_ALIASES`; do not let the intake side keep a private spelling.

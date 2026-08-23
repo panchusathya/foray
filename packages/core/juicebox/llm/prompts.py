@@ -780,6 +780,7 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "highlights",
         "confidential_items",
         "ok_to_share_with_clients",
+        "ok_to_share_verbatim",
         "declined",
         "low_confidence",
     ],
@@ -848,7 +849,9 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Their stated right to work, e.g. 'us citizen', 'green card', "
-                "'h-1b transfer needed', 'uk right to work'. Their words, nothing inferred."
+                "'h-1b transfer needed', 'uk right to work'. Their words, nothing "
+                "inferred. Leave it EMPTY if it never came up -- never write "
+                "'unknown' or 'not specified'."
             ),
         },
         "willing_to_relocate": {
@@ -915,7 +918,19 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "confidential_items": _string_array("Things they asked us not to repeat."),
         "ok_to_share_with_clients": {
             "type": ["boolean", "null"],
-            "description": "Whether we may represent them to companies. Null if unasked.",
+            "description": (
+                "Whether we may represent them to companies. Null unless it was "
+                "actually discussed -- do not infer it from a cooperative tone."
+            ),
+        },
+        "ok_to_share_verbatim": {
+            "type": "string",
+            "description": (
+                "The exact words in which they gave or refused permission to be "
+                "shared with companies. Empty if it never came up. A true "
+                "ok_to_share_with_clients is ignored without a quote here, so do "
+                "not guess: quote it or leave both empty."
+            ),
         },
         "declined": {
             "type": "array",

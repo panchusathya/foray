@@ -310,6 +310,88 @@ class TestTimelineBucketing:
         assert _bucket_timeline(said) == bucket
 
 
+class TestFromARealCall:
+    """Regressions from the first live call, 2026-08-22, 223 seconds.
+
+    Every one is a cheap model filling a field it had no evidence for, or a
+    taxonomy gap that made a real answer unmatchable. The transcript is the
+    specification here: these are not hypotheticals.
+    """
+
+    def test_a_placeholder_does_not_close_a_required_field(self):
+        """The agent never asked about work authorisation. The model wrote
+        "unknown", which `is_filled` counts as present, so the gate closed on an
+        unasked question -- and a client-blocking one."""
+        record = normalize_record({"work_authorization": "unknown"})
+        assert record["work_authorization"] == ""
+        assert "work_authorization" in coverage(record).required_missing
+
+    @pytest.mark.parametrize(
+        "placeholder", ["unknown", "N/A", "not specified", "Not discussed", "-", "null"]
+    )
+    def test_placeholder_spellings_are_all_rejected(self, placeholder):
+        assert normalize_record({"work_authorization": placeholder})["work_authorization"] == ""
+
+    def test_a_real_answer_is_not_mistaken_for_a_placeholder(self):
+        assert normalize_record({"work_authorization": "us citizen"})[
+            "work_authorization"
+        ] == "us citizen"
+
+    def test_consent_without_a_quote_is_discarded(self):
+        """Sharing permission was never discussed and the model returned true
+        anyway. Quote or it did not happen."""
+        record = normalize_record({"ok_to_share_with_clients": True})
+        assert record["ok_to_share_with_clients"] is None
+        assert "ok_to_share_with_clients" in coverage(record).required_missing
+
+    def test_consent_with_a_quote_is_kept(self):
+        record = normalize_record(
+            {"ok_to_share_with_clients": True, "ok_to_share_verbatim": "Yes, go ahead."}
+        )
+        assert record["ok_to_share_with_clients"] is True
+
+    def test_an_explicit_refusal_needs_no_quote(self):
+        """False is never the convenient answer, so nothing is gained by
+        fabricating it -- and demanding a quote would lose a real refusal."""
+        assert normalize_record({"ok_to_share_with_clients": False})[
+            "ok_to_share_with_clients"
+        ] is False
+
+    def test_a_conditional_timeline_is_exploratory(self):
+        """Verbatim from the call. The model answered under_1_month, which puts a
+        browsing candidate in front of a client hiring now."""
+        record = normalize_record(
+            {
+                "timeline": "under_1_month",
+                "timeline_verbatim": (
+                    "If I find the right role, I might wanna start soon. "
+                    "But if not, I'm okay to stay."
+                ),
+            }
+        )
+        assert record["timeline"] == "exploratory"
+
+    def test_member_of_technical_staff_is_matchable(self):
+        """Noise-stripping reduced it to "member technical", which matches no
+        posting -- losing the whole point of sharing a vocabulary with the JD
+        parser, for a title a real candidate actually said."""
+        from juicebox.enrich import taxonomy as tx
+
+        assert tx.normalize_title("Member of technical staff") == "software engineer"
+        assert tx.normalize_title("MTS") == "software engineer"
+
+    def test_a_model_chosen_timeline_bucket_is_flagged(self, scripted_llm):
+        """When the quote maps to nothing, the model's bucket is used and nothing
+        deterministic vouches for it. Say so."""
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "1_3_months"
+        payload["timeline_verbatim"] = "sometime after the reorg settles"
+        scripted_llm(default=payload)
+        result = extract_intake(COMPLETE_TRANSCRIPT)
+        assert result.record["timeline"] == "1_3_months"
+        assert "timeline" in result.low_confidence
+
+
 class TestDefensiveCoercion:
     """Schema-constrained calls still arrive through here from replays, scripted
     fakes and future schema revisions. A wrong type must not reach the DB."""
@@ -472,10 +554,15 @@ class TestDisagreement:
         assert diff_records(record, record) == {}
 
     def test_a_changed_field_is_reported_with_both_readings(self):
+        # Deliberately not `timeline`: that one is derived from the quote, so two
+        # extractions of the same call agree no matter what bucket each chose.
         a = normalize_record(COMPLETE_PAYLOAD)
-        b = normalize_record({**COMPLETE_PAYLOAD, "timeline": "immediate"})
+        b = normalize_record({**COMPLETE_PAYLOAD, "employment_status": "employed_open"})
         diff = diff_records(a, b)
-        assert diff["timeline"] == {"a": "under_1_month", "b": "immediate"}
+        assert diff["employment_status"] == {
+            "a": "employed_searching",
+            "b": "employed_open",
+        }
 
     def test_list_order_is_not_a_disagreement(self):
         a = normalize_record(COMPLETE_PAYLOAD)

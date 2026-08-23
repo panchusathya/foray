@@ -418,6 +418,7 @@ def empty_record() -> dict[str, Any]:
         "highlights": [],
         "confidential_items": [],
         "ok_to_share_with_clients": None,
+        "ok_to_share_verbatim": "",
         "declined": [],
     }
 

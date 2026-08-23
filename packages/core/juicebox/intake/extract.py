@@ -135,6 +135,15 @@ def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> Extracti
 
     record = normalize_record(result.data)
     low = _valid_keys(result.data.get("low_confidence"))
+    # The model's own bucket was used because the quote did not map to one, so
+    # nothing deterministic vouches for this value. Say so rather than let a
+    # required field look as solid as the ones we derived.
+    if (
+        record["timeline"]
+        and not _bucket_timeline(record["timeline_verbatim"])
+        and "timeline" not in low
+    ):
+        low = (*low, "timeline")
     state = coverage(record)
     review, reason = _review_verdict(
         extractor=EXTRACTOR_LLM, low_confidence=low, state=state, record=record
@@ -180,14 +189,31 @@ def normalize_record(payload: dict[str, Any]) -> dict[str, Any]:
     record["reason_for_looking"] = _text(payload.get("reason_for_looking"))
     record["urgency_driver"] = _text(payload.get("urgency_driver"))
     record["comp_flexibility_notes"] = _text(payload.get("comp_flexibility_notes"))
-    record["work_authorization"] = _text(payload.get("work_authorization")).lower()
+    # A placeholder is not an answer. In a real call the agent never asked about
+    # work authorisation and the model wrote "unknown", which `is_filled` counts
+    # as present -- so the gate closed on a required question nobody had asked,
+    # and a client-blocking one at that ("can I hire them without a visa?").
+    record["work_authorization"] = _no_placeholder(
+        _text(payload.get("work_authorization")).lower()
+    )
     record["comp_currency"] = _text(payload.get("comp_currency")).upper()[:8]
 
     record["target_base"] = _money(payload.get("target_base"))
     record["target_total"] = _money(payload.get("target_total"))
 
     record["willing_to_relocate"] = _tribool(payload.get("willing_to_relocate"))
-    record["ok_to_share_with_clients"] = _tribool(payload.get("ok_to_share_with_clients"))
+
+    # Quote or it did not happen. In a real call the agent never asked for
+    # permission to share and the model returned `true` anyway -- the third time
+    # a cheap model has filled a field it was never given evidence for, and the
+    # costliest one to get wrong. Requiring the exchange to be quotable turns
+    # "the model asserted it" into "the transcript contains it", which is the
+    # only version of consent worth storing.
+    record["ok_to_share_verbatim"] = _text(payload.get("ok_to_share_verbatim"))
+    claimed = _tribool(payload.get("ok_to_share_with_clients"))
+    record["ok_to_share_with_clients"] = (
+        claimed if (claimed is False or record["ok_to_share_verbatim"]) else None
+    )
 
     record["active_processes"] = _dicts(
         payload.get("active_processes"), ("company", "stage", "expected_decision")
@@ -231,7 +257,16 @@ _TIMELINE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("under_1_month", r"\b(two weeks|2 weeks|couple of weeks|few weeks|within a month|next month|this month)\b"),
     ("1_3_months", r"\b(next quarter|couple of months|two months|three months|few months|2-3 months)\b"),
     ("3_6_months", r"\b(six months|6 months|end of the year|later this year|next year)\b"),
-    ("exploratory", r"\b(just looking|no rush|not in a hurry|keeping an eye|exploring|casually looking|testing the waters)\b"),
+    # Conditional and non-committal answers are exploratory, not urgent. "If I
+    # find the right role I might start soon, but if not I'm okay to stay" came
+    # from a real call, and the model bucketed it as under_1_month -- which puts
+    # a browsing candidate in front of a client who is hiring now.
+    (
+        "exploratory",
+        r"\b(just looking|no rush|not in a hurry|keeping an eye|exploring|casually looking"
+        r"|testing the waters|it depends|okay to stay|ok to stay|happy where i am"
+        r"|not sure yet|no timeline|if i find the right|for the right (role|thing|one))\b",
+    ),
 )
 
 # Ordered: the first match wins, so the least ambiguous statements come first.
@@ -595,6 +630,35 @@ def _comparable(value: Any) -> Any:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+# Things a model writes into a free-text field instead of leaving it empty.
+# Every one of these reads as "filled" to the coverage gate, which is how a
+# required question stops being asked.
+_PLACEHOLDERS = frozenset(
+    {
+        "-",
+        "n/a",
+        "na",
+        "none",
+        "none specified",
+        "not asked",
+        "not discussed",
+        "not mentioned",
+        "not provided",
+        "not specified",
+        "not stated",
+        "null",
+        "unclear",
+        "undisclosed",
+        "unknown",
+        "unspecified",
+    }
+)
+
+
+def _no_placeholder(value: str) -> str:
+    return "" if value.strip().lower() in _PLACEHOLDERS else value
 
 
 def _enum(value: Any, allowed: tuple[str, ...]) -> str:

@@ -1178,6 +1178,13 @@ class CandidatePreference(Base, TimestampMixin):
     source_call_id: Mapped[str | None] = mapped_column(
         ForeignKey("intake_calls.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Sibling of source_call_id rather than a polymorphic source_type/source_id
+    # pair: a real FK per channel keeps the cascade and the join honest, and
+    # exactly one of the two is set. Both are SET NULL, so deleting the
+    # conversation drops the provenance and keeps the preferences.
+    source_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # ParsedQuery-shaped, same as JobPosting.parsed_spec.
     spec: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -1260,3 +1267,167 @@ class CandidatePhone(Base):
     phone: Mapped[str] = mapped_column(String(32))
     # 0 is the number Candidate.phones lists first.
     position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class IntakeThread(Base, TimestampMixin):
+    """One text intake conversation, however long it stays open.
+
+    A sibling of ``IntakeCall`` rather than a ``channel`` column on it. A call
+    is a bounded session with a duration, a recording, and a transcript that
+    arrives once at the end. A thread has many inbound events, can go dormant
+    for a week and resume, and never has a duration -- folding both into one
+    table leaves half its columns permanently null on either side. Unifying
+    them behind an ``IntakeSession`` is a fair refactor after the voice branch
+    lands; before that, a rename is a guaranteed merge conflict.
+
+    ``record`` is the load-bearing difference. A call extracts once, from a
+    finished transcript. A thread has to answer "what do we still owe?" before
+    *every* outbound message, so the merged record lives here and is rewritten
+    each turn. It is the shape ``intake.schema.empty_record()`` produces, so
+    ``coverage()`` reads it with no adapter.
+
+    ``org_id`` is resolved from a signed widget token or the number that was
+    texted, never from the request body -- the person on the other end is
+    unauthenticated, and a payload-supplied org is a cross-tenant write.
+    """
+
+    __tablename__ = "intake_threads"
+    __table_args__ = (
+        # Same contract as intake_calls.provider_call_id, for the same reason:
+        # inbound webhooks are retried. Partial because the web channel has no
+        # external conversation id to supply, and blank must not collide with
+        # blank.
+        Index(
+            "uq_intake_threads_provider_id",
+            "provider",
+            "provider_thread_id",
+            unique=True,
+            sqlite_where=text("provider_thread_id != ''"),
+            postgresql_where=text("provider_thread_id != ''"),
+        ),
+        Index("ix_intake_threads_org_status", "org_id", "status"),
+        Index("ix_intake_threads_org_created", "org_id", "created_at"),
+        # How an inbound text finds the thread it belongs to, and how a STOP
+        # from a stranger is remembered when there is no candidate to suppress.
+        Index("ix_intake_threads_channel_from", "channel", "from_address"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ithread"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    # Nullable for the same reason IntakeCall's is: a stranger who opens the
+    # widget has no candidate row, and the conversation has to be recorded
+    # before we decide whether to create one.
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # web | sms. A plain string, not an enum, so a new channel needs no
+    # migration -- IntakeCall.provider is a string for the same reason.
+    channel: Mapped[str] = mapped_column(String(16), default="web")
+    provider: Mapped[str] = mapped_column(String(32), default="native")
+    provider_thread_id: Mapped[str] = mapped_column(String(200), default="")
+    entry_point: Mapped[str] = mapped_column(String(24), default="web_widget")
+
+    # E.164 for sms, empty for web. to_address is what resolves the org on an
+    # inbound text, so it is stored even when the sender is unknown.
+    from_address: Mapped[str] = mapped_column(String(64), default="")
+    to_address: Mapped[str] = mapped_column(String(64), default="")
+
+    # active | complete | stopped. Dormancy is deliberately not a status: it is
+    # derived from last_inbound_at, so there is no state to keep in step with
+    # the clock and a thread cannot be "dormant" and freshly answered at once.
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    # TCPA: prior express consent before the first outbound text. On web the
+    # person opened the widget and typed, which is the consent; on SMS it has
+    # to come from somewhere else, and the channel refuses to send without it.
+    consent_messaging: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Identity, asked in the thread and kept off the preference spec on
+    # purpose: a name is not a hiring preference and ParsedQuery has no field
+    # for one. These feed the candidate upsert once the gate closes.
+    contact_name: Mapped[str] = mapped_column(String(240), default="")
+    contact_email: Mapped[str] = mapped_column(String(255), default="")
+
+    # The merged intake record, same shape as intake.schema.empty_record().
+    record: Mapped[dict] = mapped_column(JSON, default=dict)
+    extractor: Mapped[str] = mapped_column(String(32), default="")
+    schema_version: Mapped[str] = mapped_column(String(32), default="")
+
+    required_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    fields_missing: Mapped[list] = mapped_column(JSON, default=list)
+    low_confidence: Mapped[list] = mapped_column(JSON, default=list)
+    review_needed: Mapped[bool] = mapped_column(Boolean, default=True)
+    review_reason: Mapped[str] = mapped_column(String(400), default="")
+
+    # The field the last outbound message asked about, and how many times each
+    # field has been asked. Both exist to stop the one failure mode that gets a
+    # number blocked: asking the same question again because the extractor
+    # could not read the answer.
+    last_field_asked: Mapped[str] = mapped_column(String(64), default="")
+    asked_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    inbound_count: Mapped[int] = mapped_column(Integer, default=0)
+    outbound_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_outbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    error: Mapped[str] = mapped_column(String(400), default="")
+
+
+class IntakeMessage(Base, TimestampMixin):
+    """One message in an intake thread, either direction.
+
+    ``seq`` orders the thread, not ``created_at``: two rows written in the same
+    transaction share a timestamp to the microsecond on some backends, and a
+    transcript assembled in the wrong order changes what the extractor reads.
+    """
+
+    __tablename__ = "intake_messages"
+    __table_args__ = (
+        # The sender's own message id is the idempotency key -- the precedent
+        # is Message.provider_native_id, partial index included, because our
+        # own outbound rows have no provider id and blank is not unique.
+        #
+        # Scoped to the thread, not the org as Message is. A mail provider's
+        # message id is unique across a tenant, but a web chat's id comes from
+        # the browser: two strangers both sending "1" would have the second
+        # message silently swallowed as a duplicate of the first. Thread scope
+        # is safe for a vendor id too, since one always arrives on its own
+        # thread.
+        Index(
+            "uq_intake_messages_thread_native_id",
+            "thread_id",
+            "provider_native_id",
+            unique=True,
+            sqlite_where=text("provider_native_id != ''"),
+            postgresql_where=text("provider_native_id != ''"),
+        ),
+        UniqueConstraint("thread_id", "seq", name="uq_intake_message_seq"),
+        Index("ix_intake_messages_thread", "thread_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("imsg"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    # No index=True: ix_intake_messages_thread below leads on thread_id and
+    # serves the same lookups, and a thread is always read in seq order.
+    thread_id: Mapped[str] = mapped_column(ForeignKey("intake_threads.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+
+    direction: Mapped[str] = mapped_column(String(16), default="inbound")
+    body: Mapped[str] = mapped_column(Text, default="")
+    provider_native_id: Mapped[str] = mapped_column(String(300), default="")
+
+    # Which intake field this outbound message asked about; blank on inbound
+    # and on anything that is not a question.
+    asked_field: Mapped[str] = mapped_column(String(64), default="")
+    # queued | sent | failed | received
+    status: Mapped[str] = mapped_column(String(24), default="received")
+    error: Mapped[str] = mapped_column(String(400), default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    raw: Mapped[dict] = mapped_column(JSON, default=dict)

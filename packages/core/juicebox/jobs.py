@@ -50,6 +50,14 @@ KIND_CRM_DISCOVERY = "crm.discovery"
 KIND_CRM_DISCOVERY_ONE = "crm.discovery.one"
 KIND_CRM_DISCOVERY_IMPORT = "crm.discovery.import"
 
+# One turn of a text intake thread. The web widget calls run_turn inline --
+# somebody is watching a typing indicator -- but a channel whose inbound
+# arrives by webhook must answer the vendor immediately and do the work
+# here, because extraction and delivery are both too slow for a webhook
+# response. Idempotent on the inbound message id, so a redelivered webhook
+# resolves to the job that already ran.
+KIND_INTAKE_TURN = "intake.thread.turn"
+
 OPEN_STATUSES = ("queued", "running")
 
 

@@ -24,6 +24,7 @@ from .routers import (
     job_discovery,
     job_matches,
     job_postings,
+    messaging,
     org,
     outreach,
     projects,
@@ -104,6 +105,10 @@ def create_app() -> FastAPI:
     app.include_router(crm.router)
     app.include_router(integrations.router)
     app.include_router(track.router)
+    app.include_router(messaging.router)
+    # Unauthenticated by design, like track: a candidate on a careers page
+    # has no principal. Every request carries an HMAC we minted.
+    app.include_router(messaging.chat_router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

@@ -1,0 +1,166 @@
+"""Candidate-facing chat, and the token that lets a website open one.
+
+Two routers with very different postures.
+
+``router`` is ordinary recruiter-authenticated API: it hands an org the signed
+token their marketing site embeds.
+
+``chat_router`` is **unauthenticated by design** -- a stranger on a careers page
+has no principal, exactly as an email client opening a tracking pixel has none.
+It follows ``routers/track.py``: every request carries an HMAC we minted, the
+org is taken from the *verified* half of that token and never from the body,
+and an unverifiable request is refused rather than served a default. The org is
+then loaded to confirm it still exists, so a signature over a deleted org does
+not open a conversation into nothing.
+
+The thread token is scoped to one thread and one purpose, so it cannot be
+replayed to open conversations against the org, and knowing a thread id is not
+enough to read or extend somebody else's intake.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from ..deps import CommittingRoute, Principal, get_db, get_principal
+from ..messaging.channels import WEB
+from ..messaging.conversation import run_turn
+from ..messaging.schemas import (
+    ChatMessageIn,
+    ChatMessageOut,
+    ChatSessionOut,
+    ChatStartIn,
+    WidgetTokenOut,
+)
+from ..messaging.threads import messages_of, open_thread, record_inbound
+from ..models import IntakeThread, Org
+from ..security import signed_intake_token, verify_intake_token
+
+PURPOSE_WIDGET = "intake-widget"
+PURPOSE_THREAD = "intake-thread"
+
+# A single conversation cannot be used as an unbounded write endpoint. Per-IP
+# limiting belongs at the edge (the deployment already fronts the API with
+# Caddy); this is the floor that holds without it.
+MAX_INBOUND_PER_THREAD = 200
+
+router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
+chat_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/chat", tags=["intake"])
+
+_UNAUTHORIZED = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
+)
+
+
+@router.get("/widget-token", response_model=WidgetTokenOut)
+def get_widget_token(
+    principal: Principal = Depends(get_principal),
+) -> WidgetTokenOut:
+    """The token this org's website embeds to open intake chats."""
+    return WidgetTokenOut(
+        token=f"{principal.org_id}.{signed_intake_token(PURPOSE_WIDGET, principal.org_id)}"
+    )
+
+
+def _org_from_widget_token(db: Session, token: str) -> Org:
+    # rpartition, not split: an org id never contains a dot but a signature is
+    # base64url, and splitting on the first dot would corrupt both halves the
+    # day that changes.
+    org_id, _, signature = (token or "").rpartition(".")
+    if not org_id or not signature:
+        raise _UNAUTHORIZED
+    if not verify_intake_token(PURPOSE_WIDGET, org_id, signature):
+        raise _UNAUTHORIZED
+    org = db.get(Org, org_id)
+    if org is None:
+        raise _UNAUTHORIZED
+    return org
+
+
+def _thread_from_token(db: Session, thread_id: str, token: str) -> IntakeThread:
+    if not verify_intake_token(PURPOSE_THREAD, thread_id, token):
+        raise _UNAUTHORIZED
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None:
+        raise _UNAUTHORIZED
+    return thread
+
+
+def _session_out(db: Session, thread: IntakeThread, *, action: str = "") -> ChatSessionOut:
+    return ChatSessionOut(
+        thread_id=thread.id,
+        thread_token=signed_intake_token(PURPOSE_THREAD, thread.id),
+        status=thread.status,
+        action=action,
+        required_complete=bool(thread.required_complete),
+        fields_missing=list(thread.fields_missing or []),
+        messages=[ChatMessageOut.model_validate(m) for m in messages_of(db, thread)],
+    )
+
+
+@chat_router.post("/sessions", response_model=ChatSessionOut, status_code=201)
+def start_session(payload: ChatStartIn, db: Session = Depends(get_db)) -> ChatSessionOut:
+    """Open a conversation and send the greeting plus the first question."""
+    org = _org_from_widget_token(db, payload.token)
+    thread = open_thread(
+        db,
+        org_id=org.id,
+        channel=WEB,
+        entry_point="web_widget",
+        # The person opened the widget and started typing. There is no
+        # unsolicited message here to have consented to.
+        consent_messaging=True,
+    )
+    result = run_turn(db, thread=thread)
+    return _session_out(db, thread, action=result.action)
+
+
+@chat_router.get("/sessions/{thread_id}", response_model=ChatSessionOut)
+def read_session(
+    thread_id: str,
+    token: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> ChatSessionOut:
+    """Resume. A week-old thread comes back exactly where it stopped."""
+    thread = _thread_from_token(db, thread_id, token)
+    return _session_out(db, thread)
+
+
+@chat_router.post("/sessions/{thread_id}/messages", response_model=ChatSessionOut)
+def post_message(
+    thread_id: str,
+    payload: ChatMessageIn,
+    db: Session = Depends(get_db),
+) -> ChatSessionOut:
+    """Record an inbound message and run one turn.
+
+    Synchronous, unlike the SMS path, because a person is watching a typing
+    indicator -- ``llm.json_fast`` exists for exactly this. The work itself is
+    ``conversation.run_turn``, the same function the queued job calls, so the
+    two entry points cannot drift.
+
+    A repeated ``client_message_id`` returns the conversation unchanged. That
+    is the whole retry story: a double-tapped send button, or a browser
+    replaying a request it never saw the response to, must not produce a second
+    extraction and a second question.
+    """
+    thread = _thread_from_token(db, thread_id, payload.token)
+
+    if thread.inbound_count >= MAX_INBOUND_PER_THREAD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="This conversation has reached its message limit",
+        )
+
+    _, created = record_inbound(
+        db,
+        thread=thread,
+        body=payload.body,
+        provider_native_id=payload.client_message_id,
+    )
+    if not created:
+        return _session_out(db, thread, action="duplicate")
+
+    result = run_turn(db, thread=thread)
+    return _session_out(db, thread, action=result.action)

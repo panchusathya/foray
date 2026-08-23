@@ -208,3 +208,90 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   a human correction. Preferences need that immunity, and widening
   `manual_fields` across twenty more columns makes an already subtle mechanism
   carry weight it was not built for.
+
+## Messaging intake (`packages/core/juicebox/messaging`)
+
+Candidate intake over text: a web chat widget now, SMS behind the same channel
+adapter when Toll-Free Verification clears. It runs the *same* conversation as
+the voice agent and writes the same `CandidatePreference`; everything that
+decides **what** to ask is `juicebox/intake/` and is shared verbatim. This
+package owns only what is different about text. Plan and phasing live in
+`MESSAGING_INTAKE_PLAN.md`. Non-obvious points:
+
+- **The gate decides cadence here, not hangup.** On a call
+  `required_complete` says when the agent may stop talking. On a thread there
+  is nothing to hang up, so it decides whether to send at all. The costs are
+  not symmetric: a long call is disliked, one message too many gets the number
+  blocked and every candidate after that silently receives nothing. Hence one
+  question per message, and **never two outbound in a row** — an outbound
+  requires an inbound after the last thing we sent. The only exceptions are the
+  opening greeting and the single opt-out acknowledgement.
+
+- **`IntakeField.asks` is not a question you can send.** It is a topic line for
+  a voice agent's goal checklist ("Which roles they are actually going after."),
+  and sending it verbatim asks somebody to describe themselves in the third
+  person. `messaging/prompts.py:QUESTIONS` holds the candidate-facing wording,
+  and is a *copy* of the field set in the same sense `llm.prompts.
+  _INTAKE_FIELD_KEYS` is: `test_every_intake_field_has_a_question` is what stops
+  the two drifting, and tells you where the second edit goes.
+
+- **The heuristic extractor must only ever see the candidate's own turns.** It
+  is regexes over the whole text with no notion of who is speaking. Given the
+  full transcript it read a job title of *"take few details so recruiter can
+  match you to right"* and a seniority of *"mid"* out of the agent's greeting —
+  closing two required gates on words we wrote ourselves. `conversation._extract`
+  gives the model the whole thread (an answer needs its question) and the
+  heuristic `transcript_of(..., candidate_only=True)`. It also handles the
+  degrade path explicitly rather than letting `extract_intake` fall back
+  internally, because that fallback would still be holding the full transcript.
+
+- **`records.merge_record` is monotonic, and that is what stops the gate
+  oscillating.** Every turn re-extracts the whole transcript, and a later pass
+  can legitimately come back quieter than an earlier one. Empty never
+  overwrites filled; a filled value does overwrite, which is what makes
+  "actually, make that 260" work. `declined` is a union — a refusal cannot be
+  un-given by a pass that failed to notice it.
+
+- **Two asks per field, then abandon — never mark it declined.** Nobody
+  refused, and recording a refusal that did not happen puts an invented answer
+  into a record that matching reads. The field stays in `fields_missing` and
+  the thread is flagged for review. The cap applies to the contact questions
+  too, and it matters most there: a name has no `declined` to fall back on, so
+  without it somebody who never types anything name-shaped is asked forever.
+
+- **Enrichment is budgeted (`MAX_ENRICHMENT_QUESTIONS`).** A call asks all
+  fourteen because the line is already open. Each text is another notification.
+
+- **Message idempotency is scoped to the thread, not the org** — deliberately
+  unlike `Message.provider_native_id`. A mail provider's id is unique across a
+  tenant; a web chat's comes from the browser, and two strangers both sending
+  `"1"` would have the second message silently swallowed as a duplicate of the
+  first.
+
+- **An opt-out binds to the sender, not to the conversation.** A stranger who
+  texts STOP has no candidate row and therefore no address to suppress, so the
+  opt-out is remembered as a *stopped thread* and
+  `threads.stopped_thread_exists` refuses a later one. Check for *any* stopped
+  thread, never the most recent — the most recent is the conversation asking
+  the question. This is a stopgap: `Suppression` is keyed on email and has no
+  phone column, and that has to close before SMS ships. Exactly one message
+  goes out after a STOP, the confirmation a carrier expects.
+
+- **Preferences are written when the required gate closes, not only at
+  wrap-up.** A thread that answers everything and then goes quiet for a week
+  would otherwise keep a complete record where matching cannot see it.
+  `persist_preference` is an upsert, so later turns keep the row current.
+
+- **The candidate row is created no earlier than that.** A public widget
+  endpoint that made one on the first inbound message would let anyone fill the
+  CRM by opening a chat and typing once; requiring a closed gate makes that
+  cost a whole intake. An existing owner of the address always wins — splitting
+  somebody's history across two rows is worse than not creating one.
+
+- **`CandidatePreference` has one provenance link set at a time.** A thread
+  write sets `source_thread_id` and clears `source_call_id`; the *content*
+  still merges, so somebody who called and later texted keeps both halves.
+
+- **`messaging/prompts.py` and `messaging/schemas.py` sit outside the repo's
+  usual homes on purpose.** `llm/prompts.py` and `schemas.py` are shared files
+  the voice branch is also appending to. Promote them after both branches land.

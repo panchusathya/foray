@@ -92,6 +92,76 @@ def test_heuristic_result_has_checkable_evidence_no_hedge_words():
     assert "Maintains fast-transformer, 2100 stars" in result["highlights"]
 
 
+def test_heuristic_score_handles_unknown_experience():
+    """est_experience_years is nullable now (NULL = no dated role, previously
+    stored as 0.0 on 134,536 rows). Both float() sites used to TypeError on
+    None; unknown now contributes nothing to the seniority bonus rather than
+    crashing or being invented."""
+    from foray.score.common import heuristic_score
+
+    arch = load_archetypes()["founding_ml"]
+    known = heuristic_score(_row(est_experience_years=0.0), arch)
+    unknown = heuristic_score(_row(est_experience_years=None), arch)
+    assert unknown == known  # unknown reads as 0 for the heuristic band
+
+    # Same on the LinkedIn branch, which is where NULL actually occurs.
+    li = {"evidence_kind": "linkedin", "est_experience_years": None,
+          "experience_confidence": "low", "title": "Staff Engineer",
+          "domain_markers": ["ml"]}
+    assert 0 <= heuristic_score(li, arch) <= 100
+
+
+def test_build_user_content_says_unknown_not_none():
+    from foray.score.common import build_user_content
+
+    row = {
+        "evidence_kind": "linkedin",
+        "language_mix": {},
+        "embed_blob": "Dana Rivera",
+        "login": "li:dana",
+        "activity_at": None,
+        "activity_kind": None,
+        "tenure_months": None,
+        "est_experience_years": None,
+        "experience_confidence": "low",
+        "title": "Staff Engineer",
+        "employer": "Stripe",
+        "employer_domain": None,
+        "location_metro": "San Francisco",
+        "domain_markers": ["ml"],
+    }
+    content = build_user_content(row)
+    assert "experience unknown" in content
+    assert "None" not in content
+
+
+def test_gates_expand_the_recency_placeholder():
+    """{{recency}} is expanded at load; the 15 hand-copied 18-or-24-month
+    literals are gone, and validate_gates EXPLAINs the expansion at sync."""
+    from foray.config import settings
+    from foray.recency import recency_clause
+
+    expected = recency_clause(
+        settings.activity_floor_months, settings.snapshot_floor_months
+    )
+    archetypes = load_archetypes()
+    assert len(archetypes) == 15
+    for arch in archetypes.values():
+        assert "{{recency}}" not in arch.gate
+        assert expected in arch.gate, arch.id
+        # One policy, not fifteen: no gate carries its own literal any more.
+        assert "interval '18 months'" not in arch.gate
+
+
+def test_rubric_hash_does_not_cover_the_gate():
+    """Load-bearing: rubric_hash decides whether ~200k stored archetype_scores
+    are invalidated. Expanding {{recency}} changes retrieval eligibility, not
+    how any scored candidate was judged, so it must NOT rescore."""
+    arch = load_archetypes()["founding_ml"]
+    assert arch.rubric_hash == hashlib.sha256(arch.rubric.encode()).hexdigest()
+    assert "activity_at" not in arch.rubric
+
+
 def test_heuristic_flags_stale_and_thin():
     from datetime import datetime, timedelta
 

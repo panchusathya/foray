@@ -233,6 +233,16 @@ services:
         condition: service_healthy
     command: python -m foray.refresh.nightly
 
+    # The foray image bakes a HEALTHCHECK that probes uvicorn on :8100 (correct
+    # for `foray`, which shares this image and keeps the default CMD). This is a
+    # one-shot batch run that serves no HTTP, so it inherited a probe that can
+    # only ever fail: in prod it reached failing_streak=200 without a single
+    # pass while the job itself ran fine. A container that is permanently
+    # "unhealthy" trains everyone to ignore the health column, so drop the probe
+    # rather than invent a fake one.
+    healthcheck:
+      disable: true
+
   web:
     build:
       context: packages/web

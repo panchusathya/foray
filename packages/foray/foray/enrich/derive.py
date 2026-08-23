@@ -16,6 +16,8 @@ from typing import Any
 from ..db import close_pool, get_pool
 from ..log import Heartbeat, get_logger
 from ..search_doc import UPDATE_SEARCH_TSV_SQL
+from ..seniority import parse_seniority, seniority_from_experience
+from ..vocab import canonical_metro
 from .employer import infer_employer
 from .markers import detect_markers, load_markers
 
@@ -23,6 +25,28 @@ log = get_logger("enrich.derive")
 
 EXPERIENCE_CAP_YEARS = 25.0
 OSS_MAINTAINER_STARS = 100
+
+
+# location_metro's MEANING changes in 013, with no DDL.
+#
+# It used to be `(record["city"] or "").strip()` for LinkedIn and hardcoded
+# NULL for GitHub, and no search path ever read it: the metro filter went to
+# `location_raw ilike any(array[...])`, a ScalarArrayOp that cannot use a
+# trigram index (measured on prod: 219 ms, 38k buffers, x4 statements per
+# request). It is now a CANONICAL METRO KEY for BOTH sources, which is what
+# makes an equality / = any() predicate on an indexed column possible.
+#
+# Both arms must be filled or the facet is a source filter in disguise: a
+# metro predicate over a LinkedIn-only column would silently delete the 7,757
+# GitHub rows, the way `primary_language = any(...)` deletes the 196,778
+# LinkedIn ones today.
+#
+# The DEPENDENCY, stated: `foray.vocab.canonical_metro(str | None) -> str | None`,
+# which owns data/metro_aliases.yaml and is the SAME function the parser calls
+# on a query's location span — a stored value and a searched value cannot
+# disagree if only one implementation exists. It returns None for an unmappable
+# location, and None is a real answer here: an uncanonicalised city string
+# stored in a key column would match nothing while looking populated.
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -84,6 +108,91 @@ def _experience_confidence(non_fork: int, account_age_years: float) -> str:
     return "low"
 
 
+def admission(
+    signals: dict[str, Any], *, about_chars: int, role_count: int
+) -> tuple[bool, str | None]:
+    """Is this row worth indexing at all? -> (search_eligible, ineligible_reason).
+
+    ONE rule, computed HERE, stored on the row. It already existed once, as
+    ``(s.evidence_kind = 'github' or s.title is not null)`` inside
+    ``score/common.py``'s candidates_to_score — where only the scoring queue
+    could see it. Prod shows what that costs: 24,698 LinkedIn rows have no
+    title, no about-text and no experience entries, yet each carries a signals
+    row, an embedding and a tsvector (the rule below is broader than that
+    count: it also catches the one-signal rows). Re-implementing the predicate in tsvector
+    SQL, embed selection and _filter_clauses is exactly the drift this hoist
+    prevents: derive owns the rule, everyone else tests the flag.
+
+    Deliberately generous — this is admission control, not ranking. A row only
+    fails when there is nothing for any arm to match on: TWO of six independent
+    signals, with title as one of the six rather than a precondition (see the
+    branch below for the staging measurement that forced that shape).
+
+    ``about_chars`` / ``role_count`` come from the raw record (the signals dict
+    does not carry the about-text or the role list), threaded through by the
+    derive functions so this stays a pure function of stated inputs.
+
+    RECONSIDERED at stage 3 and deliberately left alone: ``role_count`` now
+    looks derivable from the new ``role_titles`` column, so this could take one
+    fewer argument. It is NOT the same number. ``role_titles`` is deduped and
+    junk-filtered, so two dated stints under one title collapse to one entry
+    and a role whose only title was the SET/LinkedIn phantom collapses to zero
+    — either of which would drop a row from ``role_count >= 2`` to below the
+    corroboration bar and flip it ineligible. Substituting it would therefore
+    change which rows are indexed, silently, in a stage whose whole point is
+    that admission is one rule computed in one place. Behaviour unchanged.
+    """
+    kind = signals.get("evidence_kind")
+    title = signals.get("title")
+
+    # Code evidence: a GitHub identity with at least one non-fork repo has a
+    # document to match (repo names, descriptions, topics, language) whether or
+    # not title is populated — and title is NULL on all 7,757 prod GitHub rows,
+    # so requiring it here would delete the entire GitHub population.
+    if kind in ("github", "both") and (signals.get("non_fork_repo_count") or 0) >= 1:
+        return True, None
+
+    if kind in ("github", "both"):
+        # 'no_code_evidence': a GitHub identity whose only claim was code, with
+        # zero non-fork repos. The account exists; the evidence does not.
+        return False, "no_code_evidence"
+
+    # TWO signals out of six, and title is only ONE of the six -- not a
+    # precondition. The first cut of this rule made title mandatory ("title AND
+    # one corroborator"), which the staging rehearsal against the restored prod
+    # dump showed to be the wrong polarity: of 67,710 rows failing for want of
+    # a title, 40,879 carried TWO OR MORE of the other signals. Real examples
+    # it excluded -- an employer, ~86 chars of about-text and FIVE dated roles,
+    # dropped solely because best_title could not extract a string -- while the
+    # same rule admitted a row holding a title and nothing else. A profile with
+    # five roles at a named employer is more searchable, not less, than a bare
+    # title; the tsvector has its employer at weight A and its prose at D, and
+    # the embed blob has the whole role list.
+    #
+    # Counting signals instead of privileging one keeps the property that
+    # mattered (a lone string is not a profile: title-only still scores 1 and
+    # still fails) without asserting that an unextractable title means an empty
+    # person. Measured effect on the restored dump: eligible rises from 124,401
+    # to ~165,000 of 205,603, and the rows admitted are the ones a recruiter
+    # would recognise as people.
+    present = (
+        title is not None,
+        signals.get("employer") is not None,
+        signals.get("current_role_start_at") is not None,
+        about_chars >= 80,
+        role_count >= 2,
+        bool(signals.get("domain_markers")),
+    )
+    if sum(present) >= 2:
+        return True, None
+    # 'thin_profile': fewer than two independent claims. Retrievable in
+    # principle -- whatever single field exists is in the tsvector -- but there
+    # is nothing to rank on and nothing to show a recruiter. Replaces the
+    # earlier 'bare_title'/'no_title' split, which described WHICH field was
+    # missing rather than whether the row is a profile.
+    return False, "thin_profile"
+
+
 def derive_signals(node: dict) -> dict[str, Any]:
     """Pure: raw GraphQL user node -> a candidate_signals row (no I/O)."""
     repos = normalize_repos(node)
@@ -111,6 +220,14 @@ def derive_signals(node: dict) -> dict[str, Any]:
     years_since_first_repo = (
         round((now - min(repo_created)).days / 365.25, 2) if repo_created else 0.0
     )
+    # Account age as an experience proxy STAYS. It is a real signal — a 2011
+    # account with repos from 2013 is evidence of a long career, weaker than a
+    # dated role but not absent — and every GitHub node has a createdAt, so
+    # this path is never NULL. The asymmetry with LinkedIn is deliberate and is
+    # the whole point of est_experience_years becoming nullable: LinkedIn has
+    # NO proxy of comparable strength (a profile with no dated role tells us
+    # nothing about tenure), so it now writes NULL = "unknown" instead of the
+    # 0.0 that 134,536 prod rows carry and that reads as "zero years".
     est_experience = min(EXPERIENCE_CAP_YEARS, max(account_age_years, years_since_first_repo))
 
     top_repos = [
@@ -135,11 +252,24 @@ def derive_signals(node: dict) -> dict[str, Any]:
 
     employer, employer_source = infer_employer(node)
 
-    return {
+    # GitHub has NO title (see "title": None below), so the only seniority
+    # reading available here is the experience proxy. est_experience is a
+    # max() of two floats that default to 0.0, so it is NEVER None on this
+    # path — confirmed by construction above — which means seniority_rank is
+    # never NULL for a GitHub row and `seniority_rank >= 4` cannot silently
+    # delete the GitHub population. That is the entire reason the proxy exists;
+    # seniority_source records that it IS a proxy so no consumer mistakes an
+    # account-age band for a title.
+    proxy_rank = seniority_from_experience(est_experience)
+
+    signals = {
         "employer": employer,
         "employer_source": employer_source,
         "title": None,
-        "location_metro": None,
+        # Canonical for GitHub too, from the free-text profile location. Before
+        # this it was hardcoded NULL, so any metro predicate on the column was
+        # "and is a LinkedIn row".
+        "location_metro": canonical_metro(node.get("location")),
         "language_mix": language_mix,
         "primary_language": langs[0] if langs else None,
         "secondary_language": langs[1] if len(langs) > 1 else None,
@@ -164,7 +294,41 @@ def derive_signals(node: dict) -> dict[str, Any]:
         "current_role_start_at": None,
         "tenure_months": None,
         "profile_asof": None,
+        # --- derived facets (013) ---------------------------------------
+        "seniority_rank": proxy_rank,
+        # No title, so no management or founder claim can be made. FALSE, not
+        # NULL, for is_founder: the column is NOT NULL because "we have no
+        # evidence you founded a company" and "you did not found a company"
+        # are the same answer for a filter, whereas a three-valued boolean
+        # would make `is_founder = false` silently drop unknowns.
+        "mgmt_rank": None,
+        "is_founder": False,
+        "seniority_source": "experience_proxy" if proxy_rank is not None else None,
+        # LinkedIn-only facets: empty arrays, never NULL. An empty array is the
+        # honest "this source cannot evidence this", and it keeps every
+        # array predicate (&&, @>) total instead of needing an IS NULL arm.
+        "past_employers": [],
+        "role_titles": [],
+        "current_titles": [],
+        "schools": [],
+        "degrees": [],
+        "fields_of_study": [],
+        # GitHub's profile `location` is free text with no country field, and
+        # inferring a country from it is a geocoding problem, not a mapping
+        # one — "Cambridge" alone is UK or US and guessing would be worse than
+        # NULL. So country_code stays unknown for GitHub, and any country
+        # predicate must admit NULL by default or it becomes a source filter.
+        "country_code": None,
+        # Admission inputs, not DB columns: they exist so admission() can be
+        # recomputed after merge_signals without re-reading the raw payloads.
+        # A GitHub node has neither about-text nor dated roles.
+        "about_chars": 0,
+        "role_count": 0,
     }
+    eligible, reason = admission(signals, about_chars=0, role_count=0)
+    signals["search_eligible"] = eligible
+    signals["ineligible_reason"] = reason
+    return signals
 
 
 def derive_linkedin_signals(record: dict, *, asof: datetime) -> dict[str, Any]:
@@ -176,24 +340,52 @@ def derive_linkedin_signals(record: dict, *, asof: datetime) -> dict[str, Any]:
     Markers run over pseudo-repos from headline/about/roles with the language
     gate off: prose saying "machine learning" is a claim, not a stray .py file.
     """
+    from ..ingest.activity import latest_activity
     from ..ingest.linkedin_map import (
         best_title,
+        country_code,
         current_role_start,
+        current_titles,
+        education,
         employer_of,
         experience_years,
         flatten_experience,
+        past_employers,
         pseudo_repos,
+        role_titles,
         tenure_months,
     )
 
     roles = flatten_experience(record)
     years, confidence = experience_years(roles, asof=asof)
     role_start = current_role_start(roles)
-    return {
+    # Real activity evidence, or nothing. See the ladder in ingest/activity.py.
+    activity = latest_activity(record)
+    title = best_title(record, roles)
+    schools, degrees, fields_of_study = education(record)
+
+    # Seniority provenance, decided ONCE here so nothing downstream has to
+    # guess. If the title says anything at all -- an IC level, a management
+    # level, or founder -- that reading is kept verbatim and stamped 'title',
+    # INCLUDING the Nones inside it: "Engineering Manager" stores
+    # seniority_rank NULL / mgmt_rank 1, and we do NOT patch the missing IC
+    # rank in from the proxy, because a row whose two ordinals came from
+    # different evidence classes cannot be described by one source column.
+    # Only a title that yields NOTHING falls through to the proxy.
+    sen_rank, mgmt_rank, is_founder = parse_seniority(title)
+    if sen_rank is not None or mgmt_rank is not None or is_founder:
+        seniority_source = "title"
+    else:
+        sen_rank = seniority_from_experience(years)
+        seniority_source = "experience_proxy" if sen_rank is not None else None
+
+    signals = {
         "employer": employer_of(record),
         "employer_source": "linkedin" if employer_of(record) else None,
-        "title": best_title(record, roles),
-        "location_metro": (record.get("city") or "").strip() or None,
+        "title": title,
+        # Was `(record["city"] or "").strip()`, a raw free-text city that no
+        # search path ever read. Now a canonical key; see the note above.
+        "location_metro": canonical_metro(record.get("city")),
         "language_mix": {},
         "primary_language": None,
         "secondary_language": None,
@@ -205,7 +397,13 @@ def derive_linkedin_signals(record: dict, *, asof: datetime) -> dict[str, Any]:
         "prs_last_year": 0,
         "last_push_at": None,
         "account_age_years": 0.0,
-        "est_experience_years": years if years is not None else 0.0,
+        # NULL, not 0.0, when the profile has no dated role. 134,536 prod rows
+        # carry est_experience_years = 0 meaning UNKNOWN, and every consumer
+        # read it as "zero years of experience" — a >= 3 filter dropped them as
+        # juniors and the heuristic scored them as such. Unknown must look
+        # unknown; see the account-age comment in derive_signals for why the
+        # GitHub path keeps a number here.
+        "est_experience_years": years,
         "experience_confidence": confidence,
         "domain_markers": detect_markers(
             pseudo_repos(record, roles), {}, require_language_gate=False
@@ -214,32 +412,131 @@ def derive_linkedin_signals(record: dict, *, asof: datetime) -> dict[str, Any]:
         "top_repos": [],
         "topics": [],
         "evidence_kind": "linkedin",
-        # The snapshot date IS the recency claim: the person was captured in
-        # this state (employed, at this role) as of the export. Using the
-        # role's START date here was a bug — it made anyone in the same job
-        # for >18 months fail the recency gates, silently excluding exactly
-        # the long-tenured seniors a search most wants. Tenure lives in
-        # current_role_start_at/tenure_months, not in the activity clock.
-        "activity_at": asof,
-        "activity_kind": "snapshot",
+        # activity_at is EVIDENCE OR NULL — never a clock.
+        #
+        # It used to be `asof`, stamped `activity_kind='snapshot'`. But `asof`
+        # is raw_profiles.fetched_at, which linkedin_file.py's _UPSERT_RAW sets
+        # to now() on insert AND on conflict-update: it is the import
+        # wall-clock, reset by every re-import. Measured on prod:
+        # 196,778 / 196,778 LinkedIn rows passed the 24-month recency floor,
+        # all stamped 'snapshot' inside one month — the floor in the search
+        # filter and in all 15 archetype gates was a no-op for 96% of the
+        # corpus. A predicate that everything passes is not a filter.
+        #
+        # The ladder (ingest/activity.py): the freshest decodable feed URN from
+        # activity[].id ('linkedin_activity', ~48.7% of records), else the
+        # freshest posts[].created_at ('linkedin_post', ~2.4%), else NULL +
+        # NULL kind meaning genuinely UNKNOWN. NULL is not "stale": it is the
+        # honest absence that foray.recency's second arm then admits on the
+        # strength of profile_asof, which is where the snapshot claim now
+        # lives — and only there.
+        #
+        # Still true from the previous comment, do not undo it: the role's
+        # START date must NOT be used as activity_at. That made anyone in the
+        # same job for >18 months fail the recency gates, silently excluding
+        # exactly the long-tenured seniors a search most wants. Tenure lives in
+        # current_role_start_at/tenure_months.
+        "activity_at": activity[0] if activity else None,
+        "activity_kind": activity[1] if activity else None,
         "current_role_start_at": role_start,
         "tenure_months": tenure_months(roles, asof=asof),
         "profile_asof": asof,
+        # --- derived facets (013) ---------------------------------------
+        "seniority_rank": sen_rank,
+        "mgmt_rank": mgmt_rank,
+        "is_founder": is_founder,
+        "seniority_source": seniority_source,
+        # The career history, computed by flatten_experience since day one and
+        # discarded on every one of 196,778 profiles: Role.current was read
+        # only by current_role_start, so its complement -- where a person USED
+        # to work -- never reached a column and "ex-Google" was unanswerable.
+        #
+        # STORED AS STATED ("Reddit, Inc.", "MUFG Union Bank, N.A."), NOT
+        # canonicalised. That is deliberate for now but it is a decision with a
+        # deadline: `employers` (the current-employer facet) canonicalises the
+        # query side through vocab.canonical_employer, so the day a
+        # `past_employers` predicate ships it must canonicalise BOTH sides or
+        # it will miss every row whose stated form differs from the alias --
+        # the UCSF-vs-University-of-California problem, one column over. The
+        # facet is wave 2 precisely so this gets decided rather than defaulted;
+        # store-canonical is the likelier answer, since it makes the array
+        # index usable for equality instead of forcing a trigram scan.
+        "past_employers": past_employers(roles),
+        # `title` is the best ONE title; these are all of them, and the
+        # currently-held subset. Different questions, different columns.
+        "role_titles": role_titles(roles),
+        "current_titles": current_titles(roles),
+        # Coverage measured on the export (2,000 records): schools land on
+        # 55.1% of records, degrees on 6.5%, fields on 5.2%. Stored anyway --
+        # one array each, and a richer export fills them for free -- but see
+        # linkedin_map.education: a HARD degree/field predicate on today's data
+        # would delete the 94% that never carried the field.
+        "schools": schools,
+        "degrees": degrees,
+        "fields_of_study": fields_of_study,
+        # The same field is_target_geo uses to tell the US San Francisco from
+        # the San Franciscos in MX/AR/CR. Present on 100% of the sample.
+        "country_code": country_code(record),
+        # Admission inputs (see derive_signals): not DB columns.
+        "about_chars": len((record.get("about") or "").strip()),
+        # role_count is now derivable from role_titles, so this is redundant
+        # data — but only ALMOST: len(role_titles) counts DISTINCT non-junk
+        # titles while role_count counts role ENTRIES, so a person with two
+        # dated stints under one title would drop from 2 roles to 1 title and
+        # lose their corroborating fact. admission() therefore keeps reading
+        # role_count and its behaviour is unchanged; see the note on
+        # admission() itself.
+        "role_count": len(roles),
     }
+    eligible, reason = admission(
+        signals, about_chars=signals["about_chars"], role_count=signals["role_count"]
+    )
+    signals["search_eligible"] = eligible
+    signals["ineligible_reason"] = reason
+    return signals
 
 
 def merge_signals(github: dict[str, Any], linkedin: dict[str, Any]) -> dict[str, Any]:
     """One person, both payloads: LinkedIn wins the career facts, GitHub wins
     the code facts, markers union, recency takes the freshest claim."""
     merged = dict(github)
-    for key in ("employer", "employer_source", "title", "location_metro"):
+    for key in (
+        "employer",
+        "employer_source",
+        "title",
+        "location_metro",
+        # LinkedIn is the only source with a country field at all (GitHub's is
+        # NULL by construction), so this coalesce is really "take LinkedIn's".
+        "country_code",
+    ):
         merged[key] = linkedin[key] or github[key]
+    # The career facets are LinkedIn's outright, not coalesced: GitHub's are
+    # always empty lists, so `or` would work today but would quietly pick the
+    # wrong side the moment GitHub grew any of them.
+    for key in (
+        "past_employers",
+        "role_titles",
+        "current_titles",
+        "schools",
+        "degrees",
+        "fields_of_study",
+    ):
+        merged[key] = linkedin[key]
     if linkedin["est_experience_years"]:
         merged["est_experience_years"] = linkedin["est_experience_years"]
         merged["experience_confidence"] = linkedin["experience_confidence"]
     merged["domain_markers"] = sorted(
         set(github["domain_markers"]) | set(linkedin["domain_markers"])
     )
+    # Freshest DATED claim wins; the None-filter is what makes that honest.
+    # It was already here and is now load-bearing in a way it was not before:
+    # the LinkedIn side used to always supply a date (the import clock stamped
+    # 'snapshot'), so on a merged row it beat any GitHub push older than the
+    # import and every 'both' row read as freshly active. With activity_at
+    # evidence-or-NULL, a LinkedIn row with no decodable feed activity
+    # contributes nothing here and a stale GitHub push stays visible as stale.
+    # Both-None stays None — merged rows are not exempt from "unknown looks
+    # unknown", and foray.recency's snapshot arm still admits them.
     candidates_at = [
         (github.get("activity_at"), github.get("activity_kind")),
         (linkedin.get("activity_at"), linkedin.get("activity_kind")),
@@ -247,10 +544,40 @@ def merge_signals(github: dict[str, Any], linkedin: dict[str, Any]) -> dict[str,
     dated = [(at, kind) for at, kind in candidates_at if at is not None]
     if dated:
         merged["activity_at"], merged["activity_kind"] = max(dated, key=lambda x: x[0])
+    else:
+        merged["activity_at"], merged["activity_kind"] = None, None
     merged["current_role_start_at"] = linkedin["current_role_start_at"]
     merged["tenure_months"] = linkedin["tenure_months"]
     merged["profile_asof"] = linkedin["profile_asof"]
     merged["evidence_kind"] = "both"
+    # Seniority: a REAL TITLE READING IS NEVER DOWNGRADED TO A PROXY. The
+    # GitHub side always carries a proxy rank (account age is never NULL), so
+    # a naive coalesce or a max() would let an account-age band overwrite
+    # "Distinguished Engineer" on precisely the rows we know most about --
+    # the merged identities. Ordering, not preference: title wins outright.
+    if linkedin["seniority_source"] == "title":
+        for key in ("seniority_rank", "mgmt_rank", "is_founder", "seniority_source"):
+            merged[key] = linkedin[key]
+    else:
+        # Neither side read a title, so re-run the proxy over the MERGED
+        # experience number — which the block above already set to LinkedIn's
+        # dated-role figure when it had one. Recomputing beats copying either
+        # side's rank, because the input it was computed from has changed.
+        rank = seniority_from_experience(merged["est_experience_years"])
+        merged["seniority_rank"] = rank
+        merged["mgmt_rank"] = None
+        merged["is_founder"] = False
+        merged["seniority_source"] = "experience_proxy" if rank is not None else None
+    # Recompute admission on the MERGED facts rather than OR-ing the two
+    # verdicts: evidence_kind is now 'both', and a row can qualify on a
+    # combination neither side had alone (LinkedIn's title + GitHub's markers).
+    merged["about_chars"] = linkedin.get("about_chars", 0)
+    merged["role_count"] = linkedin.get("role_count", 0)
+    eligible, reason = admission(
+        merged, about_chars=merged["about_chars"], role_count=merged["role_count"]
+    )
+    merged["search_eligible"] = eligible
+    merged["ineligible_reason"] = reason
     return merged
 
 
@@ -263,7 +590,12 @@ insert into candidate_signals (
     account_age_years, est_experience_years, experience_confidence,
     domain_markers, oss_maintainer, top_repos, topics,
     evidence_kind, activity_at, activity_kind,
-    current_role_start_at, tenure_months, profile_asof, derived_at
+    current_role_start_at, tenure_months, profile_asof,
+    search_eligible, ineligible_reason,
+    seniority_rank, mgmt_rank, is_founder, seniority_source,
+    past_employers, role_titles, current_titles,
+    schools, degrees, fields_of_study, country_code,
+    derived_at
 ) values (
     $1, $2, $3, $4, $5,
     $6::jsonb, $7, $8,
@@ -272,7 +604,12 @@ insert into candidate_signals (
     $16, $17, $18,
     $19, $20, $21::jsonb, $22,
     $23, $24, $25,
-    $26, $27, $28, now()
+    $26, $27, $28,
+    $29, $30,
+    $31, $32, $33, $34,
+    $35, $36, $37,
+    $38, $39, $40, $41,
+    now()
 )
 on conflict (candidate_id) do update set
     employer = excluded.employer,
@@ -302,6 +639,28 @@ on conflict (candidate_id) do update set
     current_role_start_at = excluded.current_role_start_at,
     tenure_months = excluded.tenure_months,
     profile_asof = excluded.profile_asof,
+    -- Admission is recomputed on every derive, both directions: a re-scrape
+    -- that finally lands a title must flip an ineligible row back on (which
+    -- is why the purge runbook nulls tsvector/embedding rather than deleting
+    -- rows), and a row that loses its title must flip off.
+    search_eligible = excluded.search_eligible,
+    ineligible_reason = excluded.ineligible_reason,
+    -- Derived facets (013). Every one of these is recomputed from
+    -- raw_profiles on every derive, so they must all appear here: a column
+    -- present in the INSERT list but MISSING from this list would be correct
+    -- for new rows and permanently stale for the 204,535 existing ones, which
+    -- is the failure mode a re-derive is supposed to fix.
+    seniority_rank = excluded.seniority_rank,
+    mgmt_rank = excluded.mgmt_rank,
+    is_founder = excluded.is_founder,
+    seniority_source = excluded.seniority_source,
+    past_employers = excluded.past_employers,
+    role_titles = excluded.role_titles,
+    current_titles = excluded.current_titles,
+    schools = excluded.schools,
+    degrees = excluded.degrees,
+    fields_of_study = excluded.fields_of_study,
+    country_code = excluded.country_code,
     derived_at = now()
 """
 
@@ -337,6 +696,29 @@ async def _upsert_signals(conn, candidate_id: int, node: dict, signals: dict[str
         signals["current_role_start_at"],
         signals["tenure_months"],
         signals["profile_asof"],
+        # $29 onward — positional, so the tail must stay in exactly this
+        # order, matching the column list, the VALUES placeholders and the DO
+        # UPDATE SET list above. A mismatch here does not error: asyncpg would
+        # happily write a reason string into a boolean-shaped slot or shift
+        # every column after it by one — which is why the four lists were
+        # machine-checked against each other (column count vs placeholder
+        # count, placeholders sequential 1..N, every column present in DO
+        # UPDATE SET, column->arg pairing printed and eyeballed) rather than
+        # read carefully. Re-check after ANY edit to either side.
+        signals["search_eligible"],
+        signals["ineligible_reason"],
+        # $31..$41 — the derived facets (013).
+        signals["seniority_rank"],
+        signals["mgmt_rank"],
+        signals["is_founder"],
+        signals["seniority_source"],
+        signals["past_employers"],
+        signals["role_titles"],
+        signals["current_titles"],
+        signals["schools"],
+        signals["degrees"],
+        signals["fields_of_study"],
+        signals["country_code"],
     )
     # Keep the lean identity columns on candidates current, too — but only from
     # GitHub nodes: a LinkedIn record's name/city were written at import time,

@@ -27,6 +27,33 @@ def get_cross_encoder():
     return model
 
 
+def warm_cross_encoder() -> None:
+    """Load the weights AND run one forward pass.
+
+    ``get_cross_encoder()`` alone is not a warmup. It constructs the model, but
+    torch defers a great deal to the first ``predict`` — kernel selection,
+    graph/allocator setup, tokenizer compilation — and that cost lands on
+    whoever calls first. Measured on prod with warmup as it was (weights only):
+    the first search spent 1287 ms in rank, blew the 1200 ms budget, logged
+    ``rerank.timeout`` and returned unreranked; its work kept the single
+    threadpool worker busy, so the NEXT search got ``queue_full``. Two
+    degraded searches per deploy. Once warm the same query spends ~85 ms and
+    demotes 11-43 rows, so the model is worth having — it just must not meet
+    its first pair on the request path.
+
+    The pair is a throwaway; only the side effect matters. Never raise: the
+    caller treats warmup as best-effort and a failed warmup must not stop the
+    API from serving (rerank itself degrades to unreranked).
+    """
+    model = get_cross_encoder()
+    model.predict(
+        [("warmup query", "warmup document")],
+        batch_size=1,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+    )
+
+
 def predict_logits(pairs: list[tuple[str, str]]) -> list[float]:
     """Return raw logits. The sigmoid lives in rank.py where it is testable."""
     if not pairs:

@@ -44,9 +44,32 @@ Outstanding on the number, none of which block Phase 2 code:
 - Buy Verified Phone Number and Branded Call; both have lead time.
 - Leave both webhook fields blank until the Phase 2 routes exist.
 
-Next: Phase 2 — the Retell webhook receiver (post-call), org resolution from the
-dialled number, the `intake.extract` job, and the mid-call `check_coverage` tool
-that closes the gate.
+**Phase 2 complete.** 45 new tests, full suite 853 passed, ruff clean. Shipped:
+
+- `intake/providers.py` — `VoiceProvider` protocol, `RetellProvider` (signature
+  verification + event normalisation), `FakeVoiceProvider`, and `CallEvent` as
+  the shape nothing downstream sees past.
+- `routers/intake.py` — `POST /v1/intake/webhook` (verify → record → queue →
+  return) and `POST /v1/intake/coverage` (the mid-call gate). Unauthenticated,
+  signature-verified, following `routers/track.py`.
+- `intake/service.py` — org and caller resolution, event recording, extraction,
+  preference upsert, coverage snapshots. Shared by the router and the worker so
+  neither owns domain logic.
+- `IntakeNumber` + migration `d2b8c31f9e47` — the number-to-org map that makes
+  org resolution possible without trusting the payload.
+- `KIND_INTAKE_EXTRACT` + worker handler, idempotent on the call row.
+- `juicebox intake-number` CLI to register a number.
+- Retell settings in `config.py`; `RETELL_API_KEY` doubles as the webhook secret.
+
+Exit criteria met: a replayed webhook produces an `IntakeCall` and a
+`CandidatePreference` via the worker; forged, unsigned, stale and re-serialised
+requests are all refused; duplicate deliveries are a no-op.
+
+Next: **Phase 3** — author the two agents (inbound status-line, outbound intake),
+register `check_coverage` as a custom function against them, and build the
+website widget. Blocked on one thing: the two endpoints must be publicly
+reachable before an agent can call them, so `app.goforay.io` needs to be serving
+this branch (or a tunnel for development).
 
 ---
 

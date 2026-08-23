@@ -208,3 +208,54 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   a human correction. Preferences need that immunity, and widening
   `manual_fields` across twenty more columns makes an already subtle mechanism
   carry weight it was not built for.
+
+### The webhook and the mid-call gate (phase 2)
+
+- **A number must be registered before it can take a call.** `intake_numbers`
+  maps a number to an org, and the webhook refuses anything it cannot resolve.
+  `juicebox intake-number +1... --org <id>` is the only way in; there is no
+  provider-side step that creates it. A 404 from `/v1/intake/webhook` almost
+  always means this row is missing.
+- **Org resolution has exactly two trusted sources**, in order: a row we already
+  wrote for this call id (which covers retries and covers web calls, because we
+  placed those), then the number that was dialled. Never the payload. There is a
+  test that plants `org_id` in `metadata` and asserts it is inert -- keep it.
+- **The signature is over the raw bytes plus the timestamp**, in that order,
+  keyed on the Retell API key, hex. Verify before parsing, and never against a
+  re-serialised body: `json.dumps` of the parsed payload changes whitespace and
+  key order, and every signature stops matching. `test_re_serialising_the_body
+  _breaks_verification` exists to catch exactly that regression.
+- **No key configured means refuse everything.** Accepting unsigned bodies
+  because nothing is set up turns a misconfiguration into an open write endpoint
+  that also spends money on calls.
+- **The handler verifies, records, queues, returns.** Retell times out at 10
+  seconds and retries 3 times, so an extraction on the request path becomes four
+  copies of the same conversation. `KIND_INTAKE_EXTRACT` is keyed on the call
+  row, so three deliveries produce one job.
+- **`(provider, provider_call_id)` is the idempotency key** and the unique
+  constraint. `call_started`, `call_ended` and `call_analyzed` all land on one
+  row, and each event fills only the fields it actually carries -- a later event
+  must not blank what an earlier one supplied.
+- **A transcript is never shortened.** A late `call_analyzed` sometimes carries a
+  truncated one, and losing the conversation is unrecoverable.
+- **An unmapped event type is acknowledged, not an error.** Retell emits
+  transcript updates and a whole transfer lifecycle; a provider adding an event
+  must never start failing this endpoint.
+- **A confirmed preference is flagged, never overwritten.** Once `confirmed_at`
+  is set a human has vouched for that record, and a re-run undoing their
+  correction is how people stop trusting the system.
+- **An unidentified caller still produces a record** -- on the `IntakeCall`, with
+  `review_needed` -- but no `CandidatePreference`, and **no auto-created
+  Candidate.** Creating people from cold inbound calls would fill the CRM with
+  strangers. A human decides who that was.
+- **`/v1/intake/coverage` is the gate, and it returns topics, not people.** It is
+  reachable by anyone holding a valid signature, so it must never disclose a
+  candidate's record. `still_needed` is required-tier only; once the gate closes
+  it empties and enrichment moves to `optional_topics`. Reporting enrichment as
+  "needed" would keep a finished call alive, which is the exact thing the tiering
+  exists to prevent.
+- **`wrap_up` is permission, not an instruction.** The agent may spend one more
+  question on the highest-value enrichment topic (the projects story) if the
+  candidate still sounds willing. It runs on `json_fast` because a candidate is
+  sitting in silence while it answers, and it degrades to a usable answer rather
+  than erroring -- an error here is heard as the agent going quiet.

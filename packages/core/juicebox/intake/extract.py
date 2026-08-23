@@ -89,18 +89,26 @@ def extract_intake(
     *,
     known: str = "",
     use_llm: bool | None = None,
+    fast: bool = False,
 ) -> ExtractionResult:
     """Extract preferences from ``transcript``, degrading to heuristics.
 
     ``use_llm=False`` forces the heuristic path, which is how the tests exercise
     it without unsetting the key.
+
+    ``fast=True`` is for the mid-call coverage check, where a candidate is
+    sitting in silence waiting for the agent's next question. It routes to
+    ``json_fast`` — the fast model, a short timeout, no retries — because a
+    slower and more careful reading of a half-finished conversation is the wrong
+    trade: the gate only has to decide what to ask next, and it will be asked
+    again on the next turn.
     """
     llm = get_llm()
     want_llm = llm.available if use_llm is None else use_llm
 
     if want_llm and llm.available:
         try:
-            return _llm_extract(transcript, known=known)
+            return _llm_extract(transcript, known=known, fast=fast)
         except Exception as exc:  # noqa: BLE001 - degrade, never fail an extraction
             logger.warning("llm intake extraction failed, using heuristics: %s", exc)
 
@@ -112,9 +120,10 @@ def extract_intake(
 # --------------------------------------------------------------------------
 
 
-def _llm_extract(transcript: str, *, known: str) -> ExtractionResult:
+def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> ExtractionResult:
     llm = get_llm()
-    result = llm.json(
+    call = llm.json_fast if fast else llm.json
+    result = call(
         system=INTAKE_EXTRACT_SYSTEM,
         prompt=intake_extract_prompt(transcript=transcript, known=known),
         schema=INTAKE_EXTRACT_SCHEMA,

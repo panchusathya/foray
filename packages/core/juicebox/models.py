@@ -1260,3 +1260,47 @@ class CandidatePhone(Base):
     phone: Mapped[str] = mapped_column(String(32))
     # 0 is the number Candidate.phones lists first.
     position: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class IntakeNumber(Base, TimestampMixin):
+    """A phone number we own, and the org it belongs to.
+
+    **This table is how a webhook gets an org.** A candidate on a phone call has
+    no principal -- ``get_principal`` has nothing to read -- so the org has to
+    come from something the caller cannot choose. The number that was dialled is
+    that something; the request body is not. An org id taken from a webhook
+    payload is a cross-tenant write and somebody else's phone bill, which is the
+    same mistake ``AGENTS.md`` records against Foray's paid routes.
+
+    ``phone`` is unique **globally**, not per org. A real-world number belongs to
+    exactly one org, and scoping the constraint per org would let two orgs claim
+    the same number and race for its calls.
+
+    Web calls have no dialled number. They resolve instead by ``call_id`` against
+    an ``IntakeCall`` row we created when we placed the call -- the same shape as
+    ``routers/track.py`` reading ``message.org_id`` off a row rather than a query
+    string.
+    """
+
+    __tablename__ = "intake_numbers"
+    __table_args__ = (
+        UniqueConstraint("phone", name="uq_intake_number_phone"),
+        Index("ix_intake_numbers_org_active", "org_id", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("inum"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="retell")
+    # E.164, from intake.phones.lookup_key.
+    phone: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(120), default="")
+
+    # Which agent answers, and which one dials out. Retell allows one of each
+    # per number, which is exactly the two conversations: inbound is a status
+    # update against an existing record, outbound is a first full intake.
+    inbound_agent_id: Mapped[str] = mapped_column(String(120), default="")
+    outbound_agent_id: Mapped[str] = mapped_column(String(120), default="")
+
+    # Turning a number off must not delete its call history, and a deleted row
+    # would make every past IntakeCall unattributable.
+    active: Mapped[bool] = mapped_column(Boolean, default=True)

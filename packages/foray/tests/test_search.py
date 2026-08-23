@@ -788,7 +788,30 @@ async def test_search_tsv_is_written_by_derive():
             "login": prefix,
             "bio": "vllm inference",
             "createdAt": "2018-01-01T00:00:00Z",
-            "repositories": {"nodes": []},
+            # One non-fork repo, and NOT an empty list: admission() fails a
+            # GitHub identity with zero repos as 'no_code_evidence', and an
+            # ineligible row is assigned a NULL tsvector by design. This
+            # fixture must stay admissible or the test stops exercising the
+            # tsvector write and instead re-tests admission -- via an
+            # `assert False is True` that says nothing about which rule fired.
+            "repositories": {
+                "nodes": [
+                    {
+                        "name": "vllm-bench",
+                        "description": "throughput benchmarks for vllm serving",
+                        "stargazerCount": 12,
+                        "forkCount": 1,
+                        "pushedAt": "2025-06-01T00:00:00Z",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "isArchived": False,
+                        "primaryLanguage": {"name": "Python"},
+                        "repositoryTopics": {"nodes": [{"topic": {"name": "inference"}}]},
+                        "languages": {
+                            "edges": [{"node": {"name": "Python"}, "size": 10000}]
+                        },
+                    }
+                ]
+            },
             "contributionsCollection": {
                 "totalCommitContributions": 1,
                 "totalPullRequestContributions": 0,
@@ -808,10 +831,24 @@ async def test_search_tsv_is_written_by_derive():
         from foray.search_doc import UPDATE_SEARCH_TSV_SQL
 
         signals = derive_signals(node)
+        # Fail on the precondition rather than on its downstream effect: the
+        # tsvector assignment is gated on this flag, so an admission change
+        # that drops this fixture should report the admission verdict and its
+        # reason, not a bare "search_tsv was null".
+        assert signals["search_eligible"] is True, (
+            f"fixture is inadmissible ({signals.get('ineligible_reason')}), "
+            "so search_tsv is NULL by design -- fix the fixture, not the assert"
+        )
         await _upsert_signals(conn, cid, node, signals)
         await conn.execute(UPDATE_SEARCH_TSV_SQL, [cid])
+        # Non-null AND non-empty: the setweight concatenation yields a
+        # non-NULL tsvector even with nothing to index, so `is not null` alone
+        # would pass on a document the lexical arm's `@@` can never match.
+        # This is HAS_LEXICAL_DOC_SQL's distinction between "was indexed" and
+        # "is findable"; c.name and the repo above guarantee real lexemes.
         tsv = await conn.fetchval(
-            "select search_tsv is not null from candidate_signals where candidate_id = $1",
+            "select search_tsv is not null and search_tsv <> ''::tsvector "
+            "from candidate_signals where candidate_id = $1",
             cid,
         )
         assert tsv is True

@@ -102,10 +102,9 @@ of how much you have covered -- you cannot see the record, and it can.
 - If `wrap_up` is true, you have everything required. If they still sound
   willing, ask ONE topic from `optional_topics` -- the projects question is the
   most valuable one you can ask. Then recap the two or three most important
-  facts back to them for confirmation, tell them a recruiter will follow up
-  from a number they will recognise ({sms_number_spoken}), thank them, and
-  end the call. If `sms_enabled` is true, say they will get a text from that
-  number instead.
+  facts back to them for confirmation, close the way `guidance` tells you to
+  -- it is written for whichever follow-up is actually live -- and end the
+  call. When you name the number, it is {sms_number_spoken}.
 
 If `progress_line` is present, say it, then ask the next question. If it is
 empty, do not invent a count and do not mention how many are left.

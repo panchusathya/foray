@@ -278,6 +278,23 @@ class Settings:
         default_factory=lambda: _env_int("JOB_SCRAPE_MAX_AUTO_QUERIES", 5)
     )
 
+    # --- voice intake ------------------------------------------------------
+    voice_provider: str = field(default_factory=lambda: _env("VOICE_PROVIDER", "retell"))
+    # Doubles as the webhook signing secret -- Retell signs with the API key, so
+    # this must be the key carrying the webhook badge in their dashboard. A key
+    # that works for API calls can still fail every verification.
+    retell_api_key: str = field(default_factory=lambda: _env("RETELL_API_KEY", ""))
+    # Replay window. Retell's own guidance is five minutes; their webhook retries
+    # (3, over ~seconds) land well inside it, so this is not a retry allowance.
+    retell_webhook_tolerance_seconds: int = field(
+        default_factory=lambda: _env_int("RETELL_WEBHOOK_TOLERANCE_SECONDS", 300)
+    )
+    # The mid-call coverage check is conversational latency: the candidate is
+    # sitting in silence while it runs. `json_fast` exists for exactly this.
+    intake_coverage_fast_model: bool = field(
+        default_factory=lambda: _env_bool("INTAKE_COVERAGE_FAST_MODEL", True)
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

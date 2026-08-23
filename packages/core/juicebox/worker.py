@@ -22,6 +22,7 @@ from .jobs import (
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
+    KIND_INTAKE_EXTRACT,
     KIND_JOBS_MATCH,
     KIND_JOBS_MATCH_ONE,
     KIND_JOBS_PARSE,
@@ -564,6 +565,29 @@ def _handle_crm_discovery_import(db: Session, job: Job, now) -> dict[str, Any]:
     return {"ingested": ingested, "addresses": len(addresses)}
 
 
+def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
+    from .intake.service import extract_call
+    from .models import IntakeCall
+
+    call = db.get(IntakeCall, job.payload.get("intake_call_id"))
+    if call is None:
+        return {"skipped": "missing_call"}
+    # Scoped even though the id came from our own payload: a job row and a call
+    # row are both org-owned, and a mismatch means something is very wrong.
+    if call.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    result = extract_call(db, call)
+    if result is None:
+        return {"skipped": f"call_{call.status}"}
+    return {
+        "intake_call_id": call.id,
+        "candidate_id": call.candidate_id,
+        "extractor": result.extractor,
+        "required_complete": result.coverage.required_complete,
+        "review_needed": call.review_needed,
+    }
+
+
 HANDLERS = {
     KIND_CRM_DISCOVERY: _handle_crm_discovery,
     KIND_CRM_DISCOVERY_ONE: _handle_crm_discovery_one,
@@ -580,6 +604,7 @@ HANDLERS = {
     KIND_JOBS_MATCH_ONE: _handle_jobs_match_one,
     KIND_JOBS_SCRAPE: _handle_jobs_scrape,
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
+    KIND_INTAKE_EXTRACT: _handle_intake_extract,
 }
 
 

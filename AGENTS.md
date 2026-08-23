@@ -137,3 +137,176 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
   (plus `migrate.sh` against both `foray` and `foray_staging`). The embedding
   similarity test is marked `model` and is skipped in CI (no Hugging Face
   fetch); the foray Docker image still bakes the model on every push.
+
+## Voice intake (`packages/core/juicebox/intake`)
+
+Candidate-side intake by phone: a web widget places a call, and a dial-in number
+takes process updates. Retell is the agent platform, on a Twilio number
+imported into it (+1 888 260-0142). Plan and phasing live in
+`VOICE_INTAKE_PLAN.md`. Non-obvious points:
+
+- **The gate is data, not an instruction.** `schema.coverage()` decides when a
+  call may end and `schema.next_questions()` decides what to ask; both read the
+  record. This is what makes a cooperative call two or three minutes and an
+  evasive one longer. Do **not** move that judgement into the system prompt — an
+  agent asked to decide whether it has "covered enough" guesses, and the failure
+  is invisible because the transcript always looks like a complete conversation.
+- **A declined field counts as covered.** A candidate who will not discuss comp
+  has resolved it. If refusal left the field unanswered the gate could never
+  close and the agent would ask forever, so `declined` is load-bearing, not
+  bookkeeping. It is also why an empty field is not evidence nobody asked --
+  read `declined` before concluding a call missed something.
+- **A preference has to stay in `ParsedQuery`'s vocabulary.** `spec` is
+  normalised by routing it through `ParsedQuery.normalized()`, the same call
+  `jobmatch.spec` makes for a job description, so the two sides cannot drift.
+  Adding a bespoke key to `spec` produces a field `jobmatch.engine` cannot score
+  and quietly turns intake back into notes. `SPEC_FIELDS` is deliberately a
+  subset: a candidate has no stated opinion about which school they attended.
+- **`prompts._INTAKE_FIELD_KEYS` is a copy.** `intake` imports `llm.prompts`, so
+  importing back would be a cycle. `test_the_prompt_enum_matches_the_field_set`
+  is what keeps the copy honest -- if you add a field, that test tells you where
+  the second edit goes.
+- **The heuristic path is deliberately incomplete.** It never fills
+  `must_have_skills` (a regex cannot tell "I want to keep writing Rust" from "I
+  did some Rust once", and must-haves are what `search.scoring.assess` penalises
+  hardest), never fills `highlights` (the value is the verbatim phrasing), and
+  never sets `ok_to_share_with_clients` -- the one field where a wrong guess is a
+  permission we did not have. Every heuristic extraction is flagged for review.
+  Filling these in "since we already have the transcript" is the regression to
+  watch for.
+- **Negation is checked, not assumed.** "fully remote isn't what I want"
+  contains "fully remote". `_asserted()` suppresses a phrase that appears only
+  inside a negation, and conflicting signals record nothing rather than
+  guessing. A pattern added without going through `_asserted` will read
+  preferences backwards.
+- **`candidate_phones` refuses to guess a country code.** The key comes from
+  `intake.phones.lookup_key`, which is stricter than
+  `enrich.normalize.clean_phones`: E.164 or North-American-shaped only, no row
+  otherwise. A wrong email lookup finds nobody; a wrong *phone* lookup finds the
+  wrong person and the dial-in agent reads their comp and pipeline to whoever
+  dialled. Do not add a region default to widen coverage -- unknown caller costs
+  one question, a wrong match is a disclosure. `repository.sync_candidate_phones`
+  is the only writer; call it wherever `Candidate.phones` changes.
+- **Caller ID authorises accepting an update, never disclosing one.** ANI is
+  spoofable, so the dial-in agent must confirm something only the candidate knows
+  before reading existing state back. Phase 4 owns this; the constraint is
+  recorded here because it is easy to lose while making the call feel personal.
+- **`IntakeCall.org_id` comes from the dialled number or a signed widget token,
+  never from the webhook body.** The caller is unauthenticated -- there is no
+  principal on a phone call -- and voice minutes are metered, so a
+  payload-supplied org is both a cross-tenant write and somebody else's bill.
+  `routers/track.py` is the pattern to copy: HMAC-signed token, org read off the
+  server-side row.
+- **`(provider, provider_call_id)` is the idempotency key.** Voice webhooks are
+  always retried. Without it a retry extracts the same conversation twice.
+- **Nullable booleans are deliberate.** `willing_to_relocate`, `remote_ok` and
+  `ok_to_share_with_clients` have three states, because
+  `Candidate.open_to_remote` cannot tell "wants an office" from "never asked" and
+  that is precisely why filtering on it is untrustworthy.
+- **Preferences live off `Candidate` on purpose.** `repository._apply` re-applies
+  `manual_fields` over imported data so a nightly Foray refresh cannot overwrite
+  a human correction. Preferences need that immunity, and widening
+  `manual_fields` across twenty more columns makes an already subtle mechanism
+  carry weight it was not built for.
+
+### The webhook and the mid-call gate (phase 2)
+
+- **A number must be registered before it can take a call.** `intake_numbers`
+  maps a number to an org, and the webhook refuses anything it cannot resolve.
+  `juicebox intake-number +1... --org <id>` is the only way in; there is no
+  provider-side step that creates it. A 404 from `/v1/intake/webhook` almost
+  always means this row is missing.
+- **Org resolution has exactly two trusted sources**, in order: a row we already
+  wrote for this call id (which covers retries and covers web calls, because we
+  placed those), then the number that was dialled. Never the payload. There is a
+  test that plants `org_id` in `metadata` and asserts it is inert -- keep it.
+- **The signature is over the raw bytes plus the timestamp**, in that order,
+  keyed on the Retell API key, hex. Verify before parsing, and never against a
+  re-serialised body: `json.dumps` of the parsed payload changes whitespace and
+  key order, and every signature stops matching. `test_re_serialising_the_body
+  _breaks_verification` exists to catch exactly that regression.
+- **No key configured means refuse everything.** Accepting unsigned bodies
+  because nothing is set up turns a misconfiguration into an open write endpoint
+  that also spends money on calls.
+- **The handler verifies, records, queues, returns.** Retell times out at 10
+  seconds and retries 3 times, so an extraction on the request path becomes four
+  copies of the same conversation. `KIND_INTAKE_EXTRACT` is keyed on the call
+  row, so three deliveries produce one job.
+- **`(provider, provider_call_id)` is the idempotency key** and the unique
+  constraint. `call_started`, `call_ended` and `call_analyzed` all land on one
+  row, and each event fills only the fields it actually carries -- a later event
+  must not blank what an earlier one supplied.
+- **A transcript is never shortened.** A late `call_analyzed` sometimes carries a
+  truncated one, and losing the conversation is unrecoverable.
+- **An unmapped event type is acknowledged, not an error.** Retell emits
+  transcript updates and a whole transfer lifecycle; a provider adding an event
+  must never start failing this endpoint.
+- **A confirmed preference is flagged, never overwritten.** Once `confirmed_at`
+  is set a human has vouched for that record, and a re-run undoing their
+  correction is how people stop trusting the system.
+- **An unidentified caller still produces a record** -- on the `IntakeCall`, with
+  `review_needed` -- but no `CandidatePreference`, and **no auto-created
+  Candidate.** Creating people from cold inbound calls would fill the CRM with
+  strangers. A human decides who that was.
+- **`/v1/intake/coverage` is the gate, and it returns topics, not people.** It is
+  reachable by anyone holding a valid signature, so it must never disclose a
+  candidate's record. `still_needed` is required-tier only; once the gate closes
+  it empties and enrichment moves to `optional_topics`. Reporting enrichment as
+  "needed" would keep a finished call alive, which is the exact thing the tiering
+  exists to prevent.
+- **`wrap_up` is permission, not an instruction.** The agent may spend one more
+  question on the highest-value enrichment topic (the projects story) if the
+  candidate still sounds willing. It runs on `json_fast` because a candidate is
+  sitting in silence while it answers, and it degrades to a usable answer rather
+  than erroring -- an error here is heard as the agent going quiet.
+
+### Cheap models cannot be trusted with easy-looking work
+
+The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`
+for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
+intake extractor, five runs each, that generalise past this subsystem:
+
+- **Bucketing is not a model's job.** On "two weeks if the right thing came up",
+  GLM 5.2 picked the right timeline bucket 0/5 and gpt-oss-120b 1/5, varying
+  between `1_3_months`, `3_6_months` and `immediate` across identical calls. The
+  fix was to have the model quote the phrase (`timeline_verbatim`) and map it in
+  code, sharing `_TIMELINE_PATTERNS` with the heuristic path. Anything a
+  deterministic function can decide -- fixed enums, arithmetic, thresholds --
+  should be decided there, or a required field becomes non-deterministic.
+- **A model will invent a permission.** Given a transcript where sharing never
+  came up, GLM asserted `ok_to_share_with_clients: true` 3/5 and gpt-oss 2/5. So
+  a model's claim never satisfies a consent or safety check on its own: it is
+  recorded as evidence, it still closes the coverage gate (the *call* did its
+  job), and `review_needed` stays set until a human or the candidate confirms.
+- **Expect non-JSON.** Both models intermittently return prose despite a strict
+  `json_schema` request and `provider.require_parameters`. The heuristic fallback
+  is load-bearing, not decoration -- which is also why it must never fill
+  `must_have_skills`, `highlights`, or consent.
+
+### What the first live call taught us
+
+223 seconds, real candidate, 2026-08-22. The mechanism worked -- the gate drove
+the questions, the agent wrapped up when it closed, a mid-call comp retraction
+("five hundred k... actually, I won't tell you") was correctly recorded as
+declined rather than as $500k, and asked to read back the caller's own details
+the agent refused. Four things were wrong, and three are the same thing:
+
+- **A model fills required fields it was never given evidence for.** Nobody
+  asked about work authorisation; the model wrote `"unknown"`, which `is_filled`
+  counts as present, so the gate closed on an unasked and client-blocking
+  question. Nobody asked for permission to share; the model returned `true`.
+  Free-text fields now reject placeholders (`_PLACEHOLDERS`), and consent
+  requires `ok_to_share_verbatim` -- **quote or it did not happen**. Apply that
+  pattern to any field where fabrication is worse than absence.
+- **The fallback is where wrong answers live.** `timeline_verbatim` is bucketed
+  in code, but when the quote maps to no bucket the model's own choice is used --
+  and on "if I find the right role I might start soon, but if not I'm okay to
+  stay" it chose `under_1_month`, which puts a browsing candidate in front of a
+  client hiring now. Conditional phrasing is now explicitly exploratory, and a
+  bucket that came from the model rather than the mapping is flagged low
+  confidence so it never looks as solid as a derived one.
+- **A real title has to survive the taxonomy.** "Member of technical staff"
+  noise-stripped to `member technical`, which matches no posting -- losing the
+  entire point of sharing a vocabulary with the JD parser. Aliased to `software
+  engineer`. When intake meets a title the taxonomy mangles, fix
+  `TITLE_ALIASES`; do not let the intake side keep a private spelling.

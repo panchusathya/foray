@@ -637,3 +637,324 @@ def discover_summariser_prompt(*, n_results: int, n_new: int, n_have: int, queri
         f"new: {n_new}\n"
         f"already_yours: {n_have}\n"
     )
+
+
+# --------------------------------------------------------------------------
+# 9. voice intake transcript -> candidate preferences
+# --------------------------------------------------------------------------
+
+# The enums below are duplicated from ``intake.schema`` on purpose: ``intake``
+# imports this module, so importing it back would be a cycle. Duplication is
+# safe because ``test_intake_extract`` asserts the two agree -- the same guard
+# ``store_result`` uses for the confidence ladder and its check constraint.
+_INTAKE_FIELD_KEYS = [
+    "spec.job_titles",
+    "spec.seniority",
+    "spec.locations",
+    "spec.remote_ok",
+    "spec.must_have_skills",
+    "employment_status",
+    "timeline",
+    "compensation",
+    "work_authorization",
+    "active_processes",
+    "ok_to_share_with_clients",
+    "highlights",
+    "spec.company_stages",
+    "spec.company_sizes",
+    "spec.industries",
+    "spec.nice_to_have_skills",
+    "reason_for_looking",
+    "spec.excluded_companies",
+    "spec.target_companies",
+    "spec.freeform_criteria",
+    "offers_in_hand",
+    "willing_to_relocate",
+    "equity_importance",
+    "urgency_driver",
+    "confidential_items",
+]
+
+INTAKE_EXTRACT_SYSTEM = """\
+You read a transcript of a recruiter's intake call with a job candidate and \
+record what the candidate said about the work they want.
+
+You are filling in a candidate's *preferences* — the mirror image of a job \
+description. The same vocabulary is used on both sides so the two can be scored \
+against each other, so normalise the way a JD parser would.
+
+Record only what the candidate actually said. An invented preference is the \
+expensive failure here: it does not merely add noise, it silently rules out \
+roles the person would have taken. Silence is not a preference. If the call \
+never covered company stage, leave `company_stages` empty — do not infer it \
+from where they work now.
+
+Rules:
+- Normalise job titles to lowercase singular form ("senior ML lead" -> "machine learning engineer") and put the level in `seniority`, never in `job_titles`. Allowed seniority: intern, junior, mid, senior, staff, principal, director, vp, cxo.
+- `must_have_skills` is what they framed as non-negotiable about their next role ("I want to stay hands-on in Rust"). Skills they merely mention having go in `nice_to_have_skills`. At most 5 must-haves.
+- `excluded_companies` and `negative_keywords` are for things they ruled out ("nothing in crypto", "not going back to Meta").
+- `freeform_criteria` holds dealbreakers no filter can express, one short phrase each, in their own words ("won't report to a first-time manager").
+- `highlights` is work they volunteered as their best. Quote `detail` verbatim — a client responds to the candidate's own words, and paraphrase drains them. Put any skills the story evidences in `skills`.
+- `remote_ok` is true only if they want remote. False means they want to be in an office. Null means it never came up.
+- Compensation: `target_base` and `target_total` are annual numbers in `comp_currency` units. "one eighty" is 180000. Never convert currencies. Never infer a total from a base.
+- `active_processes` records other companies they are interviewing with. If they said they are not interviewing anywhere, return one entry with company "none" and stage "none" — that is an answer, and an empty list would read as never asked.
+- `confidential_items` is anything they asked us not to repeat.
+- `declined` lists fields they were asked about and refused to answer. A refusal is an answer; it stops us asking again.
+- `low_confidence` lists fields where the transcript is ambiguous, garbled, or you are guessing. Be generous with it — a flagged field gets a human's attention, an unflagged wrong one reaches a client.
+- Never record age, race, religion, health, family or immigration status beyond a plain statement of work authorisation, even if the candidate volunteers it.
+"""
+
+_INTAKE_SPEC_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "job_titles",
+        "must_have_skills",
+        "nice_to_have_skills",
+        "seniority",
+        "locations",
+        "remote_ok",
+        "industries",
+        "company_stages",
+        "company_sizes",
+        "target_companies",
+        "excluded_companies",
+        "negative_keywords",
+        "freeform_criteria",
+    ],
+    "properties": {
+        "job_titles": _string_array("Roles the candidate says they want next."),
+        "must_have_skills": _string_array("Skills they insist their next role uses. Max 5."),
+        "nice_to_have_skills": _string_array("Skills they have or would use, but do not require."),
+        "seniority": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "intern", "junior", "mid", "senior", "staff",
+                    "principal", "director", "vp", "cxo",
+                ],
+            },
+            "description": "Levels they would accept.",
+        },
+        "locations": _string_array("Cities, regions or countries they would work in."),
+        "remote_ok": {
+            "type": ["boolean", "null"],
+            "description": (
+                "True if they want remote, false if they want an office, null if unasked."
+            ),
+        },
+        "industries": _string_array("Industries they want to work in."),
+        "company_stages": _string_array(
+            "Stages they would join, e.g. seed, series a, series b, growth, public."
+        ),
+        "company_sizes": _string_array("Headcount buckets, e.g. 1-10, 11-50, 51-200, 5000+."),
+        "target_companies": _string_array("Companies they named as wanting to work at."),
+        "excluded_companies": _string_array("Companies they ruled out."),
+        "negative_keywords": _string_array("Domains or terms they ruled out, e.g. crypto, adtech."),
+        "freeform_criteria": _string_array(
+            "Dealbreakers a filter cannot express, one short phrase each, their words."
+        ),
+    },
+}
+
+INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "spec",
+        "employment_status",
+        "reason_for_looking",
+        "timeline",
+        "timeline_verbatim",
+        "urgency_driver",
+        "target_base",
+        "target_total",
+        "comp_currency",
+        "comp_flexibility_notes",
+        "equity_importance",
+        "work_authorization",
+        "willing_to_relocate",
+        "active_processes",
+        "offers_in_hand",
+        "highlights",
+        "confidential_items",
+        "ok_to_share_with_clients",
+        "ok_to_share_verbatim",
+        "declined",
+        "low_confidence",
+    ],
+    "properties": {
+        "spec": _INTAKE_SPEC_SCHEMA,
+        "employment_status": {
+            "type": "string",
+            "enum": [
+                "",
+                "employed_not_looking",
+                "employed_open",
+                "employed_searching",
+                "unemployed_searching",
+                "student",
+            ],
+            "description": "How available they are. Empty if it never came up.",
+        },
+        "reason_for_looking": {
+            "type": "string",
+            "description": "Why they are leaving, one or two sentences, their framing.",
+        },
+        "timeline": {
+            "type": "string",
+            "enum": ["", "immediate", "under_1_month", "1_3_months", "3_6_months", "exploratory"],
+            "description": (
+                "How soon they want to move. Map to the nearest bucket by the "
+                "candidate's own words: immediate = now, this week, "
+                "\"right away\"; under_1_month = up to and including a month "
+                "(\"two weeks\", \"within a month\", \"end of the month\"); "
+                "1_3_months = more than a month up to three (\"next quarter\", "
+                "\"a couple of months\"); 3_6_months = later this year; "
+                "exploratory = no timeline, just seeing what is out there."
+            ),
+        },
+        "timeline_verbatim": {
+            "type": "string",
+            "description": (
+                "Exactly what they said about timing, quoted, e.g. \"two weeks\", "
+                "\"next quarter\", \"no rush\". Empty if timing never came up. "
+                "This is bucketed in code, so quote rather than interpret."
+            ),
+        },
+        "urgency_driver": {"type": "string", "description": "What is making them move now."},
+        "target_base": {
+            "type": ["number", "null"],
+            "description": "Annual base they are targeting, in comp_currency units.",
+        },
+        "target_total": {
+            "type": ["number", "null"],
+            "description": "Annual total compensation they are targeting.",
+        },
+        "comp_currency": {
+            "type": "string",
+            "description": "ISO code for the comp figures, e.g. USD. Empty if no figure was given.",
+        },
+        "comp_flexibility_notes": {
+            "type": "string",
+            "description": "What they said about flexibility on comp.",
+        },
+        "equity_importance": {
+            "type": "string",
+            "enum": ["", "irrelevant", "nice_to_have", "important", "critical"],
+            "description": "How much they weigh equity against cash.",
+        },
+        "work_authorization": {
+            "type": "string",
+            "description": (
+                "Their stated right to work, e.g. 'us citizen', 'green card', "
+                "'h-1b transfer needed', 'uk right to work'. Their words, nothing "
+                "inferred. Leave it EMPTY if it never came up -- never write "
+                "'unknown' or 'not specified'."
+            ),
+        },
+        "willing_to_relocate": {
+            "type": ["boolean", "null"],
+            "description": "Whether they would move. Null if unasked.",
+        },
+        "active_processes": {
+            "type": "array",
+            "description": (
+                "Other processes they are in. One entry with company 'none' means "
+                "they said they are not interviewing anywhere."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "stage", "expected_decision"],
+                "properties": {
+                    "company": {
+                        "type": "string",
+                        "description": "Company name, or 'confidential' if they withheld it.",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "Where they are, e.g. 'phone screen', 'onsite', 'final'.",
+                    },
+                    "expected_decision": {
+                        "type": "string",
+                        "description": "When they expect to hear, as they said it.",
+                    },
+                },
+            },
+        },
+        "offers_in_hand": {
+            "type": "array",
+            "description": "Live offers.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "comp_summary", "deadline"],
+                "properties": {
+                    "company": {"type": "string"},
+                    "comp_summary": {"type": "string", "description": "As they described it."},
+                    "deadline": {"type": "string", "description": "When it expires."},
+                },
+            },
+        },
+        "highlights": {
+            "type": "array",
+            "description": "Work they volunteered as their best. Detail stays verbatim.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["title", "detail", "skills"],
+                "properties": {
+                    "title": {"type": "string", "description": "Short label for the project."},
+                    "detail": {
+                        "type": "string",
+                        "description": "What they said, quoted. Do not paraphrase.",
+                    },
+                    "skills": _string_array("Skills this story evidences."),
+                },
+            },
+        },
+        "confidential_items": _string_array("Things they asked us not to repeat."),
+        "ok_to_share_with_clients": {
+            "type": ["boolean", "null"],
+            "description": (
+                "Whether we may represent them to companies. Null unless it was "
+                "actually discussed -- do not infer it from a cooperative tone."
+            ),
+        },
+        "ok_to_share_verbatim": {
+            "type": "string",
+            "description": (
+                "The exact words in which they gave or refused permission to be "
+                "shared with companies. Empty if it never came up. A true "
+                "ok_to_share_with_clients is ignored without a quote here, so do "
+                "not guess: quote it or leave both empty."
+            ),
+        },
+        "declined": {
+            "type": "array",
+            "items": {"type": "string", "enum": _INTAKE_FIELD_KEYS},
+            "description": "Fields they were asked about and refused to answer.",
+        },
+        "low_confidence": {
+            "type": "array",
+            "items": {"type": "string", "enum": _INTAKE_FIELD_KEYS},
+            "description": "Fields you are unsure about. Be generous.",
+        },
+    },
+}
+
+
+def intake_extract_prompt(*, transcript: str, known: str = "") -> str:
+    """Transcript, plus anything we already knew going in.
+
+    ``known`` is passed so the model does not record a pre-call form value as a
+    call answer: only what was actually said counts, or the coverage gate closes
+    on questions nobody asked.
+    """
+    body = (transcript or "").strip()[:24000]
+    return (
+        f"<already_known>\n{known.strip() or '(nothing)'}\n</already_known>\n"
+        f"<transcript>\n{body}\n</transcript>"
+    )

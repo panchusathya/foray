@@ -299,6 +299,156 @@ def tenure_months(roles: list[Role], *, asof: datetime) -> int | None:
     return max(0, int((asof - start).days / 30.44))
 
 
+# ------------------------------------------------------- the derived facets --
+#
+# Everything below exposes facts this module ALREADY computed and threw away.
+# ``Role.current`` in particular has been computed in flatten_experience since
+# day one and read by nobody: current_role_start uses it, and the complement --
+# the roles a person is NOT in any more, i.e. their career history -- was
+# discarded on every one of 196,778 profiles. ``past_employers`` is that fix.
+#
+# Caps are per-column, not one shared number, because the columns have very
+# different real fan-out (measured on data/in/linkedin_sample.jsonl, 2,000
+# records): 2,118 education entries across 1,129 records is ~1.9 each, while
+# experience routinely runs past 10 roles. The caps exist so a GIN index entry
+# stays bounded and one pathological profile cannot dominate an index page.
+MAX_PAST_EMPLOYERS = 12
+MAX_ROLE_TITLES = 12
+MAX_SCHOOLS = 6
+MAX_DEGREES = 6
+MAX_FIELDS_OF_STUDY = 6
+
+# Same 200-char clamp best_title/employer_of apply, for the same reason: the
+# export puts whole headlines in title fields.
+_FACET_MAX_CHARS = 200
+
+
+def _dedupe_capped(values, cap: int) -> list[str]:
+    """Order-stable, case-insensitive dedupe, then cap. Order is STABLE on
+    purpose: experience arrives newest-first, so a truncated past_employers
+    keeps the recent employers a recruiter is actually asking about, and the
+    parse echo shows the list in the order the profile states it."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = (raw or "").strip()[:_FACET_MAX_CHARS]
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def past_employers(roles: list[Role]) -> list[str]:
+    """Companies from NON-current roles — the career history.
+
+    Current employer already has its own column (``employer``); this is the
+    complement, which is what makes "ex-Google" answerable at all. A role with
+    no end_date is current by flatten_experience's rule, so the *current*
+    employer is excluded here even when a person holds several roles at once.
+
+    _JUNK_EMPLOYERS is applied for the same reason employer_of applies it: a
+    "Confidential Company" entry would otherwise become a searchable employer
+    on a GIN index.
+    """
+    return _dedupe_capped(
+        (
+            role.company
+            for role in roles
+            if not role.current and role.company.strip().lower() not in _JUNK_EMPLOYERS
+        ),
+        MAX_PAST_EMPLOYERS,
+    )
+
+
+def role_titles(roles: list[Role]) -> list[str]:
+    """EVERY title held, junk-filtered. ``title`` on candidate_signals is only
+    the best ONE, so a search for "was a data engineer before moving into
+    management" had nothing to match. Reuses _junk_role_title rather than
+    re-filtering, so the SET/LinkedIn phantom cannot come back through a
+    second door."""
+    return _dedupe_capped(
+        (
+            role.title
+            for role in roles
+            if role.title and not _junk_role_title(role.title, role.company)
+        ),
+        MAX_ROLE_TITLES,
+    )
+
+
+def current_titles(roles: list[Role]) -> list[str]:
+    """Titles of CURRENT roles only. Separate from role_titles because "is a
+    staff engineer" and "has ever been a staff engineer" are different
+    questions and a single column cannot answer both. Plural because
+    concurrent roles are common (advisor + operator, contractor at two
+    clients)."""
+    return _dedupe_capped(
+        (
+            role.title
+            for role in roles
+            if role.current
+            and role.title
+            and not _junk_role_title(role.title, role.company)
+        ),
+        MAX_ROLE_TITLES,
+    )
+
+
+def education(record: dict) -> tuple[list[str], list[str], list[str]]:
+    """``(schools, degrees, fields_of_study)`` from ``record["education"][]``.
+
+    MEASURED COVERAGE on data/in/linkedin_sample.jsonl (2,000 records, 2,118
+    education entries) — the three lists are NOT equally fillable and the
+    facets built on them must not pretend otherwise:
+
+      * ``education[]`` non-empty: 56.5% of records
+      * ``.title`` (the school name) non-empty: 58.7% of entries
+        -> at least one school on 55.1% of RECORDS
+      * ``.degree`` non-empty: 11.2% of entries -> 6.5% of records
+      * ``.field`` non-empty:  7.5% of entries -> 5.2% of records
+
+    So schools is a real facet and degrees/fields_of_study are, on this export,
+    close to empty. They are still derived and stored because they cost one
+    array each and a richer future export fills them for free, but a
+    degree/field FILTER would be a source filter in disguise on today's data:
+    a hard predicate matching 6% of the corpus deletes the 94% that simply
+    never had the field, exactly as ``primary_language = any(...)`` deletes
+    every LinkedIn row. Unknown must pass by default.
+
+    Note the shape trap: the school NAME lives in ``.title``, not ``.school``
+    or ``.name``. ``.degree`` is free text as typed ("Bachelor's degree",
+    "Bachelor of Science - BS", "BS", "MBA") — canonicalising that is
+    vocab.py's job, not this module's.
+    """
+    entries = [e for e in (record.get("education") or []) if isinstance(e, dict)]
+    schools = _dedupe_capped((e.get("title") for e in entries), MAX_SCHOOLS)
+    degrees = _dedupe_capped((e.get("degree") for e in entries), MAX_DEGREES)
+    fields = _dedupe_capped((e.get("field") for e in entries), MAX_FIELDS_OF_STUDY)
+    return schools, degrees, fields
+
+
+def country_code(record: dict) -> str | None:
+    """ISO-3166 alpha-2, uppercased, or None.
+
+    Present on 100% of the sample (US 98.8%, then MX/AR/CR/DO) — which is the
+    same field is_target_geo already uses to tell the US San Francisco from the
+    San Franciscos in Mexico, Argentina and Costa Rica. Exposing it as a column
+    means a metro filter no longer has to carry that disambiguation itself.
+
+    Anything that is not exactly two letters returns None rather than being
+    stored: a truncated or free-text value in an equality-filtered column is
+    worse than an honest unknown.
+    """
+    code = (record.get("country_code") or "").strip().upper()
+    return code if len(code) == 2 and code.isalpha() else None
+
+
 def is_target_geo(record: dict) -> bool:
     """Genuinely US Bay Area — the export carries San Franciscos in MX/AR/CR."""
     if (record.get("country_code") or "").upper() != "US":

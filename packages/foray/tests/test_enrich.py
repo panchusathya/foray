@@ -338,3 +338,230 @@ def test_merged_row_recomputes_admission_on_the_merged_facts():
     assert merged["evidence_kind"] == "both"
     assert merged["search_eligible"] is True
     assert merged["ineligible_reason"] is None
+
+
+# ------------------------------------------------------- derived facets (013) --
+
+FACET_KEYS = (
+    "seniority_rank",
+    "mgmt_rank",
+    "is_founder",
+    "seniority_source",
+    "past_employers",
+    "role_titles",
+    "current_titles",
+    "schools",
+    "degrees",
+    "fields_of_study",
+    "country_code",
+)
+
+
+def test_both_sources_emit_every_facet_key():
+    """The _UPSERT indexes signals[...] positionally for all 11 columns, and a
+    missing key on ONE source is a KeyError on a batch of 500 that the derive
+    loop swallows into enrich_errors -- i.e. a silent per-source data hole."""
+    github = derive_signals(ML_ENGINEER_NODE)
+    li = derive_linkedin_signals(_li_record(), asof=ASOF)
+    merged = merge_signals(github, li)
+    for signals in (github, li, merged):
+        for key in FACET_KEYS:
+            assert key in signals, key
+
+
+def test_linkedin_seniority_comes_from_the_title():
+    s = derive_linkedin_signals(_li_record(), asof=ASOF)
+    assert s["title"] == "Staff Engineer"
+    assert s["seniority_rank"] == 5
+    assert s["mgmt_rank"] is None
+    assert s["is_founder"] is False
+    assert s["seniority_source"] == "title"
+
+
+def test_a_title_with_no_level_word_falls_through_to_the_proxy():
+    """The fallback is what stops seniority from being NULL for everyone whose
+    title is a bare "Software Engineer" -- but it must announce itself."""
+    s = derive_linkedin_signals(
+        _li_record(
+            experience=[
+                {"title": "Software Engineer", "company": "Stripe", "start_date": "Jan 2020"},
+                {
+                    "title": "Software Engineer",
+                    "company": "Acme",
+                    "start_date": "Mar 2016",
+                    "end_date": "Dec 2019",
+                },
+            ]
+        ),
+        asof=ASOF,
+    )
+    assert s["title"] == "Software Engineer"
+    assert s["seniority_source"] == "experience_proxy"
+    # Mar 2016 -> Aug 2026 is >8 years, the top proxy band.
+    assert s["seniority_rank"] == 5
+
+
+def test_unknown_title_and_unknown_experience_means_unknown_seniority():
+    s = derive_linkedin_signals(
+        _li_record(experience=[{"title": "Software Engineer", "company": "Acme"}]),
+        asof=ASOF,
+    )
+    assert s["est_experience_years"] is None
+    assert s["seniority_rank"] is None
+    assert s["seniority_source"] is None
+
+
+def test_a_management_title_records_mgmt_and_keeps_the_title_provenance():
+    """"Engineering Manager" has no IC level word, so seniority_rank stays
+    NULL -- and we must NOT patch it in from the proxy, because a row whose two
+    ordinals came from different evidence classes cannot be described by one
+    seniority_source."""
+    s = derive_linkedin_signals(
+        _li_record(
+            experience=[
+                {"title": "Engineering Manager", "company": "Stripe", "start_date": "Jan 2020"}
+            ]
+        ),
+        asof=ASOF,
+    )
+    assert s["seniority_rank"] is None
+    assert s["mgmt_rank"] == 1
+    assert s["seniority_source"] == "title"
+
+
+def test_founder_titles_set_the_flag():
+    s = derive_linkedin_signals(
+        _li_record(
+            experience=[
+                {"title": "Founding Engineer", "company": "Stealth", "start_date": "Jan 2024"}
+            ]
+        ),
+        asof=ASOF,
+    )
+    assert s["is_founder"] is True
+    assert s["seniority_source"] == "title"
+
+
+def test_linkedin_career_and_education_facets_are_populated():
+    s = derive_linkedin_signals(
+        _li_record(
+            country_code="US",
+            education=[
+                {"title": "Stanford University", "degree": "MS", "field": "Computer Science"},
+                {"title": None, "degree": None, "field": None},
+            ],
+        ),
+        asof=ASOF,
+    )
+    # Acme is the PAST employer (it has an end_date); Stripe is current and
+    # lives in `employer`, not here.
+    assert s["past_employers"] == ["Acme"]
+    assert s["role_titles"] == ["Staff Engineer", "Software Engineer"]
+    assert s["current_titles"] == ["Staff Engineer"]
+    assert s["schools"] == ["Stanford University"]
+    assert s["degrees"] == ["MS"]
+    assert s["fields_of_study"] == ["Computer Science"]
+    assert s["country_code"] == "US"
+
+
+def test_github_seniority_is_always_a_proxy_and_never_null():
+    """title is NULL on all 7,757 prod GitHub rows, so a title-only seniority
+    column would make `seniority_rank >= 4` mean "and is a LinkedIn row".
+    est_experience_years is a max() of two floats defaulting to 0.0 on this
+    path, so the proxy always has an input."""
+    s = derive_signals(ML_ENGINEER_NODE)
+    assert s["title"] is None
+    assert s["est_experience_years"] is not None
+    assert s["seniority_rank"] is not None
+    assert s["seniority_source"] == "experience_proxy"
+    # No title means no management or founder claim is available at all.
+    assert s["mgmt_rank"] is None
+    assert s["is_founder"] is False
+
+
+def test_github_linkedin_only_facets_are_empty_arrays_not_none():
+    """Empty arrays keep every array predicate (&&, @>) total; NULL would need
+    an IS NULL arm in each one, which is where unknown-policy bugs live."""
+    s = derive_signals(ML_ENGINEER_NODE)
+    for key in ("past_employers", "role_titles", "current_titles", "schools",
+                "degrees", "fields_of_study"):
+        assert s[key] == [], key
+    # GitHub's profile location is free text with no country field, and
+    # guessing one would be worse than unknown.
+    assert s["country_code"] is None
+
+
+def test_location_metro_is_canonical_for_both_sources():
+    """It used to be raw city text for LinkedIn and hardcoded NULL for GitHub,
+    which made any metro predicate on the column "and is a LinkedIn row"."""
+    github = derive_signals(ML_ENGINEER_NODE)
+    li = derive_linkedin_signals(_li_record(city="San Francisco"), asof=ASOF)
+    assert github["location_metro"] is not None
+    assert li["location_metro"] is not None
+    # Whatever the canonicaliser does, it must be case/whitespace-stable --
+    # that is the minimum a key on an equality-filtered column has to be.
+    spaced = derive_linkedin_signals(_li_record(city="  SAN FRANCISCO  "), asof=ASOF)
+    assert spaced["location_metro"] == li["location_metro"]
+
+
+def test_merge_never_downgrades_a_title_reading_to_the_proxy():
+    """THE ordering assertion. The GitHub side ALWAYS carries a proxy rank
+    (account age is never NULL), so a coalesce or a max() would let an
+    account-age band overwrite a real title on exactly the rows we know most
+    about."""
+    github = derive_signals(ML_ENGINEER_NODE)
+    assert github["seniority_source"] == "experience_proxy"
+    li = derive_linkedin_signals(
+        _li_record(
+            experience=[
+                {"title": "Engineering Manager", "company": "Stripe", "start_date": "Jan 2020"}
+            ]
+        ),
+        asof=ASOF,
+    )
+    assert li["seniority_source"] == "title"
+
+    merged = merge_signals(github, li)
+    assert merged["seniority_source"] == "title"
+    assert merged["mgmt_rank"] == 1
+    # ...and the LinkedIn NULL survives too: the proxy does not sneak in to
+    # fill it, because then one source column would describe two provenances.
+    assert merged["seniority_rank"] is None
+
+
+def test_merge_recomputes_the_proxy_when_neither_side_read_a_title():
+    github = derive_signals(ML_ENGINEER_NODE)
+    li = derive_linkedin_signals(
+        _li_record(
+            experience=[
+                {"title": "Software Engineer", "company": "Stripe", "start_date": "Jan 2024"}
+            ]
+        ),
+        asof=ASOF,
+    )
+    assert li["seniority_source"] == "experience_proxy"
+    merged = merge_signals(github, li)
+    assert merged["seniority_source"] == "experience_proxy"
+    # Computed from the MERGED experience number (LinkedIn's dated role wins
+    # over GitHub's account age), not copied from either side.
+    from foray.seniority import seniority_from_experience
+
+    assert merged["seniority_rank"] == seniority_from_experience(
+        merged["est_experience_years"]
+    )
+
+
+def test_merge_gives_linkedin_the_career_facets_outright():
+    github = derive_signals(ML_ENGINEER_NODE)
+    li = derive_linkedin_signals(
+        _li_record(education=[{"title": "MIT", "degree": None, "field": None}]),
+        asof=ASOF,
+    )
+    merged = merge_signals(github, li)
+    assert merged["role_titles"] == li["role_titles"]
+    assert merged["past_employers"] == li["past_employers"]
+    assert merged["schools"] == ["MIT"]
+    assert merged["country_code"] == li["country_code"]
+    # ...while the code facts stay GitHub's.
+    assert merged["primary_language"] == github["primary_language"]
+    assert merged["total_stars"] == github["total_stars"]

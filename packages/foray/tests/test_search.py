@@ -18,9 +18,90 @@ from tests.dbutil import requires_db, requires_scored_db
 def test_heuristic_parse_picks_archetype_and_extracts_filters():
     parsed = heuristic_parse("founding ML engineer in San Francisco with python, 3-8 years")
     assert parsed.archetype_id == "founding_ml"
-    assert "San Francisco" in parsed.metros
+    # Canonical metro KEY, not the shard-grid string: this is what
+    # candidate_signals.location_metro stores.
+    assert parsed.metros == ["sf_bay_area"]
     assert "python" in parsed.languages
     assert parsed.experience_min == 3 and parsed.experience_max == 8
+    # "founding" is a stage descriptor, not a claim that this person founded
+    # anything. Turning it into `s.is_founder` would gate the single most
+    # important query in the product down to actual founders.
+    assert parsed.is_founder is None
+
+
+def test_heuristic_parse_extracts_the_seniority_ladder():
+    """The query floor for a word must equal the rank derive assigns to a title
+    containing it. Expectations come from foray.seniority, never from literals:
+    the first cut of SENIORITY_FLOOR hardcoded staff=4 / senior=3, one rung
+    below derive, so every seniority query admitted an extra rung — and a test
+    pinning those same literals passed the whole time."""
+    from foray.seniority import parse_seniority
+
+    for query, title in (
+        ("senior backend engineer", "Senior Backend Engineer"),
+        ("Sr. backend engineer", "Sr. Backend Engineer"),
+        ("staff infra engineer", "Staff Infrastructure Engineer"),
+        ("principal security engineer", "Principal Security Engineer"),
+        ("distinguished engineer", "Distinguished Engineer"),
+    ):
+        floor = heuristic_parse(query).seniority_min
+        derived_rank, _mgmt, _founder = parse_seniority(title)
+        assert floor == derived_rank, (
+            f"{query!r} floors at {floor} but derive ranks {title!r} as "
+            f"{derived_rank} — a row matching the query's own words would be "
+            f"{'excluded' if floor and derived_rank and floor > derived_rank else 'joined by a lower rung'}"
+        )
+    assert heuristic_parse("backend engineer").seniority_min is None
+
+
+def test_two_seniority_words_take_the_lower_floor():
+    """seniority_min is a hard predicate. Reading "senior or staff" as staff
+    would silently delete every senior; over-widening is a ranking problem,
+    over-narrowing is invisible."""
+    from foray.seniority import SENIORITY_SENIOR
+
+    assert heuristic_parse("senior or staff ML engineer").seniority_min == SENIORITY_SENIOR
+
+
+def test_founder_nouns_set_is_founder_but_the_adjective_does_not():
+    assert heuristic_parse("co-founder of a fintech startup").is_founder is True
+    assert heuristic_parse("looking for founders").is_founder is True
+    assert heuristic_parse("founding engineer at a seed startup").is_founder is None
+
+
+def test_management_framing_is_never_seniority():
+    """"Engineering Manager" is not "senior IC" — separate columns, and
+    collapsing them is what makes a seniority filter useless."""
+    parsed = heuristic_parse("engineering manager for the ML platform team")
+    assert parsed.is_manager is True
+    assert parsed.seniority_min is None
+    assert heuristic_parse("VP of engineering").is_manager is True
+    assert heuristic_parse("backend engineer").is_manager is None
+
+
+def test_consumed_facet_words_are_stripped_from_free_text():
+    """The structural version of the _NOISE guarantee: a word that became a
+    predicate cannot also reach the lexical tsquery, whether or not anyone
+    remembered to add it to search_doc._NOISE."""
+    parsed = heuristic_parse("staff ML engineer in San Francisco, 5+ years")
+    residue = parsed.free_text.lower()
+    for consumed in ("staff", "san francisco", "5", "years"):
+        assert consumed not in residue
+    # Technology words are NOT consumed: for 96% of the corpus the lexical arm
+    # is the only place a language can match at all.
+    assert "ml" in residue and "engineer" in residue
+    assert heuristic_parse("rust systems engineer").free_text == "rust systems engineer"
+
+
+def test_noise_list_is_untouched_by_the_facet_parser():
+    """Do not un-noise senior/staff/founding/shipped. Ranking "Staff
+    Accountant" for "staff engineer" is the LA Fitness incident in a new
+    costume; the parser consumes these words into predicates, and _NOISE stays
+    the backstop for the LLM parser and for a query consumed to nothing."""
+    from foray.search_doc import _NOISE
+
+    for word in ("senior", "staff", "founding", "shipped", "principal"):
+        assert word in _NOISE
 
 
 def test_heuristic_parse_picks_vlm_vocabulary():
@@ -32,14 +113,22 @@ def test_heuristic_parse_picks_vlm_vocabulary():
     assert research.archetype_id == "ml_research"
 
 
+def _placeholders(where: str) -> list[int]:
+    import re as _re
+
+    return [int(n) for n in _re.findall(r"\$(\d+)", where)]
+
+
 def test_build_filters_placeholder_numbering():
-    parsed = ParsedFilter(metros=["SF"], languages=["go"], experience_min=5)
+    """Every value is bound, numbering is contiguous from $1, and the first
+    appearance of each placeholder is in insertion order. Asserted structurally
+    rather than by count so adding a facet cannot silently renumber an arm."""
+    parsed = ParsedFilter(metros=["sf_bay_area"], languages=["go"], experience_min=5)
     params = Params()
     where = _filter_clauses(parsed, params)
-    assert params.add is not None
-    assert len(params.values) == 3
-    assert "$1" in where and "$2" in where and "$3" in where
-    assert where.index("$1") < where.index("$2") < where.index("$3")
+    numbers = _placeholders(where)
+    assert numbers == sorted(set(numbers))  # each used once, ascending
+    assert numbers == list(range(1, len(params.values) + 1))
 
 
 def test_filter_clauses_append_the_archetype_gate():
@@ -56,15 +145,338 @@ def test_filter_clauses_append_the_archetype_gate():
     assert "domain_markers @> array['ml']" in where
 
 
+def test_embedding_requirement_is_vector_arm_only():
+    """Keyword search must not depend on the embed pipeline: the shared
+    filters (count / lexical / score / enrich) no longer require an embedding,
+    only the vector arm does — it is the only query that dereferences
+    c.embedding, and a NULL-embedding row is retrievable via the lexical arm
+    while the embed backfill catches up."""
+    shared = _filter_clauses(ParsedFilter(), Params())
+    assert "embedding is not null" not in shared
+    vector = _filter_clauses(ParsedFilter(), Params(), require_embedding=True)
+    assert "c.embedding is not null" in vector
+    # The flag adds no bind parameters, so arm WHEREs stay numbering-compatible.
+    plain, gated = Params(), Params()
+    _filter_clauses(ParsedFilter(metros=["sf_bay_area"]), plain)
+    _filter_clauses(ParsedFilter(metros=["sf_bay_area"]), gated, require_embedding=True)
+    assert plain.values == gated.values
+
+
+def test_recency_clause_is_the_shared_module_not_a_literal():
+    """The old literal `s.activity_at > now() - interval 'N months'` was a
+    no-op for 96% of the corpus: activity_at for LinkedIn rows was the import
+    wall-clock, so 196,778/196,778 passed the 24-month floor. One three-valued
+    predicate now, shared with all 15 archetype gates."""
+    from foray.recency import recency_clause
+
+    where = _filter_clauses(ParsedFilter(), Params())
+    expected = recency_clause(
+        settings.activity_floor_months, settings.snapshot_floor_months
+    )
+    assert expected in where
+    # The unknown arm must be present: without it the ~51% of LinkedIn rows
+    # with no decodable activity id silently vanish from every search.
+    assert "s.activity_at is null" in where
+    assert "s.profile_asof" in where
+    # No bind parameters: the clause is literal SQL so arm WHEREs stay
+    # $N-numbering-compatible.
+    params = Params()
+    _filter_clauses(ParsedFilter(), params)
+    assert params.values == []
+
+
+def test_search_eligible_is_in_the_shared_clause_list():
+    """Admission control is one stored flag, computed by enrich/derive.py's
+    admission(). It sits in the SHARED list so an inadmissible row is invisible
+    to the count, the lexical arm and the vector arm alike."""
+    for kwargs in ({}, {"require_embedding": True}, {"has_contact": True}):
+        assert "s.search_eligible" in _filter_clauses(
+            ParsedFilter(), Params(), **kwargs
+        )
+
+
+def test_language_filter_admits_null_by_default():
+    """primary_language is GitHub-only (NULL on all 196,778 LinkedIn rows), so
+    the old hard equality matched 550 of 204,535 rows — a source filter in
+    disguise. Default: three-valued (match OR unknown)."""
+    params = Params()
+    where = _filter_clauses(ParsedFilter(languages=["Python"]), params)
+    assert "(s.primary_language = any($1::text[]) or s.primary_language is null)" in where
+    assert params.values == [["python"]]
+
+
+def test_strict_language_restores_the_exact_predicate():
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(languages=["go"], strict_language=True), params
+    )
+    assert "s.primary_language = any($1::text[])" in where
+    assert "s.primary_language is null" not in where
+    assert params.values == [["go"]]
+
+
+def test_experience_bounds_exclude_unknown_by_default():
+    """est_experience_years is NULL for 134,536 rows. Strict is the default:
+    an absence of data is not evidence of zero years, which is exactly what
+    the old `default 0` storage asserted."""
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(experience_min=3.0, experience_max=8.0), params
+    )
+    assert "s.est_experience_years >= $1" in where
+    assert "s.est_experience_years <= $2" in where
+    # Scoped to the experience column: `is null` legitimately appears
+    # elsewhere in the shared list (merged_into, and the recency clause's
+    # unknown-activity arm).
+    assert "s.est_experience_years is null" not in where
+    assert params.values == [3.0, 8.0]
+
+
+def test_include_unknown_experience_admits_nulls_on_both_bounds():
+    """The max-only brief ("under 8 years") is screening OUT the
+    over-experienced, so it reasonably wants the unknowns back."""
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(experience_max=8.0, include_unknown_experience=True), params
+    )
+    assert "(s.est_experience_years <= $1 or s.est_experience_years is null)" in where
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(
+            experience_min=3.0, experience_max=8.0, include_unknown_experience=True
+        ),
+        params,
+    )
+    assert "(s.est_experience_years >= $1 or s.est_experience_years is null)" in where
+    assert "(s.est_experience_years <= $2 or s.est_experience_years is null)" in where
+
+
+def test_no_text_facet_uses_ilike_any():
+    """The measured reason, from the plan: `ilike any(array[...])` is a
+    ScalarArrayOp and CANNOT use a trigram GIN index — prod EXPLAIN showed a
+    seq scan, 38k buffers, 219 ms for ONE metro predicate, and _filter_clauses
+    is rebuilt for the count + vector + lexical + enrich statements. An
+    OR-chain of individual LIKEs can bitmap-OR the index instead."""
+    where = _filter_clauses(
+        ParsedFilter(
+            metros=["sf_bay_area", "nyc"],
+            titles=["ml engineer"],
+            title_exclude=["recruiter"],
+            employers=["Google", "UCSF"],
+        ),
+        Params(),
+    )
+    assert "ilike any(" not in where
+    assert where.count("lower(c.location_raw) like") >= 2
+    assert "lower(s.title) like" in where
+
+
+def test_metro_uses_the_canonical_key_and_the_raw_text_arm():
+    """Two arms because metro evidence is stored twice: derive writes NO
+    location_metro for the 7,757 GitHub rows, whose only location evidence is
+    candidates.location_raw."""
+    params = Params()
+    where = _filter_clauses(ParsedFilter(metros=["sf_bay_area"]), params)
+    assert "s.location_metro = any($1::text[])" in where
+    assert params.values[0] == ["sf_bay_area"]
+    assert "%palo alto%" in params.values
+    # Two-character aliases never become LIKE bodies: pg_trgm cannot index a
+    # pattern with under 3 characters of literal text.
+    assert "%sf%" not in params.values
+
+
+def test_titles_admit_unknown_by_default():
+    """title is NULL on all 7,757 GitHub rows (derive has no title source for
+    them), so a bare LIKE means "and is a LinkedIn row"."""
+    where = _filter_clauses(ParsedFilter(titles=["ml engineer"]), Params())
+    assert "(lower(s.title) like $1 or s.title is null)" in where
+    strict = _filter_clauses(
+        ParsedFilter(titles=["ml engineer"], strict_titles=True), Params()
+    )
+    assert "s.title is null" not in strict
+
+
+def test_title_exclude_does_not_delete_null_titles():
+    """The three-valued NOT trap: `not (null like '%recruiter%')` is NULL, not
+    TRUE, so a bare NOT would drop every GitHub row from a filter whose only
+    job is to remove recruiters."""
+    where = _filter_clauses(ParsedFilter(title_exclude=["recruiter"]), Params())
+    assert "(s.title is null or not (lower(s.title) like $1))" in where
+    strict = _filter_clauses(
+        ParsedFilter(title_exclude=["recruiter"], strict_titles=True), Params()
+    )
+    assert "(s.title is not null and not (lower(s.title) like $1))" in strict
+
+
+def test_employers_use_equality_for_canonical_names_and_trigram_for_the_rest():
+    """infer_employer maps "@google"/"googlers"/"alphabet" to exactly "Google"
+    before storing, so the equality is safe for the alias table's companies.
+    "UCSF" is not in that table — and is a distinct employer from "University
+    of California, San Francisco" in the corpus today — so it takes the
+    trigram arm."""
+    params = Params()
+    where = _filter_clauses(ParsedFilter(employers=["Alphabet", "UCSF"]), params)
+    assert "lower(s.employer) = any($1::text[])" in where
+    assert "lower(s.employer) like $2" in where
+    assert params.values == [["google"], "%ucsf%"]
+
+
+def test_topics_admit_unknown_by_default_like_language():
+    """topics is GitHub-derived and populated on ZERO of the 196,778 LinkedIn
+    rows — the same collapse the language filter shipped with."""
+    where = _filter_clauses(ParsedFilter(topics=["vllm"]), Params())
+    assert "(s.topics && $1::text[] or coalesce(cardinality(s.topics), 0) = 0)" in where
+    strict = _filter_clauses(ParsedFilter(topics=["vllm"], strict_topics=True), Params())
+    assert "cardinality" not in strict
+
+
+def test_markers_need_no_unknown_policy():
+    """domain_markers is the one text facet populated on BOTH sources, so an
+    empty array is a real negative rather than a missing column."""
+    where = _filter_clauses(ParsedFilter(markers=["ml"]), Params())
+    assert "s.domain_markers && $1::text[]" in where
+    assert "domain_markers is null" not in where
+
+
+def test_seniority_admits_unknown_by_default_and_tenure_does_not():
+    """The asymmetry is deliberate and is the biggest judgement call in the
+    facet layer. seniority_rank is NULL for all 7,757 GitHub rows AND for every
+    LinkedIn title with no level word ("Software Engineer"), and
+    heuristic_parse sets seniority_min=3 for the commonest query in the
+    product — strict there would repeat the language collapse. tenure_months is
+    a numeric band, so it follows include_unknown_experience: an absence of
+    dates is not evidence of time in seat."""
+    where = _filter_clauses(ParsedFilter(seniority_min=3, tenure_min_months=18), Params())
+    assert "(s.seniority_rank >= $1 or s.seniority_rank is null)" in where
+    assert "s.tenure_months >= $2" in where
+    assert "s.tenure_months is null" not in where
+
+    flipped = _filter_clauses(
+        ParsedFilter(
+            seniority_min=3,
+            tenure_min_months=18,
+            include_unknown_seniority=False,
+            include_unknown_tenure=True,
+        ),
+        Params(),
+    )
+    assert "s.seniority_rank >= $1" in flipped
+    assert "s.seniority_rank is null" not in flipped
+    assert "(s.tenure_months >= $2 or s.tenure_months is null)" in flipped
+
+
+def test_source_and_evidence_predicates():
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(source="linkedin", require_code_evidence=True), params
+    )
+    assert "s.evidence_kind = $1" in where
+    # 'both' must be included or this reads as "GitHub-only", dropping every
+    # cross-linked profile — the strongest evidence in the corpus.
+    assert "s.evidence_kind in ('github','both')" in where
+    assert params.values == ["linkedin"]
+
+
+def test_manager_and_founder_are_flag_predicates():
+    """mgmt_rank's NULL is a NEGATIVE, not an unknown, so there is no policy
+    switch to add — but is_manager=True is therefore implicitly LinkedIn-only,
+    and is_manager=False reads as "IC or unknown"."""
+    assert "s.mgmt_rank is not null" in _filter_clauses(
+        ParsedFilter(is_manager=True), Params()
+    )
+    assert "s.mgmt_rank is null" in _filter_clauses(
+        ParsedFilter(is_manager=False), Params()
+    )
+    assert "s.is_founder" in _filter_clauses(ParsedFilter(is_founder=True), Params())
+    assert "not s.is_founder" in _filter_clauses(
+        ParsedFilter(is_founder=False), Params()
+    )
+    # Unset emits nothing: it is not the same predicate as False.
+    bare = _filter_clauses(ParsedFilter(), Params())
+    assert "mgmt_rank" not in bare and "is_founder" not in bare
+
+
+def test_predicate_summary_lists_only_facets_that_became_sql():
+    """Read by a human asking "why did this junk match" and by the eval
+    harness's filter_violations@k. Facet name -> the COERCED value."""
+    parsed = ParsedFilter(
+        archetype_id="founding_ml",
+        metros=["sf_bay_area"],
+        titles=["ml engineer"],
+        seniority_min=3,
+        is_manager=False,
+        require_code_evidence=True,
+        free_text="shipped training infrastructure",
+    )
+    summary = parsed.to_predicate_summary()
+    assert summary == {
+        "archetype_id": "founding_ml",
+        "metros": ["sf_bay_area"],
+        "titles": ["ml engineer"],
+        "seniority_min": 3,
+        "is_manager": False,
+        "require_code_evidence": True,
+    }
+    # free_text is a ranking input, not a filter; empty facets are absent
+    # rather than present-and-empty.
+    assert "free_text" not in summary
+    assert ParsedFilter().to_predicate_summary() == {}
+
+
+def test_parser_version_and_vocab_hash_are_both_in_the_cache_key():
+    """Editing an alias file must invalidate cached parses: the same query
+    hashes differently under a different vocabulary."""
+    from foray.api import parse as parse_module
+
+    baseline = parse_module._query_hash("senior backend engineer")
+    original_hash = parse_module.vocab_hash
+    original_version = parse_module.PARSER_VERSION
+    try:
+        parse_module.vocab_hash = lambda: "different-vocabulary"
+        assert parse_module._query_hash("senior backend engineer") != baseline
+    finally:
+        parse_module.vocab_hash = original_hash
+    try:
+        parse_module.PARSER_VERSION = original_version + 1
+        assert parse_module._query_hash("senior backend engineer") != baseline
+    finally:
+        parse_module.PARSER_VERSION = original_version
+    assert parse_module._query_hash("senior backend engineer") == baseline
+
+
+def test_parsed_filter_from_dict_drops_unknown_keys():
+    """A version rollback replays cached dicts with keys this build lacks;
+    ParsedFilter(**data) would TypeError and 500 the search. from_dict must
+    degrade to defaults instead (the PARSER_VERSION bump is the primary
+    protection; this is the belt-and-braces)."""
+    parsed = ParsedFilter.from_dict(
+        {"archetype_id": "founding_ml", "languages": ["python"], "from_the_future": 1}
+    )
+    assert parsed.archetype_id == "founding_ml"
+    assert parsed.languages == ["python"]
+    assert parsed.strict_language is False  # default, not the unknown key
+
+
+def test_parsed_filter_from_dict_round_trips_to_dict():
+    original = ParsedFilter(
+        archetype_id="senior_backend",
+        metros=["SF"],
+        languages=["go"],
+        experience_min=5.0,
+        free_text="senior backend in go",
+        strict_language=True,
+    )
+    assert ParsedFilter.from_dict(original.to_dict()) == original
+
+
 def test_gate_does_not_disturb_placeholder_numbering():
-    parsed = ParsedFilter(metros=["SF"], languages=["go"], experience_min=5)
+    parsed = ParsedFilter(metros=["sf_bay_area"], languages=["go"], experience_min=5)
     gated = Params()
     where = _filter_clauses(parsed, gated, gate_sql="s.est_experience_years >= 2")
     ungated = Params()
     _filter_clauses(parsed, ungated)
     assert gated.values == ungated.values
-    assert "$1" in where and "$2" in where and "$3" in where
-    assert "$4" not in where
+    assert _placeholders(where) == list(range(1, len(gated.values) + 1))
 
 
 def test_frontend_never_renders_score():

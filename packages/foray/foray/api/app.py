@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..db import close_pool, get_pool
+from ..search_doc import HAS_LEXICAL_DOC_SQL
 from .internal import router as internal_router
 from .search import probe_pgvector_version, run_search
 
@@ -45,7 +46,12 @@ async def health() -> dict:
         )
         scored = await conn.fetchval("select count(distinct candidate_id) from archetype_scores")
         lexical = await conn.fetchval(
-            "select count(*) from candidate_signals where search_tsv is not null"
+            # HAS_LEXICAL_DOC_SQL, not a bare `is not null`: an empty tsvector
+            # can never match `@@`, so counting it here would report a healthy
+            # lexical arm over a corpus it cannot actually find. The constant
+            # assumes the `s` alias (single source in search_doc), hence the
+            # alias on the table.
+            f"select count(*) from candidate_signals s where {HAS_LEXICAL_DOC_SQL}"
         )
         pgvector_version = await probe_pgvector_version(conn)
     status = "ok"
@@ -192,7 +198,9 @@ async def _startup() -> None:
         pool = await get_pool()
         async with pool.acquire() as conn:
             lexical = await conn.fetchval(
-                "select count(*) from candidate_signals where search_tsv is not null"
+                # Same definition as /health: rows the lexical arm can match,
+                # not rows the backfill has merely visited (see search_doc).
+                f"select count(*) from candidate_signals s where {HAS_LEXICAL_DOC_SQL}"
             )
         if "lexical" in (settings.retrieval_arms or "") and not lexical:
             log.warning("search.lexical_unindexed", arms=settings.retrieval_arms)

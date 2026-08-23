@@ -11,8 +11,12 @@ conversation as the voice agent** — web chat first, SMS behind an adapter.
 Not a recruiter texting inbox, and not post-call SMS follow-ups.
 
 **Phase 1 complete.** Web chat is working end to end against the real seeded
-database with no `ANTHROPIC_API_KEY`. 50 new tests, full suite green
-(858 passed, 5 skipped), ruff clean, migration drift test passing.
+database with no `ANTHROPIC_API_KEY`. Post-merge baseline: **1003 passed**, 5
+skipped (after voice intake landed on `main`).
+
+**Phase 2 code complete** (2026-08-23). Rate-limit gate, embeddable widget, and
+SMS stack are built and tested. **Live SMS traffic still waits on Toll-Free
+Verification** — set `SMS_ENABLED=true` only after TFV clears on +1 888 260-0142.
 
 Shipped:
 
@@ -94,10 +98,18 @@ nothing. `contact_name` and `contact_email` are columns on `IntakeThread`, not
 keys in `spec` — `ParsedQuery` has no field for a name, and putting one there
 would be a field `jobmatch.engine` cannot score.
 
-**Two things sit outside their usual homes on purpose.**
-`messaging/prompts.py` and `messaging/schemas.py` would normally be
-`llm/prompts.py` and `schemas.py`, both of which the voice branch is appending
-to. Promote after the merge.
+**Two things stay in this package on purpose.**
+`messaging/prompts.py` and `messaging/schemas.py` were kept out of
+`llm/prompts.py` and `schemas.py` during the voice merge to avoid conflicts.
+After voice landed, the self-contained `messaging/` boundary is the better
+home — do not promote them.
+
+**Inbound-only SMS.** We never cold-text. Consent for a sourced candidate is
+collected through email outreach or the voice call; an inbound text is prior
+express consent and sets `consent_messaging=True` at thread open.
+
+**Widget: embeddable bundle.** `packages/widget/` builds
+`juicebox-intake-widget.js` — not a page in auth-gated `packages/web`.
 
 ---
 
@@ -154,123 +166,54 @@ heuristic path by default.
 
 ---
 
-## Phase 2 — SMS, when Toll-Free Verification clears
+## Phase 2 — SMS (code complete; TFV gates live traffic)
 
 The seam is in; this is the checklist, not a redesign.
 
 1. **An `SmsChannel` implementing `MessageChannel`**, plus a webhook parser
-   returning `(provider_native_id, from_address, to_address, body)`. It must
-   supply the vendor's message id — a channel that cannot is a channel that
-   cannot be idempotent. `requires_consent()` returns `True`.
+   returning `(provider_native_id, from_address, to_address, body)`. **Done**
+   — `messaging/channels.py`, `messaging/sms.py`, `POST /v1/intake/sms/webhook`.
 2. **An unauthenticated inbound webhook**, org resolved from the number that
-   was texted, never from the payload. `routers/track.py` remains the pattern;
-   `routers/messaging.py` already follows it.
+   was texted, never from the payload. **Done** — `IntakeNumber.sms_enabled`
+   must be true; voice-only numbers do not accept texts.
 3. **Enqueue `KIND_INTAKE_TURN`** rather than running inline. Return 200 to the
-   vendor immediately.
+   vendor immediately. **Done**.
 4. **Resolve the sender to a thread** — an active one for that number, or a new
-   one. `intake.phones.lookup_key` matches the number to a candidate, and it
-   refuses to guess a country code for the reason `AGENTS.md` records: a wrong
-   phone match discloses somebody else's record.
-5. **Close the suppression gap.** `Suppression` is keyed on email. The stopped-
-   thread lookup covers a stranger's STOP, but the durable fix is a phone
-   column, which touches a table the voice branch also writes to — hence
-   deferred, and it must land before the first outbound text.
-6. **HELP.** Carrier-mandated alongside STOP, and not implemented.
-7. **Quiet hours.** TCPA is 8am–9pm in the *recipient's* local time, which
-   means capturing a timezone. Web chat needs none of this; SMS cannot ship
-   without it.
+   one. **Done** — `find_active_thread`, `lookup_key` for candidate match.
+5. **Phone column on `Suppression`.** **Done on `main`** (voice slice 2) before
+   this branch merged. `handle_stop` now writes the phone too.
+6. **HELP.** **Done** — whole-message keyword, canned reply, no turn enqueued.
+7. **Quiet hours.** **Deferred until nudging lands.** Under inbound-only every
+   outbound is a reply inside a conversation the candidate just started; TCPA
+   quiet hours bind *initiated* messages. They become mandatory the moment
+   nudging sends the first unsolicited text — see `AGENTS.md`.
 
-## Before this reaches production
+### Production gates
 
-Two gates, neither optional. Both are why the branch is a PR rather than a merge.
-
-1. **The chat routes are unauthenticated and have model spend behind them.**
-   That is by design — a stranger on a careers page has no principal — and the
-   signed widget token stops a forged org. What it does not stop is volume: the
-   token is *meant* to be embedded in a public page, so it is readable in page
-   source, and every inbound message costs an extraction call.
-   `MAX_INBOUND_PER_THREAD` bounds one conversation, not how many a script can
-   open. This is the billing-DoS shape `VOICE_INTAKE_PLAN.md` flags for voice
-   minutes, arriving here as tokens.
-
-   **Until a rate limit is in, do not point a public widget at this.** The
-   routes are harmless while nothing links to them, and the recruiter-facing
-   `/v1/intake/widget-token` is authenticated as normal.
-
-   The obvious place is the edge, where `deploy/Caddyfile` already blocks
-   `/v1/auth/signup` for the same class of reason — but that is the wrong
-   answer here. `docker-compose.prod.yml` runs the stock `caddy:2-alpine`, and
-   Caddy's `rate_limit` is a third-party module that needs an `xcaddy` build.
-   The chain is caddy -> web (nginx) -> api, and `limit_req` *is* compiled into
-   the stock nginx image, so the config-only fix lives in
-   `packages/web/nginx.conf`:
-
-   ```nginx
-   # http context: conf.d/*.conf is included inside http{}, so this goes at the
-   # top of the file, outside the server{} block.
-   limit_req_zone $binary_remote_addr zone=intake_chat:10m rate=20r/m;
-
-   # Behind Caddy, $binary_remote_addr is the Caddy container's IP -- without
-   # this every visitor shares one bucket and the limit throttles everyone or
-   # nobody.
-   set_real_ip_from 172.16.0.0/12;   # docker bridge
-   real_ip_header X-Forwarded-For;
-   real_ip_recursive on;
-
-   # inside server{}, ABOVE `location /v1/` so it wins the prefix match
-   location /v1/intake/chat/ {
-     limit_req zone=intake_chat burst=10 nodelay;
-     limit_req_status 429;
-     set $api_upstream api;
-     proxy_pass http://$api_upstream:8000;
-     proxy_set_header Host $host;
-     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-     proxy_set_header X-Forwarded-Proto $scheme;
-     proxy_read_timeout 300s;
-   }
-   ```
-
-   The durable version is still a per-org thread-creation cap in the route,
-   where it can be counted per tenant rather than per IP.
-
-2. **Migration rehearsal.** `deploy/README.md` asks for a rehearsal against a
-   restored dump on staging before merging to `main`. `b7e2c94af013` creates
-   two tables and adds one column to `candidate_preferences` through
-   `batch_alter_table` — on SQLite that rebuilds the table, on Postgres it is a
-   plain `ALTER`. The Postgres path is the one to watch, and CI covers it.
+1. **Rate limit.** **Done** — nginx `limit_req` on `/v1/intake/chat/` plus
+   `MAX_NEW_THREADS_PER_ORG_PER_HOUR` in the route.
+2. **Migration rehearsal.** Still required on staging before merge to `main`.
+   Revisions: `b7e2c94af013` (threads), `f3a8d51b62c0` (`sms_enabled`).
 
 ---
 
 ## Handover
 
-**Branch:** `feat/messaging-intake`, off `d481e52`. Open as a PR against `main`,
-not merged — see the two gates above, and the merge-order note below.
+**Branch:** stacked on `feat/messaging-intake` after merging `main` (voice intake
+landed as `fb2cc74`). Open as PRs against `feat/messaging-intake`, then one PR
+to `main` after staging rehearsal.
 
-**What works today:** web chat, end to end, with or without an
-`ANTHROPIC_API_KEY`. Recruiter gets a widget token from
-`GET /v1/intake/widget-token`; the page posts to `POST /v1/intake/chat/sessions`
-and then `.../messages`. A finished conversation writes a `CandidatePreference`
-that `jobmatch.engine.score_pair` can read.
+**What works today:** web chat and SMS code paths, end to end in tests, with or
+without an `ANTHROPIC_API_KEY`. Recruiter gets a widget token from
+`GET /v1/intake/widget-token`; embed `packages/widget/dist/juicebox-intake-widget.js`
+or use the test page at `/intake-chat-test.html`. SMS inbound is replay-tested via
+`TestSmsWebhook`; live Twilio traffic waits on TFV + `SMS_ENABLED=true`.
 
-**What is not built:** SMS (the number has no SMS), nudging (decided, not
-written), HELP, quiet hours, a candidate review step, and any recruiter alert
-when an intake lands.
+**What is not built:** nudging (decided, not written), quiet hours (until
+nudging), a candidate review step, and any recruiter alert when an intake lands.
 
-**Merge order — decided: voice first, messaging second.** Both branches add an
-Alembic revision with `down_revision = c1a7f4e05b93`, so one has to rebase, and
-it should be this one:
-
-- This branch is strictly additive (new package, new tables, new routes) and
-  touches neither `intake/` nor `config.py`. Rebasing it is a one-line
-  `down_revision` change and a re-run of `tests/test_migrations.py`.
-- Voice is mid-Phase-2. Rebasing a migration while still writing against it is
-  the worse of the two interruptions.
-- This branch has two deploy gates anyway, so nothing is gained by landing it
-  first.
-- The `_heuristic_titles` bug above is in voice's area; if they fix it before
-  merging, this branch inherits it for free.
-
-Do not combine the two migrations into one.
+**Merge order — satisfied.** Voice landed on `main`; messaging rebased with
+`down_revision = c8e3f91d24b0`. Do not combine the migrations into one.
 
 ---
 
@@ -304,11 +247,9 @@ texting them to ask.
 
 ### Blocking — these change what gets built
 
-1. **Sourced or inbound only?** Will we ever initiate a text to a candidate who
-   did not ask? If never, written-consent capture disappears and this gets
-   materially simpler and safer. If sometimes, we need a consent-provenance
-   record — source, timestamp, the exact disclosure text shown and its version
-   — because in a dispute the consent artifact *is* the defence.
+1. **Sourced or inbound only?** **Decided: inbound-only plus replies.** We never
+   cold-text. Consent for a sourced candidate is collected through email
+   outreach or the voice call; the inbound message is the artifact.
 2. **One Juicebox number, or one per org?** The biggest hidden fork, because
    Juicebox is org-scoped. A shared number means candidates get texts from a
    number they do not recognise and one tenant's complaint rate degrades
@@ -339,12 +280,12 @@ texting them to ask.
    public review page. In chat it is more natural and nearly free — "here is
    what I have, anything wrong?" before wrap-up. It changes the definition of
    done, so it is a decision rather than an assumption.
-8. **Where does the widget live?** Not `packages/web`, which is auth-gated and
-   is not the marketing site. Is there a marketing repo to ship into, or should
-   this be an embeddable `<script>` snippet handed over?
-9. **Consent capture for SMS, concretely** — once (1) is answered. Web chat is
-   self-evident; an outbound text needs consent recorded somewhere auditable
-   before the first message. Widget, voice call, or recruiter attestation?
+8. **Where does the widget live?** **Decided: `packages/widget/`** — an
+   embeddable bundle (`juicebox-intake-widget.js`), not a page in auth-gated
+   `packages/web`.
+9. **Consent capture for SMS, concretely** — **Decided with (1).** Inbound-only:
+   they texted us first, so `consent_messaging=True` at thread open. Outbound
+   to sourced candidates waits on consent collected elsewhere.
 10. **Retention** for thread transcripts, alongside the voice recording policy.
 11. **Whether `IntakeThread` and `IntakeCall` merge** into an `IntakeSession`
     with a `channel` column once both branches land. Worth doing; a rename

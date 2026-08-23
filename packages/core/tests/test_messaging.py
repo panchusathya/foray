@@ -33,6 +33,7 @@ from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 from juicebox.messaging import prompts
 from juicebox.messaging.channels import (
     FAKE,
+    SMS,
     WEB,
     ChannelError,
     FakeChannel,
@@ -53,7 +54,7 @@ from juicebox.messaging.conversation import (
 )
 from juicebox.messaging.identity import CONTACT_EMAIL, CONTACT_NAME, find_email, find_name
 from juicebox.messaging.records import merge_record, record_from_preference
-from juicebox.messaging.suppression import looks_like_stop
+from juicebox.messaging.suppression import looks_like_help, looks_like_stop
 from juicebox.messaging.threads import (
     STATUS_COMPLETE,
     STATUS_STOPPED,
@@ -61,7 +62,14 @@ from juicebox.messaging.threads import (
     record_inbound,
     transcript_of,
 )
-from juicebox.models import Candidate, CandidatePreference, IntakeMessage, IntakeThread
+from juicebox.models import (
+    Candidate,
+    CandidatePreference,
+    IntakeMessage,
+    IntakeNumber,
+    IntakeThread,
+    Job,
+)
 from juicebox.outreach.suppressions import suppress
 from juicebox.repository import upsert_candidates
 from juicebox.routers.messaging import PURPOSE_THREAD, PURPOSE_WIDGET
@@ -486,6 +494,21 @@ class TestSuppression:
 
         assert is_suppressed(session, org_id=identified.org_id, email="ada@example.com")
 
+    def test_stop_suppresses_the_sender_phone(self, session, account, fake_channel):
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            from_address="+14155550123",
+            consent_messaging=True,
+        )
+        run_turn(session, thread=thread)
+        _say(session, thread, "STOP")
+
+        from juicebox.outreach.suppressions import is_suppressed
+
+        assert is_suppressed(session, org_id=account["org_id"], phone="+14155550123")
+
     def test_a_stopped_thread_stays_silent_afterwards(
         self, session, identified, fake_channel
     ):
@@ -871,3 +894,173 @@ class TestCompletion:
         assert result.action == ACTION_COMPLETED
         assert identified.status == STATUS_COMPLETE
         assert fake_channel.bodies[-1] == prompts.WRAP_UP_COMPLETE
+
+
+# --------------------------------------------------------------------------
+# SMS webhook
+# --------------------------------------------------------------------------
+
+
+OUR_SMS_NUMBER = "+18882600142"
+CANDIDATE_SMS = "+14155550123"
+TWILIO_TOKEN = "twilio_test_signing_secret"
+SMS_WEBHOOK_URL = "http://testserver/v1/intake/sms/webhook"
+
+
+@pytest.fixture
+def twilio_env(monkeypatch):
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", TWILIO_TOKEN)
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
+    monkeypatch.setenv("SMS_FROM_NUMBER", OUR_SMS_NUMBER)
+    from juicebox.config import reset_settings_cache
+
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
+@pytest.fixture
+def sms_number(session, account):
+    row = IntakeNumber(
+        org_id=account["org_id"],
+        provider="twilio",
+        phone=OUR_SMS_NUMBER,
+        label="intake sms",
+        sms_enabled=True,
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+@pytest.fixture
+def fake_sms_channel():
+    channel = FakeChannel(consent=True)
+    set_channel(SMS, channel)
+    return channel
+
+
+def _sms_payload(**overrides):
+    payload = {
+        "MessageSid": "SM123",
+        "From": CANDIDATE_SMS,
+        "To": OUR_SMS_NUMBER,
+        "Body": "Hello",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _post_sms(client, payload):
+    from juicebox.messaging.sms import sign_request
+
+    signature = sign_request(url=SMS_WEBHOOK_URL, params=payload, auth_token=TWILIO_TOKEN)
+    return client.post(
+        "/v1/intake/sms/webhook",
+        data=payload,
+        headers={"X-Twilio-Signature": signature},
+    )
+
+
+class TestSmsWebhook:
+    def test_help_is_whole_message_only(self):
+        assert looks_like_help("HELP") is True
+        assert looks_like_help("help me understand this") is False
+
+    def test_a_valid_signed_payload_is_accepted_and_queues_a_turn(
+        self, client, account, sms_number, fake_sms_channel, session, twilio_env
+    ):
+        response = _post_sms(client, _sms_payload())
+        assert response.status_code == 200, response.text
+        jobs = session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all()
+        assert len(jobs) == 1
+        thread = session.scalar(
+            select(IntakeThread).where(
+                IntakeThread.org_id == account["org_id"],
+                IntakeThread.channel == SMS,
+            )
+        )
+        assert thread is not None
+        assert thread.from_address == CANDIDATE_SMS
+
+    def test_a_forged_signature_is_refused(self, client, sms_number, twilio_env):
+        payload = _sms_payload()
+        response = client.post(
+            "/v1/intake/sms/webhook",
+            data=payload,
+            headers={"X-Twilio-Signature": "deadbeef"},
+        )
+        assert response.status_code == 401
+
+    def test_no_auth_token_configured_refuses_everything(
+        self, client, sms_number, monkeypatch
+    ):
+        monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        response = _post_sms(client, _sms_payload())
+        assert response.status_code == 401
+
+    def test_a_duplicate_message_sid_does_not_queue_a_second_turn(
+        self, client, sms_number, fake_sms_channel, session, twilio_env
+    ):
+        first = _post_sms(client, _sms_payload())
+        second = _post_sms(client, _sms_payload())
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert second.json()["duplicate"] is True
+        jobs = session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all()
+        assert len(jobs) == 1
+
+    def test_an_unknown_to_address_is_refused(self, client, twilio_env):
+        response = _post_sms(
+            client,
+            _sms_payload(To="+14155559999"),
+        )
+        assert response.status_code == 404
+
+    def test_a_payload_org_hint_is_inert(
+        self, client, account, sms_number, fake_sms_channel, session, twilio_env
+    ):
+        response = _post_sms(
+            client,
+            _sms_payload(org_id="org_attacker", OrgId="org_attacker"),
+        )
+        assert response.status_code == 200
+        thread = session.scalar(select(IntakeThread).where(IntakeThread.channel == SMS))
+        assert thread.org_id == account["org_id"]
+
+    def test_stop_suppresses_the_phone(
+        self, client, account, sms_number, fake_sms_channel, session, twilio_env
+    ):
+        from juicebox.outreach.suppressions import is_suppressed
+        from juicebox.worker import process_job
+
+        response = _post_sms(client, _sms_payload(Body="STOP"))
+        assert response.status_code == 200
+        job = session.scalar(select(Job).where(Job.kind == KIND_INTAKE_TURN))
+        process_job(session, job)
+        assert is_suppressed(session, org_id=account["org_id"], phone=CANDIDATE_SMS)
+
+    def test_help_replies_once_without_advancing_the_conversation(
+        self, client, sms_number, fake_sms_channel, session, twilio_env
+    ):
+        response = _post_sms(client, _sms_payload(Body="HELP"))
+        assert response.status_code == 200
+        assert response.json()["help"] is True
+        assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
+
+        thread = session.scalar(select(IntakeThread).where(IntakeThread.channel == SMS))
+        assert thread.asked_counts == {}
+        assert fake_sms_channel.bodies == [prompts.HELP_REPLY]
+
+    def test_unconfigured_sms_channel_refuses_to_open_a_thread(
+        self, client, sms_number, monkeypatch, twilio_env
+    ):
+        monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        response = _post_sms(client, _sms_payload())
+        assert response.status_code == 503

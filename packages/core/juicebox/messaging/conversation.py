@@ -421,6 +421,18 @@ def _deliver(
     and a channel does not have a session.
     """
     channel = get_channel(thread.channel)
+    if not channel.is_configured():
+        logger.warning(
+            "refusing to send on %s thread %s: channel not configured",
+            thread.channel,
+            thread.id,
+        )
+        return record_outbound(
+            db,
+            thread=thread,
+            message=message,
+            result=DeliveryResult(status="failed", error="channel not configured"),
+        )
     if channel.requires_consent() and not thread.consent_messaging:
         logger.warning("refusing to send on %s thread %s: no consent", thread.channel, thread.id)
         return record_outbound(

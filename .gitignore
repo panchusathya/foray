@@ -12,6 +12,7 @@ dist/
 # node
 node_modules/
 packages/web/dist/
+packages/web/public/juicebox-intake-widget.js
 npm-debug.log*
 
 # playwright: traces and screenshots of test runs, regenerated every run

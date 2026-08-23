@@ -449,3 +449,22 @@ package owns only what is different about text. Plan and phasing live in
   after voice landed; that reason is gone and the self-contained boundary is
   better. Do not re-litigate the move.
 
+- **SMS is inbound-only plus replies.** We never cold-text a sourced candidate.
+  Consent for outreach is collected through the email stack or the voice call;
+  an inbound text sets `consent_messaging=True` at thread open because they
+  texted us first. Do not add a consent-provenance table for this posture.
+
+- **Quiet hours are deferred, not dropped.** TCPA 8am–9pm recipient-local time
+  applies to *initiated* messages. Under inbound-only every outbound is a reply
+  inside a conversation the candidate just started. Quiet hours become mandatory
+  the moment nudging sends the first unsolicited text — that is the trigger, not
+  TFV clearing.
+
+- **The SMS webhook resolves org from `IntakeNumber`, never the payload.**
+  `IntakeNumber.sms_enabled` must be true or the route refuses the text — a
+  voice-only number must not silently start accepting SMS. Twilio signs with
+  HMAC-SHA1 over the full URL plus sorted POST params (`messaging/sms.py`), not
+  Retell's raw-bytes scheme. No `TWILIO_AUTH_TOKEN` configured means refuse
+  everything. Enqueue `KIND_INTAKE_TURN` and return 200; never run the turn on
+  the request path. HELP gets one canned reply and does not enqueue a turn.
+

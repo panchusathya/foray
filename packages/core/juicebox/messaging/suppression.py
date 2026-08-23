@@ -28,6 +28,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..intake.phones import lookup_key
 from ..models import Candidate, CandidateEmail, IntakeThread
 from ..outreach.suppressions import is_suppressed, suppress
 from .threads import STATUS_STOPPED, close_thread, stopped_thread_exists
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 # message, not searched for inside it: "stop me if you've heard this one" is
 # not an opt-out, and treating it as one loses a candidate silently.
 STOP_WORDS = frozenset({"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "revoke"})
+HELP_WORDS = frozenset({"help", "info"})
 
 # The em and en dashes are built with chr() rather than typed: a literal one
 # is indistinguishable from a hyphen in most editors, and stripping the wrong
@@ -47,6 +49,10 @@ _PUNCTUATION = ".,!?;:'\"()[]{}-" + chr(0x2014) + chr(0x2013)
 
 def looks_like_stop(body: str) -> bool:
     return (body or "").strip().strip(_PUNCTUATION).strip().lower() in STOP_WORDS
+
+
+def looks_like_help(body: str) -> bool:
+    return (body or "").strip().strip(_PUNCTUATION).strip().lower() in HELP_WORDS
 
 
 def candidate_emails(db: Session, *, org_id: str, candidate_id: str) -> list[str]:
@@ -126,7 +132,17 @@ def handle_stop(db: Session, *, thread: IntakeThread) -> None:
             source="intake_thread",
             source_message_id=thread.id,
         )
-    if not addresses:
+    phone = lookup_key(thread.from_address)
+    if phone:
+        suppress(
+            db,
+            org_id=thread.org_id,
+            phone=phone,
+            reason="unsubscribe",
+            source="intake_thread",
+            source_message_id=thread.id,
+        )
+    if not addresses and not phone:
         # Nothing to put on the list. The stopped thread is the only record,
         # which is why address_has_opted_out exists.
         logger.info("intake thread %s opted out with no address to suppress", thread.id)

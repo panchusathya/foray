@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
     # Unauthenticated by design, like track: a candidate on a careers page
     # has no principal. Every request carries an HMAC we minted.
     app.include_router(messaging.chat_router)
+    app.include_router(messaging.sms_router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

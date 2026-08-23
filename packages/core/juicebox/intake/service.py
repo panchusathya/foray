@@ -185,14 +185,29 @@ def _apply_event(call: IntakeCall, event: CallEvent) -> None:
     if event.raw:
         call.raw = {**(call.raw or {}), "last_event": event.kind, "call": event.raw}
 
-    # Set by the agent as a dynamic variable once it has the acknowledgement.
-    # Phase 3 wires that; until then it stays false, which is the safe default
-    # because a call with no recorded consent must not be treated as consented.
-    consent = event.dynamic_variables.get("consent_recording")
-    if isinstance(consent, bool):
-        call.consent_recording = consent
-    elif isinstance(consent, str) and consent.strip().lower() in {"true", "yes"}:
+    # Consent arrives by whichever route the agent config provides: a dynamic
+    # variable if one was set at call creation, otherwise the provider's
+    # post-call analysis, which lands on `call_analyzed` rather than
+    # `call_ended`. Both are checked because the agent definition owns that
+    # choice and this code should not have to change when it does.
+    #
+    # Only ever latched true. A later event arriving without the field must not
+    # silently withdraw a consent that was given, and false is the safe default
+    # because a call with no recorded consent is not a consented call.
+    if _consent_given(event):
         call.consent_recording = True
+
+
+def _consent_given(event: CallEvent) -> bool:
+    analysis = event.raw.get("call_analysis")
+    custom = analysis.get("custom_analysis_data") if isinstance(analysis, dict) else None
+    for source in (event.dynamic_variables, custom if isinstance(custom, dict) else {}):
+        value = source.get("consent_recording")
+        if value is True:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "yes"}:
+            return True
+    return False
 
 
 def _entry_point(event: CallEvent) -> str:

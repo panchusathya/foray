@@ -341,6 +341,28 @@ class TestLifecycle:
         post(client, signer, call_payload())
         assert session.scalars(select(IntakeCall)).one().consent_recording is False
 
+    def test_consent_is_read_from_post_call_analysis(
+        self, client, session, signer, owned_number
+    ):
+        """The agent cannot set a dynamic variable mid-call, so the platform
+        reads consent out of the transcript afterwards -- which arrives on
+        call_analyzed, not call_ended."""
+        payload = call_payload(
+            event="call_analyzed",
+            call_analysis={"custom_analysis_data": {"consent_recording": True}},
+        )
+        post(client, signer, payload)
+        assert session.scalars(select(IntakeCall)).one().consent_recording is True
+
+    def test_a_later_event_cannot_withdraw_consent(
+        self, client, session, signer, owned_number
+    ):
+        """Latched, not overwritten. A follow-up event that simply omits the
+        field must not silently un-consent a recording that was agreed to."""
+        post(client, signer, call_payload(retell_llm_dynamic_variables={"consent_recording": True}))
+        post(client, signer, call_payload(event="call_analyzed"))
+        assert session.scalars(select(IntakeCall)).one().consent_recording is True
+
 
 # --------------------------------------------------------------------------
 # caller identification and extraction

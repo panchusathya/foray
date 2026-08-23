@@ -118,9 +118,11 @@ whether to extend or add alongside.
 
 ## 4. Start with web chat, not SMS
 
-The provisioned number `+1 (888) 260-0142` is **toll-free**. Toll-free SMS
-requires Toll-Free Verification (not A2P 10DLC), which has real lead time and is
-not yet started. So:
+The provisioned number `+1 (888) 260-0142` is **toll-free**, and the Retell API
+confirms `custom_sms_enabled: false` — **SMS is not available on it today.**
+Toll-free SMS also requires Toll-Free Verification (not A2P 10DLC), which has
+real lead time and has not been started. So web chat is not merely the
+recommended first channel, it is the only one available. So:
 
 1. **Web chat first.** No carrier gating, works today, and it is the channel the
    website widget can offer next to the "call me" button. For a chat channel you

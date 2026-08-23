@@ -12,7 +12,7 @@ Not a recruiter texting inbox, and not post-call SMS follow-ups.
 
 **Phase 1 complete.** Web chat is working end to end against the real seeded
 database with no `ANTHROPIC_API_KEY`. 50 new tests, full suite green
-(854 passed, 5 skipped), ruff clean, migration drift test passing.
+(858 passed, 5 skipped), ruff clean, migration drift test passing.
 
 Shipped:
 
@@ -150,7 +150,7 @@ heuristic path by default.
 | 3 | A returning candidate resumes without being re-asked | `test_a_dormant_thread_resumes_where_it_stopped` |
 | 4 | Suppression honoured — a do-not-contact candidate receives nothing | `TestSuppression` (5 tests) |
 | 5 | A duplicated inbound is a no-op | `test_a_duplicate_client_message_id_is_a_no_op` |
-| 6 | Suite green, ruff clean, migration drift passing | 854 passed, 5 skipped |
+| 6 | Suite green, ruff clean, migration drift passing | 858 passed, 5 skipped |
 
 ---
 
@@ -180,20 +180,131 @@ The seam is in; this is the checklist, not a redesign.
    means capturing a timezone. Web chat needs none of this; SMS cannot ship
    without it.
 
+## Before this reaches production
+
+Two gates, neither optional. Both are why the branch is a PR rather than a merge.
+
+1. **The chat routes are unauthenticated and have model spend behind them.**
+   That is by design — a stranger on a careers page has no principal — and the
+   signed widget token stops a forged org. What it does not stop is volume: the
+   token is *meant* to be embedded in a public page, so it is readable in page
+   source, and every inbound message costs an extraction call.
+   `MAX_INBOUND_PER_THREAD` bounds one conversation, not how many a script can
+   open. This is the billing-DoS shape `VOICE_INTAKE_PLAN.md` flags for voice
+   minutes, arriving here as tokens.
+
+   Cheapest fix is at the edge, where there is already a precedent:
+   `deploy/Caddyfile` blocks `/v1/auth/signup` for the same class of reason. A
+   rate limit on `/v1/intake/chat/*` costs no application code. The durable
+   version is a per-org thread-creation cap in the route.
+
+   **Until one of those is in, do not point a public widget at this.** The
+   routes are harmless while nothing links to them, and the recruiter-facing
+   `/v1/intake/widget-token` is authenticated as normal.
+
+2. **Migration rehearsal.** `deploy/README.md` asks for a rehearsal against a
+   restored dump on staging before merging to `main`. `b7e2c94af013` creates
+   two tables and adds one column to `candidate_preferences` through
+   `batch_alter_table` — on SQLite that rebuilds the table, on Postgres it is a
+   plain `ALTER`. The Postgres path is the one to watch, and CI covers it.
+
+---
+
+## Handover
+
+**Branch:** `feat/messaging-intake`, off `d481e52`. Open as a PR against `main`,
+not merged — see the two gates above, and the merge-order note below.
+
+**What works today:** web chat, end to end, with or without an
+`ANTHROPIC_API_KEY`. Recruiter gets a widget token from
+`GET /v1/intake/widget-token`; the page posts to `POST /v1/intake/chat/sessions`
+and then `.../messages`. A finished conversation writes a `CandidatePreference`
+that `jobmatch.engine.score_pair` can read.
+
+**What is not built:** SMS (the number has no SMS), nudging (decided, not
+written), HELP, quiet hours, a candidate review step, and any recruiter alert
+when an intake lands.
+
+**Merge order matters.** The voice branch is concurrently adding an Alembic
+revision whose `down_revision` is also `c1a7f4e05b93`. Whoever merges second
+rebases theirs onto the new head and re-runs `tests/test_migrations.py`. Do not
+combine the two migrations into one. Nothing else in this branch touches
+`intake/` or `config.py`, so the rest should merge mechanically.
+
+---
+
+## Decisions taken since the first pass
+
+**Nudging: yes, at low frequency.** Confirmed by Tushar. Not yet implemented.
+The wrinkle to settle first is that **web chat has no push** — a nudge on a web
+thread is only seen if the person returns to the tab, so nudging is either
+inert until SMS lands or it goes out by email through the existing outreach
+stack, which is a different channel with its own consent question.
+
+**Consent, from how the comparable products actually do it.** Poke, Instinct
+and Tomo all avoid the hard case rather than solving it:
+
+| Product | Mechanism |
+|---|---|
+| Poke (Interaction Co) | The user texts *them* first. Terms characterise the traffic as transactional, not promotional. Web signup ties the number, verification code proves control of it. |
+| Instinct (Spear Street) | Invite-only. Number typed into a web form, which is where the disclosure sits; the invite gate also caps volume while sending reputation builds. |
+| Tomo (Mapo Labs) | iMessage, no app download — sidesteps the carrier regime entirely. No 10DLC, no toll-free verification, no carrier filtering. |
+
+None of them cold-text. In all three the person texting is the person who
+signed up, which is *not* Juicebox's harder population: a candidate sourced
+from Foray never asked us for anything. **Recommended posture: inbound-only
+plus replies.** Consent for a sourced candidate is collected through a channel
+we already have — the outreach email stack, or the voice call — and never by
+texting them to ask.
+
+---
+
 ## Open decisions
 
-1. **Consent capture for SMS.** Web chat is self-evident — they opened it and
-   typed. An outbound text needs prior express consent recorded somewhere
-   auditable before the first message. Where is it captured: the widget, the
-   voice call, or a recruiter attesting to it?
-2. **Nudging a dormant thread.** Deliberately not built. A thread that goes
-   quiet stays quiet, because an unprompted re-engagement message is the
-   easiest way to get blocked and the hardest to judge from data we have.
-   Needs a policy — how long, how many, and whether it is consent-distinct.
-3. **The greeting's firm name and branding**, shared with voice open decision 2.
-4. **Retention** for thread transcripts, alongside the voice recording policy.
-5. **Rate limiting.** `MAX_INBOUND_PER_THREAD` bounds one conversation; per-IP
-   limiting belongs at the Caddy edge and is not configured.
-6. **Whether `IntakeThread` and `IntakeCall` merge** into an `IntakeSession`
-   with a `channel` column once both branches land. Worth doing; a rename
-   before the merge is a guaranteed conflict.
+### Blocking — these change what gets built
+
+1. **Sourced or inbound only?** Will we ever initiate a text to a candidate who
+   did not ask? If never, written-consent capture disappears and this gets
+   materially simpler and safer. If sometimes, we need a consent-provenance
+   record — source, timestamp, the exact disclosure text shown and its version
+   — because in a dispute the consent artifact *is* the defence.
+2. **One Juicebox number, or one per org?** The biggest hidden fork, because
+   Juicebox is org-scoped. A shared number means candidates get texts from a
+   number they do not recognise and one tenant's complaint rate degrades
+   delivery for every other tenant. Per-org means a provisioning and
+   brand-registration workflow per customer, with weeks of lead time each.
+3. **Nudge cadence.** Proposed and awaiting confirmation: first nudge at 48h of
+   silence, at most 2 per thread, at least 72h apart, never after a wrap-up or
+   an opt-out.
+4. **Nudge channel for web threads** — email fallback through the outreach
+   stack once `contact_email` is known, or leave nudging inert until SMS?
+
+### Open — worth deciding, not blocking
+
+5. **Opt-out detection is under-inclusive.** `suppression.looks_like_stop`
+   matches whole-message keywords only, chosen so "stop me if you've heard this
+   one" is not read as an opt-out. But the FCC's revocation rule expects *any
+   reasonable expression* of opt-out to be honoured — "please stop texting me",
+   "remove me" — not just the keyword. The fix is keyword match for the certain
+   cases plus an intent classifier for the rest, and the precedent is the
+   eight-intent reply classifier in `llm/prompts.py:REPLY_SYSTEM`, which §3 of
+   the brief already pointed at. Roughly half a day. Confirm current TCPA
+   specifics with counsel regardless — the consent and revocation rules have
+   moved recently.
+6. **Does a human get told when an intake lands?** Nothing does today.
+   `record_event` writes an audit row and stops there. Voice Phase 4 has
+   "recruiter alert on material change"; the same need applies here.
+7. **Should the candidate review what was captured?** Voice Phase 3 has a
+   public review page. In chat it is more natural and nearly free — "here is
+   what I have, anything wrong?" before wrap-up. It changes the definition of
+   done, so it is a decision rather than an assumption.
+8. **Where does the widget live?** Not `packages/web`, which is auth-gated and
+   is not the marketing site. Is there a marketing repo to ship into, or should
+   this be an embeddable `<script>` snippet handed over?
+9. **Consent capture for SMS, concretely** — once (1) is answered. Web chat is
+   self-evident; an outbound text needs consent recorded somewhere auditable
+   before the first message. Widget, voice call, or recruiter attestation?
+10. **Retention** for thread transcripts, alongside the voice recording policy.
+11. **Whether `IntakeThread` and `IntakeCall` merge** into an `IntakeSession`
+    with a `channel` column once both branches land. Worth doing; a rename
+    before the merge is a guaranteed conflict.

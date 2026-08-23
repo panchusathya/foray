@@ -258,6 +258,64 @@ def cmd_purge_placeholder_emails(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intake_number(args: argparse.Namespace) -> int:
+    """Register a phone number against an org, or list what is registered.
+
+    Without a row here every inbound call is refused with a 404, because the
+    webhook resolves the org from the number that was dialled and refuses to
+    guess. This is the one step that cannot be scripted from the provider side.
+    """
+    from .intake.phones import lookup_key
+    from .models import IntakeNumber
+
+    with session_scope() as db:
+        if args.list:
+            rows = db.scalars(select(IntakeNumber)).all()
+            if not rows:
+                print("no numbers registered")
+                return 0
+            for row in rows:
+                state = "active" if row.active else "disabled"
+                print(
+                    f"{row.phone}  org={row.org_id}  {row.provider}  {state}  "
+                    f"in={row.inbound_agent_id or '-'}  out={row.outbound_agent_id or '-'}"
+                )
+            return 0
+
+        key = lookup_key(args.number)
+        if not key:
+            print(
+                f"cannot normalise {args.number!r} to E.164. Give the full "
+                "international form, e.g. +18882600142."
+            )
+            return 2
+
+        org_id = _resolve_org(db, args.org)
+        existing = db.scalar(select(IntakeNumber).where(IntakeNumber.phone == key))
+        if existing is not None and existing.org_id != org_id:
+            # One number, one org. Reassigning silently would hand another
+            # workspace's calls -- and their transcripts -- to this one.
+            print(
+                f"{key} is already registered to org {existing.org_id}. "
+                "Numbers belong to exactly one org; remove it there first."
+            )
+            return 2
+
+        row = existing or IntakeNumber(org_id=org_id, phone=key)
+        row.provider = args.provider
+        row.label = args.label or row.label
+        row.active = not args.disable
+        if args.inbound_agent:
+            row.inbound_agent_id = args.inbound_agent
+        if args.outbound_agent:
+            row.outbound_agent_id = args.outbound_agent
+        db.add(row)
+        db.flush()
+        verb = "updated" if existing is not None else "registered"
+        print(f"{verb} {key} -> org {org_id} ({'active' if row.active else 'disabled'})")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -316,6 +374,19 @@ def build_parser() -> argparse.ArgumentParser:
     agents = sub.add_parser("run-agents", help="run every due sourcing agent")
     agents.add_argument("--org", default=None)
     agents.set_defaults(func=cmd_run_agents)
+
+    intake_number = sub.add_parser(
+        "intake-number", help="register a voice intake phone number against an org"
+    )
+    intake_number.add_argument("number", nargs="?", default="", help="E.164, e.g. +18882600142")
+    intake_number.add_argument("--org", default="")
+    intake_number.add_argument("--provider", default="retell")
+    intake_number.add_argument("--label", default="")
+    intake_number.add_argument("--inbound-agent", default="")
+    intake_number.add_argument("--outbound-agent", default="")
+    intake_number.add_argument("--disable", action="store_true", help="keep the row, stop taking calls")
+    intake_number.add_argument("--list", action="store_true", help="show registered numbers")
+    intake_number.set_defaults(func=cmd_intake_number)
 
     work = sub.add_parser("work", help="claim and run jobs from the durable queue")
     work.add_argument(

@@ -151,6 +151,20 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   evasive one longer. Do **not** move that judgement into the system prompt — an
   agent asked to decide whether it has "covered enough" guesses, and the failure
   is invisible because the transcript always looks like a complete conversation.
+- **A stated time budget may only narrow the gate.** `minutes_available` is
+  persisted on first sight and `coverage(core_only=)` closes on `CORE_KEYS`
+  when the budget is at or under `intake_core_only_minutes`. Twenty minutes
+  does not add questions. No budget (`None`) is today's full required set.
+  `spec.must_have_skills` is asked early but is **not** in `CORE_KEYS` — the
+  heuristic cannot fill it, and putting it on the short-call gate would run
+  every model-less pass to the 15-minute ceiling. Skipped required keys land
+  on `deferred_fields` so they do not look forgotten.
+- **Reactions land on the domain, never the person.** The agent may remark once
+  on the field ("backend infrastructure — that's an area with real movement
+  right now") and must never react to compensation, notice period, work
+  authorisation, or anything protected; never say they are strong or in demand;
+  never name a client or quote a number of roles. `progress_line` is composed
+  in code at milestones `{5, 3, 1}` so the agent cannot invent a count.
 - **A declined field counts as covered.** A candidate who will not discuss comp
   has resolved it. If refusal left the field unanswered the gate could never
   close and the agent would ask forever, so `declined` is load-bearing, not
@@ -162,6 +176,42 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   Adding a bespoke key to `spec` produces a field `jobmatch.engine` cannot score
   and quietly turns intake back into notes. `SPEC_FIELDS` is deliberately a
   subset: a candidate has no stated opinion about which school they attended.
+- **A finished call rescores off `preference.updated_at`, not `Candidate.updated_at`.**
+  Writing `CandidatePreference` touches neither the candidate row nor today's
+  watermark by itself. `enqueue_match_for_candidate` keys idempotency on the
+  preference clock plus `JOB_MATCH_ENGINE_VERSION`; the match tick also
+  enqueues when `preference.updated_at > watermark.computed_at` or the stored
+  `engine_version` is stale. Do not bump `Candidate.updated_at` to force a
+  rescore — that ripples into `repository._apply` and the contacts grid sorts.
+  A veto is `0.0` with a veto criterion, not `None`: `None` would keep the old
+  score.
+- **A key `ParsedQuery` cannot emit is a dead branch with a green test.** The
+  comp veto originally read `parsed_spec["compensation_min"]` and five other
+  guessed spellings. `parsed_spec` is `ParsedQuery.to_dict()`, which had no
+  compensation field at all, so it was unreachable on every real posting — and
+  its test passed because the test hand-wrote the key. `min_compensation` /
+  `max_compensation` / `compensation_currency` are real fields now, filled by
+  `search.parser.parse_compensation` on both JD paths. Two rules survive the
+  fix: probe one key you can point at in the dataclass, never a list of
+  candidate spellings; and drive a spec test through `parse_posting`, because a
+  hand-planted `parsed_spec` proves nothing the parser would produce.
+- **The veto compares the posting's ceiling, not its floor.** `max_compensation`
+  is what a candidate's floor has to clear. "From 180k" states no ceiling and
+  could pay 450k, so it is never a veto; neither is a silent posting, nor one
+  quoted in a different currency (converting needs a rate, and a guessed rate
+  drops real roles). `parse_compensation` is deliberately conservative for the
+  same reason a false positive here silently removes a good role: it ignores
+  clauses about the company's money (`raised`, `revenue`, `arr`) and strips
+  `401k`, which is in half of all job descriptions and parses as $401,000.
+- **The agent's persona exists twice and a test keeps it honest.**
+  `RECRUITER_NAME` / `SMS_NUMBER_SPOKEN` in `deploy/retell_agents.py` and
+  `intake_recruiter_name` / `intake_sms_number_spoken` in `config.py`. `deploy/`
+  is stdlib-only and cannot import the app, so the copy is structural, not
+  laziness. If they drift the agent greets as one name and refers to itself by
+  another mid-call; `test_the_persona_matches_the_deploy_script` is what catches
+  it. Do not name a server-side setting in the prompt either — the agent cannot
+  see `sms_enabled`, so the close defers to `guidance`, which is composed
+  server-side from the flag.
 - **`prompts._INTAKE_FIELD_KEYS` is a copy.** `intake` imports `llm.prompts`, so
   importing back would be a cycle. `test_the_prompt_enum_matches_the_field_set`
   is what keeps the copy honest -- if you add a field, that test tells you where
@@ -208,6 +258,108 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   a human correction. Preferences need that immunity, and widening
   `manual_fields` across twenty more columns makes an already subtle mechanism
   carry weight it was not built for.
+
+### The webhook and the mid-call gate (phase 2)
+
+- **A number must be registered before it can take a call.** `intake_numbers`
+  maps a number to an org, and the webhook refuses anything it cannot resolve.
+  `juicebox intake-number +1... --org <id>` is the only way in; there is no
+  provider-side step that creates it. A 404 from `/v1/intake/webhook` almost
+  always means this row is missing.
+- **Org resolution has exactly two trusted sources**, in order: a row we already
+  wrote for this call id (which covers retries and covers web calls, because we
+  placed those), then the number that was dialled. Never the payload. There is a
+  test that plants `org_id` in `metadata` and asserts it is inert -- keep it.
+- **The signature is over the raw bytes plus the timestamp**, in that order,
+  keyed on the Retell API key, hex. Verify before parsing, and never against a
+  re-serialised body: `json.dumps` of the parsed payload changes whitespace and
+  key order, and every signature stops matching. `test_re_serialising_the_body
+  _breaks_verification` exists to catch exactly that regression.
+- **No key configured means refuse everything.** Accepting unsigned bodies
+  because nothing is set up turns a misconfiguration into an open write endpoint
+  that also spends money on calls.
+- **The handler verifies, records, queues, returns.** Retell times out at 10
+  seconds and retries 3 times, so an extraction on the request path becomes four
+  copies of the same conversation. `KIND_INTAKE_EXTRACT` is keyed on the call
+  row, so three deliveries produce one job.
+- **`(provider, provider_call_id)` is the idempotency key** and the unique
+  constraint. `call_started`, `call_ended` and `call_analyzed` all land on one
+  row, and each event fills only the fields it actually carries -- a later event
+  must not blank what an earlier one supplied.
+- **A transcript is never shortened.** A late `call_analyzed` sometimes carries a
+  truncated one, and losing the conversation is unrecoverable.
+- **An unmapped event type is acknowledged, not an error.** Retell emits
+  transcript updates and a whole transfer lifecycle; a provider adding an event
+  must never start failing this endpoint.
+- **A confirmed preference is flagged, never overwritten.** Once `confirmed_at`
+  is set a human has vouched for that record, and a re-run undoing their
+  correction is how people stop trusting the system.
+- **An unidentified caller still produces a record** -- on the `IntakeCall`, with
+  `review_needed` -- but no `CandidatePreference`, and **no auto-created
+  Candidate.** Creating people from cold inbound calls would fill the CRM with
+  strangers. A human decides who that was.
+- **`/v1/intake/coverage` is the gate, and it returns topics, not people.** It is
+  reachable by anyone holding a valid signature, so it must never disclose a
+  candidate's record. `still_needed` is required-tier only; once the gate closes
+  it empties and enrichment moves to `optional_topics`. Reporting enrichment as
+  "needed" would keep a finished call alive, which is the exact thing the tiering
+  exists to prevent.
+- **`wrap_up` is permission, not an instruction.** The agent may spend one more
+  question on the highest-value enrichment topic (the projects story) if the
+  candidate still sounds willing. It runs on `json_fast` because a candidate is
+  sitting in silence while it answers, and it degrades to a usable answer rather
+  than erroring -- an error here is heard as the agent going quiet.
+
+### Cheap models cannot be trusted with easy-looking work
+
+The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`
+for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
+intake extractor, five runs each, that generalise past this subsystem:
+
+- **Bucketing is not a model's job.** On "two weeks if the right thing came up",
+  GLM 5.2 picked the right timeline bucket 0/5 and gpt-oss-120b 1/5, varying
+  between `1_3_months`, `3_6_months` and `immediate` across identical calls. The
+  fix was to have the model quote the phrase (`timeline_verbatim`) and map it in
+  code, sharing `_TIMELINE_PATTERNS` with the heuristic path. Anything a
+  deterministic function can decide -- fixed enums, arithmetic, thresholds --
+  should be decided there, or a required field becomes non-deterministic.
+- **A model will invent a permission.** Given a transcript where sharing never
+  came up, GLM asserted `ok_to_share_with_clients: true` 3/5 and gpt-oss 2/5. So
+  a model's claim never satisfies a consent or safety check on its own: it is
+  recorded as evidence, it still closes the coverage gate (the *call* did its
+  job), and `review_needed` stays set until a human or the candidate confirms.
+- **Expect non-JSON.** Both models intermittently return prose despite a strict
+  `json_schema` request and `provider.require_parameters`. The heuristic fallback
+  is load-bearing, not decoration -- which is also why it must never fill
+  `must_have_skills`, `highlights`, or consent.
+
+### What the first live call taught us
+
+223 seconds, real candidate, 2026-08-22. The mechanism worked -- the gate drove
+the questions, the agent wrapped up when it closed, a mid-call comp retraction
+("five hundred k... actually, I won't tell you") was correctly recorded as
+declined rather than as $500k, and asked to read back the caller's own details
+the agent refused. Four things were wrong, and three are the same thing:
+
+- **A model fills required fields it was never given evidence for.** Nobody
+  asked about work authorisation; the model wrote `"unknown"`, which `is_filled`
+  counts as present, so the gate closed on an unasked and client-blocking
+  question. Nobody asked for permission to share; the model returned `true`.
+  Free-text fields now reject placeholders (`_PLACEHOLDERS`), and consent
+  requires `ok_to_share_verbatim` -- **quote or it did not happen**. Apply that
+  pattern to any field where fabrication is worse than absence.
+- **The fallback is where wrong answers live.** `timeline_verbatim` is bucketed
+  in code, but when the quote maps to no bucket the model's own choice is used --
+  and on "if I find the right role I might start soon, but if not I'm okay to
+  stay" it chose `under_1_month`, which puts a browsing candidate in front of a
+  client hiring now. Conditional phrasing is now explicitly exploratory, and a
+  bucket that came from the model rather than the mapping is flagged low
+  confidence so it never looks as solid as a derived one.
+- **A real title has to survive the taxonomy.** "Member of technical staff"
+  noise-stripped to `member technical`, which matches no posting -- losing the
+  entire point of sharing a vocabulary with the JD parser. Aliased to `software
+  engineer`. When intake meets a title the taxonomy mangles, fix
+  `TITLE_ALIASES`; do not let the intake side keep a private spelling.
 
 ## Messaging intake (`packages/core/juicebox/messaging`)
 
@@ -273,9 +425,9 @@ package owns only what is different about text. Plan and phasing live in
   opt-out is remembered as a *stopped thread* and
   `threads.stopped_thread_exists` refuses a later one. Check for *any* stopped
   thread, never the most recent — the most recent is the conversation asking
-  the question. This is a stopgap: `Suppression` is keyed on email and has no
-  phone column, and that has to close before SMS ships. Exactly one message
-  goes out after a STOP, the confirmation a carrier expects.
+  the question. `handle_stop` also writes the phone to `Suppression` when the
+  number is known. Exactly one message goes out after a STOP, the confirmation
+  a carrier expects.
 
 - **Preferences are written when the required gate closes, not only at
   wrap-up.** A thread that answers everything and then goes quiet for a week
@@ -292,6 +444,8 @@ package owns only what is different about text. Plan and phasing live in
   write sets `source_thread_id` and clears `source_call_id`; the *content*
   still merges, so somebody who called and later texted keeps both halves.
 
-- **`messaging/prompts.py` and `messaging/schemas.py` sit outside the repo's
-  usual homes on purpose.** `llm/prompts.py` and `schemas.py` are shared files
-  the voice branch is also appending to. Promote them after both branches land.
+- **`messaging/prompts.py` and `messaging/schemas.py` stay in this package.**
+  The pre-merge plan was to promote them into `llm/prompts.py` and `schemas.py`
+  after voice landed; that reason is gone and the self-contained boundary is
+  better. Do not re-litigate the move.
+

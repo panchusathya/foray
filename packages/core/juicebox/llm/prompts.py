@@ -26,6 +26,7 @@ Conventions:
 - Put seniority in `seniority`, never in `job_titles`. Allowed values: intern, junior, mid, senior, staff, principal, director, vp, cxo.
 - `must_have_skills` is for requirements the recruiter framed as non-negotiable ("must know", "required", "strong X"). Everything else that is a skill goes in `nice_to_have_skills`.
 - `keywords` is for meaningful domain terms that are not skills, titles, or companies.
+- Compensation only from an explicit figure the recruiter gave ("paying over 200k"). Never infer a budget from seniority.
 - `freeform_criteria` holds qualitative requirements a keyword filter cannot express, one short phrase each ("has scaled a team from 5 to 50").
 - `search_text` is a dense keyword-rich restatement of the query used for embedding retrieval. No filler words.
 """
@@ -41,6 +42,9 @@ QUERY_PARSER_SCHEMA: dict[str, Any] = {
         "seniority",
         "min_years_experience",
         "max_years_experience",
+        "min_compensation",
+        "max_compensation",
+        "compensation_currency",
         "locations",
         "remote_ok",
         "industries",
@@ -79,6 +83,25 @@ QUERY_PARSER_SCHEMA: dict[str, Any] = {
         "max_years_experience": {
             "type": ["number", "null"],
             "description": "Maximum total years of experience, or null.",
+        },
+        "min_compensation": {
+            "type": ["number", "null"],
+            "description": (
+                "Bottom of the stated annual pay range, as a plain number in the "
+                "stated currency. Null unless a figure is actually stated."
+            ),
+        },
+        "max_compensation": {
+            "type": ["number", "null"],
+            "description": (
+                "Top of the stated annual pay range. Null unless stated. For "
+                "'up to X' this is X and min is null; for 'at least X' the "
+                "reverse; a single figure fills both."
+            ),
+        },
+        "compensation_currency": {
+            "type": "string",
+            "description": "ISO code for the pay figures, e.g. USD. Empty if none stated.",
         },
         "locations": _string_array("Cities, regions or countries the person should be in."),
         "remote_ok": {
@@ -509,6 +532,7 @@ skill goes in `nice_to_have_skills`.
 junior, mid, senior, staff, principal, director, vp, cxo.
 - Do not copy the hiring company's name into `target_companies`.
 - Ignore EEO, benefits, visa, and "no agencies" boilerplate.
+- Compensation only when the JD states a figure. "Competitive salary" is not a figure, a 401k match is not pay, and the company's funding or revenue is not the role's salary. A wrong figure here removes the role from a candidate's matches, so leave it null when in doubt. Annualise hourly or monthly rates.
 - `search_text` is a dense keyword restatement of the role for embedding retrieval.
 """
 
@@ -652,11 +676,11 @@ _INTAKE_FIELD_KEYS = [
     "spec.seniority",
     "spec.locations",
     "spec.remote_ok",
-    "spec.must_have_skills",
-    "employment_status",
-    "timeline",
     "compensation",
+    "spec.must_have_skills",
     "work_authorization",
+    "timeline",
+    "employment_status",
     "active_processes",
     "ok_to_share_with_clients",
     "highlights",
@@ -766,6 +790,7 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "employment_status",
         "reason_for_looking",
         "timeline",
+        "timeline_verbatim",
         "urgency_driver",
         "target_base",
         "target_total",
@@ -779,6 +804,7 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "highlights",
         "confidential_items",
         "ok_to_share_with_clients",
+        "ok_to_share_verbatim",
         "declined",
         "low_confidence",
     ],
@@ -803,7 +829,23 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "timeline": {
             "type": "string",
             "enum": ["", "immediate", "under_1_month", "1_3_months", "3_6_months", "exploratory"],
-            "description": "How soon they want to move.",
+            "description": (
+                "How soon they want to move. Map to the nearest bucket by the "
+                "candidate's own words: immediate = now, this week, "
+                "\"right away\"; under_1_month = up to and including a month "
+                "(\"two weeks\", \"within a month\", \"end of the month\"); "
+                "1_3_months = more than a month up to three (\"next quarter\", "
+                "\"a couple of months\"); 3_6_months = later this year; "
+                "exploratory = no timeline, just seeing what is out there."
+            ),
+        },
+        "timeline_verbatim": {
+            "type": "string",
+            "description": (
+                "Exactly what they said about timing, quoted, e.g. \"two weeks\", "
+                "\"next quarter\", \"no rush\". Empty if timing never came up. "
+                "This is bucketed in code, so quote rather than interpret."
+            ),
         },
         "urgency_driver": {"type": "string", "description": "What is making them move now."},
         "target_base": {
@@ -831,7 +873,9 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Their stated right to work, e.g. 'us citizen', 'green card', "
-                "'h-1b transfer needed', 'uk right to work'. Their words, nothing inferred."
+                "'h-1b transfer needed', 'uk right to work'. Their words, nothing "
+                "inferred. Leave it EMPTY if it never came up -- never write "
+                "'unknown' or 'not specified'."
             ),
         },
         "willing_to_relocate": {
@@ -898,7 +942,19 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "confidential_items": _string_array("Things they asked us not to repeat."),
         "ok_to_share_with_clients": {
             "type": ["boolean", "null"],
-            "description": "Whether we may represent them to companies. Null if unasked.",
+            "description": (
+                "Whether we may represent them to companies. Null unless it was "
+                "actually discussed -- do not infer it from a cooperative tone."
+            ),
+        },
+        "ok_to_share_verbatim": {
+            "type": "string",
+            "description": (
+                "The exact words in which they gave or refused permission to be "
+                "shared with companies. Empty if it never came up. A true "
+                "ok_to_share_with_clients is ignored without a quote here, so do "
+                "not guess: quote it or leave both empty."
+            ),
         },
         "declined": {
             "type": "array",

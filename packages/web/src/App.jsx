@@ -17,6 +17,7 @@ import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
 import { SourcingPage } from './pages/Sourcing.jsx';
 import { SequencesPage } from './pages/Sequences.jsx';
 import { SettingsPage } from './pages/Settings.jsx';
+import { IntakePage } from './pages/Intake.jsx';
 
 const NAV = [
   { to: '/', label: 'Home', end: true },
@@ -26,6 +27,7 @@ const NAV = [
   { to: '/jobs', label: 'Jobs' },
   { to: '/sequences', label: 'Sequences' },
   { to: '/contacts', label: 'Contacts' },
+  { to: '/intake', label: 'Intake' },
   { to: '/analytics', label: 'Analytics' },
   { to: '/settings', label: 'Settings' },
 ];
@@ -142,6 +144,7 @@ export function App() {
           <Route path="/outreach" element={<Navigate to="/sequences" replace />} />
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/contacts/:candidateId" element={<CandidateDetailPage />} />
+          <Route path="/intake" element={<IntakePage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

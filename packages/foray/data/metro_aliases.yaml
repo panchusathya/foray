@@ -1,0 +1,145 @@
+# Query vocabulary: canonical metro key -> the surface spellings that mean it.
+#
+# NOT data/metros.txt. That file is a GitHub harvest SHARD GRID and says so in
+# its own header: "variants of the same metro are separate shards on purpose",
+# which is why it lists "San Francisco", "SF Bay Area" AND "San Francisco Bay
+# Area" as three peers, and why its length (40) is pinned by test_harvest to
+# keep the 40 x 12 x 6 x 11 = 31,680-shard grid stable. A query vocabulary
+# needs the opposite shape: many spellings COLLAPSING to one key, so
+# "Palo Alto" and "SF" produce the same predicate. Growing this file is free;
+# growing metros.txt is a harvest capacity decision.
+#
+# The key is what candidate_signals.location_metro stores (enrich/derive.py
+# calls canonical_metro on the raw location), so it is also the equality
+# predicate the search path emits. Keys are stable identifiers: renaming one
+# invalidates every stored location_metro AND every cached parse (the key set
+# is folded into vocab_hash).
+#
+# Aliases are matched case- and punctuation-insensitively on token boundaries,
+# so "san francisco" also covers "San Francisco, CA" and "San-Francisco".
+# List a sub-city only when its name does not already contain a listed alias:
+# "San Francisco Bay Area" needs no entry because "san francisco" matches
+# inside it, while "Palo Alto" does.
+#
+# Two-character aliases ("sf", "la") are deliberate and are handled more
+# strictly than the rest -- see canonical_metro in foray/vocab.py.
+
+sf_bay_area:
+  - san francisco
+  - sf
+  - sf bay area
+  - bay area
+  - south san francisco
+  - palo alto
+  - mountain view
+  - oakland
+  - berkeley
+  - san jose
+  - sunnyvale
+  - santa clara
+  - redwood city
+  - menlo park
+  - cupertino
+  - san mateo
+  - emeryville
+
+nyc:
+  - new york
+  - nyc
+  - brooklyn
+  - manhattan
+  - queens
+
+seattle:
+  - seattle
+  - bellevue
+  - redmond
+  - kirkland
+
+austin:
+  - austin
+
+boston:
+  - boston
+  - cambridge
+  - somerville
+
+la:
+  - los angeles
+  - la
+  - santa monica
+  - pasadena
+  - venice beach
+  - culver city
+
+san_diego:
+  - san diego
+  - la jolla
+
+portland:
+  - portland
+
+denver:
+  - denver
+  - boulder
+
+chicago:
+  - chicago
+
+atlanta:
+  - atlanta
+
+miami:
+  - miami
+
+dc:
+  - washington dc
+  - washington d c
+  - district of columbia
+  - arlington
+  - bethesda
+  - reston
+
+philadelphia:
+  - philadelphia
+  - philly
+
+pittsburgh:
+  - pittsburgh
+
+minneapolis:
+  - minneapolis
+  - saint paul
+  - st paul
+
+salt_lake_city:
+  - salt lake city
+
+phoenix:
+  - phoenix
+  - tempe
+  - scottsdale
+
+raleigh_durham:
+  - raleigh
+  - durham
+  - chapel hill
+  - research triangle
+
+nashville:
+  - nashville
+
+detroit:
+  - detroit
+  - ann arbor
+
+madison:
+  - madison
+
+dallas:
+  - dallas
+  - fort worth
+  - plano
+
+houston:
+  - houston

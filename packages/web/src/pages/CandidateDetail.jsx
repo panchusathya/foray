@@ -18,6 +18,8 @@ import { NotesPanel } from '../components/NotesPanel.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
 import { Avatar, Badge, ErrorBox, Loading } from '../components/common.jsx';
 import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
+import { formatComp, formatTimeline, intakeApi } from '../lib/intake.js';
+import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
 
 const EDITABLE = [
@@ -231,19 +233,184 @@ export function CandidateDetailPage() {
               Notes{' '}
               {noteCount === null ? null : <span className="tab-count">{noteCount}</span>}
             </button>
+            <button
+              type="button"
+              className={tab === 'intake' ? 'active' : ''}
+              data-testid="tab-intake"
+              onClick={() => setTab('intake')}
+            >
+              Intake
+            </button>
+            <button
+              type="button"
+              className={tab === 'jobs' ? 'active' : ''}
+              data-testid="tab-jobs"
+              onClick={() => setTab('jobs')}
+            >
+              Jobs
+            </button>
           </div>
 
-          {/* Both stay mounted: the Emails tab must be present on first render
-              (see the file header), and hiding rather than unmounting keeps a
-              half-typed note alive when you glance at the thread. */}
+          {/* Emails and notes stay mounted: the Emails tab must be present on
+              first render (see the file header), and hiding rather than
+              unmounting keeps a half-typed note alive when you glance at the
+              thread. */}
           <div hidden={tab !== 'emails'}>
             <ContactHistory candidateId={candidateId} onCount={setEmailCount} />
           </div>
           <div hidden={tab !== 'notes'}>
             <NotesPanel candidateId={candidateId} onCount={setNoteCount} />
           </div>
+          <div hidden={tab !== 'intake'}>
+            <IntakePanel candidateId={candidateId} />
+          </div>
+          <div hidden={tab !== 'jobs'}>
+            <JobsPanel candidateId={candidateId} />
+          </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function fieldValue(answer) {
+  if (answer.declined) return 'declined';
+  if (answer.value == null || answer.value === '' || answer.value === false) {
+    if (answer.asked === false) return 'deferred';
+    return '—';
+  }
+  if (Array.isArray(answer.value)) return answer.value.join(', ') || '—';
+  if (typeof answer.value === 'object') return JSON.stringify(answer.value);
+  return String(answer.value);
+}
+
+function IntakePanel({ candidateId }) {
+  const pref = useAsync(() => intakeApi.getPreference(candidateId), [candidateId]);
+  const call = useAsync(async () => {
+    if (!pref.data?.source_call_id) return null;
+    return intakeApi.getCall(pref.data.source_call_id);
+  }, [pref.data?.source_call_id]);
+  const [confirmError, setConfirmError] = useState(null);
+
+  if (pref.loading) return <Loading label="Loading intake…" />;
+  if (pref.error && pref.error.status === 404) {
+    return <div className="card empty">No intake record for this person yet.</div>;
+  }
+  if (pref.error) return <ErrorBox error={pref.error} />;
+
+  const record = pref.data;
+  const answers = call.data?.field_answers ?? [];
+
+  async function confirm() {
+    setConfirmError(null);
+    try {
+      await intakeApi.confirmPreference(candidateId);
+      pref.reload();
+    } catch (caught) {
+      setConfirmError(caught);
+    }
+  }
+
+  return (
+    <div className="stack" data-testid="intake-panel">
+      <ErrorBox error={confirmError} />
+      <div className="card stack" style={{ gap: 8 }}>
+        <div className="row spread">
+          <div>
+            <div className="small muted">Timeline</div>
+            <div>{formatTimeline(record.timeline)}</div>
+          </div>
+          <div>
+            <div className="small muted">Target comp</div>
+            <div>{formatComp(record.target_total || record.target_base)}</div>
+          </div>
+          <div>
+            <div className="small muted">Work auth</div>
+            <div>{record.work_authorization || '—'}</div>
+          </div>
+        </div>
+        {record.review_needed ? (
+          <div className="small muted">Review: {record.review_reason || 'needs a look'}</div>
+        ) : null}
+        {record.confirmed_at ? (
+          <Badge>confirmed</Badge>
+        ) : (
+          <button type="button" className="tiny" onClick={confirm}>
+            Confirm record
+          </button>
+        )}
+      </div>
+      {answers.length ? (
+        <table className="jobs-table">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Value</th>
+              <th>Said</th>
+            </tr>
+          </thead>
+          <tbody>
+            {answers.map((answer) => (
+              <tr key={answer.id || answer.field_key}>
+                <td className="small">{answer.field_key}</td>
+                <td>{fieldValue(answer)}</td>
+                <td className="small muted">{answer.verbatim || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className="card empty">No per-field provenance on the source call.</div>
+      )}
+    </div>
+  );
+}
+
+function JobsPanel({ candidateId }) {
+  const matches = useAsync(() => jobsApi.forCandidate(candidateId), [candidateId]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const rows = matches.data ?? [];
+
+  async function rematch() {
+    setBusy(true);
+    setError(null);
+    try {
+      await jobsApi.rematchCandidate(candidateId);
+      matches.reload();
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (matches.loading) return <Loading label="Loading jobs…" />;
+  if (matches.error) return <ErrorBox error={matches.error} />;
+
+  return (
+    <div className="stack" data-testid="jobs-panel">
+      <ErrorBox error={error} />
+      <div className="row">
+        <button type="button" className="tiny" onClick={rematch} disabled={busy}>
+          Rematch
+        </button>
+      </div>
+      {!rows.length ? (
+        <div className="card empty">No job matches yet.</div>
+      ) : (
+        rows.map((match) => (
+          <div key={match.id} className="card row spread">
+            <div>
+              <Link to={`/jobs/${match.job_posting_id}`}>
+                {match.posting?.title || match.job_posting_id}
+              </Link>
+              <div className="small muted">{match.posting?.company}</div>
+            </div>
+            <Badge>{Math.round((match.score ?? 0) * 100)}</Badge>
+          </div>
+        ))
+      )}
     </div>
   );
 }

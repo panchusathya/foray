@@ -34,6 +34,10 @@ export const CONTACT_COLUMNS = {
   tags: { label: 'Tags', width: 160, sort: null },
   emails: { label: 'Email', width: 210, sort: null },
   created_at: { label: 'Added', width: 110, sort: 'created' },
+  intake_timeline: { label: 'Timeline', width: 130, sort: null },
+  intake_target_comp: { label: 'Target comp', width: 120, sort: null, numeric: true },
+  intake_match_count: { label: 'Matches', width: 90, sort: null, numeric: true },
+  intake_confirmed: { label: 'Confirmed', width: 110, sort: null },
 };
 
 const DEFAULT_COLUMNS = [
@@ -131,6 +135,23 @@ export const CONTACT_VIEWS = [
     dir: 'asc',
     params: {},
     empty: 'Nothing to review yet.',
+  },
+  {
+    id: 'voice_intake',
+    label: 'Voice intake',
+    blurb: 'People who have spoken to Vivian, with the preferences they stated.',
+    columns: [
+      'full_name',
+      'current_title',
+      'intake_timeline',
+      'intake_target_comp',
+      'intake_match_count',
+      'intake_confirmed',
+    ],
+    sort: 'created',
+    dir: 'desc',
+    params: { scope: 'voice_intake' },
+    empty: 'Nobody has completed an intake call yet.',
   },
   {
     id: 'all',

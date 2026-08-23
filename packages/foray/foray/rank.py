@@ -166,7 +166,13 @@ def blend_one(
     return ce
 
 
-def sort_key(blend: float, key: int, *, band: int = 1, cos_sim=0.0) -> tuple:
+def sort_key(
+    blend: float,
+    key: int,
+    *,
+    band: int = 1,
+    cos_sim: float | tuple[float, ...] = 0.0,
+) -> tuple[int, float, tuple[float, ...], int]:
     """A total order: band 0 (reranked) first, then band 1 (unreranked), then
     band 2 (CE-rejected); within a band, higher blends, then the tiebreak,
     then id. ``cos_sim`` is the descending tiebreak — a float, or a tuple
@@ -376,7 +382,7 @@ def rank_page(
     window: Window,
     policy: RankPolicy,
 ) -> Page:
-    blended: list[tuple[float, PoolRow]] = []
+    blended: list[tuple[float, float, PoolRow]] = []
     for row in pool:
         if row.highlight_count < policy.min_evidence:
             continue

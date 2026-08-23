@@ -129,6 +129,14 @@ _TITLE_NOISE = {
 }
 
 TITLE_ALIASES = {
+    # IC engineering titles at AI labs. Without these, noise-stripping
+    # reduces "member of technical staff" to "member technical", which
+    # matches no posting -- so the whole point of sharing a vocabulary with
+    # the JD parser is lost for a title a real candidate actually said.
+    "member of technical staff": "software engineer",
+    "member technical staff": "software engineer",
+    "member technical": "software engineer",
+    "mts": "software engineer",
     "swe": "software engineer",
     "sde": "software engineer",
     "software developer": "software engineer",

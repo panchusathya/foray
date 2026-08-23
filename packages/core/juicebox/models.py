@@ -20,7 +20,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     text,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -815,14 +817,31 @@ class ReplyDraft(Base, TimestampMixin):
 
 
 class Suppression(Base, TimestampMixin):
-    """Org-level do-not-contact list. Emails are stored lowercased."""
+    """Org-level do-not-contact list.
+
+    Emails are stored lowercased. Phone is E.164 when present. A STOP from an
+    unknown number is phone-only, so ``email`` is nullable — two empty-email
+    rows must not collide. Uniqueness: ``(org_id, email)`` when email is set,
+    and ``(org_id, phone)`` when phone is non-empty (partial unique).
+    """
 
     __tablename__ = "suppressions"
-    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_suppression_org_email"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_suppression_org_email"),
+        Index(
+            "uq_suppression_org_phone",
+            "org_id",
+            "phone",
+            unique=True,
+            sqlite_where=text("phone != ''"),
+            postgresql_where=text("phone != ''"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sup"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
-    email: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str] = mapped_column(String(32), default="", server_default="")
     reason: Mapped[str] = mapped_column(String(40), default="unsubscribe")
     # unsubscribe | bounce | manual
     source: Mapped[str] = mapped_column(String(40), default="manual")
@@ -1032,6 +1051,9 @@ class JobMatchWatermark(Base):
         ForeignKey("candidates.id", ondelete="CASCADE"), index=True
     )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Bumped with JOB_MATCH_ENGINE_VERSION so a new term rescores the book
+    # without nulling watermarks or touching Candidate.updated_at.
+    engine_version: Mapped[str] = mapped_column(String(32), default="", server_default="")
 
 
 class JobScrapeQuery(Base, TimestampMixin):
@@ -1138,6 +1160,15 @@ class IntakeCall(Base, TimestampMixin):
     review_needed: Mapped[bool] = mapped_column(Boolean, default=True)
     review_reason: Mapped[str] = mapped_column(String(400), default="")
 
+    # Stated time budget, persisted on first sight of check_coverage's
+    # minutes_available. None means today's full gate. A budget may only
+    # narrow the required set (gate_mode=core); it never adds questions.
+    minutes_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gate_mode: Mapped[str] = mapped_column(String(8), default="full", server_default="full")
+    # Required keys skipped by a core-mode trim. Empty is "never trimmed";
+    # a listed key is unasked-on-purpose, not forgotten.
+    deferred_fields: Mapped[list] = mapped_column(JSON, default=list)
+
     error: Mapped[str] = mapped_column(String(400), default="")
 
 
@@ -1229,6 +1260,37 @@ class CandidatePreference(Base, TimestampMixin):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confirmed_by: Mapped[str] = mapped_column(String(32), default="")
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IntakeFieldAnswer(Base, TimestampMixin):
+    """Per-field provenance for one call. Not a second source of truth.
+
+    ``jobmatch`` reads ``CandidatePreference`` only. This table exists so a
+    recruiter can see the sentence a value came from, and so ``asked=false``
+    distinguishes a core-mode trim from a field the agent forgot.
+    """
+
+    __tablename__ = "intake_field_answers"
+    __table_args__ = (
+        UniqueConstraint("intake_call_id", "field_key", name="uq_intake_field_answer_call_key"),
+        Index("ix_intake_field_answers_org_call", "org_id", "intake_call_id"),
+        Index("ix_intake_field_answers_candidate", "org_id", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ifan"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    intake_call_id: Mapped[str] = mapped_column(
+        ForeignKey("intake_calls.id", ondelete="CASCADE"), index=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    field_key: Mapped[str] = mapped_column(String(64))
+    value: Mapped[dict | list | str | float | bool | None] = mapped_column(JSON, nullable=True)
+    verbatim: Mapped[str] = mapped_column(Text, default="", server_default="")
+    confidence: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    declined: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    asked: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 
 class CandidatePhone(Base):
@@ -1431,3 +1493,47 @@ class IntakeMessage(Base, TimestampMixin):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class IntakeNumber(Base, TimestampMixin):
+    """A phone number we own, and the org it belongs to.
+
+    **This table is how a webhook gets an org.** A candidate on a phone call has
+    no principal -- ``get_principal`` has nothing to read -- so the org has to
+    come from something the caller cannot choose. The number that was dialled is
+    that something; the request body is not. An org id taken from a webhook
+    payload is a cross-tenant write and somebody else's phone bill, which is the
+    same mistake ``AGENTS.md`` records against Foray's paid routes.
+
+    ``phone`` is unique **globally**, not per org. A real-world number belongs to
+    exactly one org, and scoping the constraint per org would let two orgs claim
+    the same number and race for its calls.
+
+    Web calls have no dialled number. They resolve instead by ``call_id`` against
+    an ``IntakeCall`` row we created when we placed the call -- the same shape as
+    ``routers/track.py`` reading ``message.org_id`` off a row rather than a query
+    string.
+    """
+
+    __tablename__ = "intake_numbers"
+    __table_args__ = (
+        UniqueConstraint("phone", name="uq_intake_number_phone"),
+        Index("ix_intake_numbers_org_active", "org_id", "active"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("inum"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="retell")
+    # E.164, from intake.phones.lookup_key.
+    phone: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(120), default="")
+
+    # Which agent answers, and which one dials out. Retell allows one of each
+    # per number, which is exactly the two conversations: inbound is a status
+    # update against an existing record, outbound is a first full intake.
+    inbound_agent_id: Mapped[str] = mapped_column(String(120), default="")
+    outbound_agent_id: Mapped[str] = mapped_column(String(120), default="")
+
+    # Turning a number off must not delete its call history, and a deleted row
+    # would make every past IntakeCall unattributable.
+    active: Mapped[bool] = mapped_column(Boolean, default=True)

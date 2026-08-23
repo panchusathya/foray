@@ -13,6 +13,7 @@ from ..config import get_settings
 from ..jobs import KIND_JOBS_MATCH_ONE, enqueue
 from ..models import (
     Candidate,
+    CandidatePreference,
     Job,
     JobMatch,
     JobMatchWatermark,
@@ -24,6 +25,7 @@ from ..outreach.suppressions import normalize_email
 from ..search.index import candidate_to_doc
 from ..search.parser import ParsedQuery
 from ..search.scoring import assess
+from .preference import JOB_MATCH_ENGINE_VERSION, preference_term
 from .referrals import is_incumbent, warm_paths
 
 
@@ -33,6 +35,7 @@ class PairScore:
     heuristic_score: float
     vector_score: float
     criteria: list[dict]
+    preference_score: float = 0.0
 
 
 def score_pair(
@@ -43,6 +46,8 @@ def score_pair(
     cand_embedding_model: str,
     posting_embedding: list[float] | None,
     posting_embedding_model: str,
+    preference: CandidatePreference | None = None,
+    posting: JobPosting | None = None,
 ) -> PairScore:
     assessment = assess(doc, spec)
     heuristic = float(assessment.score)
@@ -52,21 +57,35 @@ def score_pair(
         posting_embedding,
         posting_embedding_model,
     )
+    pref_score, pref_criteria = preference_term(preference, spec, posting=posting)
     settings = get_settings()
     hw = settings.job_match_heuristic_weight
     vw = settings.job_match_vector_weight
-    if vector is None:
-        blended = heuristic
-        vector_score = 0.0
-    else:
-        weight_sum = hw + vw
-        blended = heuristic if weight_sum <= 0 else (hw * heuristic + vw * vector) / weight_sum
+    pw = settings.job_match_preference_weight
+    terms: list[tuple[float, float]] = [(hw, heuristic)]
+    vector_score = 0.0
+    if vector is not None:
         vector_score = vector
+        terms.append((vw, vector))
+    preference_score = 0.0
+    if pref_score is not None:
+        preference_score = pref_score
+        terms.append((pw, pref_score))
+    if pref_score == 0.0 and any(item.get("veto") for item in pref_criteria):
+        blended = 0.0
+    else:
+        weight_sum = sum(weight for weight, _ in terms)
+        blended = (
+            heuristic
+            if weight_sum <= 0
+            else sum(weight * value for weight, value in terms) / weight_sum
+        )
     return PairScore(
         score=max(0.0, min(1.0, blended)),
         heuristic_score=heuristic,
         vector_score=vector_score,
-        criteria=[c.to_dict() for c in assessment.criteria],
+        preference_score=preference_score,
+        criteria=[c.to_dict() for c in assessment.criteria] + pref_criteria,
     )
 
 
@@ -99,6 +118,7 @@ def match_posting(db: Session, posting: JobPosting, *, now=None) -> dict:
         return {"skipped": "not_open", "matched": 0}
     spec = ParsedQuery.from_dict(posting.parsed_spec or {})
     suppressed = _suppression_set(db, posting.org_id)
+    preferences = _preferences_for(db, posting.org_id)
     candidates = db.scalars(
         select(Candidate)
         .where(Candidate.org_id == posting.org_id)
@@ -120,6 +140,8 @@ def match_posting(db: Session, posting: JobPosting, *, now=None) -> dict:
             cand_embedding_model=candidate.embedding_model or "",
             posting_embedding=posting.embedding,
             posting_embedding_model=posting.embedding_model or "",
+            preference=preferences.get(candidate.id),
+            posting=posting,
         )
         _upsert_match(db, posting, candidate.id, pair, now=now)
         _touch_watermark(db, posting.org_id, candidate.id, now)
@@ -149,6 +171,12 @@ def match_candidate(db: Session, candidate: Candidate, *, now=None) -> dict:
             JobPosting.org_id == candidate.org_id, JobPosting.status == "open"
         )
     ).all()
+    preference = db.scalar(
+        select(CandidatePreference).where(
+            CandidatePreference.candidate_id == candidate.id,
+            CandidatePreference.org_id == candidate.org_id,
+        )
+    )
     doc = candidate_to_doc(candidate)
     kept = 0
     for posting in postings:
@@ -163,6 +191,8 @@ def match_candidate(db: Session, candidate: Candidate, *, now=None) -> dict:
             cand_embedding_model=candidate.embedding_model or "",
             posting_embedding=posting.embedding,
             posting_embedding_model=posting.embedding_model or "",
+            preference=preference,
+            posting=posting,
         )
         _upsert_match(db, posting, candidate.id, pair, now=now)
         posting.match_count = _recount(db, posting.id)
@@ -257,9 +287,26 @@ def _touch_watermark(db: Session, org_id: str, candidate_id: str, now) -> None:
         )
     )
     if row is None:
-        db.add(JobMatchWatermark(org_id=org_id, candidate_id=candidate_id, computed_at=now))
+        db.add(
+            JobMatchWatermark(
+                org_id=org_id,
+                candidate_id=candidate_id,
+                computed_at=now,
+                engine_version=JOB_MATCH_ENGINE_VERSION,
+            )
+        )
         return
     row.computed_at = now
+    row.engine_version = JOB_MATCH_ENGINE_VERSION
+
+
+def _preferences_for(db: Session, org_id: str) -> dict[str, CandidatePreference]:
+    return {
+        row.candidate_id: row
+        for row in db.scalars(
+            select(CandidatePreference).where(CandidatePreference.org_id == org_id)
+        )
+    }
 
 
 def _suppression_set(db: Session, org_id: str) -> set[str]:
@@ -294,14 +341,42 @@ def enqueue_match_for_posting(db: Session, posting: JobPosting, *, now=None) -> 
     )
 
 
-def enqueue_match_for_candidate(db: Session, candidate: Candidate, *, now=None) -> None:
+def enqueue_match_for_candidate(
+    db: Session,
+    candidate: Candidate,
+    *,
+    now=None,
+    preference: CandidatePreference | None = None,
+) -> None:
+    """Queue a rescore. The idempotency stamp is the preference clock.
+
+    Writing ``CandidatePreference`` does not touch ``Candidate.updated_at``
+    — on purpose, so a nightly Foray refresh and the contacts grid sorts
+    stay untouched. Using the candidate clock here would make extract a
+    silent no-op.
+    """
     now = now or utcnow()
-    stamp = int((candidate.updated_at or now).timestamp())
+    if preference is None:
+        preference = db.scalar(
+            select(CandidatePreference).where(
+                CandidatePreference.candidate_id == candidate.id,
+                CandidatePreference.org_id == candidate.org_id,
+            )
+        )
+    stamp_src = (
+        (preference.updated_at if preference is not None else None)
+        or candidate.updated_at
+        or now
+    )
+    stamp = int((_aware(stamp_src) or now).timestamp())
     enqueue(
         db,
         org_id=candidate.org_id,
         kind=KIND_JOBS_MATCH_ONE,
-        idempotency_key=f"{KIND_JOBS_MATCH_ONE}:candidate:{candidate.id}:{stamp}",
+        idempotency_key=(
+            f"{KIND_JOBS_MATCH_ONE}:candidate:{candidate.id}:"
+            f"{JOB_MATCH_ENGINE_VERSION}:{stamp}"
+        ),
         payload={"org_id": candidate.org_id, "candidate_id": candidate.id},
         run_at=now,
     )
@@ -325,17 +400,28 @@ def dispatch_match_tick(db: Session, org_id: str, *, now=None) -> dict:
             queued += 1
 
     watermarks = {
-        row.candidate_id: row.computed_at
+        row.candidate_id: row
         for row in db.scalars(
             select(JobMatchWatermark).where(JobMatchWatermark.org_id == org_id)
         ).all()
     }
+    preferences = _preferences_for(db, org_id)
     candidates = db.scalars(select(Candidate).where(Candidate.org_id == org_id)).all()
     for candidate in candidates:
-        mark = _aware(watermarks.get(candidate.id))
+        mark_row = watermarks.get(candidate.id)
+        mark = _aware(mark_row.computed_at) if mark_row is not None else None
         updated = _aware(candidate.updated_at)
-        if mark is None or (updated is not None and updated > mark):
-            enqueue_match_for_candidate(db, candidate, now=now)
+        pref = preferences.get(candidate.id)
+        pref_updated = _aware(pref.updated_at) if pref is not None else None
+        stale_engine = (
+            mark_row is None
+            or (mark_row.engine_version or "") != JOB_MATCH_ENGINE_VERSION
+        )
+        newer = (updated is not None and (mark is None or updated > mark)) or (
+            pref_updated is not None and (mark is None or pref_updated > mark)
+        )
+        if stale_engine or newer:
+            enqueue_match_for_candidate(db, candidate, now=now, preference=pref)
             queued += 1
     return {"queued": queued}
 

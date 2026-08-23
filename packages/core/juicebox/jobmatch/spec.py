@@ -14,7 +14,7 @@ from ..enrich import taxonomy as tx
 from ..llm.client import LLMUnavailable, get_llm
 from ..llm.prompts import JD_PARSER_SCHEMA, JD_PARSER_SYSTEM, jd_parser_prompt
 from ..models import JobPosting
-from ..search.parser import ParsedQuery, heuristic_parse
+from ..search.parser import ParsedQuery, heuristic_parse, parse_compensation
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,24 @@ def heuristic_job_spec(posting: JobPosting) -> ParsedQuery:
         parsed.seniority = [posting.seniority, *parsed.seniority]
     remainder = tx.slugify_text(f"{title} {location} {posting.jd_text or ''}")
     parsed.search_text = remainder
+    _apply_stated_comp(parsed, posting)
     return parsed.normalized()
+
+
+def _apply_stated_comp(parsed: ParsedQuery, posting: JobPosting) -> None:
+    """Fill the pay range from the JD when the caller has not already.
+
+    Read off the raw JD rather than ``heuristic_parse``, which only ever sees
+    title and location. Without this the field is never populated on the
+    offline path, and ``jobmatch.preference`` has no ceiling to test.
+    """
+    if parsed.min_compensation is not None or parsed.max_compensation is not None:
+        return
+    low, high, currency = parse_compensation(posting.jd_text or "")
+    parsed.min_compensation = low
+    parsed.max_compensation = high
+    if currency:
+        parsed.compensation_currency = currency
 
 
 def _title_adjacent_skills(title_normalized: str, jd_text: str) -> tuple[list[str], list[str]]:
@@ -95,4 +112,9 @@ def _llm_jd_parse(posting: JobPosting) -> ParsedQuery:
     )
     if not result.data:
         raise LLMUnavailable("JD parser returned no data")
-    return ParsedQuery.from_dict(result.data).normalized()
+    parsed = ParsedQuery.from_dict(result.data)
+    # The model skips a stated range often enough that leaving it to the model
+    # alone reproduces the bug this field exists to fix: a comp ceiling that is
+    # never populated, so the preference veto can never fire.
+    _apply_stated_comp(parsed, posting)
+    return parsed.normalized()

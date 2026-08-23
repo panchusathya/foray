@@ -21,6 +21,7 @@ from .extract import (
 )
 from .phones import lookup_key, lookup_keys
 from .schema import (
+    CORE_KEYS,
     ENRICHMENT_KEYS,
     FIELDS,
     FIELDS_BY_KEY,
@@ -30,11 +31,13 @@ from .schema import (
     Coverage,
     IntakeField,
     coverage,
+    deferred_required,
     empty_record,
     next_questions,
 )
 
 __all__ = [
+    "CORE_KEYS",
     "ENRICHMENT_KEYS",
     "EXTRACTOR_HEURISTIC",
     "EXTRACTOR_LLM",
@@ -47,6 +50,7 @@ __all__ = [
     "ExtractionResult",
     "IntakeField",
     "coverage",
+    "deferred_required",
     "diff_records",
     "empty_record",
     "extract_intake",

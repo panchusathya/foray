@@ -634,6 +634,25 @@ class TestChatApi:
         assert len(body["messages"]) == 2
         assert body["messages"][0]["direction"] == "outbound"
 
+    def test_the_org_thread_creation_cap_refuses_excess_sessions(
+        self, client, widget_token, monkeypatch
+    ):
+        from juicebox.routers import messaging as messaging_router
+
+        monkeypatch.setattr(messaging_router, "MAX_NEW_THREADS_PER_ORG_PER_HOUR", 2)
+
+        assert (
+            client.post("/v1/intake/chat/sessions", json={"token": widget_token}).status_code
+            == 201
+        )
+        assert (
+            client.post("/v1/intake/chat/sessions", json={"token": widget_token}).status_code
+            == 201
+        )
+        blocked = client.post("/v1/intake/chat/sessions", json={"token": widget_token})
+        assert blocked.status_code == 429
+        assert blocked.json()["detail"] == "Too many new conversations for this organization"
+
     def test_a_duplicate_client_message_id_is_a_no_op(self, client, widget_token, session):
         started = client.post(
             "/v1/intake/chat/sessions", json={"token": widget_token}

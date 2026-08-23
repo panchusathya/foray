@@ -20,7 +20,10 @@ enough to read or extend somebody else's intake.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal
@@ -34,16 +37,18 @@ from ..messaging.schemas import (
     WidgetTokenOut,
 )
 from ..messaging.threads import messages_of, open_thread, record_inbound
-from ..models import IntakeThread, Org
+from ..models import IntakeThread, Org, utcnow
 from ..security import signed_intake_token, verify_intake_token
 
 PURPOSE_WIDGET = "intake-widget"
 PURPOSE_THREAD = "intake-thread"
 
 # A single conversation cannot be used as an unbounded write endpoint. Per-IP
-# limiting belongs at the edge (the deployment already fronts the API with
-# Caddy); this is the floor that holds without it.
+# limiting belongs at the edge (nginx limit_req in packages/web/nginx.conf);
+# this is the durable floor counted per org rather than per IP.
 MAX_INBOUND_PER_THREAD = 200
+MAX_NEW_THREADS_PER_ORG_PER_HOUR = 20
+_THREAD_CAP_WINDOW = timedelta(hours=1)
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
 chat_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/chat", tags=["intake"])
@@ -99,10 +104,33 @@ def _session_out(db: Session, thread: IntakeThread, *, action: str = "") -> Chat
     )
 
 
+def _check_thread_creation_cap(db: Session, *, org_id: str) -> None:
+    """Refuse when this org has opened too many widget conversations recently."""
+    since = utcnow() - _THREAD_CAP_WINDOW
+    count = (
+        db.scalar(
+            select(func.count())
+            .select_from(IntakeThread)
+            .where(
+                IntakeThread.org_id == org_id,
+                IntakeThread.entry_point == "web_widget",
+                IntakeThread.created_at >= since,
+            )
+        )
+        or 0
+    )
+    if count >= MAX_NEW_THREADS_PER_ORG_PER_HOUR:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many new conversations for this organization",
+        )
+
+
 @chat_router.post("/sessions", response_model=ChatSessionOut, status_code=201)
 def start_session(payload: ChatStartIn, db: Session = Depends(get_db)) -> ChatSessionOut:
     """Open a conversation and send the greeting plus the first question."""
     org = _org_from_widget_token(db, payload.token)
+    _check_thread_creation_cap(db, org_id=org.id)
     thread = open_thread(
         db,
         org_id=org.id,

@@ -21,7 +21,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from ..config import get_settings
+from .sms import send_sms
+
 WEB = "web"
+SMS = "sms"
 FAKE = "fake"
 
 
@@ -111,6 +115,29 @@ class WebChatChannel:
         return DeliveryResult(status="sent")
 
 
+class SmsChannel:
+    """Twilio-backed SMS. Outbound only through the REST API."""
+
+    name = SMS
+
+    def is_configured(self) -> bool:
+        settings = get_settings()
+        return bool(
+            settings.twilio_account_sid
+            and settings.twilio_auth_token
+            and settings.sms_from_number
+        )
+
+    def requires_consent(self) -> bool:
+        return True
+
+    def send(self, *, to_address: str, message: OutboundMessage) -> DeliveryResult:
+        if not to_address:
+            raise ChannelError("SMS send requires a destination number")
+        message_sid = send_sms(to_address=to_address, body=message.body)
+        return DeliveryResult(status="sent", provider_native_id=message_sid)
+
+
 class FakeChannel:
     """Records what would have been sent. The ``MemorySender`` of messaging.
 
@@ -147,7 +174,7 @@ class FakeChannel:
 
 
 _channels: dict[str, MessageChannel] = {}
-_defaults: dict[str, type] = {WEB: WebChatChannel, FAKE: FakeChannel}
+_defaults: dict[str, type] = {WEB: WebChatChannel, SMS: SmsChannel, FAKE: FakeChannel}
 
 
 def _load_defaults() -> None:

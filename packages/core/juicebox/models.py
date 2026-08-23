@@ -1537,3 +1537,5 @@ class IntakeNumber(Base, TimestampMixin):
     # Turning a number off must not delete its call history, and a deleted row
     # would make every past IntakeCall unattributable.
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Voice-only numbers must not silently start accepting inbound texts.
+    sms_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

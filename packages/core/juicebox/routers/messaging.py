@@ -20,15 +20,20 @@ enough to read or extend somebody else's intake.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal
-from ..messaging.channels import WEB
-from ..messaging.conversation import run_turn
+from ..intake.phones import lookup_key
+from ..intake.service import resolve_candidate_id
+from ..jobs import KIND_INTAKE_TURN, enqueue
+from ..messaging import prompts
+from ..messaging.channels import SMS, WEB, OutboundMessage, SmsChannel
+from ..messaging.conversation import _deliver, run_turn
 from ..messaging.schemas import (
     ChatMessageIn,
     ChatMessageOut,
@@ -36,9 +41,14 @@ from ..messaging.schemas import (
     ChatStartIn,
     WidgetTokenOut,
 )
-from ..messaging.threads import messages_of, open_thread, record_inbound
+from ..messaging.sms import SignatureError as TwilioSignatureError
+from ..messaging.sms import parse_inbound, resolve_sms_org_id, verify_request
+from ..messaging.suppression import looks_like_help
+from ..messaging.threads import find_active_thread, messages_of, open_thread, record_inbound
 from ..models import IntakeThread, Org, utcnow
 from ..security import signed_intake_token, verify_intake_token
+
+logger = logging.getLogger(__name__)
 
 PURPOSE_WIDGET = "intake-widget"
 PURPOSE_THREAD = "intake-thread"
@@ -52,6 +62,7 @@ _THREAD_CAP_WINDOW = timedelta(hours=1)
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
 chat_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/chat", tags=["intake"])
+sms_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/sms", tags=["intake"])
 
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
@@ -192,3 +203,92 @@ def post_message(
 
     result = run_turn(db, thread=thread)
     return _session_out(db, thread, action=result.action)
+
+
+def _resolve_or_open_sms_thread(
+    db: Session,
+    *,
+    org_id: str,
+    from_address: str,
+    to_address: str,
+) -> IntakeThread:
+    from_key = lookup_key(from_address) or from_address
+    to_key = lookup_key(to_address) or to_address
+    thread = find_active_thread(db, channel=SMS, from_address=from_key)
+    if thread is not None:
+        return thread
+    if not SmsChannel().is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SMS channel is not configured",
+        )
+    candidate_id = resolve_candidate_id(db, org_id=org_id, phone=from_key)
+    return open_thread(
+        db,
+        org_id=org_id,
+        channel=SMS,
+        provider="twilio",
+        entry_point="sms_inbound",
+        candidate_id=candidate_id,
+        from_address=from_key,
+        to_address=to_key,
+        consent_messaging=True,
+    )
+
+
+@sms_router.post("/webhook")
+async def sms_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Twilio inbound SMS. Verify, record, queue, return."""
+    form = await request.form()
+    params = {key: str(value) for key, value in form.multi_items()}
+    signature = request.headers.get("X-Twilio-Signature", "")
+    try:
+        verify_request(url=str(request.url), params=params, signature=signature)
+    except TwilioSignatureError as exc:
+        logger.warning("Twilio signature rejected: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
+        ) from exc
+
+    inbound = parse_inbound(params)
+    if not inbound.provider_native_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No MessageSid in payload"
+        )
+
+    org_id = resolve_sms_org_id(db, to_address=inbound.to_address)
+    if org_id is None:
+        logger.warning("SMS to unclaimed or SMS-disabled number %r", inbound.to_address)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No org owns this number"
+        )
+
+    thread = _resolve_or_open_sms_thread(
+        db,
+        org_id=org_id,
+        from_address=inbound.from_address,
+        to_address=inbound.to_address,
+    )
+
+    message, created = record_inbound(
+        db,
+        thread=thread,
+        body=inbound.body,
+        provider_native_id=inbound.provider_native_id,
+        raw=inbound.raw,
+    )
+    if not created:
+        return {"status": "accepted", "duplicate": True, "message_id": message.id}
+
+    if looks_like_help(inbound.body):
+        _deliver(db, thread=thread, message=OutboundMessage(body=prompts.HELP_REPLY))
+        return {"status": "accepted", "help": True, "message_id": message.id}
+
+    enqueue(
+        db,
+        org_id=org_id,
+        kind=KIND_INTAKE_TURN,
+        idempotency_key=f"{KIND_INTAKE_TURN}:{message.id}",
+        payload={"thread_id": thread.id},
+    )
+    return {"status": "accepted", "message_id": message.id, "thread_id": thread.id}

@@ -324,6 +324,8 @@ class Settings:
     sms_from_number: str = field(
         default_factory=lambda: _env("SMS_FROM_NUMBER", "+18882600142")
     )
+    twilio_account_sid: str = field(default_factory=lambda: _env("TWILIO_ACCOUNT_SID", ""))
+    twilio_auth_token: str = field(default_factory=lambda: _env("TWILIO_AUTH_TOKEN", ""))
 
     @property
     def resolved_llm_provider(self) -> str:

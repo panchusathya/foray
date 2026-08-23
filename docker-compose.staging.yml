@@ -174,8 +174,8 @@ services:
 
   web:
     build:
-      context: packages/web
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: packages/web/Dockerfile
     image: juicebox-staging-web
     restart: unless-stopped
     logging: *default_logging

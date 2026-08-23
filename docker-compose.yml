@@ -130,8 +130,8 @@ services:
 
   web:
     build:
-      context: packages/web
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: packages/web/Dockerfile
     ports:
       - "5173:80"
     depends_on:

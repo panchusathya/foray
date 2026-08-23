@@ -305,6 +305,11 @@ class CandidateSummary(BaseModel):
     # Optional because search hits are built from the in-memory index doc,
     # which carries no timestamps -- those never render in the grid.
     created_at: datetime | None = None
+    # Voice-intake grid only. Optional so every other caller is unchanged.
+    intake_timeline: str | None = None
+    intake_target_comp: float | None = None
+    intake_match_count: int | None = None
+    intake_confirmed: bool | None = None
     # Populated only when the caller asked for history (include_history=true) —
     # None means "not requested", not "never contacted".
     history: HistoryStatsOut | None = None
@@ -697,9 +702,21 @@ class ThreadOut(BaseModel):
     messages: list[MessageOut]
 
 
+class EventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    type: str
+    subject_type: str
+    subject_id: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
 class CandidateTimelineOut(BaseModel):
     stats: HistoryStatsOut
     threads: list[ThreadOut]
+    events: list[EventOut] = Field(default_factory=list)
 
 
 class RunSequenceResponse(BaseModel):
@@ -937,6 +954,91 @@ class DiscoverTurnOut(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     steps: list[DiscoverStep] = Field(default_factory=list)
     results: list[DiscoveredPosting] = Field(default_factory=list)
+
+
+class IntakeFieldAnswerOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    intake_call_id: str
+    candidate_id: str | None
+    field_key: str
+    value: Any = None
+    verbatim: str
+    confidence: str
+    declined: bool
+    asked: bool
+
+
+class CandidatePreferenceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    candidate_id: str
+    source_call_id: str | None
+    spec: dict[str, Any] = Field(default_factory=dict)
+    schema_version: str
+    employment_status: str
+    reason_for_looking: str
+    timeline: str
+    urgency_driver: str
+    target_base: float | None
+    target_total: float | None
+    comp_currency: str
+    work_authorization: str
+    willing_to_relocate: bool | None
+    active_processes: list[Any] = Field(default_factory=list)
+    offers_in_hand: list[Any] = Field(default_factory=list)
+    highlights: list[Any] = Field(default_factory=list)
+    # Recruiter-only. Must never reach a client-facing surface.
+    confidential_items: list[Any] = Field(default_factory=list)
+    ok_to_share_with_clients: bool | None
+    declined: list[Any] = Field(default_factory=list)
+    low_confidence: list[Any] = Field(default_factory=list)
+    fields_missing: list[Any] = Field(default_factory=list)
+    review_needed: bool
+    review_reason: str
+    confirmed_at: datetime | None
+    confirmed_by: str
+    captured_at: datetime | None
+
+
+class IntakeCallSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    candidate_id: str | None
+    entry_point: str
+    from_number: str
+    to_number: str
+    status: str
+    duration_seconds: int
+    required_complete: bool
+    review_needed: bool
+    review_reason: str
+    gate_mode: str
+    minutes_available: int | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    created_at: datetime
+
+
+class IntakeCallOut(IntakeCallSummary):
+    transcript: str
+    recording_url: str
+    extracted: dict[str, Any] = Field(default_factory=dict)
+    deferred_fields: list[Any] = Field(default_factory=list)
+    schema_version: str
+    preference: CandidatePreferenceOut | None = None
+    field_answers: list[IntakeFieldAnswerOut] = Field(default_factory=list)
+
+
+class IntakeCallPatch(BaseModel):
+    candidate_id: str
+
+
+class IntakeCallCountOut(BaseModel):
+    count: int
 
 
 TokenResponse.model_rebuild()

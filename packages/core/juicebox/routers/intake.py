@@ -22,12 +22,14 @@ Two endpoints, both signed with the same scheme:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..deps import CommittingRoute, Principal, get_db, require_write
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..intake.providers import (
     EVENT_ANALYZED,
     EVENT_ENDED,
@@ -39,6 +41,8 @@ from ..intake.providers import (
 from ..intake.service import (
     CallRequestError,
     apply_budget,
+    attribute_call,
+    confirm_preference,
     coverage_snapshot,
     empty_coverage,
     find_call,
@@ -48,7 +52,15 @@ from ..intake.service import (
     resolve_org_id,
     schedule_extraction,
 )
-from ..models import Candidate
+from ..models import Candidate, CandidatePreference, IntakeCall, IntakeFieldAnswer
+from ..schemas import (
+    CandidatePreferenceOut,
+    IntakeCallCountOut,
+    IntakeCallOut,
+    IntakeCallPatch,
+    IntakeCallSummary,
+    IntakeFieldAnswerOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,4 +227,165 @@ def intake_coverage(
 
     return coverage_snapshot(
         transcript, known=known, minutes_available=minutes_available, call=call
+    )
+
+
+def _call_for_org(db: Session, call_id: str, org_id: str) -> IntakeCall:
+    call = db.scalar(
+        select(IntakeCall).where(IntakeCall.id == call_id, IntakeCall.org_id == org_id)
+    )
+    if call is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found")
+    return call
+
+
+@router.get("/calls/count", response_model=IntakeCallCountOut)
+def count_intake_calls(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    review_needed: bool | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    unattributed: bool = Query(default=False),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+) -> IntakeCallCountOut:
+    stmt = _calls_query(
+        principal.org_id,
+        review_needed=review_needed,
+        status_filter=status_filter,
+        unattributed=unattributed,
+        created_after=created_after,
+        created_before=created_before,
+    )
+    return IntakeCallCountOut(
+        count=int(db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    )
+
+
+@router.get("/calls", response_model=list[IntakeCallSummary])
+def list_intake_calls(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    review_needed: bool | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    unattributed: bool = Query(default=False),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[IntakeCallSummary]:
+    stmt = _calls_query(
+        principal.org_id,
+        review_needed=review_needed,
+        status_filter=status_filter,
+        unattributed=unattributed,
+        created_after=created_after,
+        created_before=created_before,
+    )
+    rows = db.scalars(
+        stmt.order_by(IntakeCall.created_at.desc()).offset(offset).limit(limit)
+    ).all()
+    return [IntakeCallSummary.model_validate(row) for row in rows]
+
+
+def _calls_query(
+    org_id: str,
+    *,
+    review_needed: bool | None,
+    status_filter: str | None,
+    unattributed: bool,
+    created_after: datetime | None,
+    created_before: datetime | None,
+):
+    stmt = select(IntakeCall).where(IntakeCall.org_id == org_id)
+    if review_needed is not None:
+        stmt = stmt.where(IntakeCall.review_needed.is_(review_needed))
+    if status_filter:
+        stmt = stmt.where(IntakeCall.status == status_filter)
+    if unattributed:
+        stmt = stmt.where(IntakeCall.candidate_id.is_(None))
+    if created_after is not None:
+        stmt = stmt.where(IntakeCall.created_at >= created_after)
+    if created_before is not None:
+        stmt = stmt.where(IntakeCall.created_at < created_before)
+    return stmt
+
+
+@router.get("/calls/{call_id}", response_model=IntakeCallOut)
+def get_intake_call(
+    call_id: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> IntakeCallOut:
+    call = _call_for_org(db, call_id, principal.org_id)
+    return _call_out(db, call)
+
+
+@router.patch("/calls/{call_id}", response_model=IntakeCallOut)
+def patch_intake_call(
+    call_id: str,
+    payload: IntakeCallPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> IntakeCallOut:
+    call = _call_for_org(db, call_id, principal.org_id)
+    try:
+        attribute_call(db, call=call, candidate_id=payload.candidate_id)
+    except CallRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _call_out(db, call)
+
+
+@router.get("/preferences/{candidate_id}", response_model=CandidatePreferenceOut)
+def get_preference(
+    candidate_id: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> CandidatePreferenceOut:
+    row = _preference_for_org(db, candidate_id, principal.org_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preference not found")
+    return CandidatePreferenceOut.model_validate(row)
+
+
+@router.post("/preferences/{candidate_id}/confirm", response_model=CandidatePreferenceOut)
+def confirm_preference_route(
+    candidate_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> CandidatePreferenceOut:
+    row = _preference_for_org(db, candidate_id, principal.org_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preference not found")
+    confirm_preference(db, preference=row, confirmed_by=principal.user_id)
+    return CandidatePreferenceOut.model_validate(row)
+
+
+def _preference_for_org(db: Session, candidate_id: str, org_id: str) -> CandidatePreference | None:
+    return db.scalar(
+        select(CandidatePreference).where(
+            CandidatePreference.candidate_id == candidate_id,
+            CandidatePreference.org_id == org_id,
+        )
+    )
+
+
+def _call_out(db: Session, call: IntakeCall) -> IntakeCallOut:
+    payload = IntakeCallOut.model_validate(call)
+    answers = db.scalars(
+        select(IntakeFieldAnswer)
+        .where(
+            IntakeFieldAnswer.intake_call_id == call.id,
+            IntakeFieldAnswer.org_id == call.org_id,
+        )
+        .order_by(IntakeFieldAnswer.field_key)
+    ).all()
+    pref = None
+    if call.candidate_id:
+        pref = _preference_for_org(db, call.candidate_id, call.org_id)
+    return payload.model_copy(
+        update={
+            "field_answers": [IntakeFieldAnswerOut.model_validate(row) for row in answers],
+            "preference": CandidatePreferenceOut.model_validate(pref) if pref else None,
+        }
     )

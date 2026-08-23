@@ -29,6 +29,7 @@ from ..models import (
     CandidatePhone,
     CandidatePreference,
     IntakeCall,
+    IntakeFieldAnswer,
     IntakeNumber,
     record_event,
     utcnow,
@@ -45,7 +46,7 @@ from .providers import (
     ProviderCallError,
     get_voice_provider,
 )
-from .schema import SCHEMA_VERSION, coverage, deferred_required
+from .schema import FIELDS, SCHEMA_VERSION, coverage, deferred_required, read_path
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +303,8 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         call.review_needed = True
         call.review_reason = _join_reasons(call.review_reason, "caller not identified")
 
+    write_field_answers(db, call=call, result=result)
+
     record_event(
         db,
         org_id=call.org_id,
@@ -372,6 +375,81 @@ def upsert_preference(
     row.captured_at = call.ended_at or utcnow()
     db.flush()
     return row
+
+
+def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResult) -> None:
+    """One row per field per call. Replaces any previous write for this call."""
+    existing = db.scalars(
+        select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
+    ).all()
+    for row in existing:
+        db.delete(row)
+    record = result.record
+    declined = {key for key in (record.get("declined") or []) if isinstance(key, str)}
+    deferred = {key for key in (call.deferred_fields or []) if isinstance(key, str)}
+    low = set(result.low_confidence)
+    for spec in FIELDS:
+        filled = spec.satisfied_by(record)
+        values = [read_path(record, path) for path in spec.paths]
+        value = next((item for item in values if item not in (None, "", [], {})), None)
+        verbatim = ""
+        if spec.key == "timeline":
+            verbatim = (record.get("timeline_verbatim") or "")[:4000]
+        elif spec.key == "ok_to_share_with_clients":
+            verbatim = (record.get("ok_to_share_verbatim") or "")[:4000]
+        asked = spec.key not in deferred
+        db.add(
+            IntakeFieldAnswer(
+                org_id=call.org_id,
+                intake_call_id=call.id,
+                candidate_id=call.candidate_id,
+                field_key=spec.key,
+                value=value,
+                verbatim=verbatim,
+                confidence="low" if spec.key in low else ("high" if filled else ""),
+                declined=spec.key in declined,
+                asked=asked,
+            )
+        )
+    db.flush()
+
+
+def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> IntakeCall:
+    """A human says who an unidentified caller was."""
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None or candidate.org_id != call.org_id:
+        raise CallRequestError("That candidate is not in this workspace.")
+    call.candidate_id = candidate.id
+    for row in db.scalars(
+        select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
+    ):
+        row.candidate_id = candidate.id
+    if call.extracted:
+        from .extract import ExtractionResult
+        from .schema import coverage as coverage_of
+
+        result = ExtractionResult(
+            record=call.extracted,
+            extractor=call.extractor or "replay",
+            coverage=coverage_of(call.extracted),
+            review_needed=call.review_needed,
+            review_reason=call.review_reason,
+        )
+        upsert_preference(db, call=call, result=result)
+    if call.review_reason == "caller not identified":
+        call.review_needed = False
+        call.review_reason = ""
+    db.flush()
+    return call
+
+
+def confirm_preference(
+    db: Session, *, preference: CandidatePreference, confirmed_by: str
+) -> CandidatePreference:
+    preference.confirmed_at = utcnow()
+    preference.confirmed_by = (confirmed_by or "recruiter")[:32]
+    db.flush()
+    return preference
 
 
 def _known_for(db: Session, call: IntakeCall) -> str:
@@ -578,6 +656,8 @@ def request_intake_call(
     # case that matters here -- a person already on it must not be dialled -- but
     # NOT an unknown number that has asked us to stop calling. That needs a
     # phone-aware suppression list before outbound volume starts.
+    if is_suppressed(db, org_id=org_id, phone=target):
+        raise CallRequestError("This contact is on the do-not-contact list.")
     for address in candidate.emails or []:
         if is_suppressed(db, org_id=org_id, email=address):
             raise CallRequestError("This contact is on the do-not-contact list.")

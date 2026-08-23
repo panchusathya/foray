@@ -61,6 +61,7 @@ describe('resolveParams', () => {
     assert.equal(resolveParams('crm', { now: NOW }).scope, 'crm');
     assert.equal(resolveParams('going_cold', { now: NOW }).scope, 'crm');
     assert.equal(resolveParams('all', { now: NOW }).scope, 'all');
+    assert.equal(resolveParams('voice_intake', { now: NOW }).scope, 'voice_intake');
   });
 
   it('going cold asks for the stale relationship at 90 days', () => {

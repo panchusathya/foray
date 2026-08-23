@@ -360,3 +360,132 @@ the agent refused. Four things were wrong, and three are the same thing:
   entire point of sharing a vocabulary with the JD parser. Aliased to `software
   engineer`. When intake meets a title the taxonomy mangles, fix
   `TITLE_ALIASES`; do not let the intake side keep a private spelling.
+
+## Messaging intake (`packages/core/juicebox/messaging`)
+
+Candidate intake over text: a web chat widget now, SMS behind the same channel
+adapter when Toll-Free Verification clears. It runs the *same* conversation as
+the voice agent and writes the same `CandidatePreference`; everything that
+decides **what** to ask is `juicebox/intake/` and is shared verbatim. This
+package owns only what is different about text. Plan and phasing live in
+`MESSAGING_INTAKE_PLAN.md`. Non-obvious points:
+
+- **The gate decides cadence here, not hangup.** On a call
+  `required_complete` says when the agent may stop talking. On a thread there
+  is nothing to hang up, so it decides whether to send at all. The costs are
+  not symmetric: a long call is disliked, one message too many gets the number
+  blocked and every candidate after that silently receives nothing. Hence one
+  question per message, and **never two outbound in a row** — an outbound
+  requires an inbound after the last thing we sent. The only exceptions are the
+  opening greeting and the single opt-out acknowledgement.
+
+- **`IntakeField.asks` is not a question you can send.** It is a topic line for
+  a voice agent's goal checklist ("Which roles they are actually going after."),
+  and sending it verbatim asks somebody to describe themselves in the third
+  person. `messaging/prompts.py:QUESTIONS` holds the candidate-facing wording,
+  and is a *copy* of the field set in the same sense `llm.prompts.
+  _INTAKE_FIELD_KEYS` is: `test_every_intake_field_has_a_question` is what stops
+  the two drifting, and tells you where the second edit goes.
+
+- **The heuristic extractor must only ever see the candidate's own turns.** It
+  is regexes over the whole text with no notion of who is speaking. Given the
+  full transcript it read a job title of *"take few details so recruiter can
+  match you to right"* and a seniority of *"mid"* out of the agent's greeting —
+  closing two required gates on words we wrote ourselves. `conversation._extract`
+  gives the model the whole thread (an answer needs its question) and the
+  heuristic `transcript_of(..., candidate_only=True)`. It also handles the
+  degrade path explicitly rather than letting `extract_intake` fall back
+  internally, because that fallback would still be holding the full transcript.
+
+- **`records.merge_record` is monotonic, and that is what stops the gate
+  oscillating.** Every turn re-extracts the whole transcript, and a later pass
+  can legitimately come back quieter than an earlier one. Empty never
+  overwrites filled; a filled value does overwrite, which is what makes
+  "actually, make that 260" work. `declined` is a union — a refusal cannot be
+  un-given by a pass that failed to notice it.
+
+- **Two asks per field, then abandon — never mark it declined.** Nobody
+  refused, and recording a refusal that did not happen puts an invented answer
+  into a record that matching reads. The field stays in `fields_missing` and
+  the thread is flagged for review. The cap applies to the contact questions
+  too, and it matters most there: a name has no `declined` to fall back on, so
+  without it somebody who never types anything name-shaped is asked forever.
+
+- **Enrichment is budgeted (`MAX_ENRICHMENT_QUESTIONS`).** A call asks all
+  fourteen because the line is already open. Each text is another notification.
+
+- **Message idempotency is scoped to the thread, not the org** — deliberately
+  unlike `Message.provider_native_id`. A mail provider's id is unique across a
+  tenant; a web chat's comes from the browser, and two strangers both sending
+  `"1"` would have the second message silently swallowed as a duplicate of the
+  first.
+
+- **An opt-out binds to the sender, not to the conversation.** A stranger who
+  texts STOP has no candidate row and therefore no address to suppress, so the
+  opt-out is remembered as a *stopped thread* and
+  `threads.stopped_thread_exists` refuses a later one. Check for *any* stopped
+  thread, never the most recent — the most recent is the conversation asking
+  the question. `handle_stop` also writes the phone to `Suppression` when the
+  number is known. Exactly one message goes out after a STOP, the confirmation
+  a carrier expects.
+
+- **Preferences are written when the required gate closes, not only at
+  wrap-up.** A thread that answers everything and then goes quiet for a week
+  would otherwise keep a complete record where matching cannot see it.
+  `persist_preference` is an upsert, so later turns keep the row current.
+
+- **The candidate row is created no earlier than that.** A public widget
+  endpoint that made one on the first inbound message would let anyone fill the
+  CRM by opening a chat and typing once; requiring a closed gate makes that
+  cost a whole intake. An existing owner of the address always wins — splitting
+  somebody's history across two rows is worse than not creating one.
+
+- **`CandidatePreference` has one provenance link set at a time.** A thread
+  write sets `source_thread_id` and clears `source_call_id`; the *content*
+  still merges, so somebody who called and later texted keeps both halves.
+
+- **`messaging/prompts.py` and `messaging/schemas.py` stay in this package.**
+  The pre-merge plan was to promote them into `llm/prompts.py` and `schemas.py`
+  after voice landed; that reason is gone and the self-contained boundary is
+  better. Do not re-litigate the move.
+
+- **Two paths write `candidate_preferences`, and a clean merge hid both gaps.**
+  `messaging.records.persist_preference` and `intake.service.upsert_preference`
+  upsert the same row and never conflicted textually, so the divergence was
+  invisible until someone read both. Whatever either one grows, check the other:
+
+  - **A thread write enqueues a rescore.** Without it a chat intake wrote a
+    preference nothing ever scored, so the match term fired for callers and
+    silently not for texters. Both paths key idempotency on
+    `preference.updated_at`, never `Candidate.updated_at`.
+  - **A thread may change a confirmed record; the confirmation does not
+    survive it.** Voice *refuses* to overwrite once `confirmed_at` is set. A
+    thread is the candidate's own words, which outrank a recruiter's
+    transcription — so it writes, then clears `confirmed_at`/`confirmed_by` and
+    goes back on the review queue. The state to never ship is the third one: a
+    row still claiming a confirmation over content the confirmer never saw,
+    because everything downstream trusts that flag.
+
+- **A number's opt-out is written *and* read.** `handle_stop` now suppresses
+  `from_address` and the candidate's known numbers through the phone column
+  voice added, not just their emails -- and `is_blocked` checks
+  `is_suppressed(phone=...)`, because writing a row nothing reads is theatre.
+  `stopped_thread_exists` stays as the second read: `lookup_key` refuses to
+  guess a country code, so a number it cannot parse has no `Suppression` row
+  and the stopped thread is the only trace of the opt-out.
+
+- **Attributing a thread refuses an address somebody else owns.** The guard
+  `attribute_call` does not need: a thread usually knows an email, and
+  attaching it to a different person is the disclosure failure, not a missed
+  match. `UNATTRIBUTED_REASON` is one shared constant so the code that sets the
+  flag and the code that clears it cannot drift, and attribution only writes a
+  preference when the record actually captured something -- an empty thread
+  must not blank a record another channel filled in.
+
+- **The review queue reads threads as well as calls.** `IntakeThread.review_needed`
+  defaults to `true`, so a queue that only knew about `IntakeCall` flagged every
+  chat and displayed none of them. `GET /v1/intake/threads` is a deliberate
+  sibling of `/calls` rather than a widened response: a thread has no duration or
+  recording and a call has no message counts. Merging them is the `IntakeSession`
+  refactor, which a review queue should not force.
+

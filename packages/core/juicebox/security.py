@@ -141,3 +141,26 @@ def signed_tracking_token(message_id: str) -> str:
 
 def verify_tracking_token(message_id: str, token: str) -> bool:
     return hmac.compare_digest(signed_tracking_token(message_id), token)
+
+
+def signed_intake_token(purpose: str, subject: str) -> str:
+    """Purpose-scoped HMAC for an endpoint whose caller has no principal.
+
+    Two of these exist. A *widget* token is minted per org and embedded in the
+    marketing site, so the org a chat belongs to is carried by something only
+    we can produce -- the pattern the tracking endpoints use, and the reason a
+    payload-supplied org is never trusted. A *thread* token is handed to the
+    browser when a conversation opens and is what lets it keep posting to a
+    conversation nobody is authenticated against.
+
+    ``purpose`` is inside the signature, so a thread token cannot be replayed
+    as a widget token to open conversations against an org, and vice versa.
+    Not truncated the way ``signed_tracking_token`` is: that one guards a
+    counter, these authorise writes.
+    """
+    secret = get_settings().secret_key
+    return _b64e(_sign(f"{purpose}:{subject}".encode(), secret))
+
+
+def verify_intake_token(purpose: str, subject: str, token: str) -> bool:
+    return hmac.compare_digest(signed_intake_token(purpose, subject), token or "")

@@ -128,6 +128,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     from juicebox.jobmatch.exa import reset_exa
     from juicebox.llm.client import reset_llm, set_llm
     from juicebox.llm.embeddings import reset_embedder
+    from juicebox.messaging.channels import reset_channels
     from juicebox.outreach.personalize import reset_fragment_cache
     from juicebox.outreach.sender import reset_sender_factories, set_sender
     from juicebox.search.engine import reset_engine
@@ -144,6 +145,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     set_sender(None)
     reset_sender_factories()
     reset_providers()
+    reset_channels()
     reset_foray()
     set_voice_provider(None)
 
@@ -170,6 +172,8 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     # A test that swapped a mail provider or sender must not leak it forward.
     reset_sender_factories()
     reset_providers()
+    # A test that injected a FakeChannel must not leak it into the next one.
+    reset_channels()
     # Likewise a stubbed Foray client: leaking one would let a later test
     # think enrichment is configured when the deployment has no token.
     set_foray(None)

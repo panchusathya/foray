@@ -52,7 +52,14 @@ from ..intake.service import (
     resolve_org_id,
     schedule_extraction,
 )
-from ..models import Candidate, CandidatePreference, IntakeCall, IntakeFieldAnswer
+from ..messaging.identity import AttributionError, attribute_thread
+from ..models import (
+    Candidate,
+    CandidatePreference,
+    IntakeCall,
+    IntakeFieldAnswer,
+    IntakeThread,
+)
 from ..schemas import (
     CandidatePreferenceOut,
     IntakeCallCountOut,
@@ -60,6 +67,9 @@ from ..schemas import (
     IntakeCallPatch,
     IntakeCallSummary,
     IntakeFieldAnswerOut,
+    IntakeThreadCountOut,
+    IntakeThreadPatch,
+    IntakeThreadSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,6 +319,106 @@ def _calls_query(
     if created_before is not None:
         stmt = stmt.where(IntakeCall.created_at < created_before)
     return stmt
+
+
+# Threads live on the same review queue as calls. Without these the queue is
+# voice-only, and because IntakeThread.review_needed defaults to true every
+# chat thread is flagged and nothing shows it.
+def _threads_query(
+    org_id: str,
+    *,
+    review_needed: bool | None,
+    status_filter: str | None,
+    unattributed: bool,
+    created_after: datetime | None,
+    created_before: datetime | None,
+):
+    stmt = select(IntakeThread).where(IntakeThread.org_id == org_id)
+    if review_needed is not None:
+        stmt = stmt.where(IntakeThread.review_needed.is_(review_needed))
+    if status_filter:
+        stmt = stmt.where(IntakeThread.status == status_filter)
+    if unattributed:
+        stmt = stmt.where(IntakeThread.candidate_id.is_(None))
+    if created_after is not None:
+        stmt = stmt.where(IntakeThread.created_at >= created_after)
+    if created_before is not None:
+        stmt = stmt.where(IntakeThread.created_at < created_before)
+    return stmt
+
+
+@router.get("/threads/count", response_model=IntakeThreadCountOut)
+def count_intake_threads(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    review_needed: bool | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    unattributed: bool = Query(default=False),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+) -> IntakeThreadCountOut:
+    stmt = _threads_query(
+        principal.org_id,
+        review_needed=review_needed,
+        status_filter=status_filter,
+        unattributed=unattributed,
+        created_after=created_after,
+        created_before=created_before,
+    )
+    return IntakeThreadCountOut(
+        count=int(db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    )
+
+
+@router.get("/threads", response_model=list[IntakeThreadSummary])
+def list_intake_threads(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    review_needed: bool | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    unattributed: bool = Query(default=False),
+    created_after: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[IntakeThreadSummary]:
+    stmt = _threads_query(
+        principal.org_id,
+        review_needed=review_needed,
+        status_filter=status_filter,
+        unattributed=unattributed,
+        created_after=created_after,
+        created_before=created_before,
+    )
+    rows = db.scalars(
+        stmt.order_by(IntakeThread.created_at.desc()).offset(offset).limit(limit)
+    ).all()
+    return [IntakeThreadSummary.model_validate(row) for row in rows]
+
+
+def _thread_for_org(db: Session, thread_id: str, org_id: str) -> IntakeThread:
+    row = db.scalar(
+        select(IntakeThread).where(IntakeThread.id == thread_id, IntakeThread.org_id == org_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such thread")
+    return row
+
+
+@router.patch("/threads/{thread_id}", response_model=IntakeThreadSummary)
+def patch_intake_thread(
+    thread_id: str,
+    payload: IntakeThreadPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> IntakeThreadSummary:
+    """Attach an unidentified conversation to a person."""
+    thread = _thread_for_org(db, thread_id, principal.org_id)
+    try:
+        attribute_thread(db, thread=thread, candidate_id=payload.candidate_id)
+    except AttributionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return IntakeThreadSummary.model_validate(thread)
 
 
 @router.get("/calls/{call_id}", response_model=IntakeCallOut)

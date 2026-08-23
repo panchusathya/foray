@@ -23,6 +23,7 @@ from .jobs import (
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
     KIND_INTAKE_EXTRACT,
+    KIND_INTAKE_TURN,
     KIND_JOBS_MATCH,
     KIND_JOBS_MATCH_ONE,
     KIND_JOBS_PARSE,
@@ -565,6 +566,29 @@ def _handle_crm_discovery_import(db: Session, job: Job, now) -> dict[str, Any]:
     return {"ingested": ingested, "addresses": len(addresses)}
 
 
+def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
+    """Advance one text intake thread.
+
+    The same ``run_turn`` the chat route calls inline. Having one function with
+    two callers is the point: a bug fixed for the widget is fixed for SMS, and
+    the two channels cannot drift into asking different questions.
+    """
+    from .messaging.conversation import run_turn
+    from .models import IntakeThread
+
+    thread_id = job.payload.get("thread_id") or ""
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None:
+        return {"skipped": "thread not found", "thread_id": thread_id}
+    result = run_turn(db, thread=thread)
+    return {
+        "thread_id": thread.id,
+        "action": result.action,
+        "asked_field": result.asked_field,
+        "sent": len(result.sent),
+    }
+
+
 def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
     from .intake.service import extract_call
     from .models import IntakeCall
@@ -604,6 +628,7 @@ HANDLERS = {
     KIND_JOBS_MATCH_ONE: _handle_jobs_match_one,
     KIND_JOBS_SCRAPE: _handle_jobs_scrape,
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
+    KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
 }
 

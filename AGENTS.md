@@ -449,3 +449,27 @@ package owns only what is different about text. Plan and phasing live in
   after voice landed; that reason is gone and the self-contained boundary is
   better. Do not re-litigate the move.
 
+- **Two paths write `candidate_preferences`, and a clean merge hid both gaps.**
+  `messaging.records.persist_preference` and `intake.service.upsert_preference`
+  upsert the same row and never conflicted textually, so the divergence was
+  invisible until someone read both. Whatever either one grows, check the other:
+
+  - **A thread write enqueues a rescore.** Without it a chat intake wrote a
+    preference nothing ever scored, so the match term fired for callers and
+    silently not for texters. Both paths key idempotency on
+    `preference.updated_at`, never `Candidate.updated_at`.
+  - **A thread may change a confirmed record; the confirmation does not
+    survive it.** Voice *refuses* to overwrite once `confirmed_at` is set. A
+    thread is the candidate's own words, which outrank a recruiter's
+    transcription — so it writes, then clears `confirmed_at`/`confirmed_by` and
+    goes back on the review queue. The state to never ship is the third one: a
+    row still claiming a confirmation over content the confirmer never saw,
+    because everything downstream trusts that flag.
+
+- **The review queue reads threads as well as calls.** `IntakeThread.review_needed`
+  defaults to `true`, so a queue that only knew about `IntakeCall` flagged every
+  chat and displayed none of them. `GET /v1/intake/threads` is a deliberate
+  sibling of `/calls` rather than a widened response: a thread has no duration or
+  recording and a call has no message counts. Merging them is the `IntakeSession`
+  refactor, which a review queue should not force.
+

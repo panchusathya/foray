@@ -1033,6 +1033,39 @@ class IntakeCallOut(IntakeCallSummary):
     field_answers: list[IntakeFieldAnswerOut] = Field(default_factory=list)
 
 
+class IntakeThreadSummary(BaseModel):
+    """A messaging thread on the review queue, beside the calls.
+
+    Deliberately a sibling shape rather than a widened ``IntakeCallSummary``:
+    a thread has no duration or recording, and a call has no message counts.
+    Unifying them is the ``IntakeSession`` refactor, which is a rename across
+    two tables and not something a review queue should force.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    candidate_id: str | None
+    channel: str
+    entry_point: str
+    status: str
+    contact_name: str
+    contact_email: str
+    from_address: str
+    required_complete: bool
+    review_needed: bool
+    review_reason: str
+    inbound_count: int
+    outbound_count: int
+    last_inbound_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class IntakeThreadCountOut(BaseModel):
+    count: int
+
+
 class IntakeCallPatch(BaseModel):
     candidate_id: str
 

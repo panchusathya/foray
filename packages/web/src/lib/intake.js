@@ -48,6 +48,8 @@ export const intakeApi = {
   countCalls: (params = {}) => request(`/v1/intake/calls/count${queryString(params)}`),
   getCall: (id) => request(`/v1/intake/calls/${id}`),
   patchCall: (id, payload) => request(`/v1/intake/calls/${id}`, { method: 'PATCH', body: payload }),
+  listThreads: (params = {}) => request(`/v1/intake/threads${queryString(params)}`),
+  countThreads: (params = {}) => request(`/v1/intake/threads/count${queryString(params)}`),
   getPreference: (candidateId) => request(`/v1/intake/preferences/${candidateId}`),
   confirmPreference: (candidateId) =>
     request(`/v1/intake/preferences/${candidateId}/confirm`, { method: 'POST' }),

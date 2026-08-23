@@ -65,34 +65,70 @@ function AttributeForm({ call, onDone }) {
   );
 }
 
+function ThreadRow({ row }) {
+  const who = row.contact_name || row.contact_email || row.from_address;
+  return (
+    <div className="card stack" data-testid="intake-review-thread">
+      <div className="row spread">
+        <div>
+          <Badge tone="partial">{row.channel}</Badge>
+          <span className="small muted"> {when(row.last_inbound_at || row.created_at)}</span>
+          <div className="small">{row.review_reason || 'Needs a look.'}</div>
+          <div className="small muted">
+            {who || 'no contact details'} · {row.inbound_count} in / {row.outbound_count} out
+          </div>
+        </div>
+        {row.candidate_id ? (
+          <Link to={`/contacts/${row.candidate_id}`}>Open record</Link>
+        ) : (
+          <span className="muted small">unattributed</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function IntakeReview() {
   const calls = useAsync(() => intakeApi.listCalls({ review_needed: true }), []);
+  // Threads sit on the same queue. IntakeThread.review_needed defaults to
+  // true, so leaving them out meant every chat was flagged and none shown.
+  const threads = useAsync(() => intakeApi.listThreads({ review_needed: true }), []);
   const rows = calls.data ?? [];
+  const threadRows = threads.data ?? [];
+  const loading = calls.loading || threads.loading;
 
   return (
     <div className="stack" data-testid="intake-review">
-      {calls.loading ? <Loading label="Loading review queue…" /> : null}
+      {loading ? <Loading label="Loading review queue…" /> : null}
       <ErrorBox error={calls.error} />
-      {!calls.loading && !rows.length ? (
+      <ErrorBox error={threads.error} />
+      {!loading && !rows.length && !threadRows.length ? (
         <Empty>Nothing waiting on review.</Empty>
       ) : (
-        rows.map((row) => (
-          <div key={row.id} className="card stack" data-testid="intake-review-row">
-            <div className="row spread">
-              <div>
-                <Badge tone="partial">{row.status}</Badge>
-                <span className="small muted"> {when(row.started_at || row.created_at)}</span>
-                <div className="small">{row.review_reason || 'Needs a look.'}</div>
+        <>
+          {threadRows.map((row) => (
+            <ThreadRow key={row.id} row={row} />
+          ))}
+          {rows.map((row) => (
+            <div key={row.id} className="card stack" data-testid="intake-review-row">
+              <div className="row spread">
+                <div>
+                  <Badge tone="partial">{row.status}</Badge>
+                  <span className="small muted"> {when(row.started_at || row.created_at)}</span>
+                  <div className="small">{row.review_reason || 'Needs a look.'}</div>
+                </div>
+                {row.candidate_id ? (
+                  <Link to={`/contacts/${row.candidate_id}`}>Open record</Link>
+                ) : (
+                  <span className="muted small">unattributed</span>
+                )}
               </div>
-              {row.candidate_id ? (
-                <Link to={`/contacts/${row.candidate_id}`}>Open record</Link>
-              ) : (
-                <span className="muted small">unattributed</span>
-              )}
+              {!row.candidate_id ? (
+                <AttributeForm call={row} onDone={() => calls.reload()} />
+              ) : null}
             </div>
-            {!row.candidate_id ? <AttributeForm call={row} onDone={() => calls.reload()} /> : null}
-          </div>
-        ))
+          ))}
+        </>
       )}
     </div>
   );

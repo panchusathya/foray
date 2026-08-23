@@ -193,14 +193,45 @@ Two gates, neither optional. Both are why the branch is a PR rather than a merge
    open. This is the billing-DoS shape `VOICE_INTAKE_PLAN.md` flags for voice
    minutes, arriving here as tokens.
 
-   Cheapest fix is at the edge, where there is already a precedent:
-   `deploy/Caddyfile` blocks `/v1/auth/signup` for the same class of reason. A
-   rate limit on `/v1/intake/chat/*` costs no application code. The durable
-   version is a per-org thread-creation cap in the route.
-
-   **Until one of those is in, do not point a public widget at this.** The
+   **Until a rate limit is in, do not point a public widget at this.** The
    routes are harmless while nothing links to them, and the recruiter-facing
    `/v1/intake/widget-token` is authenticated as normal.
+
+   The obvious place is the edge, where `deploy/Caddyfile` already blocks
+   `/v1/auth/signup` for the same class of reason — but that is the wrong
+   answer here. `docker-compose.prod.yml` runs the stock `caddy:2-alpine`, and
+   Caddy's `rate_limit` is a third-party module that needs an `xcaddy` build.
+   The chain is caddy -> web (nginx) -> api, and `limit_req` *is* compiled into
+   the stock nginx image, so the config-only fix lives in
+   `packages/web/nginx.conf`:
+
+   ```nginx
+   # http context: conf.d/*.conf is included inside http{}, so this goes at the
+   # top of the file, outside the server{} block.
+   limit_req_zone $binary_remote_addr zone=intake_chat:10m rate=20r/m;
+
+   # Behind Caddy, $binary_remote_addr is the Caddy container's IP -- without
+   # this every visitor shares one bucket and the limit throttles everyone or
+   # nobody.
+   set_real_ip_from 172.16.0.0/12;   # docker bridge
+   real_ip_header X-Forwarded-For;
+   real_ip_recursive on;
+
+   # inside server{}, ABOVE `location /v1/` so it wins the prefix match
+   location /v1/intake/chat/ {
+     limit_req zone=intake_chat burst=10 nodelay;
+     limit_req_status 429;
+     set $api_upstream api;
+     proxy_pass http://$api_upstream:8000;
+     proxy_set_header Host $host;
+     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     proxy_read_timeout 300s;
+   }
+   ```
+
+   The durable version is still a per-org thread-creation cap in the route,
+   where it can be counted per tenant rather than per IP.
 
 2. **Migration rehearsal.** `deploy/README.md` asks for a rehearsal against a
    restored dump on staging before merging to `main`. `b7e2c94af013` creates
@@ -225,11 +256,21 @@ that `jobmatch.engine.score_pair` can read.
 written), HELP, quiet hours, a candidate review step, and any recruiter alert
 when an intake lands.
 
-**Merge order matters.** The voice branch is concurrently adding an Alembic
-revision whose `down_revision` is also `c1a7f4e05b93`. Whoever merges second
-rebases theirs onto the new head and re-runs `tests/test_migrations.py`. Do not
-combine the two migrations into one. Nothing else in this branch touches
-`intake/` or `config.py`, so the rest should merge mechanically.
+**Merge order — decided: voice first, messaging second.** Both branches add an
+Alembic revision with `down_revision = c1a7f4e05b93`, so one has to rebase, and
+it should be this one:
+
+- This branch is strictly additive (new package, new tables, new routes) and
+  touches neither `intake/` nor `config.py`. Rebasing it is a one-line
+  `down_revision` change and a re-run of `tests/test_migrations.py`.
+- Voice is mid-Phase-2. Rebasing a migration while still writing against it is
+  the worse of the two interruptions.
+- This branch has two deploy gates anyway, so nothing is gained by landing it
+  first.
+- The `_heuristic_titles` bug above is in voice's area; if they fix it before
+  merging, this branch inherits it for free.
+
+Do not combine the two migrations into one.
 
 ---
 

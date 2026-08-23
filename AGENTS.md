@@ -259,3 +259,26 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   candidate still sounds willing. It runs on `json_fast` because a candidate is
   sitting in silence while it answers, and it degrades to a usable answer rather
   than erroring -- an error here is heard as the agent going quiet.
+
+### Cheap models cannot be trusted with easy-looking work
+
+The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`
+for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
+intake extractor, five runs each, that generalise past this subsystem:
+
+- **Bucketing is not a model's job.** On "two weeks if the right thing came up",
+  GLM 5.2 picked the right timeline bucket 0/5 and gpt-oss-120b 1/5, varying
+  between `1_3_months`, `3_6_months` and `immediate` across identical calls. The
+  fix was to have the model quote the phrase (`timeline_verbatim`) and map it in
+  code, sharing `_TIMELINE_PATTERNS` with the heuristic path. Anything a
+  deterministic function can decide -- fixed enums, arithmetic, thresholds --
+  should be decided there, or a required field becomes non-deterministic.
+- **A model will invent a permission.** Given a transcript where sharing never
+  came up, GLM asserted `ok_to_share_with_clients: true` 3/5 and gpt-oss 2/5. So
+  a model's claim never satisfies a consent or safety check on its own: it is
+  recorded as evidence, it still closes the coverage gate (the *call* did its
+  job), and `review_needed` stays set until a human or the candidate confirms.
+- **Expect non-JSON.** Both models intermittently return prose despite a strict
+  `json_schema` request and `provider.require_parameters`. The heuristic fallback
+  is load-bearing, not decoration -- which is also why it must never fill
+  `must_have_skills`, `highlights`, or consent.

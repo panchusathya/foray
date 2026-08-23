@@ -221,10 +221,38 @@ class TestModelExtraction:
         result = extract_intake(SPARSE_TRANSCRIPT)
         assert "permission" in result.review_reason
 
-    def test_a_complete_consenting_call_needs_no_review(self, scripted_llm):
+    def test_a_claimed_sharing_permission_does_not_clear_review(self, scripted_llm):
+        """The one field authorising us to put a person in front of employers is
+        also the one a model will invent. Asked about a transcript where sharing
+        never came up, GLM 5.2 asserted true 3/5 and gpt-oss-120b 2/5. So a
+        claim is evidence, not permission -- it still closes the coverage gate,
+        because the call did its job, but a human confirms before it counts."""
         scripted_llm(default=COMPLETE_PAYLOAD)
         result = extract_intake(COMPLETE_TRANSCRIPT)
-        assert not result.review_needed, result.review_reason
+        assert result.record["ok_to_share_with_clients"] is True
+        assert result.coverage.required_complete
+        assert result.review_needed
+        assert "not yet confirmed" in result.review_reason
+
+    def test_the_timeline_bucket_comes_from_the_quote_not_the_model(self, scripted_llm):
+        """Sorting a duration into five buckets is arithmetic. Left to the
+        model it was non-deterministic on a required field: five runs on "two
+        weeks if the right thing came up" gave GLM 1_3_months three times,
+        3_6_months once and immediate once."""
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "3_6_months"          # what the model chose
+        payload["timeline_verbatim"] = "two weeks"  # what the candidate said
+        scripted_llm(default=payload)
+        record = extract_intake(COMPLETE_TRANSCRIPT).record
+        assert record["timeline"] == "under_1_month"
+        assert record["timeline_verbatim"] == "two weeks"
+
+    def test_an_unquotable_timeline_falls_back_to_the_model_bucket(self, scripted_llm):
+        payload = _clone(COMPLETE_PAYLOAD)
+        payload["timeline"] = "1_3_months"
+        payload["timeline_verbatim"] = ""
+        scripted_llm(default=payload)
+        assert extract_intake(COMPLETE_TRANSCRIPT).record["timeline"] == "1_3_months"
 
     def test_must_haves_are_capped(self, scripted_llm):
         payload = _clone(COMPLETE_PAYLOAD)
@@ -257,6 +285,29 @@ class TestModelExtraction:
         result = extract_intake(COMPLETE_TRANSCRIPT)
         assert result.extractor == EXTRACTOR_HEURISTIC
         assert result.review_needed
+
+
+class TestTimelineBucketing:
+    """One definition of what "two weeks" means, shared by both paths, so the
+    model path and the no-model path cannot disagree about a required field."""
+
+    @pytest.mark.parametrize(
+        ("said", "bucket"),
+        [
+            ("two weeks", "under_1_month"),
+            ("within a month", "under_1_month"),
+            ("next quarter", "1_3_months"),
+            ("right away", "immediate"),
+            ("six months", "3_6_months"),
+            ("no rush", "exploratory"),
+            ("", ""),
+            ("someday", ""),
+        ],
+    )
+    def test_phrases_map_deterministically(self, said, bucket):
+        from juicebox.intake.extract import _bucket_timeline
+
+        assert _bucket_timeline(said) == bucket
 
 
 class TestDefensiveCoercion:

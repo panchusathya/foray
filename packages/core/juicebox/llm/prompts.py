@@ -766,6 +766,7 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "employment_status",
         "reason_for_looking",
         "timeline",
+        "timeline_verbatim",
         "urgency_driver",
         "target_base",
         "target_total",
@@ -803,7 +804,23 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "timeline": {
             "type": "string",
             "enum": ["", "immediate", "under_1_month", "1_3_months", "3_6_months", "exploratory"],
-            "description": "How soon they want to move.",
+            "description": (
+                "How soon they want to move. Map to the nearest bucket by the "
+                "candidate's own words: immediate = now, this week, "
+                "\"right away\"; under_1_month = up to and including a month "
+                "(\"two weeks\", \"within a month\", \"end of the month\"); "
+                "1_3_months = more than a month up to three (\"next quarter\", "
+                "\"a couple of months\"); 3_6_months = later this year; "
+                "exploratory = no timeline, just seeing what is out there."
+            ),
+        },
+        "timeline_verbatim": {
+            "type": "string",
+            "description": (
+                "Exactly what they said about timing, quoted, e.g. \"two weeks\", "
+                "\"next quarter\", \"no rush\". Empty if timing never came up. "
+                "This is bucketed in code, so quote rather than interpret."
+            ),
         },
         "urgency_driver": {"type": "string", "description": "What is making them move now."},
         "target_base": {

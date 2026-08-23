@@ -163,8 +163,19 @@ def normalize_record(payload: dict[str, Any]) -> dict[str, Any]:
     record["spec"] = _normalize_spec(payload.get("spec"))
 
     record["employment_status"] = _enum(payload.get("employment_status"), EMPLOYMENT_STATUSES)
-    record["timeline"] = _enum(payload.get("timeline"), TIMELINES)
     record["equity_importance"] = _enum(payload.get("equity_importance"), EQUITY_IMPORTANCE)
+
+    # Bucketed here, not by the model. Measured over five runs each on "two
+    # weeks if the right thing came up": GLM 5.2 answered 1_3_months three
+    # times, 3_6_months once and immediate once; gpt-oss-120b was no steadier.
+    # Sorting a duration phrase into five buckets is arithmetic, and asking a
+    # cheap model to do it makes a required field non-deterministic. The model
+    # quotes what was said; the mapping is code, and the same patterns the
+    # heuristic path already uses.
+    record["timeline_verbatim"] = _text(payload.get("timeline_verbatim"))
+    record["timeline"] = _bucket_timeline(record["timeline_verbatim"]) or _enum(
+        payload.get("timeline"), TIMELINES
+    )
 
     record["reason_for_looking"] = _text(payload.get("reason_for_looking"))
     record["urgency_driver"] = _text(payload.get("urgency_driver"))
@@ -371,6 +382,16 @@ def _heuristic_extract(transcript: str) -> ExtractionResult:
     )
 
 
+def _bucket_timeline(verbatim: str) -> str:
+    """Map a quoted timing phrase onto a bucket, deterministically.
+
+    Shared with the heuristic path on purpose: one definition of what "two
+    weeks" means, exercised by both, so the model path and the no-model path
+    cannot disagree about a required field.
+    """
+    return _first_match((verbatim or "").lower(), _TIMELINE_PATTERNS)
+
+
 def _first_match(text: str, patterns: tuple[tuple[str, str], ...]) -> str:
     for value, pattern in patterns:
         if re.search(pattern, text):
@@ -520,6 +541,16 @@ def _review_verdict(
         # Not a data-quality problem — a permission we do not have. Anything
         # that reaches a client must pass a human first.
         reasons.append("no explicit permission to share with clients")
+    elif extractor == EXTRACTOR_LLM:
+        # A *claimed* permission is not a permission. Asked for a transcript
+        # where sharing never came up, GLM 5.2 asserted `true` three times in
+        # five and gpt-oss-120b twice — so the one field authorising us to put
+        # a person in front of employers is also the one a model will invent.
+        # It stays on the record as evidence and it still closes the coverage
+        # gate, because the *call* did its job; what it must not do is clear
+        # review on its own. A human or the candidate's own review page
+        # confirms it, and `confirmed_at` is what makes it real.
+        reasons.append("sharing permission read from the transcript, not yet confirmed")
     return bool(reasons), "; ".join(reasons)
 
 

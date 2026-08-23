@@ -404,6 +404,7 @@ def empty_record() -> dict[str, Any]:
         "employment_status": "",
         "reason_for_looking": "",
         "timeline": "",
+        "timeline_verbatim": "",
         "urgency_driver": "",
         "target_base": None,
         "target_total": None,

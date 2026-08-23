@@ -118,12 +118,15 @@ def admission(
     ``score/common.py``'s candidates_to_score — where only the scoring queue
     could see it. Prod shows what that costs: 24,698 LinkedIn rows have no
     title, no about-text and no experience entries, yet each carries a signals
-    row, an embedding and a tsvector. Re-implementing the predicate in tsvector
+    row, an embedding and a tsvector (the rule below is broader than that
+    count: it also catches the one-signal rows). Re-implementing the predicate in tsvector
     SQL, embed selection and _filter_clauses is exactly the drift this hoist
     prevents: derive owns the rule, everyone else tests the flag.
 
     Deliberately generous — this is admission control, not ranking. A row only
-    fails when there is nothing for any arm to match on.
+    fails when there is nothing for any arm to match on: TWO of six independent
+    signals, with title as one of the six rather than a precondition (see the
+    branch below for the staging measurement that forced that shape).
 
     ``about_chars`` / ``role_count`` come from the raw record (the signals dict
     does not carry the about-text or the role list), threaded through by the
@@ -149,32 +152,45 @@ def admission(
     if kind in ("github", "both") and (signals.get("non_fork_repo_count") or 0) >= 1:
         return True, None
 
-    if title is not None:
-        # A title alone is a bare string; one corroborating fact means there is
-        # a person behind it. Any of these is enough.
-        corroborated = (
-            signals.get("employer") is not None
-            or signals.get("current_role_start_at") is not None
-            or about_chars >= 80
-            or role_count >= 2
-            or bool(signals.get("domain_markers"))
-        )
-        if corroborated:
-            return True, None
-        # 'bare_title': a title and nothing else — no employer, no dates, no
-        # prose, one role, no markers. Retrievable in principle (the A-weight
-        # tsvector has the title) but there is no profile behind it to rank or
-        # to show a recruiter.
-        return False, "bare_title"
-
-    # From here title is NULL, so the two remaining slugs split on WHY.
     if kind in ("github", "both"):
         # 'no_code_evidence': a GitHub identity whose only claim was code, with
         # zero non-fork repos. The account exists; the evidence does not.
         return False, "no_code_evidence"
-    # 'no_title': the 24,698-row population — a LinkedIn record with no title,
-    # which for a career-evidence-only row means no searchable claim at all.
-    return False, "no_title"
+
+    # TWO signals out of six, and title is only ONE of the six -- not a
+    # precondition. The first cut of this rule made title mandatory ("title AND
+    # one corroborator"), which the staging rehearsal against the restored prod
+    # dump showed to be the wrong polarity: of 67,710 rows failing for want of
+    # a title, 40,879 carried TWO OR MORE of the other signals. Real examples
+    # it excluded -- an employer, ~86 chars of about-text and FIVE dated roles,
+    # dropped solely because best_title could not extract a string -- while the
+    # same rule admitted a row holding a title and nothing else. A profile with
+    # five roles at a named employer is more searchable, not less, than a bare
+    # title; the tsvector has its employer at weight A and its prose at D, and
+    # the embed blob has the whole role list.
+    #
+    # Counting signals instead of privileging one keeps the property that
+    # mattered (a lone string is not a profile: title-only still scores 1 and
+    # still fails) without asserting that an unextractable title means an empty
+    # person. Measured effect on the restored dump: eligible rises from 124,401
+    # to ~165,000 of 205,603, and the rows admitted are the ones a recruiter
+    # would recognise as people.
+    present = (
+        title is not None,
+        signals.get("employer") is not None,
+        signals.get("current_role_start_at") is not None,
+        about_chars >= 80,
+        role_count >= 2,
+        bool(signals.get("domain_markers")),
+    )
+    if sum(present) >= 2:
+        return True, None
+    # 'thin_profile': fewer than two independent claims. Retrievable in
+    # principle -- whatever single field exists is in the tsvector -- but there
+    # is nothing to rank on and nothing to show a recruiter. Replaces the
+    # earlier 'bare_title'/'no_title' split, which described WHICH field was
+    # missing rather than whether the row is a profile.
+    return False, "thin_profile"
 
 
 def derive_signals(node: dict) -> dict[str, Any]:

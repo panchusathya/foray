@@ -260,16 +260,18 @@ def test_admission_admits_a_corroborated_title():
 
 
 def test_admission_rejects_the_contentless_linkedin_row():
-    """The 24,698-row prod population: no title, no about-text, no experience
-    entries -- yet each holds a signals row, an embedding and a tsvector."""
+    """No title, no about-text, no experience entries -- yet each such row holds
+    a signals row, an embedding and a tsvector before this rule existed."""
     empty = derive_linkedin_signals(
         {"name": "Nobody", "id": "nobody", "experience": []}, asof=ASOF
     )
     assert empty["search_eligible"] is False
-    assert empty["ineligible_reason"] == "no_title"
+    assert empty["ineligible_reason"] == "thin_profile"
 
 
-def test_admission_rejects_a_bare_title():
+def test_admission_rejects_a_lone_title():
+    """One signal is not a profile: a title with no employer, no dates, no
+    prose, one role and no markers stays out."""
     bare = derive_linkedin_signals(
         {
             "name": "Solo",
@@ -282,12 +284,18 @@ def test_admission_rejects_a_bare_title():
     )
     assert bare["title"] == "Coordinator"
     assert bare["search_eligible"] is False
-    assert bare["ineligible_reason"] == "bare_title"
+    assert bare["ineligible_reason"] == "thin_profile"
 
 
-def test_admission_corroborating_facts_are_each_sufficient():
+def test_admission_counts_two_signals_and_title_is_not_privileged():
+    """The polarity the staging rehearsal corrected. Title is ONE of six
+    signals, not a precondition: on the restored prod dump, 40,879 rows failing
+    the title-mandatory rule carried two or more of the others -- an employer,
+    real about-text and several dated roles -- while a bare title was admitted."""
     base = {"evidence_kind": "linkedin", "title": "Engineer", "domain_markers": []}
-    assert admission(base, about_chars=0, role_count=1) == (False, "bare_title")
+    # title alone == 1 signal -> out.
+    assert admission(base, about_chars=0, role_count=1) == (False, "thin_profile")
+    # title + any one other == 2 -> in.
     assert admission(base, about_chars=80, role_count=1)[0] is True
     assert admission(base, about_chars=0, role_count=2)[0] is True
     assert admission({**base, "employer": "Stripe"}, about_chars=0, role_count=1)[0]
@@ -295,6 +303,18 @@ def test_admission_corroborating_facts_are_each_sufficient():
         {**base, "current_role_start_at": ASOF}, about_chars=0, role_count=1
     )[0]
     assert admission({**base, "domain_markers": ["ml"]}, about_chars=0, role_count=1)[0]
+
+    # NO title, but two other signals -> in. This is the population the
+    # title-mandatory rule wrongly deleted.
+    titleless = {"evidence_kind": "linkedin", "title": None, "domain_markers": []}
+    assert admission(
+        {**titleless, "employer": "Bolt"}, about_chars=86, role_count=5
+    ) == (True, None)
+    # ...and one signal without a title is still out.
+    assert admission({**titleless, "employer": "Bolt"}, about_chars=0, role_count=1) == (
+        False,
+        "thin_profile",
+    )
 
 
 def test_admission_github_needs_a_non_fork_repo_not_a_title():
@@ -328,7 +348,7 @@ def test_admission_reasons_partition_the_ineligible_population():
             ("both", None, 0),
         )
     }
-    assert reasons == {"no_title", "bare_title", "no_code_evidence"}
+    assert reasons == {"thin_profile", "no_code_evidence"}
 
 
 def test_merged_row_recomputes_admission_on_the_merged_facts():

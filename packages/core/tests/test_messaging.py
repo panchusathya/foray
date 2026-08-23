@@ -51,13 +51,24 @@ from juicebox.messaging.conversation import (
     _next_question,
     run_turn,
 )
-from juicebox.messaging.identity import CONTACT_EMAIL, CONTACT_NAME, find_email, find_name
+from juicebox.messaging.identity import (
+    CONTACT_EMAIL,
+    CONTACT_NAME,
+    UNATTRIBUTED_REASON,
+    find_email,
+    find_name,
+)
 from juicebox.messaging.records import (
     merge_record,
     persist_preference,
     record_from_preference,
 )
-from juicebox.messaging.suppression import looks_like_stop
+from juicebox.messaging.suppression import (
+    address_has_opted_out,
+    handle_stop,
+    is_blocked,
+    looks_like_stop,
+)
 from juicebox.messaging.threads import (
     STATUS_COMPLETE,
     STATUS_STOPPED,
@@ -73,7 +84,7 @@ from juicebox.models import (
     Job,
     utcnow,
 )
-from juicebox.outreach.suppressions import suppress
+from juicebox.outreach.suppressions import is_suppressed, suppress
 from juicebox.repository import upsert_candidates
 from juicebox.routers.messaging import PURPOSE_THREAD, PURPOSE_WIDGET
 from juicebox.security import signed_intake_token
@@ -995,6 +1006,199 @@ class TestThreadsOnTheReviewQueue:
         ids = {row["id"] for row in rows}
         assert stranger.id in ids
         assert attributed.id not in ids
+
+
+class TestPhoneOptOut:
+    """A texter's STOP has to be durable outside messaging, now that it can be.
+
+    Before ``Suppression`` carried a phone column a stopped thread was the only
+    record, so nothing else in the stack could see the opt-out.
+    """
+
+    def test_stop_suppresses_the_number_it_came_from(self, session, account, fake_channel):
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            from_address="+14155550123",
+        )
+        session.commit()
+        handle_stop(session, thread=thread)
+        session.commit()
+
+        assert is_suppressed(session, org_id=account["org_id"], phone="+14155550123")
+        # And it reads back, which is the half that makes writing it worth it.
+        fresh = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            from_address="+14155550123",
+        )
+        session.commit()
+        assert is_blocked(session, thread=fresh)
+
+    def test_a_number_suppressed_elsewhere_blocks_a_new_thread(
+        self, session, account, fake_channel
+    ):
+        """A recruiter or the outreach stack can opt a number out too."""
+        suppress(session, org_id=account["org_id"], phone="+14155550999", reason="unsubscribe")
+        session.commit()
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            from_address="+14155550999",
+        )
+        session.commit()
+        assert is_blocked(session, thread=thread)
+
+    def test_an_unparseable_number_still_leaves_the_stopped_thread(
+        self, session, account, fake_channel
+    ):
+        """lookup_key refuses to guess a country, so there is no row to write."""
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            from_address="12345",
+        )
+        session.commit()
+        handle_stop(session, thread=thread)
+        session.commit()
+
+        assert not is_suppressed(session, org_id=account["org_id"], phone="12345")
+        # The stopgap is what still catches them.
+        assert address_has_opted_out(session, channel=WEB, from_address="12345")
+
+
+class TestThreadAttribution:
+    """The human action the review queue exists for."""
+
+    def _person(self, session, account, name, email):
+        upsert_candidates(
+            session,
+            org_id=account["org_id"],
+            payloads=[
+                {"source": "attr", "source_id": email, "full_name": name, "emails": [email]}
+            ],
+        )
+        session.commit()
+        return session.scalar(select(Candidate).where(Candidate.full_name == name))
+
+    def test_attributing_links_the_thread_and_clears_the_flag(
+        self, client, session, account, fake_channel
+    ):
+        person = self._person(session, account, "Ada Attr", "ada-attr@example.com")
+        thread = open_thread(
+            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
+        )
+        thread.review_needed = True
+        thread.review_reason = UNATTRIBUTED_REASON
+        thread.record = {
+            **thread.record,
+            "spec": {**thread.record["spec"], "job_titles": ["machine learning engineer"]},
+        }
+        session.commit()
+
+        out = client.patch(
+            f"/v1/intake/threads/{thread.id}",
+            json={"candidate_id": person.id},
+            headers=account["headers"],
+        )
+        assert out.status_code == 200
+        assert out.json()["candidate_id"] == person.id
+        assert out.json()["review_needed"] is False
+
+        # The conversation's content followed the person.
+        pref = session.scalar(
+            select(CandidatePreference).where(CandidatePreference.candidate_id == person.id)
+        )
+        assert pref is not None
+        assert pref.spec["job_titles"] == ["machine learning engineer"]
+
+    def test_an_address_owned_by_somebody_else_is_refused(
+        self, client, session, account, fake_channel
+    ):
+        """A wrong match here staples a conversation to the wrong record."""
+        owner = self._person(session, account, "Real Owner", "shared@example.com")
+        other = self._person(session, account, "Someone Else", "else@example.com")
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            contact_email="shared@example.com",
+        )
+        session.commit()
+
+        refused = client.patch(
+            f"/v1/intake/threads/{thread.id}",
+            json={"candidate_id": other.id},
+            headers=account["headers"],
+        )
+        assert refused.status_code == 400
+        assert "already belongs to somebody else" in refused.json()["detail"]
+        # The rightful owner is still allowed.
+        assert (
+            client.patch(
+                f"/v1/intake/threads/{thread.id}",
+                json={"candidate_id": owner.id},
+                headers=account["headers"],
+            ).status_code
+            == 200
+        )
+
+    def test_an_empty_thread_writes_no_preference(self, client, session, account, fake_channel):
+        """Attributing a thread that captured nothing must not blank a record."""
+        person = self._person(session, account, "Empty Attr", "empty-attr@example.com")
+        pref = CandidatePreference(
+            org_id=account["org_id"],
+            candidate_id=person.id,
+            spec={"job_titles": ["staff engineer"]},
+        )
+        session.add(pref)
+        thread = open_thread(
+            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
+        )
+        session.commit()
+
+        assert (
+            client.patch(
+                f"/v1/intake/threads/{thread.id}",
+                json={"candidate_id": person.id},
+                headers=account["headers"],
+            ).status_code
+            == 200
+        )
+        session.refresh(pref)
+        assert pref.spec["job_titles"] == ["staff engineer"]
+
+    def test_another_orgs_thread_is_invisible(self, client, session, account, fake_channel):
+        thread = open_thread(
+            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
+        )
+        session.commit()
+        rival = client.post(
+            "/v1/auth/signup",
+            json={
+                "org_name": "Rival Attr",
+                "email": "rival-attr@example.com",
+                "password": "rival-password-123",
+            },
+        ).json()
+        headers = {"Authorization": f"Bearer {rival['access_token']}"}
+        assert (
+            client.patch(
+                f"/v1/intake/threads/{thread.id}",
+                json={"candidate_id": "cand_whatever"},
+                headers=headers,
+            ).status_code
+            == 404
+        )
 
 
 class TestWorkerPath:

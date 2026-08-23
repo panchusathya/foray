@@ -52,6 +52,7 @@ from ..intake.service import (
     resolve_org_id,
     schedule_extraction,
 )
+from ..messaging.identity import AttributionError, attribute_thread
 from ..models import (
     Candidate,
     CandidatePreference,
@@ -67,6 +68,7 @@ from ..schemas import (
     IntakeCallSummary,
     IntakeFieldAnswerOut,
     IntakeThreadCountOut,
+    IntakeThreadPatch,
     IntakeThreadSummary,
 )
 
@@ -392,6 +394,31 @@ def list_intake_threads(
         stmt.order_by(IntakeThread.created_at.desc()).offset(offset).limit(limit)
     ).all()
     return [IntakeThreadSummary.model_validate(row) for row in rows]
+
+
+def _thread_for_org(db: Session, thread_id: str, org_id: str) -> IntakeThread:
+    row = db.scalar(
+        select(IntakeThread).where(IntakeThread.id == thread_id, IntakeThread.org_id == org_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such thread")
+    return row
+
+
+@router.patch("/threads/{thread_id}", response_model=IntakeThreadSummary)
+def patch_intake_thread(
+    thread_id: str,
+    payload: IntakeThreadPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> IntakeThreadSummary:
+    """Attach an unidentified conversation to a person."""
+    thread = _thread_for_org(db, thread_id, principal.org_id)
+    try:
+        attribute_thread(db, thread=thread, candidate_id=payload.candidate_id)
+    except AttributionError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return IntakeThreadSummary.model_validate(thread)
 
 
 @router.get("/calls/{call_id}", response_model=IntakeCallOut)

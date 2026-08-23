@@ -28,7 +28,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Candidate, CandidateEmail, IntakeThread
+from ..models import Candidate, CandidateEmail, CandidatePhone, IntakeThread
 from ..outreach.suppressions import is_suppressed, suppress
 from .threads import STATUS_STOPPED, close_thread, stopped_thread_exists
 
@@ -69,10 +69,37 @@ def candidate_emails(db: Session, *, org_id: str, candidate_id: str) -> list[str
     return list(dict.fromkeys(e.strip().lower() for e in rows if e and e.strip()))
 
 
+def candidate_phones(db: Session, *, org_id: str, candidate_id: str) -> list[str]:
+    """Every number we believe belongs to this candidate.
+
+    Twin of ``candidate_emails``, and for the same reason: the
+    ``candidate_phones`` projection is a strict subset, because
+    ``intake.phones.lookup_key`` refuses to guess a country code and writes no
+    row when it cannot. Normalisation is left to ``suppress`` /
+    ``is_suppressed``, which run the same key function.
+    """
+    rows = list(
+        db.scalars(
+            select(CandidatePhone.phone).where(
+                CandidatePhone.org_id == org_id, CandidatePhone.candidate_id == candidate_id
+            )
+        ).all()
+    )
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is not None:
+        rows.extend(p for p in (candidate.phones or []) if isinstance(p, str))
+    return list(dict.fromkeys(p.strip() for p in rows if p and p.strip()))
+
+
 def candidate_is_suppressed(db: Session, *, org_id: str, candidate_id: str) -> bool:
-    return any(
+    if any(
         is_suppressed(db, org_id=org_id, email=email)
         for email in candidate_emails(db, org_id=org_id, candidate_id=candidate_id)
+    ):
+        return True
+    return any(
+        is_suppressed(db, org_id=org_id, phone=phone)
+        for phone in candidate_phones(db, org_id=org_id, candidate_id=candidate_id)
     )
 
 
@@ -96,6 +123,13 @@ def is_blocked(db: Session, *, thread: IntakeThread) -> bool:
         return True
     if thread.candidate_id and candidate_is_suppressed(
         db, org_id=thread.org_id, candidate_id=thread.candidate_id
+    ):
+        return True
+    # The durable half of a number's opt-out. stopped_thread_exists below still
+    # matters -- it catches a stranger whose number lookup_key could not parse,
+    # and so has no Suppression row to find.
+    if thread.from_address and is_suppressed(
+        db, org_id=thread.org_id, phone=thread.from_address
     ):
         return True
     return address_has_opted_out(db, channel=thread.channel, from_address=thread.from_address)
@@ -126,7 +160,31 @@ def handle_stop(db: Session, *, thread: IntakeThread) -> None:
             source="intake_thread",
             source_message_id=thread.id,
         )
-    if not addresses:
-        # Nothing to put on the list. The stopped thread is the only record,
-        # which is why address_has_opted_out exists.
+
+    # Numbers, now that Suppression carries a phone column. Before it did, a
+    # stopped thread was the only record a texter's opt-out left, which meant
+    # nothing outside messaging could see it.
+    numbers: list[str] = []
+    if thread.from_address:
+        numbers.append(thread.from_address)
+    if thread.candidate_id:
+        numbers.extend(
+            candidate_phones(db, org_id=thread.org_id, candidate_id=thread.candidate_id)
+        )
+    written = 0
+    for phone in dict.fromkeys(numbers):
+        if suppress(
+            db,
+            org_id=thread.org_id,
+            phone=phone,
+            reason="unsubscribe",
+            source="intake_thread",
+            source_message_id=thread.id,
+        ):
+            written += 1
+
+    if not addresses and not written:
+        # Nothing durable to put on the list -- no email, and either no number
+        # or one lookup_key would not parse. The stopped thread is the only
+        # record, which is why address_has_opted_out exists.
         logger.info("intake thread %s opted out with no address to suppress", thread.id)

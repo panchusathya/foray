@@ -1062,6 +1062,10 @@ class IntakeThreadSummary(BaseModel):
     created_at: datetime
 
 
+class IntakeThreadPatch(BaseModel):
+    candidate_id: str
+
+
 class IntakeThreadCountOut(BaseModel):
     count: int
 

@@ -466,6 +466,22 @@ package owns only what is different about text. Plan and phasing live in
     row still claiming a confirmation over content the confirmer never saw,
     because everything downstream trusts that flag.
 
+- **A number's opt-out is written *and* read.** `handle_stop` now suppresses
+  `from_address` and the candidate's known numbers through the phone column
+  voice added, not just their emails -- and `is_blocked` checks
+  `is_suppressed(phone=...)`, because writing a row nothing reads is theatre.
+  `stopped_thread_exists` stays as the second read: `lookup_key` refuses to
+  guess a country code, so a number it cannot parse has no `Suppression` row
+  and the stopped thread is the only trace of the opt-out.
+
+- **Attributing a thread refuses an address somebody else owns.** The guard
+  `attribute_call` does not need: a thread usually knows an email, and
+  attaching it to a different person is the disclosure failure, not a missed
+  match. `UNATTRIBUTED_REASON` is one shared constant so the code that sets the
+  flag and the code that clears it cannot drift, and attribution only writes a
+  preference when the record actually captured something -- an empty thread
+  must not blank a record another channel filled in.
+
 - **The review queue reads threads as well as calls.** `IntakeThread.review_needed`
   defaults to `true`, so a queue that only knew about `IntakeCall` flagged every
   chat and displayed none of them. `GET /v1/intake/threads` is a deliberate

@@ -10,7 +10,7 @@ function when(value) {
   return value ? new Date(value).toLocaleString() : '—';
 }
 
-function AttributeForm({ call, onDone }) {
+function AttributeForm({ row, attribute, onDone }) {
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState('');
   const [saving, setSaving] = useState(false);
@@ -26,7 +26,7 @@ function AttributeForm({ call, onDone }) {
     setSaving(true);
     setError(null);
     try {
-      await intakeApi.patchCall(call.id, { candidate_id: picked });
+      await attribute(row.id, { candidate_id: picked });
       onDone();
     } catch (caught) {
       setError(caught);
@@ -48,7 +48,7 @@ function AttributeForm({ call, onDone }) {
         <label key={person.id} className="row" style={{ gap: 8 }}>
           <input
             type="radio"
-            name={`attr-${call.id}`}
+            name={`attr-${row.id}`}
             checked={picked === person.id}
             onChange={() => setPicked(person.id)}
           />
@@ -65,7 +65,7 @@ function AttributeForm({ call, onDone }) {
   );
 }
 
-function ThreadRow({ row }) {
+function ThreadRow({ row, onDone }) {
   const who = row.contact_name || row.contact_email || row.from_address;
   return (
     <div className="card stack" data-testid="intake-review-thread">
@@ -84,6 +84,9 @@ function ThreadRow({ row }) {
           <span className="muted small">unattributed</span>
         )}
       </div>
+      {!row.candidate_id ? (
+        <AttributeForm row={row} attribute={intakeApi.patchThread} onDone={onDone} />
+      ) : null}
     </div>
   );
 }
@@ -107,7 +110,7 @@ export function IntakeReview() {
       ) : (
         <>
           {threadRows.map((row) => (
-            <ThreadRow key={row.id} row={row} />
+            <ThreadRow key={row.id} row={row} onDone={() => threads.reload()} />
           ))}
           {rows.map((row) => (
             <div key={row.id} className="card stack" data-testid="intake-review-row">
@@ -124,7 +127,11 @@ export function IntakeReview() {
                 )}
               </div>
               {!row.candidate_id ? (
-                <AttributeForm call={row} onDone={() => calls.reload()} />
+                <AttributeForm
+                  row={row}
+                  attribute={intakeApi.patchCall}
+                  onDone={() => calls.reload()}
+                />
               ) : null}
             </div>
           ))}

@@ -319,12 +319,26 @@ def _filter_clauses(
     # needs an explicit `include_unknown_experience` parser field rather than
     # being the silent default. Not added here: it is a ParsedFilter change
     # that lands with the facet wave.
+    # est_experience_years is NULL for the 134,536 rows whose profile states no
+    # dated role, so these comparisons are three-valued: an unknown row fails
+    # both bounds by default. That is the correct default — before the column
+    # was nullable those rows held 0, which made every one of them answer "yes"
+    # to any `<= N` and "no" to any `>= N`, i.e. it asserted "no experience"
+    # from an absence of data. include_unknown_experience is the opt-out for a
+    # caller that would rather keep the unknowns (see ParsedFilter).
+    unknown_ok = parsed.include_unknown_experience
     if parsed.experience_min is not None:
         placeholder = params.add(float(parsed.experience_min))
-        clauses.append(f"s.est_experience_years >= {placeholder}")
+        bound = f"s.est_experience_years >= {placeholder}"
+        clauses.append(
+            f"({bound} or s.est_experience_years is null)" if unknown_ok else bound
+        )
     if parsed.experience_max is not None:
         placeholder = params.add(float(parsed.experience_max))
-        clauses.append(f"s.est_experience_years <= {placeholder}")
+        bound = f"s.est_experience_years <= {placeholder}"
+        clauses.append(
+            f"({bound} or s.est_experience_years is null)" if unknown_ok else bound
+        )
     if gate_sql:
         # The archetype gate is the relevance predicate: without it any Bay
         # Area person with the right experience band is retrievable for an ML

@@ -125,6 +125,42 @@ def test_strict_language_restores_the_exact_predicate():
     assert params.values == [["go"]]
 
 
+def test_experience_bounds_exclude_unknown_by_default():
+    """est_experience_years is NULL for 134,536 rows. Strict is the default:
+    an absence of data is not evidence of zero years, which is exactly what
+    the old `default 0` storage asserted."""
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(experience_min=3.0, experience_max=8.0), params
+    )
+    assert "s.est_experience_years >= $1" in where
+    assert "s.est_experience_years <= $2" in where
+    # Scoped to the experience column: `is null` legitimately appears
+    # elsewhere in the shared list (merged_into, and the recency clause's
+    # unknown-activity arm).
+    assert "s.est_experience_years is null" not in where
+    assert params.values == [3.0, 8.0]
+
+
+def test_include_unknown_experience_admits_nulls_on_both_bounds():
+    """The max-only brief ("under 8 years") is screening OUT the
+    over-experienced, so it reasonably wants the unknowns back."""
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(experience_max=8.0, include_unknown_experience=True), params
+    )
+    assert "(s.est_experience_years <= $1 or s.est_experience_years is null)" in where
+    params = Params()
+    where = _filter_clauses(
+        ParsedFilter(
+            experience_min=3.0, experience_max=8.0, include_unknown_experience=True
+        ),
+        params,
+    )
+    assert "(s.est_experience_years >= $1 or s.est_experience_years is null)" in where
+    assert "(s.est_experience_years <= $2 or s.est_experience_years is null)" in where
+
+
 def test_parsed_filter_from_dict_drops_unknown_keys():
     """A version rollback replays cached dicts with keys this build lacks;
     ParsedFilter(**data) would TypeError and 500 the search. from_dict must

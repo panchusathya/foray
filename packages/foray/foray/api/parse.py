@@ -23,12 +23,13 @@ from ..vocab import match_languages
 log = get_logger("api.parse")
 
 # Bumped when ARCHETYPE_KEYWORDS or heuristic extraction changes — or when the
-# ParsedFilter dict shape changes (v3 added strict_language): the cache stores
+# ParsedFilter dict shape changes (v3 added strict_language, v4 added
+# include_unknown_experience): the cache stores
 # to_dict() output, so a shape change without a bump would hydrate old rows
 # into the new dataclass (and, on rollback, new rows into the old one). Folded
 # into the cache key so parse_query cannot serve a row that was written under
 # an older vocabulary or shape. Orphan rows in query_parse_cache are harmless.
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 # Keyword -> archetype id (first match wins, order matters: specific before broad).
 ARCHETYPE_KEYWORDS: list[tuple[str, str]] = [
@@ -78,6 +79,17 @@ class ParsedFilter:
     # (language matches OR is unknown); True restores the strict predicate for
     # callers that genuinely mean "known to write X", accepting the collapse.
     strict_language: bool = False
+    # The same unknown-policy question for experience. est_experience_years is
+    # NULL for 134,536 rows (no dated role in the profile), so a bare
+    # `>= 3` / `<= 8` excludes them under three-valued logic. Strict is the
+    # right DEFAULT — "we do not know this person's experience" is not evidence
+    # that they have 3 years, and the pre-NULL behaviour of storing 0 made
+    # every unknown row silently answer "yes" to `<= 8`. But the loose reading
+    # has to be expressible: a max-only brief ("under 8 years") reasonably
+    # wants the unknowns back, since it is screening OUT the over-experienced
+    # rather than screening IN a floor. Neither parser sets this and the LLM
+    # schema prompt does not advertise it; it is a caller policy switch.
+    include_unknown_experience: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

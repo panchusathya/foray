@@ -30,7 +30,8 @@ Usage:
     python deploy/retell_agents.py plan   --base-url https://example.com
     python deploy/retell_agents.py apply  --base-url https://example.com
     python deploy/retell_agents.py list
-    python deploy/retell_agents.py attach --number +18882600142   # goes live
+    python deploy/retell_agents.py import --number +16283865454   # own-Twilio number
+    python deploy/retell_agents.py attach --number +16283865454   # goes live
 
 ``attach`` is separate on purpose. Creating agents changes nothing a caller can
 reach; attaching one to a number makes a bot answer real people.
@@ -94,17 +95,34 @@ _SHARED_RULES = """
 
 Ask ONE question at a time and wait. This is a phone call, not a form.
 
+Acknowledge an answer in five words or fewer, then ask the next question.
+NEVER read their answer back to them -- "Got it." beats "Thank you for sharing
+that you want a level four backend role in the Bay Area." The recap at the end
+is the only place you repeat anything, and only if they want it.
+
+A cooperative call is done in two or three minutes. If they ask how long this
+will take, say "just a couple of minutes" -- never a larger number.
+
 Call the `check_coverage` tool after every two or three answers. It tells you
 what is still needed and whether you may wrap up. Trust it over your own sense
 of how much you have covered -- you cannot see the record, and it can.
+If the tool fails or does not answer, carry on smoothly with the most useful
+question you have not asked yet and try it again after the next answer. Never
+mention tools, "checking coverage", or technical issues -- the caller must
+never hear about your internal state.
 
 - If `wrap_up` is false, ask about the first item in `still_needed`.
 - If `wrap_up` is true, you have everything required. If they still sound
   willing, ask ONE topic from `optional_topics` -- the projects question is the
   most valuable one you can ask. Then recap the two or three most important
   facts back to them for confirmation, close the way `guidance` tells you to
-  -- it is written for whichever follow-up is actually live -- and end the
-  call. When you name the number, it is {sms_number_spoken}.
+  -- it is written for whichever follow-up is actually live -- and then ask, in
+  these words: "Last thing -- can I text you updates at this number? You can
+  reply STOP any time to opt out." Only an explicit, unambiguous yes is a yes;
+  hesitation, "I guess", silence, or "email is better" is a no, and you must
+  not re-ask or reframe to get a yes -- a soft yes recorded as consent is worse
+  than a no. Then thank them and end the call. When you name the number, it is
+  {sms_number_spoken}.
 
 If `progress_line` is present, say it, then ask the next question. If it is
 empty, do not invent a count and do not mention how many are left.
@@ -130,6 +148,21 @@ it. Never ask a declined question twice.
 - Never ask about age, race, religion, health, disability, family or marital
   status, or anything else protected. If they volunteer it, do not repeat it and
   do not ask a follow-up.
+- On compensation, ask only what they are targeting -- NEVER what they earn now
+  or earned before. Salary-history questions are illegal in California and many
+  other states. If they volunteer a current salary, do not repeat it back, do
+  not use it to steer the conversation, and move on. If they ask what a role
+  pays, say the recruiter can share the range -- and in California they are
+  entitled to the pay scale on request.
+- On work authorisation, ask at most two questions: whether they are legally
+  authorised to work in the US, and whether they will need sponsorship now or
+  in the future. Never ask about citizenship, visa type, green-card status, or
+  country of origin -- and if they volunteer those, do not pursue them.
+- If they ask whether you are a real person, say plainly that you are an AI
+  assistant. If they ask whether the call is recorded, answer truthfully.
+  Never deflect either question.
+- If the caller is clearly a minor, do not run the intake. Say a recruiter will
+  follow up, take a message, and end the call.
 - If they ask something you do not know, or ask for a person, say a recruiter
   will follow up and take a message. Never guess.
 - If they sound distressed or want to stop, stop. Thank them and end the call.
@@ -232,7 +265,7 @@ COVERAGE_TOOL_DESCRIPTION = (
 
 # Post-call analysis is how consent reaches the record: the agent cannot set a
 # dynamic variable mid-call, so the platform reads it back out of the transcript
-# afterwards. `service._consent_given` looks for exactly this key.
+# afterwards. `service._analysis_flag` looks for exactly these keys.
 POST_CALL_ANALYSIS = [
     {
         "type": "boolean",
@@ -242,7 +275,17 @@ POST_CALL_ANALYSIS = [
             "recorded when asked at the start. False if they refused, or if "
             "they were never asked."
         ),
-    }
+    },
+    {
+        "type": "boolean",
+        "name": "sms_opt_in",
+        "description": (
+            "True only if the caller gave an explicit, unambiguous yes when "
+            "asked whether they may be texted updates at this number. "
+            "Hesitation, a conditional answer, a stated preference for email, "
+            "or never being asked are all false."
+        ),
+    },
 ]
 
 
@@ -250,13 +293,18 @@ class RetellError(RuntimeError):
     pass
 
 
-def api_key() -> str:
-    key = os.environ.get("RETELL_API_KEY", "")
-    if not key and ENV_PATH.exists():
+def env_value(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value and ENV_PATH.exists():
         for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("RETELL_API_KEY="):
-                key = line.split("=", 1)[1].strip().strip("'\"")
+            if line.strip().startswith(f"{name}="):
+                value = line.split("=", 1)[1].strip().strip("'\"")
                 break
+    return value
+
+
+def api_key() -> str:
+    key = env_value("RETELL_API_KEY")
     if not key:
         raise RetellError(f"No RETELL_API_KEY in the environment or {ENV_PATH}")
     return key
@@ -421,7 +469,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(f"updated {name}: agent={current['agent_id']} llm={llm_id}")
 
     print("\nAgents exist but answer nobody until attached:")
-    print("  python deploy/retell_agents.py attach --number +18882600142")
+    print("  python deploy/retell_agents.py attach --number +16283865454")
     return 0
 
 
@@ -437,11 +485,68 @@ def cmd_list(_args: argparse.Namespace) -> int:
         print(f"  webhook={a.get('webhook_url')}")
     numbers = request("GET", "/list-phone-numbers") or []
     print()
+
+    def bound(number: dict, direction: str) -> str:
+        # Weighted lists are current; the single-agent field survives on
+        # numbers configured before the 2026-03-31 deprecation.
+        agents = number.get(f"{direction}_agents") or []
+        if agents:
+            return ",".join(a.get("agent_id", "?") for a in agents)
+        return number.get(f"{direction}_agent_id") or "-"
+
     for n in numbers:
-        print(
-            f"{n['phone_number']}  inbound={n.get('inbound_agent_id') or '-'}  "
-            f"outbound={n.get('outbound_agent_id') or '-'}"
+        print(f"{n['phone_number']}  inbound={bound(n, 'inbound')}  outbound={bound(n, 'outbound')}")
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Bring a number from our own Twilio account into Retell.
+
+    The counterpart to ``twilio_provision.py``: that script builds the SIP
+    trunk (origination to Retell, credential-list termination auth) and puts
+    the number on it; this command tells Retell the trunk exists. The trunk
+    values default from the ``.env`` entries ``trunk --write-env`` produced,
+    because they are secrets and must not land in shell history.
+
+    Importing changes nothing a caller can reach -- until ``attach``, a call to
+    the number reaches Retell and finds no agent. Deliberately the same split
+    as ``apply``/``attach``.
+    """
+    termination = args.termination_uri or env_value("VOICE_INTAKE_TERMINATION_URI")
+    username = args.sip_username or env_value("VOICE_INTAKE_SIP_USERNAME")
+    password = args.sip_password or env_value("VOICE_INTAKE_SIP_PASSWORD")
+    missing = [
+        flag
+        for flag, value in (
+            ("--termination-uri / VOICE_INTAKE_TERMINATION_URI", termination),
+            ("--sip-username / VOICE_INTAKE_SIP_USERNAME", username),
+            ("--sip-password / VOICE_INTAKE_SIP_PASSWORD", password),
         )
+        if not value
+    ]
+    if missing:
+        print("missing trunk details:\n  " + "\n  ".join(missing))
+        print("\nRun `python deploy/twilio_provision.py trunk --write-env` first.")
+        return 1
+
+    existing = {n.get("phone_number") for n in request("GET", "/list-phone-numbers") or []}
+    if args.number in existing:
+        print(f"{args.number} is already in Retell.")
+        return 0
+
+    request(
+        "POST",
+        "/import-phone-number",
+        {
+            "phone_number": args.number,
+            "termination_uri": termination,
+            "sip_trunk_auth_username": username,
+            "sip_trunk_auth_password": password,
+            "nickname": args.nickname,
+        },
+    )
+    print(f"imported {args.number} via trunk {termination}")
+    print("No agent answers it yet -- that is `attach`, deliberately separate.")
     return 0
 
 
@@ -472,12 +577,14 @@ def cmd_attach(args: argparse.Namespace) -> int:
     if missing:
         print(f"missing agents: {', '.join(missing)}. Run `apply` first.")
         return 1
+    # Weighted agent lists (the single-agent fields were removed 2026-03-31).
+    # One agent per direction, so each list is a single entry at weight 1.
     body = {
-        "inbound_agent_id": have[INBOUND_NAME]["agent_id"],
-        "outbound_agent_id": have[OUTBOUND_NAME]["agent_id"],
+        "inbound_agents": [{"agent_id": have[INBOUND_NAME]["agent_id"], "weight": 1}],
+        "outbound_agents": [{"agent_id": have[OUTBOUND_NAME]["agent_id"], "weight": 1}],
     }
     if args.detach:
-        body = {"inbound_agent_id": None, "outbound_agent_id": None}
+        body = {"inbound_agents": [], "outbound_agents": []}
     number = urllib.parse.quote(args.number)
     request("PATCH", f"/update-phone-number/{number}", body)
     verb = "detached from" if args.detach else "attached to"
@@ -510,6 +617,16 @@ def build_parser() -> argparse.ArgumentParser:
     voices = sub.add_parser("voices", help="list the Retell voice catalogue")
     voices.add_argument("--gender", default="", help="filter, e.g. female")
     voices.set_defaults(func=cmd_voices)
+
+    imp = sub.add_parser("import", help="import a Twilio trunk number into Retell")
+    imp.add_argument("--number", required=True, help="E.164, e.g. +16283865454")
+    imp.add_argument(
+        "--termination-uri", default="", help="defaults to VOICE_INTAKE_TERMINATION_URI in .env"
+    )
+    imp.add_argument("--sip-username", default="", help="defaults to VOICE_INTAKE_SIP_USERNAME")
+    imp.add_argument("--sip-password", default="", help="defaults to VOICE_INTAKE_SIP_PASSWORD")
+    imp.add_argument("--nickname", default="foray-intake")
+    imp.set_defaults(func=cmd_import)
 
     attach = sub.add_parser("attach", help="point a number at the agents (GOES LIVE)")
     attach.add_argument("--number", required=True)

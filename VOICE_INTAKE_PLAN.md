@@ -45,11 +45,27 @@ Retell workspace, showing `Provider: Twilio`. It is toll-free rather than the
 local 415 originally chosen; see "It is toll-free, which is a trade" for the
 consequence and the two add-ons that mitigate it.
 
-Outstanding on the number, none of which block Phase 2 code:
+**Superseded (2026-08-23): the live number is now the local `+1 (628) 386-5454`**,
+bought on our own Twilio account and brought into Retell over the SIP trunk
+(`twilio_provision.py` trunk/attach + `retell_agents.py import`). The toll-free
+trade is unwound; the 888 stays detached until the 628 has taken a few real
+calls, then gets released. Console steps live in `deploy/NUMBER_CHECKLIST.md`.
+
+Outstanding on the number, none of which block Phase 2 code — now tracked, with
+the Twilio trust add-ons and the whole SMS path, in `deploy/NUMBER_CHECKLIST.md`:
 - Restrict allowed inbound/outbound countries to US (+CA) — abuse and spend control.
 - Set the fallback number to a real recruiter, so concurrency overflow reaches a human.
 - Buy Verified Phone Number and Branded Call; both have lead time.
 - Leave both webhook fields blank until the Phase 2 routes exist.
+
+**Compliance guardrails consolidated** in `INTAKE_COMPLIANCE.md`, and enforced
+in the agent prompts and schema rather than only documented: salary history is
+never asked (expectations only), work authorization is capped at the two
+permitted questions, protected categories have no field to land in, and the
+intake path carries no score, rank, or recommendation. TCPA SMS opt-in is now
+asked at wrap-up and captured per call (`intake_calls.sms_opt_in`, migration
+`e5f0a92c7d18`, latched like `consent_recording`) so lawful opt-ins accumulate
+while texting itself waits on the entity and toll-free verification.
 
 **Phase 2 complete.** 45 new tests, full suite 853 passed, ruff clean. Shipped:
 

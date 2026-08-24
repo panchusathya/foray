@@ -1136,6 +1136,11 @@ class IntakeCall(Base, TimestampMixin):
     # consent is given to a conversation, and two-party-consent jurisdictions
     # make "they agreed last time" the wrong answer.
     consent_recording: Mapped[bool] = mapped_column(Boolean, default=False)
+    # TCPA consent to text this number, captured on the call where it was given.
+    # Latched exactly like consent_recording. The verbatim exchange lives in
+    # `transcript` on this same row, so the flag carries no copy of the
+    # language -- the call row *is* the evidence record.
+    sms_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

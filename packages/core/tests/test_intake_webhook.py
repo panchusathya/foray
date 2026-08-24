@@ -408,6 +408,51 @@ class TestLifecycle:
         post(client, signer, call_payload(event="call_analyzed"))
         assert session.scalars(select(IntakeCall)).one().consent_recording is True
 
+    def test_sms_opt_in_is_read_from_post_call_analysis(
+        self, client, session, signer, owned_number
+    ):
+        """The TCPA consent record. Same route as recording consent: the agent
+        asks at wrap-up, the platform reads the answer out of the transcript."""
+        payload = call_payload(
+            event="call_analyzed",
+            call_analysis={"custom_analysis_data": {"sms_opt_in": True}},
+        )
+        post(client, signer, payload)
+        assert session.scalars(select(IntakeCall)).one().sms_opt_in is True
+
+    def test_sms_opt_in_defaults_to_false(self, client, session, signer, owned_number):
+        """A number with no recorded opt-in must never be texted. A caller who
+        was never asked has not consented."""
+        post(client, signer, call_payload())
+        assert session.scalars(select(IntakeCall)).one().sms_opt_in is False
+
+    def test_a_later_event_cannot_withdraw_sms_opt_in(
+        self, client, session, signer, owned_number
+    ):
+        """Opt-out happens by the person replying STOP, never by a webhook
+        omitting a field."""
+        post(
+            client,
+            signer,
+            call_payload(
+                event="call_analyzed",
+                call_analysis={"custom_analysis_data": {"sms_opt_in": True}},
+            ),
+        )
+        post(client, signer, call_payload(event="call_ended"))
+        assert session.scalars(select(IntakeCall)).one().sms_opt_in is True
+
+    def test_recording_consent_does_not_imply_sms_opt_in(
+        self, client, session, signer, owned_number
+    ):
+        """Two different consents to two different things. Agreeing to be
+        recorded says nothing about agreeing to be texted."""
+        payload = call_payload(retell_llm_dynamic_variables={"consent_recording": True})
+        post(client, signer, payload)
+        call = session.scalars(select(IntakeCall)).one()
+        assert call.consent_recording is True
+        assert call.sms_opt_in is False
+
 
 # --------------------------------------------------------------------------
 # caller identification and extraction

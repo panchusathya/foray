@@ -356,6 +356,25 @@ class Settings:
         default_factory=lambda: _env_int("MESSAGING_OPTOUT_BREAKER_PER_DAY", 5)
     )
 
+    # --- candidate documents (resumes, cover letters) -----------------------
+    # Local filesystem behind the API: a single-VM compose stack needs no S3,
+    # and CandidateDocument.storage_path keeps a later move to object storage
+    # a data migration rather than a schema change. In containers this is the
+    # `filedata` volume, mounted on api and worker both.
+    file_storage_dir: str = field(
+        default_factory=lambda: _env(
+            "JUICEBOX_FILE_STORAGE_DIR", str(REPO_ROOT / "data" / "files")
+        )
+    )
+    max_upload_bytes: int = field(
+        default_factory=lambda: _env_int("JUICEBOX_MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
+    )
+    # The proposal bar's score floor (CANDIDATE_AGENT_PLAN §5): necessary,
+    # never sufficient -- vetoes and the explainability gate sit on top.
+    proposal_score_floor: float = field(
+        default_factory=lambda: float(_env("PROPOSAL_SCORE_FLOOR", "0.55"))
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

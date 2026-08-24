@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     false,
     text,
     true,
@@ -141,6 +142,11 @@ class Candidate(Base, TimestampMixin):
     current_title: Mapped[str] = mapped_column(String(240), default="")
     current_title_normalized: Mapped[str] = mapped_column(String(240), default="")
     current_company: Mapped[str] = mapped_column(String(240), default="")
+    # normalize_company(current_company), maintained by repository._apply so
+    # warm-contact lookups filter in SQL instead of loading the whole org.
+    current_company_normalized: Mapped[str] = mapped_column(
+        String(240), default="", server_default="", index=True
+    )
     current_company_domain: Mapped[str] = mapped_column(String(240), default="")
 
     seniority: Mapped[str] = mapped_column(String(40), default="unknown")
@@ -193,6 +199,10 @@ class Experience(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
 
     company: Mapped[str] = mapped_column(String(240), default="")
+    # normalize_company(company); the alumni half of warm-contact lookups.
+    company_normalized: Mapped[str] = mapped_column(
+        String(240), default="", server_default="", index=True
+    )
     company_domain: Mapped[str] = mapped_column(String(240), default="")
     company_industry: Mapped[str] = mapped_column(String(120), default="")
     company_size: Mapped[str] = mapped_column(String(40), default="")  # e.g. "51-200"
@@ -1609,3 +1619,277 @@ class ConsentRecord(Base, TimestampMixin):
     # The acting principal for recruiter-recorded consent; empty when the
     # person granted it themselves on an unauthenticated surface.
     actor_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+# --------------------------------------------------------------------------
+# candidate agent: proposals, applications, documents
+# --------------------------------------------------------------------------
+
+# CANDIDATE_AGENT_PLAN §10. Forward flow plus the honest escapes; the legal
+# transitions live in applications/state.py, validated in code like every
+# other status vocabulary here.
+#
+#   draft            created; package not yet built
+#   prepared         tailored resume / cover letter / answers exist
+#   awaiting_consent the package was shown; the per-application yes is pending
+#   submitted        a human sent it (candidate one-tap, recruiter, or agent
+#                    on a tier that allows it) -- REQUIRES a recorded consent
+#   acknowledged     the employer confirmed receipt
+#   interviewing / offer / rejected / withdrawn
+APPLICATION_STATUSES = (
+    "draft",
+    "prepared",
+    "awaiting_consent",
+    "submitted",
+    "acknowledged",
+    "interviewing",
+    "offer",
+    "rejected",
+    "withdrawn",
+)
+APPLICATION_TERMINAL_STATUSES = ("rejected", "withdrawn")
+
+JOB_PROPOSAL_STATUSES = ("proposed", "accepted", "declined", "expired")
+
+DOCUMENT_KINDS = ("resume_uploaded", "resume_generated", "cover_letter", "other")
+DOCUMENT_STATUSES = ("uploaded", "generating", "ready", "failed")
+
+
+class JobProposal(Base, TimestampMixin):
+    """One posting put in front of one candidate, and what they said.
+
+    **Deliberately not a status on ``JobMatch``.** That field is recruiter
+    triage (new | shortlisted | dismissed); candidate consent is a different
+    axis, and collapsing them means a recruiter shortlisting something reads
+    as the candidate agreeing to it (CANDIDATE_AGENT_PLAN §10). The portal
+    feed and the message thread read *this* table; the recruiter board reads
+    matches. The two meet only in provenance columns.
+
+    Unique per ``(candidate_id, job_posting_id)``: a role passed on is not
+    re-surfaced, on any channel -- silence and swipes-left are information.
+    """
+
+    __tablename__ = "job_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "job_posting_id", name="uq_job_proposal_candidate_posting"
+        ),
+        Index("ix_job_proposals_org_candidate", "org_id", "candidate_id"),
+        Index("ix_job_proposals_org_status", "org_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jprop"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    job_posting_id: Mapped[str] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), index=True
+    )
+    job_match_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_matches.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # imessage | web | portal -- where it was shown. A proposal in a text and
+    # a card swiped in the portal are the same fact on different surfaces.
+    channel: Mapped[str] = mapped_column(String(24), default="")
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+    # The outbound message that carried it, when a thread did.
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_messages.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # proposed | accepted | declined | expired
+    status: Mapped[str] = mapped_column(String(24), default="proposed")
+    # The evidence strings shown with the card -- what we told them the fit
+    # was, frozen at proposal time. Never a score (§5).
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The inbound message that answered, when the answer came by text.
+    responded_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    decline_reason: Mapped[str] = mapped_column(String(240), default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Application(Base, TimestampMixin):
+    """One pursuit of one posting on behalf of one candidate.
+
+    The lifecycle after a proposal is accepted: prepare the package, get the
+    per-application yes, a human submits, statuses arrive. ``JobMatch`` is
+    triage, ``JobProposal`` is presentation and consent-to-pursue -- this row
+    is the pursuit itself, and the only place a submission can hang off.
+
+    **Consent is structural.** ``applications/state.py`` refuses the
+    transition to ``submitted`` unless ``consenting_message_id`` or
+    ``approved_at`` is set: a candidate saying "yes, things like that" is not
+    consent to a specific submission, and this table is what keeps us out of
+    "you applied to forty jobs as me" (§4).
+
+    Documents hang off ``CandidateDocument.application_id`` rather than FK
+    columns here -- one less cycle, and "the current resume variant" is the
+    latest ready row per kind.
+    """
+
+    __tablename__ = "applications"
+    __table_args__ = (
+        # Exactly one application per (candidate, posting), ever. A duplicate
+        # submission reads as spam in an ATS and is the single most
+        # embarrassing failure available to us (§4).
+        UniqueConstraint(
+            "candidate_id", "job_posting_id", name="uq_application_candidate_posting"
+        ),
+        Index("ix_applications_org_status", "org_id", "status"),
+        Index("ix_applications_org_candidate", "org_id", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("app"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    job_posting_id: Mapped[str] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), index=True
+    )
+    # Provenance, not state: which match and which proposal led here. Creating
+    # an application never mutates JobMatch.status.
+    job_match_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_matches.id", ondelete="SET NULL"), nullable=True
+    )
+    proposal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_proposals.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # candidate | recruiter | agent -- who started the pursuit.
+    source: Mapped[str] = mapped_column(String(24), default="candidate")
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    status_reason: Mapped[str] = mapped_column(String(240), default="")
+
+    # The per-application yes, bound to the message it arrived in (a text) or
+    # to a portal approval. One of these must be set before `submitted`.
+    consenting_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_verbatim: Mapped[str] = mapped_column(String(400), default="")
+
+    # Where and how a human applies. Tier 0 is a prepared package plus this
+    # link; the copy must never imply we submitted somewhere we did not (§8).
+    submission_url: Mapped[str] = mapped_column(Text, default="")
+    # portal_link | recruiter_manual | email | ats_api
+    submission_method: Mapped[str] = mapped_column(String(32), default="")
+    # candidate | recruiter | agent
+    submitted_by: Mapped[str] = mapped_column(String(16), default="")
+    submitted_by_user_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    # [{key, question, answer, provenance: {kind, ref}, generated_by, edited}]
+    # -- every answer names the resume line, preference field, or message that
+    # supports it. No answer is generated from nothing (§8).
+    form_answers: Mapped[list] = mapped_column(JSON, default=list)
+    # Cached warm-contact suggestions + drafted intros for this application.
+    networking: Mapped[list] = mapped_column(JSON, default=list)
+
+    package_error: Mapped[str] = mapped_column(String(400), default="")
+
+    prepared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class CandidateDocument(Base, TimestampMixin):
+    """A file that belongs to a candidate: an uploaded resume, a generated one,
+    a cover letter.
+
+    Metadata only -- the bytes live in the local document store behind
+    ``storage.py``, path-addressed by ids (``storage_path``). ``structured``
+    is the ``resume.v1`` JSON: the parse result for uploads, the render source
+    for generated documents. Parsed facts land HERE first and are promoted to
+    the Candidate by an explicit merge step, never by a blind upsert --
+    ``repository._replace_children`` rebuilds experience rows wholesale, and
+    ``Candidate.summary``/``skills`` feed the search haystack (§7).
+
+    ``application_id`` set = a per-application tailored variant; null = a
+    profile-level document. ``is_default`` marks the profile resume.
+    """
+
+    __tablename__ = "candidate_documents"
+    __table_args__ = (
+        Index("ix_candidate_documents_candidate", "org_id", "candidate_id"),
+        Index("ix_candidate_documents_application", "application_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cdoc"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    application_id: Mapped[str | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # resume_uploaded | resume_generated | cover_letter | other
+    kind: Mapped[str] = mapped_column(String(32), default="other")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # The original upload name, display only -- storage paths are id-built and
+    # never touch this.
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(100), default="application/pdf")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    storage_path: Mapped[str] = mapped_column(String(400), default="")
+
+    # uploaded | generating | ready | failed
+    status: Mapped[str] = mapped_column(String(24), default="ready")
+    text_extracted: Mapped[str] = mapped_column(Text, default="")
+    structured: Mapped[dict] = mapped_column(JSON, default=dict)
+    schema_version: Mapped[str] = mapped_column(String(32), default="")
+    # llm | template | "" (an upload) -- the ReplyDraft convention.
+    generated_by: Mapped[str] = mapped_column(String(20), default="")
+    # upload | linkedin_ingest | generated -- where the content came from.
+    source: Mapped[str] = mapped_column(String(32), default="")
+    # The thread it arrived on, when one did.
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+
+    error: Mapped[str] = mapped_column(String(400), default="")
+    created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+# --------------------------------------------------------------------------
+# derived columns, guaranteed at the ORM layer
+# --------------------------------------------------------------------------
+#
+# current_company_normalized / company_normalized are what the warm-contact
+# SQL prefilter matches on, and they must hold for EVERY writer -- the enrich
+# upsert, a test adding an Experience by hand, a future importer. A derived
+# column maintained only by one call site is a column that silently goes
+# stale, so the stamp lives on flush. normalize_company is imported lazily to
+# keep models.py free of business-module imports at load time.
+
+
+@event.listens_for(Experience, "before_insert", propagate=True)
+@event.listens_for(Experience, "before_update", propagate=True)
+def _stamp_experience_company_normalized(mapper, connection, target) -> None:
+    from .enrich.taxonomy import normalize_company
+
+    target.company_normalized = normalize_company(target.company or "")
+
+
+@event.listens_for(Candidate, "before_insert", propagate=True)
+@event.listens_for(Candidate, "before_update", propagate=True)
+def _stamp_candidate_company_normalized(mapper, connection, target) -> None:
+    from .enrich.taxonomy import normalize_company
+
+    target.current_company_normalized = normalize_company(target.current_company or "")

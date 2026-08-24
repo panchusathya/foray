@@ -23,6 +23,12 @@ dependencies = [
     # zoneinfo's tz database: absent on Windows and not guaranteed in slim
     # images — without it every send_timezone silently degrades to UTC.
     "tzdata>=2024.1",
+    # Resume PDFs: pypdf extracts text from uploads, reportlab renders the
+    # generated resume and cover letter. Both ship pure-Python/manylinux
+    # wheels and install into python:3.12-slim with no apt layer — weasyprint
+    # would drag in pango/cairo, and headless chromium is a browser.
+    "pypdf>=4.0",
+    "reportlab>=4.1",
 ]
 
 [project.optional-dependencies]

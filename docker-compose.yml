@@ -51,8 +51,11 @@ services:
       ZOHO_REDIRECT_URI: ${ZOHO_REDIRECT_URI:-}
       ZOHO_ACCOUNTS_DOMAIN: ${ZOHO_ACCOUNTS_DOMAIN:-https://accounts.zoho.com}
       CORS_ORIGINS: http://localhost:5173,http://localhost:4173
+      JUICEBOX_FILE_STORAGE_DIR: /app/data/files
     ports:
       - "8000:8000"
+    volumes:
+      - filedata:/app/data/files
     depends_on:
       db:
         condition: service_healthy
@@ -87,6 +90,9 @@ services:
       ZOHO_CLIENT_SECRET: ${ZOHO_CLIENT_SECRET:-}
       ZOHO_REDIRECT_URI: ${ZOHO_REDIRECT_URI:-}
       ZOHO_ACCOUNTS_DOMAIN: ${ZOHO_ACCOUNTS_DOMAIN:-https://accounts.zoho.com}
+      JUICEBOX_FILE_STORAGE_DIR: /app/data/files
+    volumes:
+      - filedata:/app/data/files
     depends_on:
       api:
         condition: service_started
@@ -148,3 +154,4 @@ services:
 
 volumes:
   pgdata:
+  filedata:

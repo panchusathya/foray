@@ -111,6 +111,11 @@ x-app-env: &app_env
   LINQ_WEBHOOK_SECRET: ${LINQ_WEBHOOK_SECRET:-}
   LINQ_FROM_NUMBER: ${LINQ_FROM_NUMBER:-}
   LINQ_ENABLED: ${LINQ_ENABLED:-false}
+  # Candidate documents (resumes, cover letters). The `filedata` volume is
+  # mounted on api AND worker — the worker writes generated PDFs, the api
+  # serves uploads and downloads. Back this volume up alongside pgdata: the
+  # rows in candidate_documents are only the metadata half.
+  JUICEBOX_FILE_STORAGE_DIR: /app/data/files
 
 services:
   db:
@@ -152,6 +157,8 @@ services:
     restart: unless-stopped
     logging: *default_logging
     environment: *app_env
+    volumes:
+      - filedata:/app/data/files
     depends_on:
       db:
         condition: service_healthy
@@ -166,6 +173,8 @@ services:
     restart: unless-stopped
     logging: *default_logging
     environment: *app_env
+    volumes:
+      - filedata:/app/data/files
     depends_on:
       # service_healthy, not service_started: the api healthcheck only passes
       # once uvicorn is serving, which is only after migrations finished.
@@ -285,3 +294,4 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  filedata:

@@ -1120,3 +1120,86 @@ class IntakeCallCountOut(BaseModel):
 
 
 TokenResponse.model_rebuild()
+
+
+# --------------------------------------------------------------------------
+# applications and candidate documents
+# --------------------------------------------------------------------------
+
+
+class ApplicationCreate(BaseModel):
+    candidate_id: str
+    job_posting_id: str
+    source: str = "recruiter"
+
+
+class ApplicationTransitionIn(BaseModel):
+    to_status: str
+    reason: str = ""
+
+
+class ApplicationPatch(BaseModel):
+    submission_url: str | None = None
+    status_reason: str | None = None
+    form_answers: list[dict[str, Any]] | None = None
+
+
+class CandidateDocumentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    candidate_id: str
+    application_id: str | None
+    kind: str
+    is_default: bool
+    filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    status: str
+    schema_version: str
+    generated_by: str
+    source: str
+    error: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    candidate_id: str
+    job_posting_id: str
+    job_match_id: str | None
+    proposal_id: str | None
+    project_id: str | None
+    source: str
+    status: str
+    status_reason: str
+    consenting_message_id: str | None
+    approved_at: datetime | None
+    consent_verbatim: str
+    submission_url: str
+    submission_method: str
+    submitted_by: str
+    form_answers: list[Any] = Field(default_factory=list)
+    networking: list[Any] = Field(default_factory=list)
+    package_error: str
+    prepared_at: datetime | None
+    submitted_at: datetime | None
+    acknowledged_at: datetime | None
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApplicationDetailOut(ApplicationOut):
+    """List row plus joined display fields and current documents."""
+
+    company: str = ""
+    title: str = ""
+    candidate_name: str = ""
+    documents: list[CandidateDocumentOut] = Field(default_factory=list)

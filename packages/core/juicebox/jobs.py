@@ -65,6 +65,17 @@ KIND_INTAKE_TURN = "intake.thread.turn"
 # enqueued by a call ending, not on a schedule.
 KIND_INTAKE_EXTRACT = "intake.extract"
 
+# Parsing one uploaded candidate document (pypdf + one model call). Enqueued
+# by an upload landing; never on ensure_ticks.
+KIND_DOC_PARSE = "docs.parse"
+
+# Building one application package: tailored resume PDF, cover letter, form
+# answers. User-initiated ("apply to 2", a swipe, a recruiter click); never on
+# ensure_ticks. Idempotency keys carry a timestamp because a rebuild is a
+# legitimate second request -- the per-application open-job guard in
+# applications.service is what collapses double-clicks.
+KIND_APP_PACKAGE = "application.package"
+
 OPEN_STATUSES = ("queued", "running")
 
 

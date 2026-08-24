@@ -17,9 +17,11 @@ from .migrate import is_up_to_date
 from .routers import (
     agents,
     analytics,
+    applications,
     auth,
     candidates,
     crm,
+    documents,
     intake,
     integrations,
     job_discovery,
@@ -96,6 +98,8 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(job_postings.router)
     app.include_router(job_matches.router)
+    app.include_router(applications.router)
+    app.include_router(documents.router)
     app.include_router(job_discovery.router)
     app.include_router(outreach.router)
     app.include_router(outreach.messages_router)

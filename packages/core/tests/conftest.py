@@ -121,6 +121,8 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     monkeypatch.setenv("LINQ_ENABLED", "false")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
+    # Candidate documents land in the test's own tmp dir, never in data/files.
+    monkeypatch.setenv("JUICEBOX_FILE_STORAGE_DIR", str(tmp_path / "files"))
     # Retry logic is asserted by call counts, so don't actually sleep for it.
     monkeypatch.setenv("LLM_RETRY_INITIAL_DELAY", "0")
 

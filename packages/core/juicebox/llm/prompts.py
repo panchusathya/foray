@@ -982,3 +982,245 @@ def intake_extract_prompt(*, transcript: str, known: str = "") -> str:
         f"<already_known>\n{known.strip() or '(nothing)'}\n</already_known>\n"
         f"<transcript>\n{body}\n</transcript>"
     )
+
+
+# ---------------------------------------------------------------------------
+# candidate documents: resume parsing, tailoring, cover letters, form answers
+# ---------------------------------------------------------------------------
+#
+# All four share one discipline, learned from spec.py and enforced by tests:
+# NEVER invent an employer, a title, a date, or a credential. The deterministic
+# path in docgen/ is complete on its own, so the model's whole job is
+# selection, ordering, and tightening -- an application asserts things in a
+# real person's name, and an invented year of experience is not a bug we can
+# apologise for (CANDIDATE_AGENT_PLAN §8).
+
+# The structured resume shape shared by parsing (uploads) and generation.
+# docgen.resume.RESUME_SCHEMA_VERSION names it "resume.v1".
+_RESUME_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["contact", "summary", "experience", "education", "skills", "certifications"],
+    "properties": {
+        "contact": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["name", "email", "phone", "location", "linkedin_url"],
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"},
+                "phone": {"type": "string"},
+                "location": {"type": "string"},
+                "linkedin_url": {"type": "string"},
+            },
+        },
+        "summary": {"type": "string", "description": "3-4 plain sentences, no buzzwords."},
+        "experience": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "title", "start", "end", "bullets"],
+                "properties": {
+                    "company": {"type": "string"},
+                    "title": {"type": "string"},
+                    "start": {
+                        "type": "string",
+                        "description": "YYYY-MM or YYYY, empty if unknown",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "YYYY-MM, YYYY, 'present', or empty",
+                    },
+                    "bullets": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "education": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["school", "degree", "field", "start_year", "end_year"],
+                "properties": {
+                    "school": {"type": "string"},
+                    "degree": {"type": "string"},
+                    "field": {"type": "string"},
+                    "start_year": {"type": "string"},
+                    "end_year": {"type": "string"},
+                },
+            },
+        },
+        "skills": {"type": "array", "items": {"type": "string"}},
+        "certifications": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+RESUME_PARSE_SYSTEM = """\
+You read the plain text extracted from an uploaded resume PDF and return it as \
+structured JSON. Transcription, not improvement: keep the person's own wording \
+in bullets, fix nothing but whitespace, and leave a field empty rather than \
+guess. Dates only as written -- never infer a month that is not there. Skip \
+boilerplate (page headers, "references available on request"). If the text is \
+not a resume, return empty arrays and an empty summary.
+"""
+
+RESUME_PARSE_SCHEMA: dict[str, Any] = _RESUME_JSON_SCHEMA
+
+
+def resume_parse_prompt(*, text: str) -> str:
+    return f"<resume_text>\n{(text or '').strip()[:24000]}\n</resume_text>"
+
+
+RESUME_TAILOR_SYSTEM = """\
+You tighten a structured resume for one specific role. You are given the \
+resume as JSON and the role's parsed requirements.
+
+Rules, none negotiable:
+- NEVER add an employer, title, date, credential, school, or skill that is not \
+in the input JSON. Removing and reordering are your only powers over facts.
+- Reorder skills and bullets so what the role asks for comes first.
+- Tighten bullets: active voice, concrete nouns, no filler. A bullet may be \
+shortened or dropped, never expanded with new claims.
+- Rewrite the summary (3 sentences max) for this role using only facts present \
+elsewhere in the JSON.
+- Keep every job in the history. Gaps are the candidate's to explain, not \
+yours to paper over.
+"""
+
+RESUME_TAILOR_SCHEMA: dict[str, Any] = _RESUME_JSON_SCHEMA
+
+
+def resume_tailor_prompt(*, resume_json: str, role_spec: str, uploaded_text: str = "") -> str:
+    uploaded = (
+        f"<their_own_resume_text>\n{uploaded_text.strip()[:12000]}\n</their_own_resume_text>\n\n"
+        if uploaded_text.strip()
+        else ""
+    )
+    return (
+        f"{uploaded}"
+        f"<resume_json>\n{resume_json.strip()}\n</resume_json>\n\n"
+        f"<role_requirements>\n{role_spec.strip()}\n</role_requirements>\n\n"
+        "Return the tailored resume JSON."
+    )
+
+
+COVER_LETTER_SYSTEM = """\
+You write a short cover letter for a specific role, in first person as the \
+candidate.
+
+Style -- plain, normal prose:
+- Three paragraphs, under 180 words total. No address block, no date; open \
+with "Dear Hiring Manager," and close with "Sincerely," plus the name given.
+- Paragraph 1: which role, and the single strongest reason they fit, drawn \
+from the resume facts.
+- Paragraph 2: one or two concrete experiences that map to the role's stated \
+requirements. Name real employers and real work from the resume only.
+- Paragraph 3: brief, forward-looking, no begging.
+- Never invent facts, never restate the whole resume, no exclamation marks, \
+no "I am passionate about".
+"""
+
+COVER_LETTER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["body"],
+    "properties": {
+        "body": {"type": "string", "description": "The letter body, plain text."},
+    },
+}
+
+
+def cover_letter_prompt(*, resume_json: str, role_spec: str, company: str, title: str) -> str:
+    return (
+        f"<resume_json>\n{resume_json.strip()}\n</resume_json>\n\n"
+        f'<role company="{company}" title="{title}">\n{role_spec.strip()}\n</role>\n\n'
+        "Write the cover letter."
+    )
+
+
+FORM_ANSWERS_SYSTEM = """\
+You answer the standard application-form questions for a candidate, from their \
+intake preferences and resume. Every answer must carry its provenance: which \
+preference field or resume fact it came from. If the inputs do not answer a \
+question, return an empty answer with provenance "none" -- an application \
+asserts things in a real person's name, and a guessed answer is worse than a \
+blank one. One to two sentences per answer, plain prose, first person.
+"""
+
+FORM_ANSWERS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answers"],
+    "properties": {
+        "answers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["key", "answer", "provenance"],
+                "properties": {
+                    "key": {"type": "string"},
+                    "answer": {"type": "string"},
+                    "provenance": {
+                        "type": "string",
+                        "description": (
+                            "preference:<field>, resume:<company or section>, or 'none'"
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def form_answers_prompt(*, questions: str, preference_context: str, resume_json: str) -> str:
+    return (
+        f"<questions>\n{questions.strip()}\n</questions>\n\n"
+        f"<preferences>\n{preference_context.strip() or '(none)'}\n</preferences>\n\n"
+        f"<resume_json>\n{resume_json.strip()}\n</resume_json>\n\n"
+        "Answer the questions."
+    )
+
+
+INTRO_DRAFT_SYSTEM = """\
+You draft a short networking message FROM a job applicant TO somebody at (or \
+formerly at) the company they are applying to. The applicant will copy, edit, \
+and send it themselves -- write in first person as the applicant.
+
+Style -- plain, normal prose:
+- Under 80 words. No subject line, no signature block.
+- Open with the one honest connection point provided (shared employer, shared \
+school, or simply that they work where the applicant is applying). Never \
+invent one.
+- Name the specific role being applied to.
+- Ask for one small thing: a short chat, or any advice about the team. Never \
+ask them to refer the applicant in the first message.
+- No flattery, no "I hope this finds you well", no exclamation marks.
+"""
+
+INTRO_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["body"],
+    "properties": {
+        "body": {"type": "string", "description": "The message, plain text."},
+    },
+}
+
+
+def intro_draft_prompt(
+    *,
+    applicant_context: str,
+    contact_context: str,
+    role_line: str,
+    connection_point: str,
+) -> str:
+    return (
+        f"<applicant>\n{applicant_context.strip()}\n</applicant>\n\n"
+        f"<contact>\n{contact_context.strip()}\n</contact>\n\n"
+        f"<role>\n{role_line.strip()}\n</role>\n\n"
+        f"<connection_point>\n{connection_point.strip() or '(none beyond the company itself)'}\n"
+        "</connection_point>\n\nDraft the message."
+    )

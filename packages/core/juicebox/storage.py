@@ -1,0 +1,69 @@
+"""Where candidate document bytes live.
+
+The repo's first blob store, and deliberately the smallest one that is
+correct: DB rows own the metadata (``CandidateDocument``), the filesystem owns
+the bytes, and the path is derived from ids rather than from anything a client
+sent. CANDIDATE_AGENT_PLAN §7 called the storage decision the thing that
+stalls resume ingest — this resolves it as "local filesystem behind the API",
+one config value (`JUICEBOX_FILE_STORAGE_DIR`) away from any future move,
+because ``storage_path`` is stored on the row and a move is a data migration.
+
+Writes are atomic (tmp file + ``os.replace``): a crash mid-write leaves either
+the old bytes or no file, never a truncated PDF that parses as garbage.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from pathlib import Path
+
+from .config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def storage_root() -> Path:
+    return Path(get_settings().file_storage_dir)
+
+
+def document_relpath(*, org_id: str, candidate_id: str, document_id: str, suffix: str = ".pdf") -> str:
+    """``{org}/{candidate}/{doc}.pdf`` — ids only, nothing client-supplied.
+
+    A path built from a filename would be a traversal bug waiting for a
+    reviewer to miss it; ids are ours and shell-safe by construction.
+    """
+    return f"{org_id}/{candidate_id}/{document_id}{suffix}"
+
+
+def document_abspath(relpath: str) -> Path:
+    root = storage_root()
+    resolved = (root / relpath).resolve()
+    # Belt and braces: the relpath is server-built, but a stored row edited by
+    # hand must still not read outside the store.
+    if not resolved.is_relative_to(root.resolve()):
+        raise ValueError(f"storage path {relpath!r} escapes the document store")
+    return resolved
+
+
+def save_bytes(relpath: str, data: bytes) -> tuple[int, str]:
+    """Write atomically. Returns ``(size_bytes, sha256)`` for the row."""
+    target = document_abspath(relpath)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
+    return len(data), hashlib.sha256(data).hexdigest()
+
+
+def read_bytes(relpath: str) -> bytes:
+    return document_abspath(relpath).read_bytes()
+
+
+def delete_file(relpath: str) -> None:
+    """Best-effort: the row's deletion drives this, a missing file is fine."""
+    try:
+        document_abspath(relpath).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("could not delete document file %s: %s", relpath, exc)

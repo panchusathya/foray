@@ -37,6 +37,7 @@ x-staging-app-env: &staging_app_env
   # must never send. Do not interpolate SMTP_* or OUTREACH_* from prod .env.
   EMAIL_PROVIDER: console
   OUTREACH_FROM_EMAIL: staging@localhost
+  JUICEBOX_FILE_STORAGE_DIR: /app/data/files
   JUICEBOX_LLM_ENABLED: ${JUICEBOX_LLM_ENABLED:-false}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   EXA_API_KEY: ${EXA_API_KEY:-}
@@ -93,6 +94,8 @@ services:
     restart: unless-stopped
     logging: *default_logging
     environment: *staging_app_env
+    volumes:
+      - filedata_staging:/app/data/files
     depends_on:
       db:
         condition: service_healthy
@@ -109,6 +112,8 @@ services:
     restart: unless-stopped
     logging: *default_logging
     environment: *staging_app_env
+    volumes:
+      - filedata_staging:/app/data/files
     depends_on:
       api:
         condition: service_healthy
@@ -193,3 +198,4 @@ services:
 
 volumes:
   pgdata_staging:
+  filedata_staging:

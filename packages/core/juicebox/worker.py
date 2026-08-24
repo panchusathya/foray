@@ -19,9 +19,11 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .jobs import (
     KIND_AGENT_TICK,
+    KIND_APP_PACKAGE,
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
+    KIND_DOC_PARSE,
     KIND_INTAKE_EXTRACT,
     KIND_INTAKE_TURN,
     KIND_JOBS_MATCH,
@@ -600,6 +602,64 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     }
 
 
+def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
+    """Extract text from one uploaded document and read it into resume.v1.
+
+    Parse problems land on the row (``error``), never as a handler raise: a
+    scanned PDF is a data point about the upload, not a worker failure, and
+    retrying it would extract the same nothing.
+    """
+    from . import storage
+    from .docgen.parse import extract_pdf_text, parse_resume_text
+    from .docgen.resume import RESUME_SCHEMA_VERSION
+    from .models import CandidateDocument
+
+    document_id = job.payload.get("document_id") or ""
+    doc = db.get(CandidateDocument, document_id)
+    if doc is None:
+        return {"skipped": "document not found", "document_id": document_id}
+    if doc.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    if doc.kind != "resume_uploaded":
+        return {"skipped": f"kind {doc.kind} is not parseable"}
+
+    if not doc.text_extracted:
+        data = storage.read_bytes(doc.storage_path)
+        doc.text_extracted = extract_pdf_text(data)
+
+    structured, error = parse_resume_text(doc.text_extracted)
+    doc.structured = structured
+    doc.error = error
+    if structured:
+        doc.schema_version = RESUME_SCHEMA_VERSION
+    # The file itself is fine either way -- ready with an error note beats a
+    # "failed" upload the candidate would be asked to redo for our benefit.
+    doc.status = "ready"
+    db.flush()
+    return {
+        "document_id": doc.id,
+        "parsed": bool(structured),
+        "error": error,
+        "text_chars": len(doc.text_extracted or ""),
+    }
+
+
+def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
+    """Build one application package. Failures re-raise so backoff retries."""
+    from .applications.service import build_package
+    from .models import Application
+
+    application_id = job.payload.get("application_id") or ""
+    application = db.get(Application, application_id)
+    if application is None:
+        return {"skipped": "application not found", "application_id": application_id}
+    if application.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    if application.status not in {"draft", "prepared"}:
+        return {"skipped": f"status {application.status} does not take a package"}
+    return build_package(db, application)
+
+
 def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
     from .intake.service import extract_call
     from .models import IntakeCall
@@ -641,6 +701,8 @@ HANDLERS = {
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
     KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
+    KIND_DOC_PARSE: _handle_doc_parse,
+    KIND_APP_PACKAGE: _handle_app_package,
 }
 
 

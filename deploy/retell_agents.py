@@ -64,9 +64,11 @@ INBOUND_NAME = "foray-status-inbound"
 # load, which presents as an agent that forgets to ask things.
 AGENT_MODEL = "gpt-4.1-mini"
 
-# Female, warm, American. Do not guess a replacement -- `voices --gender female`
-# lists the catalogue so the pick is auditable. Audition the sample, not the name.
-VOICE_ID = "11labs-Cimo"
+# Warm, calm, unhurried American female. Do not guess a replacement --
+# `voices --gender female` lists the catalogue so the pick is auditable, and
+# nearby fits if this one wears badly on a phone are 11labs-Nina (softer) and
+# 11labs-Kate (more corporate). Judge through a phone speaker, not a demo page.
+VOICE_ID = "11labs-Myra"
 
 # Spoken so TTS does not read +18882600142 as noise. Recognition of the
 # follow-up sender is the entire point of saying it.
@@ -460,6 +462,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
             "PATCH",
             f"/update-agent/{current['agent_id']}",
             {
+                # voice_id included so a VOICE_ID change actually reaches
+                # existing agents -- create set it, update used to forget it.
+                "voice_id": VOICE_ID,
                 "webhook_url": f"{args.base_url.rstrip('/')}/v1/intake/webhook",
                 "post_call_analysis_data": POST_CALL_ANALYSIS,
                 "max_call_duration_ms": MAX_CALL_MS,

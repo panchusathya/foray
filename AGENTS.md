@@ -238,6 +238,13 @@ imported into it (+1 888 260-0142). Plan and phasing live in
   must not blank what an earlier one supplied.
 - **A transcript is never shortened.** A late `call_analyzed` sometimes carries a
   truncated one, and losing the conversation is unrecoverable.
+- **Consent flags are latched true, never overwritten.** `consent_recording` and
+  `sms_opt_in` share one reader (`service._analysis_flag`) and one rule: a later
+  event omitting the field must not silently withdraw a consent, and false is
+  the safe default because unasked is unconsented. `sms_opt_in` is TCPA consent
+  to *application updates* -- opt-out happens by a person replying STOP, never
+  by a webhook. No verbatim-language column, deliberately: the transcript on the
+  same row is the evidence record, and a copy could drift from it.
 - **An unmapped event type is acknowledged, not an error.** Retell emits
   transcript updates and a whole transfer lifecycle; a provider adding an event
   must never start failing this endpoint.
@@ -282,6 +289,26 @@ intake extractor, five runs each, that generalise past this subsystem:
   `json_schema` request and `provider.require_parameters`. The heuristic fallback
   is load-bearing, not decoration -- which is also why it must never fill
   `must_have_skills`, `highlights`, or consent.
+
+### What the second live call taught us (inbound, the 628, 2026-08-23)
+
+213 seconds, first call on the imported own-Twilio number. The consent capture
+worked end to end -- `consent_recording` and `sms_opt_in` both arrived true via
+post-call analysis. Three prompt rules came out of it:
+
+- **The agent narrated its own tooling.** `check_coverage` failed (the number
+  was registered in prod only after the call) and the agent told the caller "I
+  had a technical issue checking coverage" -- which the caller heard as "COVID".
+  Rule: on tool failure, continue smoothly and retry later; callers never hear
+  about internal state.
+- **A model invents a duration.** Asked "how long will this take", the agent
+  said "10 to 15 minutes" -- three to five times the design target, and the
+  caller nearly hung up. The expected duration is now stated in the prompt;
+  anything time-shaped that matters must be, or the model will improvise it.
+- **Echo acknowledgments are where the seconds go.** Every answer was read back
+  in full ("Thank you for sharing that you want a level four backend role...").
+  Rule: acknowledge in five words or fewer; the closing recap is the only
+  repetition, and only if wanted.
 
 ### What the first live call taught us
 

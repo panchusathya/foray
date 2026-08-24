@@ -310,6 +310,8 @@ def cmd_trunk(args: argparse.Namespace) -> int:
         )
     else:
         username, password = _attach_credential_list(trunk_sid)
+        if not username and args.rotate_credential:
+            username, password = _rotate_credential(trunk_sid)
         if username:
             produced["VOICE_INTAKE_SIP_USERNAME"] = username
             produced["VOICE_INTAKE_SIP_PASSWORD"] = password
@@ -480,6 +482,30 @@ def _attach_credential_list(trunk_sid: str) -> tuple[str, str]:
     return username, password
 
 
+def _rotate_credential(trunk_sid: str) -> tuple[str, str]:
+    """Add a fresh credential to the trunk's attached list.
+
+    Twilio never returns a SIP password after creation, so a lost password is
+    replaced, never recovered. The stale credential stays on the list -- it is
+    harmless (nobody knows its password either), and deleting credentials a
+    live trunk might still be using is not this script's call to make.
+    """
+    attached = request("GET", f"{TRUNKING}/Trunks/{trunk_sid}/CredentialLists").get(
+        "credential_lists", []
+    )
+    if not attached:
+        raise TwilioError("no credential list attached to the trunk; run `trunk` first")
+    list_sid = attached[0]["sid"]
+    username = f"retell{secrets.token_hex(4)}"
+    password = _generate_password()
+    request(
+        "POST",
+        account_path(f"SIP/CredentialLists/{list_sid}/Credentials.json"),
+        data={"Username": username, "Password": password},
+    )
+    return username, password
+
+
 def _attach_ip_acl(trunk_sid: str) -> None:
     attached = request("GET", f"{TRUNKING}/Trunks/{trunk_sid}/IpAccessControlLists").get(
         "ip_access_control_lists", []
@@ -552,6 +578,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use Retell's IP block instead of a credential list (not recommended)",
     )
     trunk.add_argument("--write-env", action="store_true")
+    trunk.add_argument(
+        "--rotate-credential",
+        action="store_true",
+        help="Add a fresh SIP credential (use when the saved password was lost)",
+    )
     trunk.set_defaults(func=cmd_trunk)
 
     attach = sub.add_parser("attach", help="Move a number onto the trunk")

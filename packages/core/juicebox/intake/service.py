@@ -214,16 +214,20 @@ def _apply_event(call: IntakeCall, event: CallEvent) -> None:
     #
     # Only ever latched true. A later event arriving without the field must not
     # silently withdraw a consent that was given, and false is the safe default
-    # because a call with no recorded consent is not a consented call.
-    if _consent_given(event):
+    # because a call with no recorded consent is not a consented call. The same
+    # latch governs sms_opt_in: it is TCPA consent, and un-consenting happens by
+    # the person replying STOP, never by a webhook omitting a field.
+    if _analysis_flag(event, "consent_recording"):
         call.consent_recording = True
+    if _analysis_flag(event, "sms_opt_in"):
+        call.sms_opt_in = True
 
 
-def _consent_given(event: CallEvent) -> bool:
+def _analysis_flag(event: CallEvent, key: str) -> bool:
     analysis = event.raw.get("call_analysis")
     custom = analysis.get("custom_analysis_data") if isinstance(analysis, dict) else None
     for source in (event.dynamic_variables, custom if isinstance(custom, dict) else {}):
-        value = source.get("consent_recording")
+        value = source.get(key)
         if value is True:
             return True
         if isinstance(value, str) and value.strip().lower() in {"true", "yes"}:

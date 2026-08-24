@@ -119,6 +119,13 @@ x-app-env: &app_env
   # Where magic links point. The api and worker mint them, so they carry this;
   # the portal container itself never needs it.
   PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+  # The proposal bar's score floor. Necessary but never sufficient — vetoes
+  # and the explainability gate sit on top. Raising it above 1.0 is the kill
+  # switch for candidate-facing job proposals: nothing clears the bar, so the
+  # agent and the portal feed go quiet while onboarding, documents and the
+  # recruiter views keep working. Held above 1.0 until the LL144 /
+  # authority-to-apply counsel review clears.
+  PROPOSAL_SCORE_FLOOR: ${PROPOSAL_SCORE_FLOOR:-0.55}
   # The logged-in LinkedIn session the profile scraper drives. Empty is a safe
   # state: the scrape raises and the thread falls back to asking questions.
   LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}

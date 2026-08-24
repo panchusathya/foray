@@ -573,7 +573,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     two callers is the point: a bug fixed for the widget is fixed for SMS, and
     the two channels cannot drift into asking different questions.
     """
-    from .messaging.conversation import run_turn
+    from .messaging.conversation import ACTION_DEFERRED, run_turn
     from .models import IntakeThread
 
     thread_id = job.payload.get("thread_id") or ""
@@ -583,6 +583,15 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     if thread.org_id != job.org_id:
         return {"skipped": "org_mismatch"}
     result = run_turn(db, thread=thread)
+    if result.action == ACTION_DEFERRED and result.resume_at is not None:
+        # Quiet hours. The turn re-runs when the recipient's send window
+        # opens -- deferral is Job.run_at, not a scheduler.
+        return {
+            "defer": True,
+            "defer_until": result.resume_at,
+            "thread_id": thread.id,
+            "action": result.action,
+        }
     return {
         "thread_id": thread.id,
         "action": result.action,
@@ -652,7 +661,12 @@ def process_job(db: Session, job: Job, *, now=None) -> None:
         job.status = "queued"
         job.locked_at = None
         job.locked_by = ""
-        job.run_at = now + timedelta(seconds=max(settings.worker_tick_seconds, 30))
+        # A handler that knows exactly when the work becomes possible says so
+        # (quiet-hours deferral names the window's opening); otherwise the
+        # generic short backoff applies.
+        job.run_at = result.get("defer_until") or (
+            now + timedelta(seconds=max(settings.worker_tick_seconds, 30))
+        )
         return
     mark_succeeded(job, now=now)
 

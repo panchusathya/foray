@@ -331,6 +331,31 @@ class Settings:
     linq_from_number: str = field(default_factory=lambda: _env("LINQ_FROM_NUMBER", ""))
     linq_enabled: bool = field(default_factory=lambda: _env_bool("LINQ_ENABLED", False))
 
+    # --- messaging governance (CANDIDATE_AGENT_PLAN §3-§4) ------------------
+    # An outbound message answering an inbound one this recent sends regardless
+    # of the clock: a reply is not a solicitation.
+    intake_reply_window_minutes: int = field(
+        default_factory=lambda: _env_int("INTAKE_REPLY_WINDOW_MINUTES", 60)
+    )
+    # The unknown-timezone send window: 8am-9pm intersected across Eastern and
+    # Pacific, expressed in Eastern local time. Config rather than constants
+    # because texting Alaska or Hawaii would narrow it to 14:00-21:00.
+    quiet_hours_unknown_start_hour: int = field(
+        default_factory=lambda: _env_int("QUIET_HOURS_UNKNOWN_START_HOUR", 11)
+    )
+    quiet_hours_unknown_end_hour: int = field(
+        default_factory=lambda: _env_int("QUIET_HOURS_UNKNOWN_END_HOUR", 21)
+    )
+    quiet_hours_unknown_zone: str = field(
+        default_factory=lambda: _env("QUIET_HOURS_UNKNOWN_ZONE", "America/New_York")
+    )
+    # The shared-number circuit breaker: opt-outs per org per rolling 24h
+    # before that org's *initiated* outbound stops. Opt-out rate is the number
+    # carriers actually score, so it is the number to watch.
+    messaging_optout_breaker_per_day: int = field(
+        default_factory=lambda: _env_int("MESSAGING_OPTOUT_BREAKER_PER_DAY", 5)
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

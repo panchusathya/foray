@@ -1433,6 +1433,14 @@ class IntakeThread(Base, TimestampMixin):
     last_field_asked: Mapped[str] = mapped_column(String(64), default="")
     asked_counts: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Send-window zone (IANA name) and how it was resolved -- see
+    # messaging/cadence.py. Stored, not recomputed, so the window applied to a
+    # send is auditable: "stated_location" and "candidate_record" carry
+    # different confidence, and empty means the conservative unknown-zone
+    # window (11:00-21:00 America/New_York) was in force.
+    timezone: Mapped[str] = mapped_column(String(64), default="")
+    timezone_source: Mapped[str] = mapped_column(String(24), default="")
+
     inbound_count: Mapped[int] = mapped_column(Integer, default=0)
     outbound_count: Mapped[int] = mapped_column(Integer, default=0)
     last_inbound_at: Mapped[datetime | None] = mapped_column(
@@ -1492,6 +1500,10 @@ class IntakeMessage(Base, TimestampMixin):
     # Which intake field this outbound message asked about; blank on inbound
     # and on anything that is not a question.
     asked_field: Mapped[str] = mapped_column(String(64), default="")
+    # reply (answers something inbound) | proactive (nudge, proposal, notify)
+    # | system (STOP acknowledgement, HELP). Budgets in messaging/cadence.py
+    # count proactive rows, so the budget cannot drift from what was sent.
+    origin: Mapped[str] = mapped_column(String(16), default="reply")
     # queued | sent | failed | received
     status: Mapped[str] = mapped_column(String(24), default="received")
     error: Mapped[str] = mapped_column(String(400), default="")
@@ -1542,3 +1554,58 @@ class IntakeNumber(Base, TimestampMixin):
     # Turning a number off must not delete its call history, and a deleted row
     # would make every past IntakeCall unattributable.
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ConsentRecord(Base, TimestampMixin):
+    """Consent provenance: who agreed to what, where, and what they were shown.
+
+    CANDIDATE_AGENT_PLAN §2: with sourced outbound in scope, the artifact *is*
+    the defence in a dispute. One row per grant, written wherever consent is
+    obtained — a widget opened, an inbound text, a voice wrap-up opt-in — and
+    never updated in place. Revocation is its own fact (``revoked_at``); the
+    suppression list remains what send paths consult, this is the audit trail
+    behind it.
+
+    ``disclosure_text`` and ``disclosure_version`` are stored verbatim because
+    the wording changes over time and the defence rests on what *this person*
+    was shown, not on what the template says today.
+    """
+
+    __tablename__ = "consent_records"
+    __table_args__ = (
+        Index("ix_consent_records_org_candidate", "org_id", "candidate_id"),
+        Index("ix_consent_records_thread", "thread_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("crec"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+    call_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_calls.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # web | imessage | sms | voice | email
+    channel: Mapped[str] = mapped_column(String(24), default="")
+    # messaging (this conversation may continue) | application_updates (texts
+    # about applications, the 10DLC use case). Never "marketing" — nothing in
+    # the product asks for that, so nothing can claim it.
+    scope: Mapped[str] = mapped_column(String(32), default="messaging")
+    # web_widget | inbound_text | voice_wrap_up | portal
+    source: Mapped[str] = mapped_column(String(32), default="")
+
+    disclosure_text: Mapped[str] = mapped_column(Text, default="")
+    disclosure_version: Mapped[str] = mapped_column(String(40), default="")
+    # The exact words the person used, when there are any (a voice opt-in's
+    # "yes, that's fine"). Empty for consent-by-conduct like opening a widget.
+    verbatim: Mapped[str] = mapped_column(String(400), default="")
+
+    granted: Mapped[bool] = mapped_column(Boolean, default=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The acting principal for recruiter-recorded consent; empty when the
+    # person granted it themselves on an unauthenticated surface.
+    actor_id: Mapped[str | None] = mapped_column(String(40), nullable=True)

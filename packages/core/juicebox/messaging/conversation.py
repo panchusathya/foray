@@ -55,7 +55,7 @@ from ..intake.schema import (
 )
 from ..llm.client import get_llm
 from ..models import IntakeMessage, IntakeThread, Org
-from . import identity, prompts
+from . import cadence, identity, prompts
 from .channels import ChannelError, DeliveryResult, OutboundMessage, get_channel
 from .records import merge_record, persist_preference
 from .suppression import handle_stop, is_blocked, looks_like_stop
@@ -86,6 +86,10 @@ ACTION_COMPLETED = "completed"
 ACTION_STOPPED = "stopped"
 ACTION_BLOCKED = "blocked"
 ACTION_HELD = "held"
+# Quiet hours: the message may not go now but should go later. Carries
+# ``resume_at`` so the worker can re-enqueue the turn for when the recipient's
+# send window opens -- deferral reuses Job.run_at, there is no scheduler.
+ACTION_DEFERRED = "deferred"
 
 _ENRICHMENT_KEYS = frozenset(f.key for f in FIELDS if f.tier == TIER_ENRICHMENT)
 
@@ -105,6 +109,8 @@ class TurnResult:
     asked_field: str = ""
     sent: list[IntakeMessage] = field(default_factory=list)
     extractor: str = ""
+    # Set only with ACTION_DEFERRED: the UTC instant the send window opens.
+    resume_at: Any = None
 
 
 def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
@@ -141,6 +147,22 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     # Rule 2. Their turn -- holding is the correct outcome, not a failure.
     if last.direction == OUTBOUND:
         return TurnResult(ACTION_HELD, thread, coverage(thread.record or {}))
+
+    # Quiet hours, checked before composing for the same reason is_blocked is.
+    # Only channels that text a phone are gated: the web widget's delivery is
+    # the HTTP response to somebody sitting in front of it. In practice the
+    # reply window passes almost every live turn -- this bites when a turn is
+    # retried hours later off the queue, which is exactly when a 2am send
+    # would otherwise slip out.
+    if get_channel(thread.channel).requires_consent():
+        decision = cadence.may_send_now(db, thread=thread)
+        if not decision.allowed:
+            return TurnResult(
+                ACTION_DEFERRED,
+                thread,
+                coverage(thread.record or {}),
+                resume_at=decision.resume_at,
+            )
 
     identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
     _reread(db, thread=thread)

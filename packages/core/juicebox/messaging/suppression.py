@@ -148,6 +148,11 @@ def handle_stop(db: Session, *, thread: IntakeThread) -> None:
     """
     close_thread(db, thread=thread, status=STATUS_STOPPED, reason="opted out")
 
+    # Keep the audit trail telling the same story the suppression list does.
+    from .consent import revoke_consent
+
+    revoke_consent(db, thread_id=thread.id)
+
     addresses: list[str] = []
     if thread.contact_email:
         addresses.append(thread.contact_email)

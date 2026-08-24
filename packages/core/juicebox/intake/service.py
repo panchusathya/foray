@@ -182,6 +182,25 @@ def record_call_event(
     elif event.kind in {EVENT_ENDED, EVENT_ANALYZED} and call.status != STATUS_EXTRACTED:
         call.status = STATUS_COMPLETED
 
+    if call.sms_opt_in:
+        # The audit row behind the latch. The transcript on this call is the
+        # primary evidence; this makes the grant findable without re-reading
+        # every transcript, and pins the disclosure wording version. Idempotent
+        # per (call, scope), so a re-delivered call_analyzed adds nothing.
+        from ..messaging import consent as _consent
+
+        _consent.record_consent(
+            db,
+            org_id=call.org_id,
+            channel="voice",
+            scope=_consent.SCOPE_APPLICATION_UPDATES,
+            source=_consent.SOURCE_VOICE_WRAP_UP,
+            disclosure_text=_consent.DISCLOSURE_VOICE_SMS,
+            disclosure_version=_consent.DISCLOSURE_VOICE_SMS_VERSION,
+            candidate_id=call.candidate_id,
+            call_id=call.id,
+        )
+
     db.flush()
     return call, is_new
 

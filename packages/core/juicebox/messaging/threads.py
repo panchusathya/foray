@@ -234,11 +234,17 @@ def record_outbound(
     thread: IntakeThread,
     message: OutboundMessage,
     result: DeliveryResult,
+    origin: str = "reply",
 ) -> IntakeMessage:
     """Store what we said, whether or not the channel managed to deliver it.
 
     A failed send is still a row: without one there is no evidence a question
     was attempted, and the next turn would compose the same question again.
+
+    ``origin`` distinguishes an answer (``reply``) from a message nobody asked
+    for (``proactive``) and from protocol traffic (``system``): the nudge and
+    proposal budgets in ``cadence.py`` count proactive rows, so what a budget
+    charges for is exactly what was sent.
     """
     sent = result.status == "sent"
     row = IntakeMessage(
@@ -251,6 +257,7 @@ def record_outbound(
         asked_field=message.asked_field,
         status=result.status,
         error=result.error,
+        origin=origin,
         sent_at=utcnow() if sent else None,
     )
     db.add(row)

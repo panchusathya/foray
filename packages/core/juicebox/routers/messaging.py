@@ -33,7 +33,7 @@ from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..intake.phones import lookup_key
 from ..intake.service import resolve_candidate_id
 from ..jobs import KIND_INTAKE_TURN, enqueue
-from ..messaging import prompts
+from ..messaging import consent, prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
 from ..messaging.linq import SignatureError as LinqSignatureError
@@ -192,6 +192,16 @@ def start_session(payload: ChatStartIn, db: Session = Depends(get_db)) -> ChatSe
         # unsolicited message here to have consented to.
         consent_messaging=True,
     )
+    consent.record_consent(
+        db,
+        org_id=org.id,
+        channel=WEB,
+        scope=consent.SCOPE_MESSAGING,
+        source=consent.SOURCE_WEB_WIDGET,
+        disclosure_text=consent.DISCLOSURE_WEB_WIDGET,
+        disclosure_version=consent.DISCLOSURE_WEB_WIDGET_VERSION,
+        thread_id=thread.id,
+    )
     result = run_turn(db, thread=thread)
     return _session_out(db, thread, action=result.action)
 
@@ -274,7 +284,7 @@ def _resolve_or_open_linq_thread(
         )
     to_key = lookup_key(inbound.to_address) or inbound.to_address
     candidate_id = resolve_candidate_id(db, org_id=org_id, phone=from_key)
-    return open_thread(
+    thread = open_thread(
         db,
         org_id=org_id,
         channel=LINQ,
@@ -286,6 +296,18 @@ def _resolve_or_open_linq_thread(
         to_address=to_key,
         consent_messaging=True,
     )
+    consent.record_consent(
+        db,
+        org_id=org_id,
+        channel=LINQ,
+        scope=consent.SCOPE_MESSAGING,
+        source=consent.SOURCE_INBOUND_TEXT,
+        disclosure_text=consent.DISCLOSURE_INBOUND_TEXT,
+        disclosure_version=consent.DISCLOSURE_INBOUND_TEXT_VERSION,
+        candidate_id=candidate_id,
+        thread_id=thread.id,
+    )
+    return thread
 
 
 @linq_router.post("/webhook")

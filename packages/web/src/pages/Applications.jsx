@@ -1,0 +1,262 @@
+/**
+ * What we are putting in people's names, and where each one stands.
+ *
+ * The candidate drives most of this from the portal — they swipe, they
+ * approve a package, they mark it sent. This page is the recruiter's window
+ * on the same rows, plus the moves only a human on our side can make:
+ * recording that an employer acknowledged, moved to interview, or passed.
+ * Nothing here reaches into the candidate's inbox, because their mailbox is
+ * not connected; a status only changes when somebody tells us.
+ *
+ * Two things it deliberately shows that the candidate's own view does not:
+ * the provenance behind every generated answer, and the consent trail. If we
+ * asserted something under somebody's name, a recruiter should be able to see
+ * where it came from without opening a database.
+ */
+
+import { useCallback, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+
+import { Badge, Empty, ErrorBox, Loading, PageHeader, ViewTabs } from '../components/common.jsx';
+import {
+  APPLICATION_STATUS_LABELS,
+  APPLICATION_TRANSITIONS,
+  api,
+  applicationStatusTone,
+} from '../lib/api.js';
+import { APPLICATION_VIEWS, applicationView, inView } from '../lib/applicationViews.js';
+import { useAsync } from '../lib/useAsync.js';
+
+export function statusLabel(status) {
+  return APPLICATION_STATUS_LABELS[status] ?? status;
+}
+
+export function ApplicationStatus({ status }) {
+  return <Badge tone={applicationStatusTone(status)}>{statusLabel(status)}</Badge>;
+}
+
+function formatDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
+}
+
+export function ApplicationsPage() {
+  const [params] = useSearchParams();
+  const view = applicationView(params.get('view') ?? 'open');
+  const list = useAsync(() => api.listApplications(), []);
+  const rows = (list.data ?? []).filter((row) => inView(view, row));
+
+  return (
+    <div className="stack">
+      <PageHeader
+        title="Applications"
+        subtitle="Every pursuit we have prepared or sent on a candidate's behalf."
+      />
+      <ViewTabs views={APPLICATION_VIEWS} activeId={view.id} basePath="/applications" />
+      <p className="muted small">{view.blurb}</p>
+      <ErrorBox error={list.error} />
+
+      {list.loading ? <Loading /> : null}
+      {!list.loading && rows.length === 0 ? (
+        <Empty>
+          Nothing here. Applications appear when a candidate swipes right in the portal, says
+          &ldquo;apply&rdquo; in a thread, or when you start one for them.
+        </Empty>
+      ) : null}
+
+      {rows.length > 0 ? (
+        <table className="jobs-table" data-testid="applications-table">
+          <thead>
+            <tr>
+              <th>Candidate</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Started by</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>
+                  <Link to={`/applications/${row.id}`}>{row.candidate_name || 'Candidate'}</Link>
+                </td>
+                <td>
+                  <div>{row.title}</div>
+                  <div className="muted small">{row.company}</div>
+                </td>
+                <td>
+                  <ApplicationStatus status={row.status} />
+                </td>
+                <td className="muted small">{row.source}</td>
+                <td className="muted small">{formatDate(row.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </div>
+  );
+}
+
+export function ApplicationDetailPage() {
+  const { applicationId } = useParams();
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const detail = useAsync(() => api.getApplication(applicationId), [applicationId]);
+  const application = detail.data;
+
+  const act = useCallback(
+    async (fn) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await fn();
+        await detail.reload();
+      } catch (err) {
+        setError(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [detail],
+  );
+
+  if (detail.loading) return <Loading />;
+  if (!application) {
+    return (
+      <div className="stack">
+        <ErrorBox error={detail.error} />
+        <Empty>Application not found.</Empty>
+      </div>
+    );
+  }
+
+  const consented = Boolean(application.consenting_message_id || application.approved_at);
+  // The transition table says prepared -> submitted is legal; state.py adds
+  // that it is legal *with a recorded yes*. Offering the button anyway means
+  // a recruiter clicks it and reads a 409 — so the UI mirrors the real rule,
+  // and the consent line above says what is missing.
+  const moves = (APPLICATION_TRANSITIONS[application.status] ?? []).filter(
+    (next) => next !== 'submitted' || consented,
+  );
+
+  return (
+    <div className="stack">
+      <PageHeader
+        title={application.title || 'Application'}
+        subtitle={[application.company, application.candidate_name].filter(Boolean).join(' — ')}
+        actions={
+          <Link to={`/contacts/${application.candidate_id}`}>Open contact</Link>
+        }
+      />
+      <ErrorBox error={error ?? detail.error} />
+
+      <div className="card stack">
+        <div className="spread">
+          <ApplicationStatus status={application.status} />
+          {application.submission_url ? (
+            <a href={application.submission_url} target="_blank" rel="noreferrer">
+              Job posting ↗
+            </a>
+          ) : null}
+        </div>
+
+        {/* The consent trail. An application cannot reach "submitted" without
+            one -- state.py refuses the transition -- so this reads as
+            reassurance on a sent row, and as the outstanding blocker on one
+            that has not gone yet. */}
+        <div className="muted small" data-testid="application-consent">
+          {consented
+            ? `Consent on file${
+                application.consent_verbatim ? `: “${application.consent_verbatim}”` : ''
+              }${application.approved_at ? ' (approved in the portal)' : ''}`
+            : 'No consent recorded yet — this cannot be submitted until the candidate says yes.'}
+        </div>
+
+        {application.package_error ? (
+          <div className="error">Package build failed: {application.package_error}</div>
+        ) : null}
+      </div>
+
+      <div className="card stack">
+        <h3>Package</h3>
+        {application.documents?.length ? (
+          application.documents.map((doc) => (
+            <div className="spread" key={doc.id}>
+              <span>
+                {doc.kind === 'cover_letter' ? 'Cover letter' : 'Resume'}
+                <span className="muted small">
+                  {' '}
+                  · {doc.generated_by === 'llm' ? 'tailored' : 'generated'} ·{' '}
+                  {Math.max(1, Math.round((doc.size_bytes ?? 0) / 1024))} KB
+                </span>
+              </span>
+              <a
+                href={`/v1/candidates/${application.candidate_id}/documents/${doc.id}/download`}
+              >
+                Download
+              </a>
+            </div>
+          ))
+        ) : (
+          <>
+            <p className="muted">Nothing generated yet.</p>
+            <div>
+              <button
+                type="button"
+                className="tiny"
+                disabled={busy}
+                onClick={() => act(() => api.buildApplicationPackage(application.id))}
+              >
+                Build package
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {application.form_answers?.length ? (
+        <div className="card stack">
+          <h3>Answers we would send</h3>
+          {application.form_answers.map((answer) => (
+            <div key={answer.key}>
+              <div className="muted small">{answer.question}</div>
+              <div>{answer.answer || <em className="muted">left blank on purpose</em>}</div>
+              {/* Provenance, not decoration: every generated answer names the
+                  preference field or resume line behind it, and "none" is how
+                  a blank proves it was not invented. */}
+              <div className="muted small">from: {answer.provenance || 'none'}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {moves.length ? (
+        <div className="card stack">
+          <h3>Record an update</h3>
+          <p className="muted small">
+            Employer replies do not reach us on their own — the candidate&apos;s mailbox is not
+            connected. Move it here when you hear something.
+          </p>
+          <div className="row wrap">
+            {moves.map((next) => (
+              <button
+                key={next}
+                type="button"
+                className="tiny ghost"
+                disabled={busy}
+                onClick={() =>
+                  act(() => api.transitionApplication(application.id, { to_status: next }))
+                }
+              >
+                {statusLabel(next)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

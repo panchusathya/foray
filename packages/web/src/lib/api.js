@@ -231,7 +231,83 @@ export const api = {
       method: 'PATCH',
       body: payload,
     }),
+
+  // Applications: the candidate-side pursuit of one posting. The candidate
+  // drives most of these from the portal; this is the recruiter's window on
+  // the same rows.
+  listApplications: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.status) query.set('status', params.status);
+    if (params.candidate_id) query.set('candidate_id', params.candidate_id);
+    if (params.job_posting_id) query.set('job_posting_id', params.job_posting_id);
+    const suffix = query.toString();
+    return request(`/v1/applications${suffix ? `?${suffix}` : ''}`);
+  },
+  applicationCounts: () => request('/v1/applications/count'),
+  getApplication: (id) => request(`/v1/applications/${id}`),
+  transitionApplication: (id, payload) =>
+    request(`/v1/applications/${id}/transition`, { method: 'POST', body: payload }),
+  buildApplicationPackage: (id) => request(`/v1/applications/${id}/package`, { method: 'POST' }),
+
+  // A single-use, expiring deep link into the candidate portal. Same minting
+  // function the messaging agent uses, so a link handed over by a recruiter
+  // behaves exactly like one the agent texted.
+  mintPortalLink: (candidateId) =>
+    request(`/v1/candidates/${candidateId}/portal-link`, { method: 'POST' }),
 };
+
+// Mirrors APPLICATION_STATUSES in models.py, in lifecycle order. The labels
+// are the recruiter's vocabulary, not the database's: "awaiting_consent" is
+// the machine's name for "we are waiting on the candidate".
+export const APPLICATION_STATUSES = [
+  'draft',
+  'prepared',
+  'awaiting_consent',
+  'submitted',
+  'acknowledged',
+  'interviewing',
+  'offer',
+  'rejected',
+  'withdrawn',
+];
+
+export const APPLICATION_STATUS_LABELS = {
+  draft: 'Draft',
+  prepared: 'Package ready',
+  awaiting_consent: 'Awaiting candidate',
+  submitted: 'Submitted',
+  acknowledged: 'Acknowledged',
+  interviewing: 'Interviewing',
+  offer: 'Offer',
+  rejected: 'Rejected',
+  withdrawn: 'Withdrawn',
+};
+
+// Which moves a recruiter may make from each status, mirroring
+// applications/state.py TRANSITIONS. The server is still the authority and
+// answers 409 on anything illegal -- this only keeps the UI from offering a
+// button that cannot work.
+export const APPLICATION_TRANSITIONS = {
+  draft: ['prepared', 'withdrawn'],
+  prepared: ['awaiting_consent', 'submitted', 'draft', 'withdrawn'],
+  awaiting_consent: ['submitted', 'prepared', 'withdrawn'],
+  submitted: ['acknowledged', 'interviewing', 'rejected', 'withdrawn'],
+  acknowledged: ['interviewing', 'rejected', 'withdrawn'],
+  interviewing: ['offer', 'rejected', 'withdrawn'],
+  offer: ['rejected', 'withdrawn'],
+  rejected: [],
+  withdrawn: [],
+};
+
+// Reuses the criterion tones the rest of the app already speaks in, rather
+// than inventing a second colour vocabulary: strong = moving forward,
+// partial = waiting on somebody, miss = closed.
+export function applicationStatusTone(status) {
+  if (['submitted', 'acknowledged', 'interviewing', 'offer'].includes(status)) return 'strong';
+  if (['prepared', 'awaiting_consent'].includes(status)) return 'partial';
+  if (['rejected', 'withdrawn'].includes(status)) return 'miss';
+  return '';
+}
 
 // What each provider is called in the UI, and what the server needs to enable
 // it. Keyed by MailboxConnection.provider, which is also Message.source for

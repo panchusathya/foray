@@ -502,3 +502,56 @@ class TestJobCard:
 
         with pytest.raises(ValueError):
             draft_intro(session, application, "cand_not_on_list")
+
+
+class TestUiMirrorsTheMachine:
+    """The transition table now exists twice: once in ``applications/state.py``
+    and once in ``packages/web/src/lib/api.js`` so the UI can avoid offering a
+    button the server will refuse.
+
+    Two copies of a rule drift. The repo already guards this shape of
+    duplication by reading the other file and comparing (see
+    ``TestPersonaCopy`` reading ``deploy/retell_agents.py``); this does the
+    same across the language boundary. The server stays authoritative — it
+    answers 409 — but a UI that offers an impossible move reads as a bug.
+    """
+
+    @staticmethod
+    def _js_block(name: str) -> str:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[3] / "packages" / "web" / "src" / "lib" / "api.js"
+        ).read_text(encoding="utf-8")
+        start = source.index(f"export const {name}")
+        return source[start : source.index("};", start)]
+
+    def test_the_status_list_matches(self):
+        import re
+
+        from juicebox.models import APPLICATION_STATUSES
+
+        block = self._js_block("APPLICATION_STATUSES")
+        found = tuple(re.findall(r"'([a-z_]+)'", block))
+        assert found == APPLICATION_STATUSES
+
+    def test_the_transition_table_matches(self):
+        import re
+
+        from juicebox.applications.state import TRANSITIONS
+
+        block = self._js_block("APPLICATION_TRANSITIONS")
+        found = {
+            key: set(re.findall(r"'([a-z_]+)'", targets))
+            for key, targets in re.findall(r"^\s*([a-z_]+): \[(.*)\],$", block, re.M)
+        }
+        assert found == {key: set(value) for key, value in TRANSITIONS.items()}
+
+    def test_the_status_labels_cover_every_status(self):
+        import re
+
+        from juicebox.models import APPLICATION_STATUSES
+
+        block = self._js_block("APPLICATION_STATUS_LABELS")
+        labelled = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
+        assert labelled == set(APPLICATION_STATUSES)

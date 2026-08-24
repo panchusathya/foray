@@ -5,6 +5,7 @@ import { useAuth } from './lib/auth.jsx';
 import { CurrentProjectProvider, useCurrentProject } from './lib/project.jsx';
 import { AgentsPage } from './pages/Agents.jsx';
 import { AnalyticsPage } from './pages/Analytics.jsx';
+import { ApplicationDetailPage, ApplicationsPage } from './pages/Applications.jsx';
 import { CandidateDetailPage } from './pages/CandidateDetail.jsx';
 import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
@@ -26,6 +27,7 @@ const NAV = [
   { to: '/sourcing', label: 'Sourcing' },
   { to: '/projects', label: 'Projects' },
   { to: '/jobs', label: 'Jobs' },
+  { to: '/applications', label: 'Applications' },
   { to: '/sequences', label: 'Sequences' },
   { to: '/import', label: 'Import' },
   { to: '/contacts', label: 'Contacts' },
@@ -141,6 +143,8 @@ export function App() {
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:postingId" element={<JobDetailPage />} />
           <Route path="/rematch" element={<Navigate to="/jobs?view=rematch" replace />} />
+          <Route path="/applications" element={<ApplicationsPage />} />
+          <Route path="/applications/:applicationId" element={<ApplicationDetailPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/sequences" element={<SequencesPage />} />
           <Route path="/sequences/:sequenceId" element={<SequenceEditorPage />} />

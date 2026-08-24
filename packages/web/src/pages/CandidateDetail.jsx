@@ -17,7 +17,8 @@ import { InlineField } from '../components/InlineField.jsx';
 import { NotesPanel } from '../components/NotesPanel.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
 import { Avatar, Badge, ErrorBox, Loading } from '../components/common.jsx';
-import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
+import { CRM_STATUSES, CRM_STATUS_LABELS, api, applicationStatusTone } from '../lib/api.js';
+import { statusLabel } from './Applications.jsx';
 import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../lib/intake.js';
 import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
@@ -154,7 +155,10 @@ export function CandidateDetailPage() {
                 suppressed — sequences will skip them
               </span>
             ) : null}
+            <PortalLinkButton candidateId={candidateId} />
           </div>
+
+          <CandidateApplications candidateId={candidateId} />
 
           <div className="card stack" data-testid="candidate-profile">
             <strong className="small">Profile</strong>
@@ -443,6 +447,99 @@ function JobsPanel({ candidateId }) {
           </div>
         ))
       )}
+    </div>
+  );
+}
+
+/**
+ * Hand this person a way into the portal.
+ *
+ * The same minting function the messaging agent uses, so a link a recruiter
+ * copies behaves exactly like one the agent texted: single-use, expiring,
+ * scoped to this candidate. It is shown rather than sent — we do not have a
+ * channel to push it down from here, and a recruiter pasting it into whatever
+ * thread they are already in is the honest version of that.
+ */
+function PortalLinkButton({ candidateId }) {
+  const [link, setLink] = useState('');
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const mint = async () => {
+    setBusy(true);
+    setError(null);
+    setCopied(false);
+    try {
+      const result = await api.mintPortalLink(candidateId);
+      setLink(result.url);
+      setExpiresIn(result.expires_in ?? 0);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+    } catch {
+      // Clipboard is permission-gated; the link is on screen either way.
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="stack small" style={{ gap: 6 }} data-testid="portal-link">
+      <div className="row" style={{ gap: 8 }}>
+        <button type="button" className="tiny" disabled={busy} onClick={mint}>
+          {link ? 'New portal link' : 'Portal link'}
+        </button>
+        {link ? (
+          <button type="button" className="tiny ghost" onClick={copy}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        ) : null}
+      </div>
+      <ErrorBox error={error} />
+      {link ? (
+        <>
+          <code className="mono small wrap-anywhere" data-testid="portal-link-url">
+            {link}
+          </code>
+          <span className="muted small">
+            Single use, expires in {Math.max(1, Math.round(expiresIn / 60))} minutes. Minting a
+            new one does not revoke the old one — it expires on its own.
+          </span>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** This person's applications, so the contact page shows what we sent for them. */
+function CandidateApplications({ candidateId }) {
+  const list = useAsync(() => api.listApplications({ candidate_id: candidateId }), [candidateId]);
+  const rows = list.data ?? [];
+
+  if (list.loading || (!rows.length && !list.error)) return null;
+
+  return (
+    <div className="card stack" data-testid="candidate-applications">
+      <strong className="small">Applications</strong>
+      <ErrorBox error={list.error} />
+      {rows.map((row) => (
+        <div key={row.id} className="row spread">
+          <div>
+            <Link to={`/applications/${row.id}`}>{row.title || 'Role'}</Link>
+            <div className="small muted">{row.company}</div>
+          </div>
+          <Badge tone={applicationStatusTone(row.status)}>{statusLabel(row.status)}</Badge>
+        </div>
+      ))}
     </div>
   );
 }

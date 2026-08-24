@@ -101,6 +101,26 @@ def is_fresh(posting: JobPosting, *, now: datetime | None = None) -> bool:
     return (now or utcnow()) - seen <= timedelta(days=FRESH_DAYS)
 
 
+def floor_for(org_id: str, candidate_id: str = "") -> float:
+    """The score floor this match is held to.
+
+    One global floor plus two exempt lists. The floor doubles as the kill
+    switch for candidate-facing proposals, so without an exemption there is no
+    way to test the loop end to end without opening it for everybody.
+
+    The candidate list is the one that matters in practice: the shared intake
+    number belongs to the same org as every real candidate, so an org-level
+    exemption would open proposals to anyone who texts it. Naming candidates
+    opens it for exactly those people and nobody else.
+    """
+    settings = get_settings()
+    if candidate_id and candidate_id in settings.proposal_floor_exempt_candidates:
+        return settings.proposal_score_floor_exempt
+    if org_id and org_id in settings.proposal_floor_exempt_orgs:
+        return settings.proposal_score_floor_exempt
+    return settings.proposal_score_floor
+
+
 def passes_bar(
     match: JobMatch, posting: JobPosting, *, now: datetime | None = None
 ) -> BarDecision:
@@ -113,7 +133,9 @@ def passes_bar(
     if veto:
         return BarDecision(False, why_not=f"veto: {veto}")
 
-    floor = get_settings().proposal_score_floor
+    floor = floor_for(
+        getattr(match, "org_id", "") or "", getattr(match, "candidate_id", "") or ""
+    )
     if float(match.score or 0.0) < floor:
         return BarDecision(False, why_not="below-floor")
 

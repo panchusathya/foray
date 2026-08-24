@@ -129,6 +129,10 @@ x-app-env: &app_env
   # The SMTP user must be this address or a verified alias of it — Zoho and
   # most providers reject a From they did not authenticate.
   PORTAL_FROM_EMAIL: ${PORTAL_FROM_EMAIL:-}
+  # Google sign-in for candidates. Public by nature -- it ships to the browser
+  # -- so this is a client id, not a secret. The portal container needs it to
+  # render the button; the api needs it to check the token's audience.
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
   PORTAL_FROM_NAME: ${PORTAL_FROM_NAME:-Foray}
   # The proposal bar's score floor. Necessary but never sufficient — vetoes
   # and the explainability gate sit on top. Raising it above 1.0 is the kill
@@ -137,6 +141,20 @@ x-app-env: &app_env
   # recruiter views keep working. Held above 1.0 until the LL144 /
   # authority-to-apply counsel review clears.
   PROPOSAL_SCORE_FLOOR: ${PROPOSAL_SCORE_FLOOR:-0.55}
+  # Orgs exempt from that floor, and the bar they run at instead. Lets our own
+  # org test the full loop while the global floor keeps the shared number shut.
+  PROPOSAL_FLOOR_EXEMPT_ORGS: ${PROPOSAL_FLOOR_EXEMPT_ORGS:-}
+  PROPOSAL_SCORE_FLOOR_EXEMPT: ${PROPOSAL_SCORE_FLOOR_EXEMPT:-0.55}
+  # Named candidates exempt from the floor. This is the one that isolates
+  # testing: the shared number belongs to the same org as everybody, so an
+  # org-level exemption would open proposals to every caller.
+  PROPOSAL_FLOOR_EXEMPT_CANDIDATES: ${PROPOSAL_FLOOR_EXEMPT_CANDIDATES:-}
+  # LinkedIn profile providers, in cost order: the free scrape needs a logged-in
+  # session, and without one every lookup falls through to the paid provider.
+  APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+  APIFY_LINKEDIN_ACTOR: ${APIFY_LINKEDIN_ACTOR:-}
+  SCRAPIN_API_KEY: ${SCRAPIN_API_KEY:-}
+  PROFILE_PROVIDER: ${PROFILE_PROVIDER:-apify}
   # The logged-in LinkedIn session the profile scraper drives. Empty is a safe
   # state: the scrape raises and the thread falls back to asking questions.
   LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}

@@ -213,7 +213,12 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
 
         return run_manager_turn(db, thread=thread, last=last)
 
-    identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
+    identity.absorb(
+        thread,
+        body=last.body,
+        asked_field=thread.last_field_asked,
+        batched=thread.last_field_asked == BATCH_GAP_FILL,
+    )
     _reread(db, thread=thread)
 
     _capture(db, thread=thread)
@@ -638,7 +643,16 @@ def _run_linkedin_short(
     outbound_sent = any(m.direction == OUTBOUND and m.status == "sent" for m in history)
 
     if last is not None and last.direction == INBOUND:
-        identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
+        identity.absorb(
+            thread,
+            body=last.body,
+            asked_field=thread.last_field_asked,
+            # The gap-fill asks up to three things at once, so the reply is a
+            # list. Without this the name is dropped, nothing links a
+            # candidate, and every downstream step -- matching, proposals,
+            # "find me roles" -- silently has nobody to work with.
+            batched=thread.last_field_asked == BATCH_GAP_FILL,
+        )
 
     if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
         return _linkedin_intro(db, thread=thread)

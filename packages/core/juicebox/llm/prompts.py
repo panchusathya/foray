@@ -539,6 +539,44 @@ junior, mid, senior, staff, principal, director, vp, cxo.
 JD_PARSER_SCHEMA = QUERY_PARSER_SCHEMA
 
 
+# --------------------------------------------------------------------------
+# posting identity: who is hiring, for what, where -- and is this even a job
+# --------------------------------------------------------------------------
+
+POSTING_IDENTITY_SYSTEM = """You read a scraped web page and answer two questions: is this ONE job posting, and if so, what role is it, at which company, in what location.
+
+`is_posting` is false for anything that lists many different jobs: a job board index, a company's careers landing page, a "software engineer jobs at X" search result, a newsletter round-up. One posting means one role a person could apply to. Getting this wrong puts a search-results page in front of a candidate as if it were a job, so when the page shows several distinct roles, say false.
+
+- `title` is the role as advertised, with no site furniture: not "Founding Engineer at Ventura | Y Combinator", just "Founding Engineer".
+- `company` is the employer doing the hiring, not the job board and not the investor. Y Combinator is not the employer for a YC company's posting.
+- `location` is the work location as stated. "Remote" is a location. Leave it empty when the page does not say -- an invented city sends a candidate to the wrong side of the country.
+
+Leave any field you cannot read from the page empty. Empty is recoverable; wrong is what reaches a candidate.
+"""
+
+POSTING_IDENTITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_posting": {"type": "boolean"},
+        "title": {"type": "string"},
+        "company": {"type": "string"},
+        "location": {"type": "string"},
+    },
+    "required": ["is_posting", "title", "company", "location"],
+    "additionalProperties": False,
+}
+
+
+def posting_identity_prompt(*, title: str, url: str, jd_text: str) -> str:
+    """The page as the model sees it. Truncated: identity lives at the top,
+    and a 40k-character careers page would cost more than the answer."""
+    return (
+        f"Page title: {title}\n"
+        f"URL: {url}\n\n"
+        f"Page text:\n{jd_text[:6000]}"
+    )
+
+
 def jd_parser_prompt(
     *,
     title: str,

@@ -279,6 +279,29 @@ MANAGER_FALLBACK = (
     "a recruiter will follow up. Want me to look for roles?"
 )
 
+# Paired copy: the second line is what goes out when the first would repeat
+# what we just said. Saying the identical canned sentence twice in a row is
+# the clearest possible sign nobody is listening, so each of these moves the
+# conversation somewhere instead of restating it.
+MANAGER_NOTED = "Noted — thanks. Anything else you want me looking for?"
+MANAGER_NOTED_AGAIN = (
+    "Got it, that's on your profile. Want me to go find roles with it?"
+)
+
+# The fallback is the line most likely to repeat, because everything the
+# agent does not understand lands on it.
+MANAGER_FALLBACK_AGAIN = (
+    "I'm still not sure what you're after — the things I'm good at are finding "
+    "roles, applying, and telling you where an application stands. Want me to "
+    "start with roles?"
+)
+
+MANAGER_ACK_DECLINE = "Sounds good — I'll go look for roles and text you what I find."
+MANAGER_STANDING_BY = (
+    "All good — I'll keep an eye out and text you when something worth your "
+    "time comes up."
+)
+
 DETAIL_UNAVAILABLE = "I don't have more detail on that one yet — want me to flag it to a recruiter?"
 
 CLARIFY_WHICH = "Which one do you mean? Reply with the number from the list."

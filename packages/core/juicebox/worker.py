@@ -26,6 +26,7 @@ from .jobs import (
     KIND_DOC_PARSE,
     KIND_INTAKE_EXTRACT,
     KIND_INTAKE_TURN,
+    KIND_JOBS_DISCOVER_ONE,
     KIND_JOBS_MATCH,
     KIND_JOBS_MATCH_ONE,
     KIND_JOBS_PARSE,
@@ -291,6 +292,12 @@ def _handle_reply_draft(db: Session, job: Job, now) -> dict[str, Any]:
     if draft is None:
         return {"skipped": "no_draft_for_intent"}
     return {"draft_id": draft.id, "generated_by": draft.generated_by}
+
+
+def _handle_jobs_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
+    from .jobmatch.discover_candidate import handle_discover_one
+
+    return handle_discover_one(db, job, now)
 
 
 def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
@@ -979,6 +986,7 @@ HANDLERS = {
     KIND_JOBS_PARSE: _handle_jobs_parse,
     KIND_JOBS_MATCH: _handle_jobs_match,
     KIND_JOBS_MATCH_ONE: _handle_jobs_match_one,
+    KIND_JOBS_DISCOVER_ONE: _handle_jobs_discover_one,
     KIND_JOBS_SCRAPE: _handle_jobs_scrape,
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
     KIND_INTAKE_TURN: _handle_intake_turn,

@@ -382,8 +382,54 @@ class Settings:
     proposal_score_floor: float = field(
         default_factory=lambda: float(_env("PROPOSAL_SCORE_FLOOR", "0.55"))
     )
+    # Orgs exempt from the global floor, comma-separated ids. The floor doubles
+    # as the kill switch for candidate-facing proposals (raise it above 1.0 and
+    # nothing clears the bar), which makes end-to-end testing impossible while
+    # the LL144 / authority-to-apply review is open. This lets our own org run
+    # at the normal bar without opening the shared number to real candidates.
+    # Deliberately not a per-org *value*: one exempt list is auditable, a table
+    # of per-tenant thresholds is a thing nobody can reason about later.
+    proposal_floor_exempt_orgs: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            o.strip() for o in _env("PROPOSAL_FLOOR_EXEMPT_ORGS", "").split(",") if o.strip()
+        )
+    )
+    # The bar every exempt org runs at instead.
+    proposal_score_floor_exempt: float = field(
+        default_factory=lambda: float(_env("PROPOSAL_SCORE_FLOOR_EXEMPT", "0.55"))
+    )
+    # Named candidates exempt from the floor, comma-separated ids.
+    #
+    # This, not the org list, is what makes end-to-end testing possible here:
+    # the shared Linq number belongs to the same org as every real candidate,
+    # so exempting the org would open proposals to anyone who texts it. An
+    # explicit list of candidate ids opens it for exactly the people on it.
+    proposal_floor_exempt_candidates: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            c.strip()
+            for c in _env("PROPOSAL_FLOOR_EXEMPT_CANDIDATES", "").split(",")
+            if c.strip()
+        )
+    )
 
     # --- LinkedIn profile ingestion (paid, worker-only) ----------------------
+    # Which paid provider `get_profile_provider` returns: apify | scrapin.
+    # The free browser scrape is tried first by `enrich.profile_sources` and
+    # only reaches here when it fails -- which, with no LINKEDIN_SESSION_COOKIE
+    # set, is every time.
+    profile_provider: str = field(
+        default_factory=lambda: _env("PROFILE_PROVIDER", "apify").lower()
+    )
+    apify_api_token: str = field(default_factory=lambda: _env("APIFY_API_TOKEN", ""))
+    # Actor ids use ~ between owner and name in the API path.
+    apify_linkedin_actor: str = field(
+        default_factory=lambda: _env(
+            "APIFY_LINKEDIN_ACTOR", "dev_fusion~Linkedin-Profile-Scraper"
+        )
+    )
+    apify_base_url: str = field(
+        default_factory=lambda: _env("APIFY_BASE_URL", "https://api.apify.com")
+    )
     scrapin_api_key: str = field(default_factory=lambda: _env("SCRAPIN_API_KEY", ""))
     scrapin_api_base: str = field(
         default_factory=lambda: _env("SCRAPIN_API_BASE", "https://api.scrapin.io")
@@ -422,6 +468,11 @@ class Settings:
     # while a sign-in code is the system talking, and a personal mailbox is
     # the wrong return address for it. Empty falls back to the outreach
     # sender, so an unconfigured deployment keeps working.
+    # Google sign-in for the portal. The real fix for OTP being undeliverable:
+    # outbound SMTP is blocked at the network level on the prod VM, and a
+    # sign-in that sends no email cannot be blocked by that. Empty disables the
+    # button, so a deployment without Google configured is unchanged.
+    google_client_id: str = field(default_factory=lambda: _env("GOOGLE_CLIENT_ID", ""))
     portal_from_email: str = field(default_factory=lambda: _env("PORTAL_FROM_EMAIL", ""))
     portal_from_name: str = field(default_factory=lambda: _env("PORTAL_FROM_NAME", "Foray"))
 

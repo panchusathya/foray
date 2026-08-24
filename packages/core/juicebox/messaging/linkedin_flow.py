@@ -64,7 +64,9 @@ GAP_FILL_LINES: dict[str, str] = {
 }
 
 YEARS_LINE = "roughly how many years of experience do you have?"
-NAME_LINE = "and what name should i put on this?"
+# No leading "and": this is rendered as the first bullet of a dashed list,
+# where it came out as "- and what name should i put on this?".
+NAME_LINE = "what name should i put on this?"
 
 
 def default_flow(channel: str) -> str:

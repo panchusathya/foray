@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from ..llm.embeddings import get_embedder
@@ -11,8 +13,86 @@ from .ids import spec_version_for
 from .referrals import warm_paths
 from .spec import job_spec
 
+logger = logging.getLogger(__name__)
+
+
+def resolve_identity(posting: JobPosting) -> str:
+    """Fill in title/company/location, and reject pages that are not one job.
+
+    Exa's search results carry neither: ``company`` was being read from
+    ``author`` (empty for every job board) and ``location`` from a field the
+    search API does not return at all, so both were structurally always blank
+    and the spec parser -- which only *reads* those columns -- had nothing to
+    work with. A card with no employer and no location is not a card.
+
+    Returns the reason the posting was rejected, or "" when it stands. Only
+    called when something is actually missing, so a hand-entered posting with
+    a real company costs nothing.
+    """
+    from ..llm.client import get_llm
+    from ..llm.prompts import (
+        POSTING_IDENTITY_SCHEMA,
+        POSTING_IDENTITY_SYSTEM,
+        posting_identity_prompt,
+    )
+
+    text = (posting.jd_text or "").strip()
+    if not text:
+        return ""
+    llm = get_llm()
+    if not llm.available:
+        # No key: keep whatever the scrape gave us rather than dropping the
+        # row. A thin posting is worth more than no posting.
+        return ""
+    try:
+        result = llm.json_fast(
+            system=POSTING_IDENTITY_SYSTEM,
+            prompt=posting_identity_prompt(
+                title=posting.title or "", url=posting.source_url or "", jd_text=text
+            ),
+            schema=POSTING_IDENTITY_SCHEMA,
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade, never fail a parse
+        logger.warning("posting identity extraction failed for %s: %s", posting.id, exc)
+        return ""
+
+    data = result.data or {}
+    if data.get("is_posting") is False:
+        return "not a single job posting"
+
+    # Only ever fill blanks. A company somebody typed in beats one a model read.
+    title = str(data.get("title") or "").strip()
+    company = str(data.get("company") or "").strip()
+    location = str(data.get("location") or "").strip()
+    if title and (not posting.title or _is_site_furniture(posting.title)):
+        posting.title = title[:300]
+    if company and not (posting.company or "").strip():
+        posting.company = company[:200]
+    if location and not (posting.location or "").strip():
+        posting.location = location[:200]
+    return ""
+
+
+# "Founding Engineer at Ventura | Y Combinator" -- a page title, not a role.
+_FURNITURE = (" | ", " - ", " at ", " @ ")
+
+
+def _is_site_furniture(title: str) -> bool:
+    return any(token in title for token in _FURNITURE)
+
 
 def parse_posting(db: Session, posting: JobPosting) -> dict:
+    if not (posting.company or "").strip() or not (posting.location or "").strip():
+        rejected = resolve_identity(posting)
+        if rejected:
+            # Closed, not deleted: the row records that we saw the URL and
+            # decided against it, so the next sweep does not re-ingest it.
+            posting.status = "closed"
+            posting.parsed_at = utcnow()
+            db.flush()
+            logger.info("posting %s rejected: %s", posting.id, rejected)
+            return {"parser": "identity", "status": posting.status, "rejected": rejected}
+
     spec, parser = job_spec(posting)
     payload = spec.to_dict()
     posting.parsed_spec = payload

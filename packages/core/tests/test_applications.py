@@ -555,3 +555,62 @@ class TestUiMirrorsTheMachine:
         block = self._js_block("APPLICATION_STATUS_LABELS")
         labelled = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
         assert labelled == set(APPLICATION_STATUSES)
+
+
+class TestPerOrgFloor:
+    """The score floor doubles as the kill switch for candidate-facing
+    proposals, so testing the loop end to end used to mean opening it for
+    everybody on the shared number. An exempt list is the narrow way through.
+    """
+
+    def _reload(self, monkeypatch, **env):
+        import juicebox.config as config
+
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        config.reset_settings_cache()
+
+    def test_an_exempt_org_runs_at_its_own_bar(self, monkeypatch):
+        from juicebox.applications.bar import floor_for
+
+        self._reload(
+            monkeypatch,
+            PROPOSAL_SCORE_FLOOR="1.1",
+            PROPOSAL_FLOOR_EXEMPT_ORGS="org_ours, org_other",
+            PROPOSAL_SCORE_FLOOR_EXEMPT="0.55",
+        )
+        assert floor_for("org_ours") == 0.55
+        assert floor_for("org_other") == 0.55, "the list is comma-separated and trimmed"
+        assert floor_for("org_stranger") == 1.1, "everyone else stays blocked"
+        assert floor_for("") == 1.1, "an unknown org is not exempt"
+
+    def test_a_named_candidate_is_exempt_without_opening_the_org(self, monkeypatch):
+        """The exemption that actually isolates testing.
+
+        The shared intake number belongs to the same org as every real
+        candidate, so exempting the org would let anyone who texts it receive
+        proposals -- which is the thing the floor is holding shut.
+        """
+        from juicebox.applications.bar import floor_for
+
+        self._reload(
+            monkeypatch,
+            PROPOSAL_SCORE_FLOOR="1.1",
+            PROPOSAL_FLOOR_EXEMPT_ORGS="",
+            PROPOSAL_FLOOR_EXEMPT_CANDIDATES="cand_tester",
+            PROPOSAL_SCORE_FLOOR_EXEMPT="0.55",
+        )
+        assert floor_for("org_shared", "cand_tester") == 0.55
+        assert floor_for("org_shared", "cand_a_real_person") == 1.1
+        assert floor_for("org_shared") == 1.1
+
+    def test_no_exemptions_by_default(self, monkeypatch):
+        from juicebox.applications.bar import floor_for
+
+        self._reload(
+            monkeypatch,
+            PROPOSAL_SCORE_FLOOR="1.1",
+            PROPOSAL_FLOOR_EXEMPT_ORGS="",
+            PROPOSAL_FLOOR_EXEMPT_CANDIDATES="",
+        )
+        assert floor_for("org_ours", "cand_anyone") == 1.1

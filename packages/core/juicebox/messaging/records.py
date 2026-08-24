@@ -196,6 +196,13 @@ def _enqueue_preference_match(
     candidate = db.get(Candidate, candidate_id)
     if candidate is None:
         return
+    from ..jobmatch.discover_candidate import enqueue_discovery_for_candidate
     from ..jobmatch.engine import enqueue_match_for_candidate
 
     enqueue_match_for_candidate(db, candidate, preference=preference)
+    # And go find postings that do not exist yet. Scoring against the book we
+    # happen to hold is only half the job: the first live thread finished
+    # onboarding with a complete spec and there was simply nothing in the
+    # database for a two-year engineer in San Francisco. Discovery re-queues
+    # its own match once the new postings are parsed.
+    enqueue_discovery_for_candidate(db, candidate=candidate, preference=preference)

@@ -127,8 +127,14 @@ def _exa_rows(raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
         text = str(raw.get("text") or raw.get("summary") or "").strip()
         if not title and not text:
             continue
-        company = str(raw.get("author") or "").strip()
-        location = str(raw.get("location") or "").strip()
+        # `author` is the page byline, not the employer -- on job boards it is
+        # empty, and when it is not it is the board itself. `location` is not a
+        # field Exa search returns at all. Both were read here anyway, which is
+        # why every ingested posting had a blank company and blank location.
+        # Left empty on purpose: `parse.resolve_identity` reads them out of the
+        # posting text, where they actually are.
+        company = ""
+        location = ""
         sid = source_id_for(url=url, title=title, company=company)
         if sid in seen:
             continue

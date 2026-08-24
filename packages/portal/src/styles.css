@@ -508,3 +508,172 @@ a {
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
+
+/* --------------------------------------------------------------------------
+   Networking page primitives
+   -------------------------------------------------------------------------- */
+
+.stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.strong {
+  font-weight: 600;
+}
+
+/* A whole-row toggle. Reset the button chrome rather than use a div: the
+   thing that expands a section has to be reachable by keyboard. */
+.disclosure {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-3);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.disclosure:hover {
+  border-color: var(--ink-3);
+}
+
+.draft {
+  white-space: pre-wrap;
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  border-radius: var(--r-2);
+  padding: var(--s-3);
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
+   Desktop. Everything above this line is the phone layout, unchanged.
+
+   The portal shipped with one @media query and it was prefers-color-scheme,
+   so on a laptop it rendered as a 560px strip down the middle of the screen
+   with a phone tab bar glued to the bottom of the window. Below 900px nothing
+   here applies and the mobile layout is exactly what it was.
+   -------------------------------------------------------------------------- */
+
+/* Tab count is not fixed any more — a fifth tab silently overflowed a
+   4-column grid. Let the columns follow the children. */
+.nav {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+}
+
+@media (min-width: 900px) {
+  :root {
+    --sidebar-w: 216px;
+  }
+
+  .app {
+    /* The bottom bar becomes a rail, so the bottom inset goes away. */
+    padding-bottom: 0;
+    padding-left: var(--sidebar-w);
+  }
+
+  .nav {
+    top: 0;
+    bottom: 0;
+    right: auto;
+    width: var(--sidebar-w);
+    height: 100%;
+    padding: var(--s-5) var(--s-3);
+    padding-bottom: var(--s-5);
+    grid-auto-flow: row;
+    grid-auto-rows: max-content;
+    gap: 2px;
+    align-content: start;
+    border-top: none;
+    border-right: 1px solid var(--line);
+    backdrop-filter: none;
+  }
+
+  .nav a {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: var(--s-2);
+    font-size: 15px;
+    padding: 0 var(--s-3);
+    border-radius: var(--r-2);
+  }
+
+  .nav a.on {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+  }
+
+  .screen {
+    /* Wider, but still a readable measure — full-bleed text at 1600px is
+       worse than a column, not better. */
+    max-width: 940px;
+    padding: var(--s-5) var(--s-5) var(--s-6);
+  }
+
+  .topbar h1 {
+    font-size: 30px;
+  }
+
+  /* Lists of cards get two columns once there is room for them. Applied to
+     the shared stack so every page benefits without per-page markup. */
+  .screen > .stack.cols {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s-3);
+    align-items: start;
+  }
+}
+
+@media (min-width: 1280px) {
+  .screen {
+    max-width: 1080px;
+  }
+
+  .screen > .stack.cols {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Google sign-in */
+.google-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.or {
+  position: relative;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.or::before,
+.or::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: calc(50% - 24px);
+  height: 1px;
+  background: var(--line);
+}
+
+.or::before { left: 0; }
+.or::after { right: 0; }

@@ -287,3 +287,97 @@ class TestIntakeUntouched:
         assert thread.mode == MODE_INTAKE
         assert thread.flow == "full"
         assert run_turn(session, thread=thread).action == "greeted"
+
+
+class TestTheFirstLiveThread:
+    """Regression pins from the first real conversation (2026-08-24, 19:09).
+
+    That thread asked for a name, was given one, and dropped it -- so nothing
+    linked a candidate, nothing was ever matched, and "find me roles" answered
+    "tell me your name and email first" to somebody who had supplied both. It
+    then sent the identical canned line on two consecutive turns.
+    """
+
+    def test_the_gap_fill_answer_is_not_thrown_away(self, session, thread, channel):
+        """"Sathya, 2 yrs, 150k" carries a name, and the name has to survive.
+
+        This is the root cause of the whole cascade: no name, no candidate, no
+        matches, no roles.
+        """
+        from juicebox.messaging import identity
+        from juicebox.messaging.linkedin_flow import BATCH_GAP_FILL
+
+        thread.contact_email = "ada@example.com"
+        thread.last_field_asked = BATCH_GAP_FILL
+        session.flush()
+
+        identity.absorb(
+            thread,
+            body="Sathya, 2 yrs, 150k",
+            asked_field=BATCH_GAP_FILL,
+            batched=True,
+        )
+        assert thread.contact_name == "Sathya"
+
+    def test_a_partial_batch_answer_invents_no_name(self, session, thread):
+        """Skipping the name question must leave it unset, not guess.
+
+        "150k, asap" answers the other two questions. Reading the first
+        name-shaped token out of it would put a candidate called Asap in front
+        of an employer.
+        """
+        from juicebox.messaging import identity
+        from juicebox.messaging.linkedin_flow import BATCH_GAP_FILL
+
+        identity.absorb(
+            thread, body="150k, asap", asked_field=BATCH_GAP_FILL, batched=True
+        )
+        assert not thread.contact_name
+
+    def test_managing_absorbs_the_answer_it_asked_for(self, session, account, channel, thread):
+        """Ask for a name in managing mode, get one, link the candidate.
+
+        Before the fix the manager asked, the candidate answered, and the
+        answer went nowhere -- so the next turn asked again.
+        """
+        thread.record = _core_complete_record()
+        thread.contact_email = "ada-live@example.com"
+        thread.mode = MODE_MANAGING
+        session.flush()
+
+        _say(session, thread, "find me roles", native_id="live-1")
+        asked = channel.bodies[-1]
+        assert "name" in asked.lower()
+        assert "email" not in asked.lower(), "the email was already given"
+
+        _say(session, thread, "Sathya", native_id="live-2")
+        session.refresh(thread)
+        assert thread.contact_name == "Sathya"
+        assert thread.candidate_id, "a name plus an email is enough to link"
+
+    def test_never_sends_the_same_canned_line_twice(self, session, account, channel, thread):
+        """Two identical replies in a row is what made the agent look broken."""
+        thread = _managed(session, thread)
+
+        _say(session, thread, "i also care about equity", native_id="rep-1")
+        first = channel.bodies[-1]
+        _say(session, thread, "and remote", native_id="rep-2")
+        second = channel.bodies[-1]
+        assert first != second, f"repeated verbatim: {first!r}"
+
+    def test_no_is_a_refusal_not_a_profile_answer(self, session):
+        """"No" was reaching the LLM and coming back as profile_answer."""
+        from juicebox.messaging import intents
+
+        for text in ("No", "no", "nope", "nah", "not now"):
+            assert intents.classify(text, presented=[]).kind == intents.INTENT_DECLINE, text
+        for text in ("yes", "Yep", "sure", "ok"):
+            assert intents.classify(text, presented=[]).kind == intents.INTENT_AFFIRM, text
+
+    def test_no_inside_a_sentence_is_not_a_refusal(self):
+        """Whole-message only: "no rush, show me more" is a request."""
+        from juicebox.messaging import intents
+
+        assert intents.classify("no rush, show me more", presented=[]).kind != (
+            intents.INTENT_DECLINE
+        )

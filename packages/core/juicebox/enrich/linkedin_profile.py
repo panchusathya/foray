@@ -112,6 +112,92 @@ class ScrapinProvider:
         return payload
 
 
+class ApifyProvider:
+    """LinkedIn profiles via an Apify actor run.
+
+    Apify runs a scraper on their infrastructure and hands back dataset items,
+    so the wire shape is an actor's output rather than a documented profile
+    API. Which actor is configurable (``APIFY_LINKEDIN_ACTOR``) because the
+    good ones come and go; what does not change is that the result must leave
+    this class in the ScrapIn-style ``person`` envelope, so ``map_profile``
+    stays one function and swapping vendors stays a one-class change.
+
+    ``run-sync-get-dataset-items`` blocks until the run finishes and returns
+    the items directly, which avoids polling a run id. It also means the
+    timeout has to be generous: a browser actor is seconds, not milliseconds.
+    """
+
+    name = "apify"
+
+    def is_configured(self) -> bool:
+        return bool(get_settings().apify_api_token)
+
+    def fetch(self, linkedin_url: str) -> dict[str, Any]:
+        settings = get_settings()
+        if not self.is_configured():
+            raise ProfileProviderUnavailable("no APIFY_API_TOKEN configured")
+        actor = settings.apify_linkedin_actor.replace("/", "~")
+        url = (
+            f"{settings.apify_base_url.rstrip('/')}/v2/acts/{actor}"
+            f"/run-sync-get-dataset-items"
+        )
+        try:
+            response = httpx.post(
+                url,
+                params={"token": settings.apify_api_token},
+                json={"profileUrls": [linkedin_url]},
+                timeout=120.0,
+            )
+        except httpx.HTTPError as exc:
+            raise ProfileProviderUnavailable(f"apify run failed: {exc}") from exc
+
+        if response.status_code == 404:
+            # The actor id is wrong, not the person. Never cache this as a
+            # miss -- that would stamp a candidate unfetchable over a typo.
+            raise ProfileProviderUnavailable(f"apify actor {actor!r} not found")
+        if response.status_code in {401, 402, 403, 429} or response.status_code >= 500:
+            raise ProfileProviderUnavailable(f"apify returned {response.status_code}")
+
+        try:
+            items = response.json()
+        except ValueError as exc:
+            raise ProfileProviderUnavailable("apify returned non-JSON") from exc
+        if not isinstance(items, list) or not items:
+            # A finished run with no items is the profile being unreachable --
+            # private, deleted, or blocked. That is about this person, so it
+            # is a real miss and may be cached.
+            raise ProfileNotFound(linkedin_url)
+        person = items[0]
+        if not isinstance(person, dict) or not person:
+            raise ProfileProviderUnavailable("apify returned an empty item")
+        return {"person": _apify_person(person)}
+
+
+def _apify_person(item: dict[str, Any]) -> dict[str, Any]:
+    """One actor's field names → the envelope ``map_profile`` reads.
+
+    Only the keys that differ are translated; everything else is passed
+    through, so a richer actor payload is not thrown away and ``map_profile``
+    can pick up the spellings it already understands.
+    """
+    person = dict(item)
+    if "fullName" not in person:
+        full = str(item.get("full_name") or item.get("name") or "").strip()
+        if full:
+            person["fullName"] = full
+    if "positions" not in person and "positionHistory" not in person:
+        for key in ("experiences", "experience", "positions_data"):
+            if isinstance(item.get(key), list):
+                person["positions"] = item[key]
+                break
+    if "schools" not in person and "educationHistory" not in person:
+        for key in ("educations", "education", "education_data"):
+            if isinstance(item.get(key), list):
+                person["schools"] = item[key]
+                break
+    return person
+
+
 class FakeProfileProvider:
     """Scripted provider for tests: one canned payload per URL."""
 
@@ -142,7 +228,11 @@ _provider: ProfileProvider | None = None
 def get_profile_provider() -> ProfileProvider:
     global _provider
     if _provider is None:
-        _provider = ScrapinProvider()
+        _provider = (
+            ScrapinProvider()
+            if get_settings().profile_provider == "scrapin"
+            else ApifyProvider()
+        )
     return _provider
 
 

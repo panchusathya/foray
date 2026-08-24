@@ -417,3 +417,79 @@ class TestScrapeThenPaidFallback:
         meta = (thread.record or {}).get("_linkedin", {})
         assert meta.get("error")
         assert not meta.get("scrape")
+
+
+class TestApifyProvider:
+    """Apify is the paid leg Sathya chose. Its job is to leave the wire shape
+    behind: whatever an actor returns has to arrive at ``map_profile`` in the
+    same envelope ScrapIn produces, so swapping vendors stays a one-class
+    change instead of a second mapper nobody keeps in sync.
+    """
+
+    def test_an_actor_payload_maps_to_a_full_profile(self):
+        from juicebox.enrich.linkedin_profile import _apify_person, map_profile
+
+        item = {
+            "full_name": "Ada Okonkwo",
+            "headline": "ML Engineer",
+            "experiences": [
+                {"title": "ML Engineer", "company": "Modal", "startDate": "2020-01"},
+                {
+                    "title": "Software Engineer",
+                    "company": "Stripe",
+                    "startDate": "2018-01",
+                    "endDate": "2019-12",
+                },
+            ],
+            "education": [{"school": "MIT", "degree": "BS"}],
+        }
+        parsed = map_profile(
+            {"person": _apify_person(item)},
+            linkedin_url="https://www.linkedin.com/in/ada-okonkwo",
+        )
+        assert parsed["full_name"] == "Ada Okonkwo"
+        roles = [(e["company"], e["title"]) for e in parsed["experiences"]]
+        assert roles == [("Modal", "ML Engineer"), ("Stripe", "Software Engineer")]
+        # The open-ended role is the current one; that is what a resume header
+        # and every "currently at" line downstream reads.
+        assert parsed["experiences"][0]["is_current"] is True
+        assert parsed["experiences"][1]["is_current"] is False
+        assert parsed["educations"][0]["school"] == "MIT"
+
+    def test_an_empty_run_is_a_miss_and_a_bad_actor_is_not(self, monkeypatch):
+        """The distinction decides whether somebody gets negative-cached.
+
+        A finished run with no items means the profile is unreachable -- that
+        is about this person and may be stamped. A 404 means the actor id is
+        wrong, which says nothing about them; stamping that would mark a
+        candidate permanently unfetchable over a typo in config.
+        """
+        import juicebox.config as config
+        from juicebox.enrich.linkedin_profile import (
+            ApifyProvider,
+            ProfileNotFound,
+            ProfileProviderUnavailable,
+        )
+
+        monkeypatch.setenv("APIFY_API_TOKEN", "tok")
+        config.reset_settings_cache()
+        provider = ApifyProvider()
+
+        class Response:
+            def __init__(self, code, payload):
+                self.status_code = code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        import juicebox.enrich.linkedin_profile as mod
+
+        monkeypatch.setattr(mod.httpx, "post", lambda *a, **k: Response(200, []))
+        with pytest.raises(ProfileNotFound):
+            provider.fetch("https://www.linkedin.com/in/nobody")
+
+        monkeypatch.setattr(mod.httpx, "post", lambda *a, **k: Response(404, {}))
+        with pytest.raises(ProfileProviderUnavailable):
+            provider.fetch("https://www.linkedin.com/in/nobody")
+        config.reset_settings_cache()

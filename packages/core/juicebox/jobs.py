@@ -41,6 +41,7 @@ KIND_JOBS_MATCH = "jobs.match"
 KIND_JOBS_MATCH_ONE = "jobs.match.one"
 KIND_JOBS_SCRAPE = "jobs.scrape"
 KIND_JOBS_SCRAPE_ONE = "jobs.scrape.one"
+KIND_JOBS_DISCOVER_ONE = "jobs.discover.one"
 
 # Contact discovery mirrors the sync split: a per-org dispatcher fans out
 # one job per mailbox. It is never added to ensure_ticks -- reading a year

@@ -86,6 +86,9 @@ export const api = {
   swipe: (postingId, direction) =>
     request(`/feed/${postingId}/swipe`, { method: 'POST', body: { direction } }),
 
+  authConfig: () => request('/auth/config', { auth: false }),
+  googleSignIn: (credential) =>
+    request('/auth/google', { method: 'POST', body: { credential }, auth: false }),
   applications: () => request('/applications'),
   application: (id) => request(`/applications/${id}`),
   approve: (id) => request(`/applications/${id}/approve`, { method: 'POST' }),

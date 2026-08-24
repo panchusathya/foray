@@ -251,3 +251,118 @@ class TestPortalSender:
         sent = mailbox.outbox[-1]
         assert sent.from_email == "vivian@example.com"
         assert sent.from_name == "Foray"
+
+
+class TestGoogleSignIn:
+    """The door that works when email does not.
+
+    Outbound SMTP is blocked at the network level on the production host, so
+    the OTP path can accept an address and still never deliver anything.
+    Google sends no email at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def google_configured(self, monkeypatch):
+        import juicebox.config as config
+
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+        config.reset_settings_cache()
+        yield
+        config.reset_settings_cache()
+
+    def _tokeninfo(self, monkeypatch, payload, code=200):
+        """Stand in for Google's tokeninfo endpoint."""
+        import juicebox.portal.google as google
+
+        class Response:
+            # Bound from the argument, not named the same: a class body cannot
+            # read the enclosing function's locals.
+            status_code = code
+
+            def json(self):
+                return payload
+
+        monkeypatch.setattr(google.httpx, "get", lambda *a, **k: Response())
+
+    def _claims(self, **over):
+        base = {
+            "aud": "test-client.apps.googleusercontent.com",
+            "iss": "https://accounts.google.com",
+            "email": "ada@example.com",
+            "email_verified": "true",
+            "name": "Ada Okonkwo",
+            "sub": "12345",
+        }
+        base.update(over)
+        return base
+
+    def test_a_verified_google_account_gets_a_session(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        self._tokeninfo(monkeypatch, self._claims())
+        session.commit()
+
+        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
+        assert response.status_code == 200, response.text
+        token = response.json()["access_token"]
+        me = client.get("/v1/portal/me", headers={"Authorization": f"Bearer {token}"})
+        assert me.status_code == 200
+
+    def test_a_token_for_another_app_is_refused(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        """The audience check is the whole point.
+
+        A Google token issued for somebody else's client is still a perfectly
+        valid Google token. Without checking `aud`, anyone with any Google
+        application could mint sessions here for any address they control.
+        """
+        self._tokeninfo(monkeypatch, self._claims(aud="someone-elses-app"))
+        session.commit()
+        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
+        assert response.status_code == 401
+
+    def test_an_unverified_address_is_refused(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        """Unverified proves nothing about who holds the address."""
+        self._tokeninfo(monkeypatch, self._claims(email_verified="false"))
+        session.commit()
+        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
+        assert response.status_code == 401
+
+    def test_an_unexpected_issuer_is_refused(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        self._tokeninfo(monkeypatch, self._claims(iss="https://evil.example.com"))
+        session.commit()
+        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
+        assert response.status_code == 401
+
+    def test_an_unknown_address_says_so(self, client, session, account, monkeypatch):
+        """Unlike OTP, this one tells the truth.
+
+        The OTP door answers 202 to everything so it cannot be used to find out
+        who is a candidate. Here the caller has already proved they own the
+        address, so telling them we have no record tells them only about
+        themselves -- and silence would leave them clicking a dead button.
+        """
+        self._tokeninfo(monkeypatch, self._claims(email="stranger@example.com"))
+        session.commit()
+        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
+        assert response.status_code == 404
+
+    def test_the_config_endpoint_reports_the_client_id(self, client):
+        response = client.get("/v1/portal/auth/config")
+        assert response.status_code == 200
+        assert response.json()["google_client_id"].endswith(".apps.googleusercontent.com")
+
+    def test_unconfigured_deployments_refuse_and_advertise_nothing(
+        self, client, monkeypatch
+    ):
+        import juicebox.config as config
+
+        monkeypatch.setenv("GOOGLE_CLIENT_ID", "")
+        config.reset_settings_cache()
+        assert client.get("/v1/portal/auth/config").json()["google_client_id"] == ""
+        assert client.post("/v1/portal/auth/google", json={"credential": "x"}).status_code == 401

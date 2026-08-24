@@ -117,6 +117,66 @@ def _candidates_for_email(db: Session, email: str) -> list[Candidate]:
     return candidates
 
 
+class GoogleIn(BaseModel):
+    credential: str = ""
+
+
+@router.get("/config")
+def auth_config() -> dict:
+    """What sign-in doors this deployment actually has open.
+
+    The portal asks rather than hardcoding, so a deployment with no Google
+    client configured does not render a button that cannot work.
+    """
+    return {"google_client_id": get_settings().google_client_id}
+
+
+@router.post("/google")
+def google_sign_in(payload: GoogleIn, db: Session = Depends(get_db)) -> dict:
+    """Exchange a Google ID token for a portal session.
+
+    Deliberately NOT always-202 like the OTP door. There the vagueness
+    protects a stranger's privacy: a 202 for every address stops the endpoint
+    confirming who is a candidate. Here the caller has already proven they own
+    the address, so telling them we have no record is telling them about
+    themselves, and a silent failure would leave them staring at a sign-in
+    button that does nothing.
+    """
+    from ..portal.google import GoogleAuthError, verify_id_token
+
+    try:
+        identity = verify_id_token(payload.credential)
+    except GoogleAuthError as exc:
+        logger.info("google sign-in refused: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Google sign-in failed"
+        ) from exc
+
+    candidates = _candidates_for_email(db, identity.email)
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No application found for that address.",
+        )
+    orgs = {candidate.org_id for candidate in candidates}
+    if len(orgs) > 1:
+        # Same rule as the OTP path: refuse rather than guess which tenant.
+        # The org-scoped magic link remains the way in for these people.
+        logger.info("google sign-in refused: %s maps to %d orgs", identity.email, len(orgs))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That address is registered with more than one team — use the link we texted you.",
+        )
+
+    candidate = candidates[0]
+    return {
+        "access_token": mint_session_token(
+            org_id=candidate.org_id, candidate_id=candidate.id
+        ),
+        "expires_in": get_settings().portal_session_ttl_seconds,
+    }
+
+
 @router.post("/otp/request", status_code=202)
 def otp_request(payload: OtpRequestIn, db: Session = Depends(get_db)) -> dict:
     """Always 202. Whether a code went out is not something this endpoint

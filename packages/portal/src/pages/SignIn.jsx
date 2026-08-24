@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import { GoogleButton } from '../components/GoogleButton.jsx';
 import { ErrorNote, Screen } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { once } from '../lib/once.js';
@@ -63,6 +64,33 @@ export function LoginPage() {
   const [stage, setStage] = useState('email');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState('');
+
+  // Ask the server which doors are open rather than hardcoding: a deployment
+  // with no Google client configured should not show a button that cannot work.
+  useEffect(() => {
+    api
+      .authConfig()
+      .then((data) => setGoogleClientId(data.google_client_id || ''))
+      .catch(() => setGoogleClientId(''));
+  }, []);
+
+  const onGoogle = useCallback(
+    async (credential) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const result = await api.googleSignIn(credential);
+        await signIn(result.access_token);
+        navigate('/', { replace: true });
+      } catch (err) {
+        setError(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [signIn, navigate],
+  );
 
   const requestCode = async (event) => {
     event.preventDefault();
@@ -96,6 +124,12 @@ export function LoginPage() {
   return (
     <Screen title="Sign in" sub="No password — we'll email you a code.">
       <ErrorNote error={error} />
+      {googleClientId && stage === 'email' ? (
+        <div className="card stack">
+          <GoogleButton clientId={googleClientId} onCredential={onGoogle} />
+          <div className="or">or</div>
+        </div>
+      ) : null}
       {stage === 'email' ? (
         <form className="card stack" onSubmit={requestCode}>
           <div className="field">

@@ -52,7 +52,9 @@ CONTACT_LINKEDIN = "contact.linkedin"
 ASKS = {
     CONTACT_NAME: "first things first — what name should i put on this?",
     CONTACT_EMAIL: "and the best email to reach you on?",
-    CONTACT_LINKEDIN: "first, drop your linkedin url (or just the /in/ handle)?",
+    # Not "first" -- the intro already used that word for the email question,
+    # and hearing it twice in consecutive messages reads as a restart.
+    CONTACT_LINKEDIN: "got it. now drop your linkedin url (or just the /in/ handle)?",
 }
 
 # Set by _wrap_up when a conversation ends with nobody to attach it to, and
@@ -106,13 +108,45 @@ def find_linkedin(body: str) -> str:
     return extract_linkedin(body)
 
 
-def absorb(thread: IntakeThread, *, body: str, asked_field: str) -> list[str]:
+# One batched question gets one batched answer: "Sathya, 2 yrs, 150k". Every
+# segment is still judged by ``find_name`` -- this only decides where to look,
+# it does not lower the bar for what counts as a name.
+_BATCH_SPLIT = re.compile(r"[,;\n]")
+
+
+def find_name_in_batch(body: str) -> str:
+    """A name from a comma-separated answer to several questions at once.
+
+    ``find_name`` refuses anything containing a digit, which is right for a
+    single answer and wrong here: the gap-fill asks for name, years and comp
+    at once, so "Sathya, 2 yrs, 150k" loses the name entirely.
+
+    Only the FIRST segment is considered, because the name line is always the
+    first question in ``gap_fill_message``. Scanning every segment for the
+    first thing that looks like a name reads "150k, asap" as a candidate
+    called Asap -- answering the other questions and skipping this one would
+    put a wrong name on a profile that goes in front of employers. Failing
+    here costs one repeat of an easy question, which is the same trade
+    ``find_name`` already makes.
+    """
+    first = _BATCH_SPLIT.split(body or "", maxsplit=1)[0]
+    return find_name(first)
+
+
+def absorb(
+    thread: IntakeThread, *, body: str, asked_field: str, batched: bool = False
+) -> list[str]:
     """Take any contact detail out of an inbound message. Returns what changed.
 
     An address and a LinkedIn URL are read from *any* message, because somebody
     who volunteers one early should not be asked for it later. A name is read
     only when the last question asked for one -- otherwise "I'm looking for
     staff roles" becomes a candidate called "looking for staff roles".
+
+    ``batched`` says the last question was a multi-part one, so the answer is
+    read segment by segment. The caller owns that fact; passing it here rather
+    than matching on a pseudo-field keeps this module unaware of which flow is
+    running.
     """
     changed: list[str] = []
 
@@ -126,8 +160,8 @@ def absorb(thread: IntakeThread, *, body: str, asked_field: str) -> list[str]:
         thread.contact_linkedin = linkedin[:400]
         changed.append(CONTACT_LINKEDIN)
 
-    if not thread.contact_name and asked_field == CONTACT_NAME:
-        name = find_name(body)
+    if not thread.contact_name and (asked_field == CONTACT_NAME or batched):
+        name = find_name_in_batch(body) if batched else find_name(body)
         if name:
             thread.contact_name = name[:240]
             changed.append(CONTACT_NAME)

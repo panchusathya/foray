@@ -83,9 +83,20 @@ def run_manager_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
 def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     from .conversation import TurnResult, _capture, _deliver, _reread
 
-    # Corrections keep flowing into the preference whatever the topic is.
+    # Corrections keep flowing into the preference whatever the topic is --
+    # including contact details. Without this a thread that reached `managing`
+    # without a name could never acquire one: the manager would ask, the
+    # candidate would answer, and the answer would go nowhere, so every reply
+    # to "what's your name" was met with the same request again.
+    identity.absorb(
+        thread,
+        body=last.body or "",
+        asked_field=thread.last_field_asked or "",
+    )
     _reread(db, thread=thread)
     _capture(db, thread=thread)
+    if not thread.candidate_id:
+        identity.link_candidate(db, thread=thread)
     state = coverage(thread.record or {})
 
     presented = list(thread.last_presented or [])
@@ -112,9 +123,15 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         )
     if intent.kind == intents.INTENT_NETWORKING:
         return _say(_networking_text(db, thread), verbatim=True)
+    if intent.kind == intents.INTENT_AFFIRM:
+        # "yes" almost always means yes to the thing we just offered, and the
+        # thing we offer is roles.
+        return present_matches(db, thread=thread, state=state)
+    if intent.kind == intents.INTENT_DECLINE:
+        return _say(_fresh(db, thread, prompts.MANAGER_ACK_DECLINE, prompts.MANAGER_STANDING_BY))
     if intent.kind == intents.INTENT_PROFILE_ANSWER:
-        return _say("Noted — thanks. Anything else you want me looking for?")
-    return _say(prompts.MANAGER_FALLBACK)
+        return _say(_fresh(db, thread, prompts.MANAGER_NOTED, prompts.MANAGER_NOTED_AGAIN))
+    return _say(_fresh(db, thread, prompts.MANAGER_FALLBACK, prompts.MANAGER_FALLBACK_AGAIN))
 
 
 def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, selection: int):
@@ -291,6 +308,45 @@ def eligible_matches(
     return pairs
 
 
+def _fresh(db, thread, first: str, second: str) -> str:
+    """``first``, unless we just said it -- then ``second``.
+
+    Two identical canned lines in a row is the clearest possible signal that
+    nobody is home. The live thread sent "Noted — thanks. Anything else you
+    want me looking for?" twice back to back, and the second one is what made
+    the agent look broken rather than merely unhelpful.
+    """
+    from .threads import OUTBOUND, messages_of
+
+    # Case-insensitive: the channel voice lowercases outbound copy before it
+    # is stored, so comparing against the constant as written never matches.
+    for message in reversed(messages_of(db, thread)):
+        if message.direction != OUTBOUND:
+            continue
+        said = (message.body or "").strip().lower()
+        return second if said == first.strip().lower() else first
+    return first
+
+
+def _identity_request(thread) -> tuple[str, str]:
+    """What we still need before anyone can be matched, and the field to tag.
+
+    Tagging the outbound with the field means the answer is absorbed on the
+    next turn. Untagged, the candidate answers into a void and gets asked
+    again -- which is exactly what happened in the first live thread.
+    """
+    need_name = not (thread.contact_name or "").strip()
+    need_contact = not (thread.contact_email or "").strip() and not (
+        thread.contact_linkedin or ""
+    ).strip()
+
+    if need_name and need_contact:
+        return ("What name and email should I put on this?", identity.CONTACT_NAME)
+    if need_name:
+        return ("What name should I put on this?", identity.CONTACT_NAME)
+    return ("What's the best email to reach you on?", identity.CONTACT_EMAIL)
+
+
 def present_matches(
     db: Session, *, thread: IntakeThread, state, origin: str = "reply", quiet: bool = False
 ):
@@ -308,12 +364,14 @@ def present_matches(
     if not candidate_id:
         if quiet:
             return None
+        # Ask for what is actually missing. Demanding the email from somebody
+        # who gave it two messages ago reads as not listening, and it was the
+        # name we never captured.
+        body, asked = _identity_request(thread)
         row = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(
-                body="Tell me your name and email first so I can match you properly."
-            ),
+            message=OutboundMessage(body=body, asked_field=asked),
             origin=origin,
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])

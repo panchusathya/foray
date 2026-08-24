@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from job_fixtures import LONG_JD
 
 from juicebox.jobmatch.parse import parse_posting
@@ -255,3 +257,163 @@ class TestMatchEndpoints:
         queue = client.get("/v1/job-matches/rematch-queue", headers=account["headers"])
         assert queue.status_code == 200, queue.text
         assert queue.json() == []
+
+
+class TestPostingIdentity:
+    """Company and location were structurally always blank.
+
+    The Exa ingest read `company` from `author` (empty on every job board) and
+    `location` from a field the search API does not return at all, and the spec
+    parser only *reads* those columns -- so nothing downstream could recover
+    them. A job card with no employer and no location is not a card.
+    """
+
+    def test_the_exa_ingest_no_longer_invents_a_company(self):
+        from juicebox.jobmatch.discover import _exa_rows
+
+        rows = _exa_rows(
+            [
+                {
+                    "url": "https://jobs.example.com/1",
+                    "title": "Founding Engineer at Ventura | Y Combinator",
+                    "author": "Y Combinator",
+                    "text": "Ventura is hiring a founding engineer in New York.",
+                }
+            ]
+        )
+        assert rows[0]["company"] == "", "Y Combinator is the board, not the employer"
+        assert rows[0]["location"] == ""
+
+    def test_a_page_title_is_recognised_as_furniture(self):
+        from juicebox.jobmatch.parse import _is_site_furniture
+
+        assert _is_site_furniture("Founding Engineer at Ventura | Y Combinator")
+        assert _is_site_furniture("Hiring Founding Engineer at Prox")
+        assert not _is_site_furniture("Founding Engineer")
+
+    def test_identity_fills_blanks_and_leaves_real_values_alone(self, session, account):
+        """A company somebody typed in outranks one a model read off a page."""
+        from juicebox.jobmatch import parse as parse_mod
+        from juicebox.models import JobPosting
+
+        posting = JobPosting(
+            org_id=account["org_id"],
+            source="exa",
+            source_id="idt-1",
+            title="Founding Engineer at Ventura | Y Combinator",
+            company="Typed By A Human",
+            location="",
+            jd_text="Ventura is hiring a founding engineer in New York.",
+            status="pending_parse",
+        )
+
+        class FakeLLM:
+            available = True
+
+            def json_fast(self, **kwargs):
+                return SimpleNamespace(
+                    data={
+                        "is_posting": True,
+                        "title": "Founding Engineer",
+                        "company": "Ventura",
+                        "location": "New York",
+                    }
+                )
+
+        import juicebox.llm.client as client_mod
+
+        original = client_mod.get_llm
+        client_mod.get_llm = lambda: FakeLLM()
+        try:
+            rejected = parse_mod.resolve_identity(posting)
+        finally:
+            client_mod.get_llm = original
+
+        assert rejected == ""
+        assert posting.company == "Typed By A Human", "never overwrite a real value"
+        assert posting.location == "New York", "but do fill a blank"
+        assert posting.title == "Founding Engineer", "page furniture is replaced"
+
+    def test_an_index_page_is_rejected(self, session, account):
+        from juicebox.jobmatch import parse as parse_mod
+        from juicebox.models import JobPosting
+
+        posting = JobPosting(
+            org_id=account["org_id"],
+            source="exa",
+            source_id="idt-2",
+            title="Software Engineer jobs at Y Combinator startups",
+            jd_text="Browse hundreds of roles across YC companies.",
+            status="pending_parse",
+        )
+
+        class FakeLLM:
+            available = True
+
+            def json_fast(self, **kwargs):
+                return SimpleNamespace(
+                    data={"is_posting": False, "title": "", "company": "", "location": ""}
+                )
+
+        import juicebox.llm.client as client_mod
+
+        original = client_mod.get_llm
+        client_mod.get_llm = lambda: FakeLLM()
+        try:
+            rejected = parse_mod.resolve_identity(posting)
+        finally:
+            client_mod.get_llm = original
+        assert rejected, "a search-results page is not a job a person can apply to"
+
+
+class TestCandidateDiscovery:
+    """Nothing ever went looking for jobs on a candidate's behalf.
+
+    Scoring against the book we happen to hold is half the job. The first live
+    thread finished onboarding with a complete spec and the database held 59
+    postings, none of them matched to anybody.
+    """
+
+    def _pref(self, **spec):
+        class P:
+            pass
+
+        p = P()
+        p.spec = spec
+        return p
+
+    def test_queries_come_from_the_stated_spec(self):
+        from juicebox.jobmatch.discover_candidate import queries_for
+
+        queries = queries_for(
+            self._pref(
+                job_titles=["machine learning engineer", "software engineer"],
+                locations=["san francisco"],
+                seniority=["senior"],
+                remote_ok=False,
+            )
+        )
+        assert queries == [
+            "senior machine learning engineer jobs in san francisco",
+            "senior software engineer jobs in san francisco",
+        ]
+
+    def test_remote_stands_in_for_a_location(self):
+        from juicebox.jobmatch.discover_candidate import queries_for
+
+        assert queries_for(self._pref(job_titles=["product manager"], remote_ok=True)) == [
+            "product manager jobs remote"
+        ]
+
+    def test_no_title_means_no_search(self):
+        """"jobs" as a query spends money to return noise."""
+        from juicebox.jobmatch.discover_candidate import queries_for
+
+        assert queries_for(self._pref(job_titles=[], locations=["nyc"])) == []
+        assert queries_for(self._pref()) == []
+
+    def test_queries_are_capped(self):
+        from juicebox.jobmatch.discover_candidate import MAX_QUERIES, queries_for
+
+        many = queries_for(self._pref(job_titles=[f"role {i}" for i in range(10)]))
+        assert len(many) == MAX_QUERIES

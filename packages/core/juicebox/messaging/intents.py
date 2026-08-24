@@ -25,7 +25,20 @@ INTENT_APPLY = "apply"
 INTENT_STATUS = "status"
 INTENT_NETWORKING = "networking"
 INTENT_PROFILE_ANSWER = "profile_answer"
+INTENT_DECLINE = "decline"
+INTENT_AFFIRM = "affirm"
 INTENT_OTHER = "other"
+
+# Bare confirmations and refusals, matched on the whole message only -- "no"
+# inside "no rush, show me more" must not read as a refusal.
+_NEGATIVE = frozenset(
+    {"no", "nope", "nah", "no thanks", "no thank you", "not now", "nothing", "nah im good",
+     "im good", "i'm good", "all good", "not right now", "no im good", "no i'm good"}
+)
+_AFFIRMATIVE = frozenset(
+    {"yes", "yep", "yeah", "yup", "sure", "ok", "okay", "sounds good", "please", "yes please",
+     "go ahead", "do it"}
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,11 @@ def resolve_reference(body: str, presented: list[dict[str, Any]]) -> int:
     return 0
 
 
+def _bare(text: str) -> str:
+    """The message with surrounding punctuation gone, for whole-message matching."""
+    return text.strip().strip(".!?,;: ").strip()
+
+
 def classify(body: str, *, presented: list[dict[str, Any]]) -> Intent:
     text = (body or "").strip().lower()
     if not text:
@@ -119,6 +137,16 @@ def classify(body: str, *, presented: list[dict[str, Any]]) -> Intent:
     ):
         # "2" or "the Goldman one" on its own is a detail request.
         return Intent(INTENT_JOBS_DETAIL, selection)
+
+    # A bare yes or no, decided here rather than by the model. "No" was being
+    # classified as a profile answer, so the agent replied "Noted -- thanks"
+    # to somebody declining, then asked the same question again. These are
+    # the cheapest words in the language to get wrong and the most obvious
+    # ones to a reader.
+    if _bare(text) in _NEGATIVE:
+        return Intent(INTENT_DECLINE)
+    if _bare(text) in _AFFIRMATIVE:
+        return Intent(INTENT_AFFIRM)
 
     llm = get_llm()
     if not llm.available:

@@ -12,6 +12,21 @@ COPY packages/core/pyproject.toml /app/packages/core/pyproject.toml
 COPY packages/core/juicebox/__init__.py /app/packages/core/juicebox/__init__.py
 RUN pip install --upgrade pip && pip install "/app/packages/core[postgres]"
 
+# The free LinkedIn scrape, off by default.
+#
+# Build with `--build-arg INSTALL_PLAYWRIGHT=true` to turn it on. It is not on
+# by default for two reasons: it adds Chromium and its apt dependencies to an
+# image that otherwise needs no apt at all (~400MB, on a host currently at 71%
+# disk), and it is useless without LINKEDIN_SESSION_COOKIE -- LinkedIn serves
+# an auth wall to a browser that is not logged in, so an installed-but-
+# cookieless scraper fails on every profile and falls through to the paid
+# provider anyway, just more slowly.
+#
+# `enrich.profile_sources` already tries the scrape first and pays only on
+# failure, so turning this on is the only step needed once a cookie exists.
+ARG INSTALL_PLAYWRIGHT=false
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then       pip install "playwright>=1.40" &&       playwright install --with-deps chromium;     fi
+
 # Includes migrations/, which `juicebox migrate` resolves relative to the package.
 COPY packages/core /app/packages/core
 COPY eval /app/eval

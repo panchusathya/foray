@@ -7,6 +7,7 @@ import { api } from './lib/api.js';
 import { useAuth } from './lib/auth.jsx';
 import { ApplicationDetailPage, ApplicationsPage } from './pages/Applications.jsx';
 import { DiscoverPage } from './pages/Discover.jsx';
+import { NetworkingPage } from './pages/Networking.jsx';
 import { DocumentsPage, ProfilePage } from './pages/Profile.jsx';
 import { LoginPage, MagicLinkPage } from './pages/SignIn.jsx';
 
@@ -50,6 +51,7 @@ export function App() {
             <Route path="/" element={<DiscoverPage />} />
             <Route path="/applications" element={<ApplicationsPage />} />
             <Route path="/applications/:applicationId" element={<ApplicationDetailPage />} />
+            <Route path="/networking" element={<NetworkingPage />} />
             <Route path="/documents" element={<DocumentsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

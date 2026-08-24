@@ -115,7 +115,9 @@ def ingest_exa_results(
             posting.title = title or posting.title
             posting.title_normalized = tx.normalize_title(posting.title)
             posting.jd_text = text or posting.jd_text
-        posting.company = posting.company or _fit(raw.get("author") or "", TITLE_MAX)
+        # Not `author`: on a job board that is the board, or empty. The
+        # employer is read out of the page text by `parse.resolve_identity`.
+        posting.company = posting.company or ""
         posting.company_normalized = _fit(
             tx.normalize_company(posting.company), TITLE_MAX
         )

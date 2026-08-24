@@ -184,7 +184,7 @@ def intro_message(*, recruiter: str, org: str) -> str:
         f"hey, i'm {name} from {org_name}. i'm an ai helping the team match you "
         f"to roles — we'll ask a short series of questions so we don't waste "
         f"your time on ones that aren't a fit.\n\n"
-        f"first, drop your linkedin url (or just the /in/ handle)?"
+        f"first, what's the best email to reach you on?"
     )
 
 

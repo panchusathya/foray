@@ -16,7 +16,12 @@ from juicebox.messaging.conversation import (
     ACTION_HELD,
     run_turn,
 )
-from juicebox.messaging.identity import CONTACT_LINKEDIN, find_linkedin, link_candidate
+from juicebox.messaging.identity import (
+    CONTACT_EMAIL,
+    CONTACT_LINKEDIN,
+    find_linkedin,
+    link_candidate,
+)
 from juicebox.messaging.linkedin_flow import (
     BATCH_CONFIRM,
     BATCH_GAP_FILL,
@@ -93,19 +98,28 @@ def linq_number(session, account):
 
 
 class TestLinkedinShortFlow:
-    def test_intro_asks_for_linkedin_in_one_lowercase_message(
+    def test_intro_asks_for_email_in_one_lowercase_message(
         self, session, account, fake_channel
     ):
         thread = _short_thread(session, account, fake_channel)
         result = run_turn(session, thread=thread)
 
         assert result.action == ACTION_GREETED
-        assert result.asked_field == CONTACT_LINKEDIN
+        assert result.asked_field == CONTACT_EMAIL
         assert len(fake_channel.bodies) == 1
         body = fake_channel.bodies[0]
         assert body == body.lower() or "http" in body
-        assert "linkedin" in body
+        assert "email" in body
         assert "vivian" in body
+
+    def test_after_email_it_asks_for_linkedin(self, session, account, fake_channel):
+        thread = _short_thread(session, account, fake_channel)
+        run_turn(session, thread=thread)
+        result = _say(session, thread, "ada@lovelace.dev")
+
+        assert result.action == ACTION_ASKED
+        assert result.asked_field == CONTACT_LINKEDIN
+        assert "linkedin" in fake_channel.bodies[-1]
 
     def test_a_url_enqueues_a_scrape_and_holds(
         self, session, account, fake_channel
@@ -190,14 +204,15 @@ class TestLinkedinShortFlow:
         assert result.asked_field == BATCH_GAP_FILL
         assert "couldn't pull" in fake_channel.bodies[-1]
 
-    def test_a_first_inbound_url_skips_the_intro(
+    def test_a_first_inbound_url_still_prompts_for_email_first(
         self, session, account, fake_channel
     ):
         thread = _short_thread(session, account, fake_channel)
         result = _say(session, thread, "linkedin.com/in/ada-lovelace")
-        assert result.action == ACTION_HELD
+        assert result.action == ACTION_GREETED
+        assert result.asked_field == CONTACT_EMAIL
+        assert "email" in fake_channel.bodies[-1]
         assert thread.contact_linkedin.endswith("/ada-lovelace")
-        assert fake_channel.bodies == []
 
 
 class TestLinkedinIdentity:

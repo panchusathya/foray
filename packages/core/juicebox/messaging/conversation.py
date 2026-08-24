@@ -544,13 +544,30 @@ def _run_linkedin_short(
     if last is not None and last.direction == INBOUND:
         identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
 
-    if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_linkedin):
+    if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
         return _linkedin_intro(db, thread=thread)
 
     if last is not None and last.direction == OUTBOUND:
         return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     assert last is not None
+
+    if not thread.contact_linkedin:
+        sent = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(
+                body=identity.ASKS[CONTACT_LINKEDIN],
+                asked_field=CONTACT_LINKEDIN,
+            ),
+        )
+        return TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=CONTACT_LINKEDIN,
+            sent=[s for s in [sent] if s],
+        )
 
     if thread.contact_linkedin and not _scrape_settled(thread):
         _enqueue_linkedin_scrape(db, thread)
@@ -564,7 +581,7 @@ def _run_linkedin_short(
             thread.contact_name = name[:240]
 
     asked = thread.last_field_asked or ""
-    if asked in ("", CONTACT_LINKEDIN):
+    if asked in ("", CONTACT_LINKEDIN, identity.CONTACT_EMAIL):
         return _linkedin_after_scrape(db, thread=thread, last=last)
     if asked == BATCH_CONFIRM:
         return _linkedin_after_confirm(db, thread=thread, last=last)
@@ -581,14 +598,14 @@ def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
     org_name = (getattr(org, "name", "") or "our team").strip()
     body = intro_message(recruiter=prompts.recruiter_name(), org=org_name)
     sent = _deliver(
-        db, thread=thread, message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN)
+        db, thread=thread, message=OutboundMessage(body=body, asked_field=identity.CONTACT_EMAIL)
     )
     update_flow_meta(thread, phase="intro")
     return TurnResult(
         ACTION_GREETED,
         thread,
         _coverage_for(thread),
-        asked_field=CONTACT_LINKEDIN,
+        asked_field=identity.CONTACT_EMAIL,
         sent=[s for s in [sent] if s],
     )
 

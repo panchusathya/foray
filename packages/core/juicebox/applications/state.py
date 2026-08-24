@@ -128,6 +128,20 @@ def transition(
         actor_id=actor_id,
         payload={"from": previous, "to": to_status, "actor": actor, "reason": reason},
     )
+
+    # A recruiter moving the pursuit is news to the candidate; a candidate's
+    # own action is not -- nobody wants a text announcing what they just did.
+    if actor == "recruiter":
+        from ..messaging.notify import EVENT_STATUS_CHANGED, notify_candidate
+
+        notify_candidate(
+            db,
+            org_id=application.org_id,
+            candidate_id=application.candidate_id,
+            event=EVENT_STATUS_CHANGED,
+            subject_id=f"{application.id}:{to_status}",
+        )
+
     db.flush()
     return application
 

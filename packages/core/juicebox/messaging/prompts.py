@@ -177,3 +177,129 @@ HELP_REPLY = (
     "Juicebox intake assistant. Reply STOP to opt out. "
     "For help, contact the recruiter who shared this number."
 )
+
+
+# ---------------------------------------------------------------------------
+# the recruiting-manager modes (CANDIDATE_AGENT_PLAN + the candidate agent)
+# ---------------------------------------------------------------------------
+
+# The first message of a candidate-agent thread. Compliance requirements all
+# in one breath, because a shared number means the candidate cannot recognise
+# the sender: who we are (the org), what this is (an AI), and how to stop.
+MANAGER_GREETING = (
+    "Hi — I'm the AI recruiting assistant for {org}. I can find roles that fit "
+    "you, prepare applications for your review, and keep you posted — all here. "
+    "Reply STOP any time to opt out, HELP for info."
+)
+
+ASK_EMAIL_MANAGER = "First — what's the best email to reach you on?"
+
+ASK_NAME_MANAGER = "And what name should I put on things?"
+
+# The resume nudge: the flexibility is the feature (either works), the nudge
+# is the resume — it carries more than a profile scrape does.
+ASK_LINKEDIN = (
+    "Best way to get you set up: send your LinkedIn URL, or better, upload "
+    "your resume here: {upload_link}"
+)
+
+PROFILE_INGEST_ACK = (
+    "Got it — pulling your profile together now. A couple of quick questions "
+    "while that runs."
+)
+
+MANAGING_READY = (
+    "You're set. I'll text you when I find roles worth your time — or ask me "
+    "anything: \"what's my status\", \"find me roles\", \"who should I talk to\"."
+)
+
+MANAGER_FALLBACK = (
+    "I can help with roles, applications, and status here — for anything else "
+    "a recruiter will follow up. Want me to look for roles?"
+)
+
+DETAIL_UNAVAILABLE = "I don't have more detail on that one yet — want me to flag it to a recruiter?"
+
+CLARIFY_WHICH = "Which one do you mean? Reply with the number from the list."
+
+APPLY_ACK = (
+    "On it — I'm preparing your application for {title} at {company}. "
+    "I'll text you when it's ready to review."
+)
+
+APPLY_PARKED = (
+    "I've noted you want {title} at {company}. You're at this week's "
+    "application limit, so I'll queue it and check back with you."
+)
+
+# Proactive notifications: canned, never model-written. Nothing to reply to
+# means nothing to anchor a model, and a hallucinated claim texted unprompted
+# is the worst place for one.
+NOTIFY_PROFILE_READY = (
+    "Your profile's in. I'm scanning for roles that fit — I'll text you the "
+    "good ones."
+)
+
+NOTIFY_PACKAGE_READY = (
+    "Your application for {title} at {company} is ready to review — resume, "
+    "cover letter, and answers: {link}"
+)
+
+NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
+
+# Presenting cards relaxes the 320-char single-question budget: a numbered
+# block of three roles is legitimately longer. Still hard-capped, and still
+# exactly one question (the footer's "reply with a number").
+MAX_CARD_MESSAGE_CHARS = 900
+
+
+INTENT_SYSTEM = """\
+You classify one inbound text from a job candidate talking to their recruiting
+assistant. Pick exactly one intent:
+
+- jobs_more: they want to see roles ("find me roles", "got anything?")
+- jobs_detail: they want more about a specific role already shown
+- apply: they want to apply to a specific role already shown
+- status: they ask where their applications stand
+- networking: they ask who to talk to / how to get an intro
+- profile_answer: they are answering a profile/preference question
+- other: anything else
+
+`selection` is the 1-based number of the role they mean when they reference
+one ("the second one", "the Goldman role") against the numbered list provided;
+0 when they don't. Never guess a selection you cannot ground in their words.
+"""
+
+INTENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["intent", "selection"],
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": [
+                "jobs_more",
+                "jobs_detail",
+                "apply",
+                "status",
+                "networking",
+                "profile_answer",
+                "other",
+            ],
+        },
+        "selection": {"type": "integer", "minimum": 0},
+    },
+}
+
+
+def intent_prompt(*, body: str, presented: list[dict[str, Any]]) -> str:
+    lines = [
+        f"{index}. {item.get('title', '')} — {item.get('company', '')}"
+        for index, item in enumerate(presented or [], start=1)
+    ]
+    shown = "\n".join(lines) or "(none shown yet)"
+    return (
+        f"<roles_shown>\n{shown}\n</roles_shown>\n\n"
+        f"<their_message>\n{(body or '').strip()[:1000]}\n</their_message>\n\n"
+        "Classify it."
+    )

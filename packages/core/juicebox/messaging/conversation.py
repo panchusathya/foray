@@ -164,6 +164,15 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
                 resume_at=decision.resume_at,
             )
 
+    # The candidate-agent modes take over here, AFTER every safety rail above:
+    # STOP, suppression, hold, and quiet hours are shared, and only what one
+    # message says next is mode-specific. mode="intake" threads never reach
+    # the manager, byte-for-byte the behaviour they always had.
+    if thread.mode and thread.mode != "intake":
+        from .manager import run_manager_turn
+
+        return run_manager_turn(db, thread=thread, last=last)
+
     identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
     _reread(db, thread=thread)
 
@@ -435,7 +444,7 @@ def _compose(*, asks: str, topic: str, last_inbound: str, known: str) -> str:
 
 
 def _deliver(
-    db: Session, *, thread: IntakeThread, message: OutboundMessage
+    db: Session, *, thread: IntakeThread, message: OutboundMessage, origin: str = "reply"
 ) -> IntakeMessage | None:
     """Hand a message to the channel and record what happened either way.
 
@@ -475,7 +484,7 @@ def _deliver(
     except ChannelError as exc:
         logger.warning("intake send failed on thread %s: %s", thread.id, exc.detail)
         result = DeliveryResult(status="failed", error=exc.detail[:400])
-    return record_outbound(db, thread=thread, message=outbound, result=result)
+    return record_outbound(db, thread=thread, message=outbound, result=result, origin=origin)
 
 
 def deliver(

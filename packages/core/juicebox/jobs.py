@@ -74,6 +74,13 @@ KIND_DOC_PARSE = "docs.parse"
 # enqueues and returns, so a public request path never spends money.
 KIND_PROFILE_INGEST = "profile.ingest"
 
+# One proactive message to one candidate thread (profile ready, cards, a
+# package to review, a status change). Event-keyed idempotency so a rescore
+# firing twice cannot double-text; every cadence gate applies inside the
+# handler. Never on ensure_ticks -- notifications are enqueued by the events
+# they announce.
+KIND_THREAD_NOTIFY = "thread.notify"
+
 # Building one application package: tailored resume PDF, cover letter, form
 # answers. User-initiated ("apply to 2", a swipe, a recruiter click); never on
 # ensure_ticks. Idempotency keys carry a timestamp because a rebuild is a

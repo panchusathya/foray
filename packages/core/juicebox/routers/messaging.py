@@ -310,6 +310,10 @@ def _resolve_or_open_linq_thread(
         from_address=from_key,
         to_address=to_key,
         consent_messaging=True,
+        # A cold inbound text opens the recruiting-manager flow, not the
+        # coverage-gate interview: this thread is the person's standing line
+        # to the agent, and it never completes.
+        mode="onboarding",
     )
     consent.record_consent(
         db,

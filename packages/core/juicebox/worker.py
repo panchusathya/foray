@@ -38,6 +38,7 @@ from .jobs import (
     KIND_OUTREACH_TICK,
     KIND_PROFILE_INGEST,
     KIND_REPLY_DRAFT,
+    KIND_THREAD_NOTIFY,
     claim,
     enqueue,
     has_open_job,
@@ -376,7 +377,24 @@ def _handle_jobs_match(db: Session, job: Job, now) -> dict[str, Any]:
 def _handle_jobs_match_one(db: Session, job: Job, now) -> dict[str, Any]:
     from .jobmatch.engine import handle_match_one
 
-    return handle_match_one(db, job, now)
+    result = handle_match_one(db, job, now)
+
+    # matches.ready: when a candidate rescore lands and they have a standing
+    # thread, tell them -- at most once per day per candidate (the date bucket
+    # is the idempotency), and only if cards actually clear the bar (the
+    # notify handler stays silent otherwise).
+    candidate_id = (job.payload or {}).get("candidate_id")
+    if candidate_id and not result.get("skipped"):
+        from .messaging.notify import EVENT_MATCHES_READY, notify_candidate
+
+        notify_candidate(
+            db,
+            org_id=job.org_id,
+            candidate_id=candidate_id,
+            event=EVENT_MATCHES_READY,
+            subject_id=f"{candidate_id}:{now.date().isoformat()}",
+        )
+    return result
 
 
 def _handle_jobs_scrape(db: Session, job: Job, now) -> dict[str, Any]:
@@ -762,6 +780,17 @@ def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
             thread.candidate_id = promoted.id
 
     enqueue_match_for_candidate(db, promoted, now=now)
+
+    if thread_id:
+        from .messaging.notify import EVENT_PROFILE_READY, notify_candidate
+
+        notify_candidate(
+            db,
+            org_id=job.org_id,
+            candidate_id=promoted.id,
+            event=EVENT_PROFILE_READY,
+            subject_id=slug,
+        )
     db.flush()
     return {
         "candidate_id": promoted.id,
@@ -774,6 +803,7 @@ def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
 def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
     """Build one application package. Failures re-raise so backoff retries."""
     from .applications.service import build_package
+    from .messaging.notify import EVENT_PACKAGE_READY, notify_candidate
     from .models import Application
 
     application_id = job.payload.get("application_id") or ""
@@ -784,7 +814,21 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "org_mismatch"}
     if application.status not in {"draft", "prepared"}:
         return {"skipped": f"status {application.status} does not take a package"}
-    return build_package(db, application)
+    result = build_package(db, application)
+    notify_candidate(
+        db,
+        org_id=job.org_id,
+        candidate_id=application.candidate_id,
+        event=EVENT_PACKAGE_READY,
+        subject_id=application.id,
+    )
+    return result
+
+
+def _handle_thread_notify(db: Session, job: Job, now) -> dict[str, Any]:
+    from .messaging.notify import handle_notify
+
+    return handle_notify(db, job, now)
 
 
 def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
@@ -831,6 +875,7 @@ HANDLERS = {
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
     KIND_PROFILE_INGEST: _handle_profile_ingest,
+    KIND_THREAD_NOTIFY: _handle_thread_notify,
 }
 
 

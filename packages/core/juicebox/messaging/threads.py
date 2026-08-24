@@ -53,6 +53,7 @@ def open_thread(
     consent_messaging: bool = False,
     contact_name: str = "",
     contact_email: str = "",
+    mode: str = "intake",
 ) -> IntakeThread:
     """Start a conversation.
 
@@ -73,6 +74,7 @@ def open_thread(
         consent_messaging=consent_messaging,
         contact_name=contact_name,
         contact_email=contact_email,
+        mode=mode,
         status=STATUS_ACTIVE,
         record=empty_record(),
         schema_version=SCHEMA_VERSION,

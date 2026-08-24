@@ -1421,6 +1421,22 @@ class IntakeThread(Base, TimestampMixin):
     # derived from last_inbound_at, so there is no state to keep in step with
     # the clock and a thread cannot be "dormant" and freshly answered at once.
     status: Mapped[str] = mapped_column(String(24), default="active")
+    # intake (the original coverage-gate interview; may complete) or the
+    # candidate-agent modes: onboarding -> profile -> managing. A managing
+    # thread is permanent -- only mode="intake" ever reaches STATUS_COMPLETE,
+    # because run_turn is silent forever on a complete thread and a recruiting
+    # manager's line going permanently dead is a product failure, not an end
+    # state. Default preserves every existing thread byte-for-byte.
+    mode: Mapped[str] = mapped_column(String(24), default="intake", server_default="intake")
+    # The profile URL the candidate handed over during onboarding.
+    linkedin_url: Mapped[str] = mapped_column(String(400), default="", server_default="")
+    # The cards most recently shown: [{proposal_id, posting_id, company,
+    # title}]. What "the Goldman one" resolves against. Reassigned, never
+    # mutated -- the JSON-tracking rule threads.py documents. Nullable because
+    # ALTER ADD COLUMN NOT NULL needs a server default and SQLite/Postgres
+    # disagree on JSON defaults; None reads as "nothing shown yet".
+    last_presented: Mapped[list | None] = mapped_column(JSON, nullable=True, default=list)
+    presented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # TCPA: prior express consent before the first outbound text. On web the
     # person opened the widget and typed, which is the consent; on SMS it has
     # to come from somewhere else, and the channel refuses to send without it.

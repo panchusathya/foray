@@ -69,3 +69,15 @@ export function formatComp(value) {
   if (number >= 1000) return `$${Math.round(number / 1000)}k`;
   return `$${number}`;
 }
+
+/** iMessage delivery state for an outbound intake message. SMS stays at Sent. */
+export function messageReceipt(message) {
+  if (!message || message.direction === 'inbound') return '';
+  if (message.read_at) return 'Read';
+  if (message.delivered_at) return 'Delivered';
+  if (message.status === 'failed') return 'Failed';
+  if (message.sent_at || message.status === 'sent' || message.status === 'delivered' || message.status === 'read') {
+    return 'Sent';
+  }
+  return '';
+}

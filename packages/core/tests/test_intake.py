@@ -171,6 +171,16 @@ class TestCoverageGate:
         assert "spec.must_have_skills" not in CORE_KEYS
         assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
 
+    def test_linkedin_short_gate_drops_survey_fields(self):
+        from juicebox.intake.schema import LINKEDIN_SHORT_KEYS
+
+        record = empty_record()
+        missing = set(coverage(record, gate_keys=LINKEDIN_SHORT_KEYS).required_missing)
+        assert missing == set(LINKEDIN_SHORT_KEYS)
+        assert "spec.must_have_skills" not in missing
+        assert "employment_status" not in missing
+        assert "active_processes" not in missing
+
 
 class TestProgressLine:
     def test_empty_off_milestone(self):

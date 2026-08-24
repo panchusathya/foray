@@ -331,6 +331,15 @@ class Settings:
     linq_from_number: str = field(default_factory=lambda: _env("LINQ_FROM_NUMBER", ""))
     linq_enabled: bool = field(default_factory=lambda: _env_bool("LINQ_ENABLED", False))
 
+    # Logged-in LinkedIn session for the intake scraper. JSON cookie array
+    # (Playwright storage_state) or a raw ``li_at=...`` string. Never commit.
+    linkedin_session_cookie: str = field(
+        default_factory=lambda: _env("LINKEDIN_SESSION_COOKIE", "")
+    )
+    linkedin_session_path: str = field(
+        default_factory=lambda: _env("LINKEDIN_SESSION_PATH", "")
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

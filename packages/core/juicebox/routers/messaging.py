@@ -36,8 +36,14 @@ from ..jobs import KIND_INTAKE_TURN, enqueue
 from ..messaging import prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
+from ..messaging.linq import (
+    STATUS_EVENTS,
+    parse_inbound,
+    parse_status_event,
+    resolve_linq_org_id,
+    verify_webhook,
+)
 from ..messaging.linq import SignatureError as LinqSignatureError
-from ..messaging.linq import parse_inbound, resolve_linq_org_id, verify_webhook
 from ..messaging.schemas import (
     ChatMessageIn,
     ChatMessageOut,
@@ -47,6 +53,7 @@ from ..messaging.schemas import (
 )
 from ..messaging.suppression import handle_stop, looks_like_help, looks_like_stop
 from ..messaging.threads import (
+    apply_status_event,
     find_active_thread,
     find_by_provider_id,
     messages_of,
@@ -330,6 +337,8 @@ def linq_webhook(
         ) from exc
 
     event_type = str(payload.get("event_type") or "")
+    if event_type in STATUS_EVENTS:
+        return _handle_linq_status(db, payload, event_type=event_type)
     if event_type != "message.received":
         return {"status": "ignored", "event_type": event_type}
 
@@ -397,3 +406,28 @@ def linq_webhook(
         payload={"thread_id": thread.id},
     )
     return {"status": "accepted", "message_id": message.id, "thread_id": thread.id}
+
+
+def _handle_linq_status(db, payload: dict, *, event_type: str) -> dict:
+    """Stamp delivered/read/failed onto the outbound row. Never starts a turn."""
+    try:
+        event = parse_status_event(payload)
+    except ValueError as exc:
+        logger.warning("Linq status event %s ignored: %s", event_type, exc)
+        return {"status": "ignored", "event_type": event_type, "reason": str(exc)}
+    row = apply_status_event(
+        db,
+        provider_native_id=event.message_id,
+        event_type=event.event_type,
+        delivered_at=event.delivered_at,
+        read_at=event.read_at,
+        error=event.error,
+    )
+    if row is None:
+        return {"status": "ignored", "event_type": event_type, "reason": "unknown_message"}
+    return {
+        "status": "accepted",
+        "event_type": event_type,
+        "message_id": row.id,
+        "delivery_status": row.status,
+    }

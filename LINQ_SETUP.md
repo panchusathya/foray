@@ -52,8 +52,13 @@ python deploy/linq_setup.py create-webhook \
   --write-env
 ```
 
-This subscribes to `message.received` and `message.failed`, filters to your line, and
-appends `LINQ_WEBHOOK_SECRET` + `LINQ_ENABLED=true` to `.env`.
+This subscribes to `message.received`, `message.sent`, `message.delivered`,
+`message.read`, and `message.failed`, filters to your line, and appends
+`LINQ_WEBHOOK_SECRET` + `LINQ_ENABLED=true` to `.env`.
+
+Read receipts (`message.read`) only fire on iMessage/RCS when the recipient has
+read receipts enabled. SMS fallback never emits delivered/read — staying at
+Sent is expected, not a bug.
 
 **Store `signing_secret` immediately** — Linq returns it once and cannot retrieve it
 later.
@@ -110,13 +115,38 @@ Set `LINQ_ENABLED=true` only after steps 1–4 are complete.
 2. Expect HTTP 200 to Linq within 10 seconds.
 3. Check API logs for `KIND_INTAKE_TURN` enqueued.
 4. Run worker (or wait for loop): reply arrives over iMessage.
-5. Complete the intake gate → `candidate_preferences` row appears.
+5. Reply with a LinkedIn URL; expect a confirm-or-gap-fill text, then a
+   `candidate_preferences` row once the short flow wraps up.
 6. Re-send the same message id (Linq retry simulation) → no duplicate turn.
 
 ## 7. Seed helper (optional)
 
 If `LINQ_FROM_NUMBER` is set when running `juicebox seed`, the demo org gets an
 `IntakeNumber` row with `provider=linq` automatically.
+
+## 8. LinkedIn scrape (LinkedIn-first intake)
+
+Linq threads ask for a LinkedIn URL first, then scrape the profile in a
+Playwright browser on the worker. Without a logged-in session the scrape fails
+open and the thread asks 2–3 leftover questions instead.
+
+On the worker host:
+
+```bash
+# optional extra; the API image does not need this
+pip install 'packages/core[linkedin]'
+playwright install chromium
+
+# session cookie — Playwright storage_state JSON, or a raw li_at=... string
+# never commit this
+LINKEDIN_SESSION_COOKIE='[{"name":"li_at","value":"...","domain":".linkedin.com","path":"/"}]'
+# or
+LINKEDIN_SESSION_PATH=/opt/juicebox/secrets/linkedin-cookies.json
+```
+
+Add the same vars to `/opt/juicebox/.env` and recreate `worker`. LinkedIn ToS /
+account-ban risk is operator-owned; rotate the session when scrapes start
+returning auth-wall errors.
 
 ## Troubleshooting
 
@@ -126,6 +156,8 @@ If `LINQ_FROM_NUMBER` is set when running `juicebox seed`, the demo org gets an
 | 404 on webhook | No `intake_numbers` row for this E.164 with `provider=linq` and `active=true` |
 | 503 on webhook | `LINQ_ENABLED=false` or missing `LINQ_API_KEY` / `LINQ_FROM_NUMBER` |
 | No reply | Worker not running; `LinqChannel` not configured; missing `provider_thread_id` |
+| Stuck at Sent, never Read | SMS fallback, or the recipient has read receipts off — expected |
+| Scrape skipped, extra questions | Missing `LINKEDIN_SESSION_*`, Playwright, or an auth wall |
 | Voice calls wrong number | Linq number registered with `--provider retell` — fix provider column |
 
 ## Out of scope (accepted gaps)
@@ -133,3 +165,4 @@ If `LINQ_FROM_NUMBER` is set when running `juicebox seed`, the demo org gets an
 - **Android / SMS fallback** until Linq registration model is confirmed
 - **Conversational opt-out** beyond keyword STOP/HELP
 - **Twilio SMS** until TFV clears — see [`SMS_ENABLEMENT.md`](SMS_ENABLEMENT.md)
+- **Resume / PDF attachments** on the first inbound (media-only messages are ignored)

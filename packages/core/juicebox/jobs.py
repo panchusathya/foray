@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,12 @@ KIND_CRM_DISCOVERY_IMPORT = "crm.discovery.import"
 # response. Idempotent on the inbound message id, so a redelivered webhook
 # resolves to the job that already ran.
 KIND_INTAKE_TURN = "intake.thread.turn"
+
+# Browser scrape of a LinkedIn URL captured on a text thread. Slow and
+# failure-prone (auth wall, missing cookies), so it is a job rather than
+# inline in the turn: the turn holds, this job writes the scrape onto the
+# thread, then re-enqueues a turn to send the confirm message.
+KIND_LINKEDIN_SCRAPE = "intake.linkedin.scrape"
 
 # Reading a finished intake call into a preference record. A job rather than
 # inline work in the webhook: the provider times out at 10s and retries three
@@ -160,10 +166,14 @@ def claim(
     settings = get_settings()
     now = now or utcnow()
     batch = limit if limit is not None else settings.worker_batch_size
+    priority = case(
+        (Job.kind.in_((KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE)), 0),
+        else_=1,
+    )
     stmt = (
         select(Job)
         .where(Job.status == "queued", Job.run_at <= now)
-        .order_by(Job.run_at, Job.created_at)
+        .order_by(priority, Job.run_at, Job.created_at)
         .limit(max(batch, 1))
     )
     bind = db.get_bind()

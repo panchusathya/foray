@@ -45,6 +45,9 @@ class ChatMessageOut(BaseModel):
     body: str
     asked_field: str = ""
     created_at: datetime | None = None
+    sent_at: datetime | None = None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

@@ -29,6 +29,7 @@ from .jobs import (
     KIND_JOBS_PARSE,
     KIND_JOBS_SCRAPE,
     KIND_JOBS_SCRAPE_ONE,
+    KIND_LINKEDIN_SCRAPE,
     KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
     KIND_MAILBOX_SYNC_ONE,
@@ -574,6 +575,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     the two channels cannot drift into asking different questions.
     """
     from .messaging.conversation import run_turn
+    from .messaging.linq import maybe_start_typing
     from .models import IntakeThread
 
     thread_id = job.payload.get("thread_id") or ""
@@ -582,6 +584,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "thread not found", "thread_id": thread_id}
     if thread.org_id != job.org_id:
         return {"skipped": "org_mismatch"}
+    maybe_start_typing(thread)
     result = run_turn(db, thread=thread)
     return {
         "thread_id": thread.id,
@@ -589,6 +592,59 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
         "asked_field": result.asked_field,
         "sent": len(result.sent),
     }
+
+
+def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
+    """Fetch a LinkedIn profile and re-enqueue the thread's next turn."""
+    from .enrich.linkedin_scrape import ScrapeError, scrape_profile
+    from .messaging.linkedin_flow import (
+        FLOW_META_KEY,
+        apply_profile_to_record,
+        update_flow_meta,
+    )
+    from .messaging.linq import maybe_start_typing
+    from .models import IntakeThread
+
+    thread_id = job.payload.get("thread_id") or ""
+    url = job.payload.get("linkedin_url") or ""
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None:
+        return {"skipped": "thread not found", "thread_id": thread_id}
+    if thread.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+
+    maybe_start_typing(thread)
+    try:
+        profile = scrape_profile(url)
+    except ScrapeError as exc:
+        logger.warning("linkedin scrape failed for thread %s: %s", thread.id, exc)
+        update_flow_meta(thread, error=str(exc)[:400], scrape=None)
+    except Exception as exc:
+        logger.exception("linkedin scrape crashed for thread %s", thread.id)
+        update_flow_meta(thread, error=str(exc)[:400], scrape=None)
+    else:
+        thread.record = apply_profile_to_record(thread.record, profile)
+        # Re-attach meta after merge_record, which copies unknown keys but
+        # apply_profile_to_record goes through merge_record of empty+incoming
+        # and preserves _linkedin from current.
+        if not (thread.contact_name or "").strip() and profile.full_name:
+            thread.contact_name = profile.full_name[:240]
+        if profile.url and not thread.contact_linkedin:
+            thread.contact_linkedin = profile.url[:400]
+        update_flow_meta(thread, scrape=profile.to_dict(), error="")
+        # merge_record copies _linkedin from current; update_flow_meta then
+        # writes scrape onto it. If apply wiped the key, restore from profile.
+        if FLOW_META_KEY not in (thread.record or {}):
+            update_flow_meta(thread, scrape=profile.to_dict(), error="")
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_INTAKE_TURN,
+        idempotency_key=f"{KIND_INTAKE_TURN}:{thread.id}:after-scrape",
+        payload={"thread_id": thread.id},
+    )
+    return {"thread_id": thread.id, "scraped": bool((thread.record or {}).get("_linkedin", {}).get("scrape"))}
 
 
 def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
@@ -632,6 +688,7 @@ HANDLERS = {
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
     KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
+    KIND_LINKEDIN_SCRAPE: _handle_linkedin_scrape,
 }
 
 

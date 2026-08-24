@@ -42,7 +42,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = REPO_ROOT / ".env"
 
 API = "https://api.linqapp.com/api/partner/v3"
-DEFAULT_EVENTS = ("message.received", "message.failed")
+DEFAULT_EVENTS = (
+    "message.received",
+    "message.sent",
+    "message.delivered",
+    "message.read",
+    "message.failed",
+)
 WEBHOOK_VERSION = "2026-02-03"
 
 

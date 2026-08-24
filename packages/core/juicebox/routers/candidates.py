@@ -758,6 +758,8 @@ def get_candidate_timeline(
                         status=message.status,
                         created_at=message.created_at,
                         sent_at=message.sent_at,
+                        delivered_at=message.delivered_at,
+                        read_at=message.read_at,
                     )
                     for message in thread.messages
                 ],

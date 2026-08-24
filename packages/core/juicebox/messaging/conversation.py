@@ -44,6 +44,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..enrich.linkedin_scrape import parse_years_experience
 from ..intake.extract import EXTRACTOR_HEURISTIC, ExtractionResult, extract_intake
 from ..intake.schema import (
     FIELDS,
@@ -53,10 +54,28 @@ from ..intake.schema import (
     coverage,
     next_questions,
 )
+from ..jobs import KIND_LINKEDIN_SCRAPE, enqueue
 from ..llm.client import get_llm
 from ..models import IntakeMessage, IntakeThread, Org
-from . import identity, prompts
+from . import identity, linkedin_flow, prompts
 from .channels import ChannelError, DeliveryResult, OutboundMessage, get_channel
+from .identity import CONTACT_LINKEDIN
+from .linkedin_flow import (
+    BATCH_CONFIRM,
+    BATCH_GAP_FILL,
+    PHASE_SCRAPING,
+    apply_years_to_record,
+    confirm_message,
+    flow_meta,
+    gap_fill_message,
+    intro_message,
+    is_linkedin_short,
+    scrape_failed_message,
+    scraped_profile,
+    short_coverage,
+    update_flow_meta,
+    wants_years_question,
+)
 from .records import merge_record, persist_preference
 from .suppression import handle_stop, is_blocked, looks_like_stop
 from .threads import (
@@ -115,12 +134,12 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     # Opted out, suppressed, or already finished -- decided before anything is
     # composed, so a blocked thread costs no model call.
     if thread.status == STATUS_STOPPED:
-        return TurnResult(ACTION_BLOCKED, thread, coverage(thread.record or {}))
+        return TurnResult(ACTION_BLOCKED, thread, _coverage_for(thread))
     if is_blocked(db, thread=thread):
         close_thread(db, thread=thread, status=STATUS_STOPPED, reason="do-not-contact")
-        return TurnResult(ACTION_BLOCKED, thread, coverage(thread.record or {}))
+        return TurnResult(ACTION_BLOCKED, thread, _coverage_for(thread))
     if thread.status == STATUS_COMPLETE:
-        return TurnResult(ACTION_COMPLETED, thread, coverage(thread.record or {}))
+        return TurnResult(ACTION_COMPLETED, thread, _coverage_for(thread))
 
     if last is not None and last.direction == INBOUND and looks_like_stop(last.body):
         handle_stop(db, thread=thread)
@@ -131,8 +150,11 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
             db, thread=thread, message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT)
         )
         return TurnResult(
-            ACTION_STOPPED, thread, coverage(thread.record or {}), sent=[s for s in [sent] if s]
+            ACTION_STOPPED, thread, _coverage_for(thread), sent=[s for s in [sent] if s]
         )
+
+    if is_linkedin_short(thread):
+        return _run_linkedin_short(db, thread=thread, last=last)
 
     # Opening move: nobody has said anything yet.
     if last is None:
@@ -140,14 +162,14 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
 
     # Rule 2. Their turn -- holding is the correct outcome, not a failure.
     if last.direction == OUTBOUND:
-        return TurnResult(ACTION_HELD, thread, coverage(thread.record or {}))
+        return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
     _reread(db, thread=thread)
 
     _capture(db, thread=thread)
 
-    state = coverage(thread.record or {})
+    state = _coverage_for(thread)
     contact_field = _next_identity_field(thread)
     if contact_field:
         return _ask(
@@ -178,12 +200,18 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
 # --------------------------------------------------------------------------
 
 
+def _coverage_for(thread: IntakeThread) -> Coverage:
+    if is_linkedin_short(thread):
+        return short_coverage(thread.record)
+    return coverage(thread.record or {})
+
+
 def _greet(db: Session, *, thread: IntakeThread) -> TurnResult:
     org = db.get(Org, thread.org_id)
     org_name = (getattr(org, "name", "") or "our team").strip()
-    state = coverage(thread.record or {})
+    state = _coverage_for(thread)
 
-    greeting = prompts.GREETING.format(org=org_name)
+    greeting = prompts.greeting_for(org=org_name)
     sent = _deliver(db, thread=thread, message=OutboundMessage(body=greeting))
 
     field_key = _next_identity_field(thread)
@@ -218,7 +246,7 @@ def _reread(db: Session, *, thread: IntakeThread) -> None:
     thread.schema_version = thread.record.get("schema_version") or thread.schema_version
     thread.low_confidence = list(result.low_confidence)
 
-    state = coverage(thread.record)
+    state = _coverage_for(thread)
     thread.required_complete = state.required_complete
     thread.fields_missing = [*state.required_missing, *state.enrichment_missing]
     # The extractor's own verdict, widened: an open gate is a reason for a
@@ -253,8 +281,9 @@ def _extract(db: Session, *, thread: IntakeThread, transcript: str) -> Extractio
     exactly the case this exists to prevent.
     """
     llm = get_llm()
+    fast = is_linkedin_short(thread)
     if llm.available:
-        result = extract_intake(transcript, known=_known_summary(thread))
+        result = extract_intake(transcript, known=_known_summary(thread), fast=fast)
         if result.extractor != EXTRACTOR_HEURISTIC:
             return result
         logger.warning("intake extraction degraded to heuristics, re-reading candidate turns")
@@ -274,7 +303,9 @@ def _known_summary(thread: IntakeThread) -> str:
         lines.append(f"name: {thread.contact_name}")
     if thread.contact_email:
         lines.append(f"email: {thread.contact_email}")
-    state = coverage(thread.record or {})
+    if thread.contact_linkedin:
+        lines.append(f"linkedin: {thread.contact_linkedin}")
+    state = _coverage_for(thread)
     if state.covered:
         lines.append("already answered: " + ", ".join(state.covered))
     if state.declined:
@@ -366,9 +397,13 @@ def _ask(
     off what the field is asking about.
     """
     asks = prompts.question_for(field_key, topic)
-    body = _compose(
-        asks=asks, topic=topic, last_inbound=last_inbound, known=_known_summary(thread)
-    )
+    skip_compose = field_key.startswith("batch.") or field_key == CONTACT_LINKEDIN
+    if skip_compose:
+        body = asks
+    else:
+        body = _compose(
+            asks=asks, topic=topic, last_inbound=last_inbound, known=_known_summary(thread)
+        )
     sent = _deliver(
         db, thread=thread, message=OutboundMessage(body=body, asked_field=field_key)
     )
@@ -421,6 +456,11 @@ def _deliver(
     rather than in the channel: the refusal has to be recorded on the thread,
     and a channel does not have a session.
     """
+    lowered = OutboundMessage(
+        body=prompts.lowercase_outbound(message.body),
+        asked_field=message.asked_field,
+        send_key=message.send_key,
+    )
     channel = get_channel(thread.channel)
     if not channel.is_configured():
         logger.warning(
@@ -431,7 +471,7 @@ def _deliver(
         return record_outbound(
             db,
             thread=thread,
-            message=message,
+            message=lowered,
             result=DeliveryResult(status="failed", error="channel not configured"),
         )
     if channel.requires_consent() and not thread.consent_messaging:
@@ -439,11 +479,11 @@ def _deliver(
         return record_outbound(
             db,
             thread=thread,
-            message=message,
+            message=lowered,
             result=DeliveryResult(status="failed", error="no messaging consent on file"),
         )
 
-    outbound = with_send_key(db, thread=thread, message=message)
+    outbound = with_send_key(db, thread=thread, message=lowered)
     try:
         result = channel.send(
             to_address=thread.from_address,
@@ -487,3 +527,158 @@ def _wrap_up(db: Session, *, thread: IntakeThread, state: Coverage) -> TurnResul
     return TurnResult(
         ACTION_COMPLETED, thread, state, sent=[s for s in [sent] if s], extractor=thread.extractor
     )
+
+
+# --------------------------------------------------------------------------
+# LinkedIn-first short flow
+# --------------------------------------------------------------------------
+
+
+def _run_linkedin_short(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage | None
+) -> TurnResult:
+    """Intro → scrape → confirm → one gap-fill batch → wrap up."""
+    history = messages_of(db, thread)
+    outbound_sent = any(m.direction == OUTBOUND and m.status == "sent" for m in history)
+
+    if last is not None and last.direction == INBOUND:
+        identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
+
+    if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_linkedin):
+        return _linkedin_intro(db, thread=thread)
+
+    if last is not None and last.direction == OUTBOUND:
+        return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+
+    assert last is not None
+
+    if thread.contact_linkedin and not _scrape_settled(thread):
+        _enqueue_linkedin_scrape(db, thread)
+        return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+
+    _reread(db, thread=thread)
+    _absorb_years(thread, last.body)
+    if flow_meta(thread).get("scrape") and not thread.contact_name:
+        name = str(scraped_profile(thread).get("full_name") or "").strip()
+        if name:
+            thread.contact_name = name[:240]
+
+    asked = thread.last_field_asked or ""
+    if asked in ("", CONTACT_LINKEDIN):
+        return _linkedin_after_scrape(db, thread=thread, last=last)
+    if asked == BATCH_CONFIRM:
+        return _linkedin_after_confirm(db, thread=thread, last=last)
+    return _wrap_up(db, thread=thread, state=_coverage_for(thread))
+
+
+def _scrape_settled(thread: IntakeThread) -> bool:
+    meta = flow_meta(thread)
+    return bool(meta.get("scrape") or meta.get("error"))
+
+
+def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
+    org = db.get(Org, thread.org_id)
+    org_name = (getattr(org, "name", "") or "our team").strip()
+    body = intro_message(recruiter=prompts.recruiter_name(), org=org_name)
+    sent = _deliver(
+        db, thread=thread, message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN)
+    )
+    update_flow_meta(thread, phase="intro")
+    return TurnResult(
+        ACTION_GREETED,
+        thread,
+        _coverage_for(thread),
+        asked_field=CONTACT_LINKEDIN,
+        sent=[s for s in [sent] if s],
+    )
+
+
+def _enqueue_linkedin_scrape(db: Session, thread: IntakeThread) -> None:
+    meta = flow_meta(thread)
+    if meta.get("phase") == PHASE_SCRAPING and not _scrape_settled(thread):
+        # Already queued; a second inbound while we wait must not spend twice.
+        return
+    url = thread.contact_linkedin
+    update_flow_meta(thread, phase=PHASE_SCRAPING)
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_LINKEDIN_SCRAPE,
+        idempotency_key=f"{KIND_LINKEDIN_SCRAPE}:{thread.id}:{url}",
+        payload={"thread_id": thread.id, "linkedin_url": url},
+    )
+
+
+def _linkedin_after_scrape(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage
+) -> TurnResult:
+    meta = flow_meta(thread)
+    if meta.get("scrape"):
+        body = confirm_message(scraped_profile(thread))
+        sent = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body, asked_field=BATCH_CONFIRM)
+        )
+        update_flow_meta(thread, phase="confirm")
+        return TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=BATCH_CONFIRM,
+            sent=[s for s in [sent] if s],
+            extractor=thread.extractor,
+        )
+    # Scrape failed — skip confirm and go straight to the leftover questions.
+    preface = scrape_failed_message()
+    return _linkedin_gap_fill(db, thread=thread, last=last, preface=preface)
+
+
+def _linkedin_after_confirm(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage
+) -> TurnResult:
+    missing = linkedin_flow.short_missing(thread)
+    if not missing and thread.contact_name:
+        return _wrap_up(db, thread=thread, state=_coverage_for(thread))
+    return _linkedin_gap_fill(db, thread=thread, last=last)
+
+
+def _linkedin_gap_fill(
+    db: Session,
+    *,
+    thread: IntakeThread,
+    last: IntakeMessage,
+    preface: str = "",
+) -> TurnResult:
+    body, keys = gap_fill_message(thread, preface=preface)
+    if not body:
+        return _wrap_up(db, thread=thread, state=_coverage_for(thread))
+    sent = _deliver(
+        db, thread=thread, message=OutboundMessage(body=body, asked_field=BATCH_GAP_FILL)
+    )
+    counts = dict(thread.asked_counts or {})
+    for key in keys:
+        counts[key] = int(counts.get(key, 0)) + 1
+    thread.asked_counts = counts
+    update_flow_meta(thread, phase="gap_fill", gap_keys=keys)
+    return TurnResult(
+        ACTION_ASKED,
+        thread,
+        _coverage_for(thread),
+        asked_field=BATCH_GAP_FILL,
+        sent=[s for s in [sent] if s],
+        extractor=thread.extractor,
+    )
+
+
+def _absorb_years(thread: IntakeThread, body: str) -> None:
+    """IC follow-up: map '8 years' onto a seniority bucket in code, not by the model."""
+    if thread.last_field_asked not in {BATCH_GAP_FILL, "spec.seniority"}:
+        return
+    if not wants_years_question(thread) and "spec.seniority" not in (
+        flow_meta(thread).get("gap_keys") or []
+    ):
+        # Still try: they may have answered years unprompted in a batch.
+        pass
+    years = parse_years_experience(body)
+    if years is None:
+        return
+    thread.record = apply_years_to_record(thread.record, years)

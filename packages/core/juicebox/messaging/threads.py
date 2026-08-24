@@ -16,6 +16,7 @@ here, so the two invariants that matter have one place to live:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 from ..intake.schema import SCHEMA_VERSION, empty_record
 from ..models import IntakeMessage, IntakeThread, record_event, utcnow
 from .channels import WEB, DeliveryResult, OutboundMessage
+from .linkedin_flow import default_flow
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,8 @@ def open_thread(
     consent_messaging: bool = False,
     contact_name: str = "",
     contact_email: str = "",
+    contact_linkedin: str = "",
+    flow: str | None = None,
 ) -> IntakeThread:
     """Start a conversation.
 
@@ -73,6 +77,8 @@ def open_thread(
         consent_messaging=consent_messaging,
         contact_name=contact_name,
         contact_email=contact_email,
+        contact_linkedin=contact_linkedin,
+        flow=flow or default_flow(channel),
         status=STATUS_ACTIVE,
         record=empty_record(),
         schema_version=SCHEMA_VERSION,
@@ -266,6 +272,48 @@ def record_outbound(
             # in-place changes to a JSON dict, so a mutation here would be
             # dropped and the re-ask cap would never bite.
             thread.asked_counts = counts
+    db.flush()
+    return row
+
+
+def apply_status_event(
+    db: Session,
+    *,
+    provider_native_id: str,
+    event_type: str,
+    delivered_at: datetime | None = None,
+    read_at: datetime | None = None,
+    error: str = "",
+) -> IntakeMessage | None:
+    """Stamp delivery/read/failure onto an outbound row. Idempotent.
+
+    ``read`` implies ``delivered``. Timestamps are only set, never cleared, so
+    a delayed ``message.delivered`` after ``message.read`` is a no-op on
+    ``read_at`` and fills ``delivered_at`` if it was missing.
+    """
+    if not provider_native_id:
+        return None
+    row = db.scalar(
+        select(IntakeMessage).where(IntakeMessage.provider_native_id == provider_native_id)
+    )
+    if row is None:
+        return None
+    if delivered_at and row.delivered_at is None:
+        row.delivered_at = delivered_at
+    if read_at and row.read_at is None:
+        row.read_at = read_at
+        if row.delivered_at is None:
+            row.delivered_at = read_at
+    if event_type == "message.failed":
+        row.status = "failed"
+        if error:
+            row.error = error[:400]
+    elif event_type == "message.read":
+        if row.status != "failed":
+            row.status = "read"
+    elif event_type == "message.delivered":
+        if row.status not in {"read", "failed"}:
+            row.status = "delivered"
     db.flush()
     return row
 

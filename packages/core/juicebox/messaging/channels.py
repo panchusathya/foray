@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..config import get_settings
-from .linq import LinqSendError, send_message
+from .linq import LinqSendError, send_message, stop_typing
 
 WEB = "web"
 LINQ = "linq"
@@ -151,6 +151,9 @@ class LinqChannel:
     ) -> DeliveryResult:
         if not provider_thread_id:
             raise ChannelError("Linq send requires provider_thread_id (chat id)")
+        # Drop the typing indicator so iMessage does not keep showing it after
+        # the reply lands. Failures are swallowed inside stop_typing.
+        stop_typing(provider_thread_id)
         try:
             message_id = send_message(
                 chat_id=provider_thread_id,

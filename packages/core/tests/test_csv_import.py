@@ -299,3 +299,89 @@ class TestReachScoresAcrossNamespaces:
 
         candidate.raw = {}
         assert _email_reach_scores(candidate) == {}
+
+
+class TestCallerAttributionAfterAnImport:
+    """The reason phones are imported at all.
+
+    ``candidate_phones`` is what lets an inbound call be attributed, so a
+    candidate imported from a CSV with a number must be findable by the number
+    a voice platform hands us -- in whatever shape it hands it over.
+    """
+
+    def test_an_imported_number_is_matchable_in_every_format_a_provider_might_send(
+        self, client, account, session
+    ):
+        from juicebox.intake.service import resolve_candidate_id
+
+        body = client.post(
+            "/v1/candidates/bulk",
+            headers=account["headers"],
+            json={
+                "candidates": [
+                    csv_payload(
+                        source_id="li:ada",
+                        full_name="Ada Lovelace",
+                        emails=["ada@gmail.com"],
+                        phones=["+1 213-431-7465"],
+                    )
+                ]
+            },
+        ).json()
+        candidate_id = body["ids"][0]
+
+        # Every one of these is the same person. Before resolve_candidate_id
+        # normalised its input, only the tidy E.164 form matched and the rest
+        # silently produced an unattributed call.
+        for shape in (
+            "+12134317465",
+            "12134317465",
+            "2134317465",
+            "(213) 431-7465",
+            "213-431-7465",
+        ):
+            assert (
+                resolve_candidate_id(session, org_id=account["org_id"], phone=shape)
+                == candidate_id
+            ), shape
+
+    def test_an_unmatchable_number_still_matches_nobody(self, client, account, session):
+        """lookup_key refuses to guess a country, and that must survive the fix:
+        a wrong phone match discloses somebody else's record."""
+        from juicebox.intake.service import resolve_candidate_id
+
+        client.post(
+            "/v1/candidates/bulk",
+            headers=account["headers"],
+            json={
+                "candidates": [
+                    csv_payload(
+                        source_id="li:bo",
+                        full_name="Bo Diddley",
+                        emails=["bo@x.com"],
+                        phones=["+1 415-555-0123"],
+                    )
+                ]
+            },
+        )
+        for junk in ("", "12345", "987654321", "not a phone"):
+            assert resolve_candidate_id(session, org_id=account["org_id"], phone=junk) is None, junk
+
+    def test_a_number_from_another_org_is_never_matched(self, client, account, session):
+        from juicebox.intake.service import resolve_candidate_id
+
+        client.post(
+            "/v1/candidates/bulk",
+            headers=account["headers"],
+            json={
+                "candidates": [
+                    csv_payload(
+                        source_id="li:cy",
+                        full_name="Cy Young",
+                        emails=["cy@x.com"],
+                        phones=["+12134317465"],
+                    )
+                ]
+            },
+        )
+        assert resolve_candidate_id(session, org_id="org_someone_else", phone="+12134317465") is None

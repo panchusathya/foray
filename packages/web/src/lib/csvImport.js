@@ -122,6 +122,8 @@ const COLUMNS = {
   email: ['email', 'e-mail', 'email address'],
   emailStatus: ['email verification', 'email status'],
   phones: ['phone numbers', 'phone number', 'phone'],
+  phoneLineType: ['phone line type'],
+  phoneVerification: ['phone verification status', 'phone verification'],
   location: ['location'],
   linkedin: ['linkedin', 'linkedin url', 'linkedin profile'],
   github: ['github', 'github url'],
@@ -215,6 +217,29 @@ export function selectEmails(row, columns) {
   };
 }
 
+// Phone numbers, which the export can carry several of in one cell. Kept as
+// written rather than normalised here: `enrich.normalize.clean_phones` tidies
+// them for storage and `intake.phones.lookup_key` decides what is matchable,
+// and that key function deliberately refuses to guess a country. Duplicating
+// either rule in the browser is how the two drift apart.
+//
+// This matters for more than completeness: `candidate_phones` is what lets an
+// inbound call be attributed to a person, so a candidate imported without a
+// number can never be recognised when they ring back.
+export function selectPhones(row, columns) {
+  const cell = String(row[columns.phones] ?? '').trim();
+  if (!cell) return [];
+  const out = [];
+  for (const part of cell.split(/[,;|]+/)) {
+    const value = part.trim();
+    // Six digits is below any real subscriber number and is usually a stray
+    // extension or a spreadsheet artefact.
+    if (!value || (value.match(/\d/g) ?? []).length < 7) continue;
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
 export function normalizeEmail(value) {
   const trimmed = String(value ?? '').trim().toLowerCase();
   if (!trimmed || !trimmed.includes('@')) return '';
@@ -275,6 +300,7 @@ export const CSV_SOURCE = 'juicebox_csv';
 export function juiceboxRowToCandidate(row, columns) {
   const { usable, excluded } = selectEmails(row, columns);
   const emails = usable.map((e) => e.email);
+  const phones = selectPhones(row, columns);
 
   // Only scored addresses go in email_reach: _sendable_address treats an
   // unscored address as passing, "because the gate only applies when we
@@ -295,6 +321,7 @@ export function juiceboxRowToCandidate(row, columns) {
     current_title: (row[columns.currentTitle] ?? '').trim(),
     current_company: (row[columns.currentCompany] ?? '').trim(),
     emails,
+    phones,
     raw: {
       juicebox_csv: {
         email_reach: emailReach,
@@ -303,6 +330,10 @@ export function juiceboxRowToCandidate(row, columns) {
         excluded_emails: excluded.map((e) => ({ email: e.email, reason: e.verification })),
         education: (row[columns.education] ?? '').trim(),
         profile_url: (row[columns.profileUrl] ?? '').trim(),
+        // Not acted on, but the only record of why a number might be a bad
+        // one to call -- and it costs nothing to keep.
+        phone_line_type: (row[columns.phoneLineType] ?? '').trim(),
+        phone_verification: (row[columns.phoneVerification] ?? '').trim(),
       },
     },
   };

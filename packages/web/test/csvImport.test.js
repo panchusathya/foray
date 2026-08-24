@@ -18,6 +18,7 @@ import {
   readImportDraft,
   rowName,
   selectEmails,
+  selectPhones,
   sourceIdFor,
   summarizeImport,
 } from '../src/lib/csvImport.js';
@@ -350,5 +351,49 @@ describe('surviving a navigation', () => {
     const draft = readImportDraft(JSON.stringify({ text: 'a\n1\n', fileName: 7, chosen: 'no' }));
     assert.equal(draft.fileName, '');
     assert.deepEqual(draft.chosen, []);
+  });
+});
+
+describe('selectPhones', () => {
+  const columns = detectColumns(parseDelimited(fixture()).headers);
+
+  it('reads a single number as written', () => {
+    assert.deepEqual(selectPhones({ 'Phone Numbers': '+1 213-431-7465' }, columns), ['+1 213-431-7465']);
+  });
+
+  it('splits a cell carrying several', () => {
+    assert.deepEqual(
+      selectPhones({ 'Phone Numbers': '+12134317465, (415) 555-0123; 646-555-9999' }, columns),
+      ['+12134317465', '(415) 555-0123', '646-555-9999'],
+    );
+  });
+
+  it('drops something too short to be a subscriber number', () => {
+    assert.deepEqual(selectPhones({ 'Phone Numbers': 'x123, 4567' }, columns), []);
+  });
+
+  it('de-duplicates and tolerates an empty cell', () => {
+    assert.deepEqual(selectPhones({ 'Phone Numbers': '2134317465, 2134317465' }, columns), ['2134317465']);
+    assert.deepEqual(selectPhones({}, columns), []);
+    assert.deepEqual(selectPhones({ 'Phone Numbers': '   ' }, columns), []);
+  });
+
+  it('puts phones on the payload, so an inbound caller can be attributed', () => {
+    const { columns: c, rows } = parsedFixture(
+      '"Ada","Lovelace","SF","https://linkedin.com/in/ada","ada@gmail.com","Deliverable","","",'
+      + '"+12134317465","mobile","valid","","Research Engineer","Meta","","","","",""',
+    );
+    const payload = juiceboxRowToCandidate(rows[0], c);
+    assert.deepEqual(payload.phones, ['+12134317465']);
+    assert.equal(payload.raw.juicebox_csv.phone_line_type, 'mobile');
+    assert.equal(payload.raw.juicebox_csv.phone_verification, 'valid');
+  });
+
+  it('sends an empty list when the export carries no phone column', () => {
+    const { columns: c, rows } = parsedFixture(
+      '"Bo","Diddley","NY","https://linkedin.com/in/bo","bo@x.com","Deliverable","","","","","",'
+      + '"","Engineer","Acme","","","","",""',
+    );
+    assert.deepEqual(juiceboxRowToCandidate(rows[0], c).phones, []);
   });
 });

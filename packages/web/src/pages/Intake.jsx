@@ -17,7 +17,7 @@ export function IntakePage() {
       <PageHeader title="Intake" subtitle={view.blurb} />
       <ViewTabs views={INTAKE_VIEWS} activeId={view.id} basePath="/intake" />
       {view.panel === 'calls' ? <IntakeCalls /> : null}
-      {view.panel === 'threads' ? <IntakeThreads /> : null}
+      {view.panel === 'text' ? <IntakeThreads /> : null}
       {view.panel === 'review' ? <IntakeReview /> : null}
       {view.panel === 'matches' ? <IntakeMatches /> : null}
     </div>

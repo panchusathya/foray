@@ -7,19 +7,19 @@ export const INTAKE_VIEWS = [
   {
     id: 'calls',
     label: 'Calls',
-    blurb: 'Every intake call, identified or still waiting on a human.',
+    blurb: 'Every voice intake call — expand a row for the transcript and summary.',
     panel: 'calls',
   },
   {
-    id: 'threads',
-    label: 'Threads',
-    blurb: 'Every messaging intake conversation — web chat and iMessage.',
-    panel: 'threads',
+    id: 'text',
+    label: 'Text',
+    blurb: 'Every messaging intake conversation — expand a row for the full message log.',
+    panel: 'text',
   },
   {
     id: 'review',
     label: 'Review queue',
-    blurb: 'Extractions a recruiter still needs to check or attribute.',
+    blurb: 'Calls and texts a recruiter still needs to check or attribute.',
     panel: 'review',
   },
   {
@@ -33,5 +33,7 @@ export const INTAKE_VIEWS = [
 export const DEFAULT_VIEW_ID = 'calls';
 
 export function viewById(id) {
-  return INTAKE_VIEWS.find((view) => view.id === id) ?? INTAKE_VIEWS[0];
+  // Older links used ?view=threads.
+  const key = id === 'threads' ? 'text' : id;
+  return INTAKE_VIEWS.find((view) => view.id === key) ?? INTAKE_VIEWS[0];
 }

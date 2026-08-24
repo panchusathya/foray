@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
-import { intakeApi } from '../../lib/intake.js';
+import { intakeApi, messageReceipt } from '../../lib/intake.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -30,6 +30,9 @@ function ThreadMessages({ threadId }) {
                 </Badge>
                 {message.asked_field ? (
                   <span className="muted">asked {message.asked_field}</span>
+                ) : null}
+                {!inbound && messageReceipt(message) ? (
+                  <span className="muted">{messageReceipt(message)}</span>
                 ) : null}
               </span>
               <span className="muted">{when(message.sent_at || message.created_at)}</span>

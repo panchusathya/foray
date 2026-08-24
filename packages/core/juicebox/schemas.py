@@ -721,6 +721,8 @@ class IntakeTimelineMessageOut(BaseModel):
     status: str = ""
     created_at: datetime
     sent_at: datetime | None = None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
 
 
 class IntakeTimelineThreadOut(BaseModel):
@@ -1071,6 +1073,7 @@ class IntakeThreadSummary(BaseModel):
     status: str
     contact_name: str
     contact_email: str
+    contact_linkedin: str = ""
     from_address: str
     required_complete: bool
     review_needed: bool
@@ -1093,6 +1096,8 @@ class IntakeMessageOut(BaseModel):
     seq: int = 0
     created_at: datetime
     sent_at: datetime | None = None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
 
 
 class IntakeThreadOut(IntakeThreadSummary):

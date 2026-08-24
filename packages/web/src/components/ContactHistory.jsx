@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 
 import { api, providerLabel } from '../lib/api.js';
+import { messageReceipt } from '../lib/intake.js';
 import { useAsync } from '../lib/useAsync.js';
 import { Badge, Empty, ErrorBox, Loading } from './common.jsx';
 
@@ -185,7 +186,10 @@ function IntakeThreadHistory({ thread }) {
                   <Badge tone={inbound ? 'accent' : 'strong'}>
                     {inbound ? '← candidate' : '→ agent'}
                   </Badge>
-                  <span className="muted small">{when(message.sent_at || message.created_at)}</span>
+                  <span className="muted small">
+                    {!inbound && messageReceipt(message) ? `${messageReceipt(message)} · ` : ''}
+                    {when(message.sent_at || message.created_at)}
+                  </span>
                 </div>
                 <pre className="message-body">{message.body || '—'}</pre>
               </div>

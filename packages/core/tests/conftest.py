@@ -126,6 +126,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
+    from juicebox.enrich.linkedin_scrape import reset_scraper
     from juicebox.intake.providers import set_voice_provider
     from juicebox.integrations.foray import reset_foray, set_foray
     from juicebox.integrations.providers import reset_providers
@@ -150,6 +151,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_sender_factories()
     reset_providers()
     reset_channels()
+    reset_scraper()
     reset_foray()
     set_voice_provider(None)
 
@@ -178,6 +180,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_providers()
     # A test that injected a FakeChannel must not leak it into the next one.
     reset_channels()
+    reset_scraper()
     # Likewise a stubbed Foray client: leaking one would let a later test
     # think enrichment is configured when the deployment has no token.
     set_foray(None)
@@ -205,6 +208,16 @@ def mailbox():
     sender = MemorySender()
     set_sender(sender)
     return sender
+
+
+@pytest.fixture
+def fake_channel():
+    """Install a FakeChannel as the web channel and hand it back."""
+    from juicebox.messaging.channels import WEB, FakeChannel, set_channel
+
+    channel = FakeChannel()
+    set_channel(WEB, channel)
+    return channel
 
 
 @pytest.fixture

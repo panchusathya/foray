@@ -165,6 +165,8 @@ class TestReadApi:
         answers = patched.json()["field_answers"]
         assert answers
         assert all(row["candidate_id"] == person.id for row in answers)
+        session.refresh(person)
+        assert person.crm_tracked is True
 
     def test_confirm_sets_confirmed_at(self, client, session, account):
         person = _person(session, account["org_id"])
@@ -306,6 +308,7 @@ class TestRematchAndTimeline:
         ).json()
         types = [event["type"] for event in timeline["events"]]
         assert "intake.extracted" in types
+        assert timeline["intake_threads"] == []
         rival = _other_headers(client)
         assert (
             client.get(
@@ -313,3 +316,41 @@ class TestRematchAndTimeline:
             ).status_code
             == 404
         )
+
+    def test_timeline_includes_messaging_threads(self, client, session, account):
+        from juicebox.messaging.channels import WEB, DeliveryResult, OutboundMessage
+        from juicebox.messaging.threads import open_thread, record_inbound, record_outbound
+
+        person = _person(session, account["org_id"])
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            entry_point="web_widget",
+            candidate_id=person.id,
+            consent_messaging=True,
+        )
+        record_outbound(
+            session,
+            thread=thread,
+            message=OutboundMessage(body="What roles are you after?"),
+            result=DeliveryResult(status="sent"),
+        )
+        record_inbound(
+            session,
+            thread=thread,
+            body="Senior backend in SF",
+            provider_native_id="m-1",
+        )
+        session.commit()
+
+        timeline = client.get(
+            f"/v1/candidates/{person.id}/timeline", headers=account["headers"]
+        ).json()
+        assert len(timeline["intake_threads"]) == 1
+        assert timeline["intake_threads"][0]["thread_id"] == thread.id
+        bodies = [m["body"] for m in timeline["intake_threads"][0]["messages"]]
+        assert "What roles are you after?" in bodies
+        assert "Senior backend in SF" in bodies
+        types = [event["type"] for event in timeline["events"]]
+        assert "intake.thread.opened" in types

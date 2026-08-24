@@ -104,6 +104,7 @@ class TestPlacingTheCall:
         assert candidate.first_name == "Ada"
         assert TARGET in candidate.phones
         assert "ada@example.com" in candidate.emails
+        assert candidate.crm_tracked is True
         # Projected, so the inbound line can recognise them when they call back.
         assert session.scalar(select(CandidatePhone.phone)) == TARGET
 

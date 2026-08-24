@@ -29,6 +29,18 @@ from ..repository import owner_of_email, upsert_candidates
 
 logger = logging.getLogger(__name__)
 
+
+def _mark_crm_tracked(db: Session, candidate_id: str) -> None:
+    """Intake-linked people belong on the default Contacts grid."""
+    # Late import: crm -> outreach -> sequencer -> crm would cycle if
+    # messaging.identity pulled track at module load.
+    from ..crm import track
+
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is not None:
+        track(candidate)
+        db.flush()
+
 # Pseudo-fields. Namespaced with a dot so they can never collide with an
 # intake.schema key, which is what `asked_field` otherwise holds.
 CONTACT_NAME = "contact.name"
@@ -137,6 +149,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     splits their history and their preferences across two records.
     """
     if thread.candidate_id:
+        _mark_crm_tracked(db, thread.candidate_id)
         return thread.candidate_id
 
     email = (thread.contact_email or "").strip().lower()
@@ -157,6 +170,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     existing = owner_of_email(db, org_id=thread.org_id, email=email)
     if existing:
         thread.candidate_id = existing
+        _mark_crm_tracked(db, existing)
         return existing
 
     result = upsert_candidates(
@@ -174,6 +188,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     if not result.ids:
         return None
     thread.candidate_id = result.ids[0]
+    _mark_crm_tracked(db, thread.candidate_id)
     return thread.candidate_id
 
 
@@ -203,6 +218,7 @@ def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) ->
             )
 
     thread.candidate_id = candidate.id
+    _mark_crm_tracked(db, candidate.id)
 
     # Whatever the conversation captured now has a person to hang off. Guarded
     # on there being something: attributing an empty thread must not write an

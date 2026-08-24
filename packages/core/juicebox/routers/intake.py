@@ -53,6 +53,7 @@ from ..intake.service import (
     schedule_extraction,
 )
 from ..messaging.identity import AttributionError, attribute_thread
+from ..messaging.threads import messages_of
 from ..models import (
     Candidate,
     CandidatePreference,
@@ -67,7 +68,9 @@ from ..schemas import (
     IntakeCallPatch,
     IntakeCallSummary,
     IntakeFieldAnswerOut,
+    IntakeMessageOut,
     IntakeThreadCountOut,
+    IntakeThreadOut,
     IntakeThreadPatch,
     IntakeThreadSummary,
 )
@@ -403,6 +406,26 @@ def _thread_for_org(db: Session, thread_id: str, org_id: str) -> IntakeThread:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such thread")
     return row
+
+
+def _thread_out(db: Session, thread: IntakeThread) -> IntakeThreadOut:
+    return IntakeThreadOut(
+        **IntakeThreadSummary.model_validate(thread).model_dump(),
+        messages=[IntakeMessageOut.model_validate(m) for m in messages_of(db, thread)],
+        record=dict(thread.record or {}),
+        fields_missing=list(thread.fields_missing or []),
+    )
+
+
+@router.get("/threads/{thread_id}", response_model=IntakeThreadOut)
+def get_intake_thread(
+    thread_id: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> IntakeThreadOut:
+    """Full messaging thread for the recruiter, including message bodies."""
+    thread = _thread_for_org(db, thread_id, principal.org_id)
+    return _thread_out(db, thread)
 
 
 @router.patch("/threads/{thread_id}", response_model=IntakeThreadSummary)

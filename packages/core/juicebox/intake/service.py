@@ -435,10 +435,13 @@ def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResu
 
 def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> IntakeCall:
     """A human says who an unidentified caller was."""
+    from ..crm import track
+
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.org_id != call.org_id:
         raise CallRequestError("That candidate is not in this workspace.")
     call.candidate_id = candidate.id
+    track(candidate)
     for row in db.scalars(
         select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
     ):
@@ -749,11 +752,14 @@ def _find_or_create_candidate(
     dial-in line we refuse to create anyone, because a stranger dialling a
     number has not asked to be in the CRM.
     """
+    from ..crm import track
+
     existing_id = resolve_candidate_id(db, org_id=org_id, phone=phone)
     if existing_id:
         candidate = db.get(Candidate, existing_id)
         if candidate is not None:
             _merge_contact_details(db, candidate, phone=phone, email=email, name=name)
+            track(candidate)
             return candidate
 
     address = (email or "").strip().lower()
@@ -767,6 +773,7 @@ def _find_or_create_candidate(
             candidate = db.get(Candidate, owner.candidate_id)
             if candidate is not None:
                 _merge_contact_details(db, candidate, phone=phone, email=address, name=name)
+                track(candidate)
                 return candidate
 
     first, last = split_name(name)
@@ -786,6 +793,7 @@ def _find_or_create_candidate(
     db.flush()
     sync_candidate_emails(db, candidate)
     sync_candidate_phones(db, candidate)
+    track(candidate)
     return candidate
 
 

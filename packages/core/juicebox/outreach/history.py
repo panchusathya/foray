@@ -15,7 +15,7 @@ from datetime import datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from ..models import Event, IntakeCall, Message
+from ..models import Event, IntakeCall, IntakeMessage, IntakeThread, Message
 
 
 @dataclass
@@ -33,6 +33,26 @@ class Thread:
     subject: str
     last_at: datetime | None
     messages: list[Message] = field(default_factory=list)
+
+
+@dataclass
+class IntakeTimelineMessage:
+    id: str
+    direction: str
+    body: str
+    asked_field: str
+    status: str
+    created_at: datetime
+    sent_at: datetime | None
+
+
+@dataclass
+class IntakeTimelineThread:
+    thread_id: str
+    channel: str
+    status: str
+    last_at: datetime | None
+    messages: list[IntakeTimelineMessage] = field(default_factory=list)
 
 
 def _when(column):
@@ -149,15 +169,18 @@ def candidate_timeline(
 def intake_events_for_candidate(
     db: Session, *, org_id: str, candidate_id: str, limit: int = 50
 ) -> list[Event]:
-    """Intake events whose subject is a call attributed to this person.
+    """Intake events for calls and messaging threads attributed to this person.
 
-    ``record_event`` already writes ``intake.call_requested`` and
-    ``intake.extracted`` against the call id. The rendered timeline just
-    needs to find them.
+    ``record_event`` writes against the call or thread id. The rendered
+    timeline finds both so a text intake is not invisible next to a call.
     """
     call_ids = select(IntakeCall.id).where(
         IntakeCall.org_id == org_id,
         IntakeCall.candidate_id == candidate_id,
+    )
+    thread_ids = select(IntakeThread.id).where(
+        IntakeThread.org_id == org_id,
+        IntakeThread.candidate_id == candidate_id,
     )
     return list(
         db.scalars(
@@ -165,9 +188,67 @@ def intake_events_for_candidate(
             .where(
                 Event.org_id == org_id,
                 Event.type.like("intake.%"),
-                Event.subject_id.in_(call_ids),
+                Event.subject_id.in_(call_ids.union(thread_ids)),
             )
             .order_by(Event.created_at.desc())
             .limit(limit)
         ).all()
     )
+
+
+def intake_threads_for_candidate(
+    db: Session, *, org_id: str, candidate_id: str, limit: int = 20
+) -> list[IntakeTimelineThread]:
+    """Attributed messaging conversations with their messages, oldest first."""
+    threads = list(
+        db.scalars(
+            select(IntakeThread)
+            .where(
+                IntakeThread.org_id == org_id,
+                IntakeThread.candidate_id == candidate_id,
+            )
+            .order_by(IntakeThread.created_at.desc())
+            .limit(limit)
+        ).all()
+    )
+    if not threads:
+        return []
+
+    thread_ids = [thread.id for thread in threads]
+    messages = list(
+        db.scalars(
+            select(IntakeMessage)
+            .where(IntakeMessage.thread_id.in_(thread_ids))
+            .order_by(IntakeMessage.thread_id, IntakeMessage.seq)
+        ).all()
+    )
+    by_thread: dict[str, list[IntakeTimelineMessage]] = {thread.id: [] for thread in threads}
+    for message in messages:
+        by_thread.setdefault(message.thread_id, []).append(
+            IntakeTimelineMessage(
+                id=message.id,
+                direction=message.direction,
+                body=message.body or "",
+                asked_field=message.asked_field or "",
+                status=message.status or "",
+                created_at=message.created_at,
+                sent_at=message.sent_at,
+            )
+        )
+
+    result: list[IntakeTimelineThread] = []
+    for thread in threads:
+        items = by_thread.get(thread.id) or []
+        last_at = thread.last_inbound_at or thread.last_outbound_at or thread.created_at
+        if items:
+            last_at = items[-1].sent_at or items[-1].created_at
+        result.append(
+            IntakeTimelineThread(
+                thread_id=thread.id,
+                channel=thread.channel,
+                status=thread.status,
+                last_at=last_at,
+                messages=items,
+            )
+        )
+    return result

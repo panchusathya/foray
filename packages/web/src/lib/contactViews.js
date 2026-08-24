@@ -138,8 +138,8 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'voice_intake',
-    label: 'Voice intake',
-    blurb: 'People who have spoken to Vivian, with the preferences they stated.',
+    label: 'Intake',
+    blurb: 'People who completed a call or text intake, with the preferences they stated.',
     columns: [
       'full_name',
       'current_title',
@@ -151,7 +151,7 @@ export const CONTACT_VIEWS = [
     sort: 'created',
     dir: 'desc',
     params: { scope: 'voice_intake' },
-    empty: 'Nobody has completed an intake call yet.',
+    empty: 'Nobody has completed an intake yet.',
   },
   {
     id: 'all',

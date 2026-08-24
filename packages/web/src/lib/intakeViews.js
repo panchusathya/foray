@@ -11,6 +11,12 @@ export const INTAKE_VIEWS = [
     panel: 'calls',
   },
   {
+    id: 'threads',
+    label: 'Threads',
+    blurb: 'Every messaging intake conversation — web chat and iMessage.',
+    panel: 'threads',
+  },
+  {
     id: 'review',
     label: 'Review queue',
     blurb: 'Extractions a recruiter still needs to check or attribute.',

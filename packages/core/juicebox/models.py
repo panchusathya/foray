@@ -1874,6 +1874,55 @@ class CandidateDocument(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
+class CandidateAuthGrant(Base, TimestampMixin):
+    """One single-use portal magic link, and whether it was spent.
+
+    The signature alone is not enough: a texted link lands in SMS previews,
+    browser history, and forwarded screenshots, so its JWT carries a ``jti``
+    pointing here and the exchange endpoint marks the row consumed. A second
+    exchange finds ``consumed_at`` set and refuses — replay is a 401, not a
+    second session.
+    """
+
+    __tablename__ = "candidate_auth_grants"
+    __table_args__ = (Index("ix_candidate_auth_grants_candidate", "org_id", "candidate_id"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cgrant"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # sms | email | otp | recruiter -- how the link (or session) was issued.
+    channel: Mapped[str] = mapped_column(String(16), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PortalOtp(Base, TimestampMixin):
+    """A six-digit email code: the bookmark-return path into the portal.
+
+    The code is HMAC-hashed at rest (a leaked table must not be a login), a
+    verify attempt increments ``attempts`` and hard-fails at the cap, and
+    issuance is capped per address per hour in the request endpoint. The
+    request endpoint always answers 202 — an attacker learns nothing about
+    which addresses exist.
+    """
+
+    __tablename__ = "portal_otps"
+    __table_args__ = (Index("ix_portal_otps_email", "email"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("potp"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    email: Mapped[str] = mapped_column(String(255))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 # --------------------------------------------------------------------------
 # derived columns, guaranteed at the ORM layer
 # --------------------------------------------------------------------------

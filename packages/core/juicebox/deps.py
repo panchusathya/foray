@@ -13,8 +13,15 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from .db import get_session_factory
-from .models import ApiKey, User, utcnow
+from .models import ApiKey, Candidate, User, utcnow
 from .security import TokenError, decode_access_token, hash_api_key
+
+# Payload `typ` values that separate candidate tokens from recruiter tokens.
+# Recruiter/user tokens carry no `typ` (they predate the claim); candidate
+# tokens always do, and each principal reader checks the claim EXPLICITLY in
+# both directions -- the two dependency functions below are the only wall
+# between the two surfaces, because everything signs with one SECRET_KEY.
+CANDIDATE_TOKEN_TYPES = frozenset({"candidate", "portal-link"})
 
 
 def get_db(request: Request) -> Iterator[Session]:
@@ -100,6 +107,12 @@ def get_principal(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
+    # Explicit, not incidental: a candidate token would also fail the User
+    # lookup below, but the rejection must not depend on id prefixes never
+    # colliding. A candidate session on a recruiter route is always a 401.
+    if payload.get("typ") in CANDIDATE_TOKEN_TYPES:
+        raise _UNAUTHORIZED
+
     user = db.get(User, payload["sub"])
     if user is None or not user.is_active:
         raise _UNAUTHORIZED
@@ -110,3 +123,46 @@ def require_write(principal: Principal = Depends(get_principal)) -> Principal:
     if not principal.can_write:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read-only principal")
     return principal
+
+
+@dataclass
+class CandidatePrincipal:
+    """Who a portal session speaks for. One candidate, one org, nothing else.
+
+    Deliberately not a ``Principal``: nothing that accepts a ``Principal``
+    can be handed one of these by accident, and portal routes scope every
+    query by BOTH ids -- never load-then-check.
+    """
+
+    org_id: str
+    candidate_id: str
+    kind: str = "candidate"
+
+
+def get_candidate_principal(
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+) -> CandidatePrincipal:
+    """Bearer-only, and the token must say ``typ: candidate`` exactly.
+
+    A recruiter token (no ``typ``) is refused; so is a magic-link token
+    (``typ: portal-link``) -- a link is exchanged for a session, never used
+    as one, or every link forwarded in a screenshot would be a session.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise _UNAUTHORIZED
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = decode_access_token(token)
+    except TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if payload.get("typ") != "candidate":
+        raise _UNAUTHORIZED
+    candidate = db.get(Candidate, payload["sub"])
+    if candidate is None or candidate.org_id != payload.get("org"):
+        raise _UNAUTHORIZED
+    return CandidatePrincipal(org_id=candidate.org_id, candidate_id=candidate.id)

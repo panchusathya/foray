@@ -852,3 +852,37 @@ def delete_note(
 ) -> None:
     note = _load_note(db, note_id, principal)
     db.delete(note)
+
+
+@router.post("/{candidate_id}/portal-link")
+def mint_candidate_portal_link(
+    candidate_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """A single-use portal magic link for this candidate.
+
+    The recruiter's copy of what the messaging agent texts: same minting
+    function, same grant row, same TTL. Doubles as the e2e hook before the
+    thread flow exists for a given person.
+    """
+    from sqlalchemy import select as _select
+
+    from ..config import get_settings as _get_settings
+    from ..models import Candidate as _Candidate
+    from ..portal.links import mint_portal_link
+
+    candidate = db.scalar(
+        _select(_Candidate).where(
+            _Candidate.id == candidate_id, _Candidate.org_id == principal.org_id
+        )
+    )
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+    url = mint_portal_link(
+        db,
+        org_id=principal.org_id,
+        candidate_id=candidate.id,
+        channel="recruiter",
+    )
+    return {"url": url, "expires_in": _get_settings().portal_link_ttl_seconds}

@@ -385,6 +385,30 @@ class Settings:
         default_factory=lambda: _env_int("PROFILE_INGEST_RECHECK_DAYS", 30)
     )
 
+    # --- candidate portal (apply.goforay.io) ---------------------------------
+    # Where magic links point. The api and worker mint links, so THEY carry
+    # this; the portal container itself never needs it.
+    portal_base_url: str = field(
+        default_factory=lambda: _env("PORTAL_BASE_URL", "http://localhost:5174")
+    )
+    # A texted link is short-lived and single-use; the session it exchanges
+    # into lasts a week. The OTP sits between: ten minutes, five attempts.
+    portal_link_ttl_seconds: int = field(
+        default_factory=lambda: _env_int("PORTAL_LINK_TTL_SECONDS", 900)
+    )
+    portal_session_ttl_seconds: int = field(
+        default_factory=lambda: _env_int("PORTAL_SESSION_TTL_SECONDS", 7 * 24 * 3600)
+    )
+    portal_otp_ttl_seconds: int = field(
+        default_factory=lambda: _env_int("PORTAL_OTP_TTL_SECONDS", 600)
+    )
+    portal_otp_max_attempts: int = field(
+        default_factory=lambda: _env_int("PORTAL_OTP_MAX_ATTEMPTS", 5)
+    )
+    portal_otp_hourly_cap: int = field(
+        default_factory=lambda: _env_int("PORTAL_OTP_HOURLY_CAP", 3)
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

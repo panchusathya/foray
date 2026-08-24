@@ -13,7 +13,12 @@ test.describe('intake', () => {
     await expect(page.getByTestId('view-tabs')).toBeVisible();
     await expect(page.getByTestId('view-tabs').getByRole('link', { name: 'Calls' })).toBeVisible();
     await expect(page.getByTestId('intake-calls')).toBeVisible();
-    await expect(page.getByText('No intake calls yet.')).toBeVisible();
+    await expect(page.getByText('No voice intake calls yet.')).toBeVisible();
+
+    await page.getByTestId('view-tabs').getByRole('link', { name: 'Text' }).click();
+    await expect(page).toHaveURL(/view=text/);
+    await expect(page.getByTestId('intake-threads')).toBeVisible();
+    await expect(page.getByText('No text intake conversations yet.')).toBeVisible();
 
     await page.getByTestId('view-tabs').getByRole('link', { name: 'Review queue' }).click();
     await expect(page).toHaveURL(/view=review/);
@@ -24,8 +29,8 @@ test.describe('intake', () => {
     await expect(page.getByTestId('intake-matches')).toBeVisible();
 
     await page.goto('/contacts?view=voice_intake');
-    await expect(page.getByTestId('view-tabs').getByRole('link', { name: 'Voice intake' })).toBeVisible();
-    await expect(page.getByText('Nobody has completed an intake call yet.')).toBeVisible();
+    await expect(page.getByTestId('view-tabs').getByRole('link', { name: 'Intake' })).toBeVisible();
+    await expect(page.getByText('Nobody has completed an intake yet.')).toBeVisible();
   });
 
   test('the person record has intake and jobs tabs', async ({ page, request }) => {

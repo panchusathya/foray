@@ -4,12 +4,15 @@ import { Link } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, PageHeader, Stat } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import {
+  IMPORT_STATE_KEY,
   buildImportRows,
   chunk,
   describeImport,
   detectColumns,
   hasEmailColumn,
   parseDelimited,
+  pruneChosen,
+  readImportDraft,
   summarizeImport,
 } from '../lib/csvImport.js';
 
@@ -65,6 +68,7 @@ export function ImportPage() {
   const [chosen, setChosen] = useState(() => new Set());
   const [showAll, setShowAll] = useState(false);
   const [sheetNote, setSheetNote] = useState('');
+  const [landed, setLanded] = useState(null);
 
   const [sequences, setSequences] = useState([]);
   const [sequenceId, setSequenceId] = useState('');
@@ -74,6 +78,22 @@ export function ImportPage() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
+
+  // Restore a draft before anything else, so coming back from Sequences lands
+  // on the same table you left.
+  useEffect(() => {
+    let draft = null;
+    try {
+      draft = readImportDraft(window.sessionStorage.getItem(IMPORT_STATE_KEY));
+    } catch {
+      draft = null;
+    }
+    if (!draft) return;
+    setFileName(draft.fileName);
+    setSheetNote(draft.sheetNote);
+    load(draft.text, { keep: draft.chosen });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -141,6 +161,13 @@ export function ImportPage() {
       }
     }
 
+    load(text, { keep: null });
+    remember(text);
+  }
+
+  // One place that turns delimited text into the review table, used by both a
+  // fresh file and a restored draft.
+  function load(text, { keep }) {
     const { headers, rows } = parseDelimited(text);
     if (!rows.length) {
       setImportRows([]);
@@ -152,10 +179,56 @@ export function ImportPage() {
     const built = buildImportRows(rows, detected);
     setColumns(detected);
     setImportRows(built);
-    // Pre-select exactly the rows that can be mailed. Everything else is
-    // visible but off, so the default action is never the surprising one.
-    setChosen(new Set(built.filter((r) => r.sendable).map((r) => r.key)));
+    // Pre-select exactly the rows that can be mailed unless we are restoring a
+    // selection. Everything else is visible but off, so the default action is
+    // never the surprising one.
+    setChosen(
+      new Set(keep ? pruneChosen(keep, built) : built.filter((r) => r.sendable).map((r) => r.key)),
+    );
     setShowAll(false);
+  }
+
+  // sessionStorage, not state: routing to Sequences unmounts this page, and
+  // losing the file on the way back reads as the screen wiping your work.
+  // Wrapped because a private window or a full quota throws on write.
+  function remember(text, chosenKeys) {
+    try {
+      window.sessionStorage.setItem(
+        IMPORT_STATE_KEY,
+        JSON.stringify({
+          fileName,
+          text,
+          sheetNote,
+          chosen: chosenKeys ?? [...chosen],
+        }),
+      );
+    } catch {
+      /* the draft just will not survive a navigation */
+    }
+  }
+
+  function forget() {
+    try {
+      window.sessionStorage.removeItem(IMPORT_STATE_KEY);
+    } catch {
+      /* nothing to clean up */
+    }
+  }
+
+  // Persisting the selection separately from the text: the file is written once,
+  // the checkboxes change constantly.
+  function persistChosen(next) {
+    try {
+      const raw = window.sessionStorage.getItem(IMPORT_STATE_KEY);
+      const draft = readImportDraft(raw);
+      if (!draft) return;
+      window.sessionStorage.setItem(
+        IMPORT_STATE_KEY,
+        JSON.stringify({ ...draft, chosen: [...next] }),
+      );
+    } catch {
+      /* selection just will not survive a navigation */
+    }
   }
 
   function toggle(key) {
@@ -163,6 +236,7 @@ export function ImportPage() {
       const next = new Set(previous);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      persistChosen(next);
       return next;
     });
   }
@@ -175,6 +249,7 @@ export function ImportPage() {
         if (on) next.add(row.key);
         else next.delete(row.key);
       }
+      persistChosen(next);
       return next;
     });
   }
@@ -187,7 +262,9 @@ export function ImportPage() {
     setParseError('');
     setStatus('');
     setSheetNote('');
+    setLanded(null);
     setError(null);
+    forget();
     if (inputRef.current) inputRef.current.value = '';
   }
 
@@ -213,6 +290,7 @@ export function ImportPage() {
       const imported = `${created} new, ${updated} updated`;
       if (!enroll) {
         setStatus(`Imported ${ids.length} into contacts (${imported}).`);
+        setLanded({ count: ids.length, sequenceId: '', sequenceName: '' });
         setBusy('');
         return;
       }
@@ -228,6 +306,7 @@ export function ImportPage() {
           + `${enrollments?.length ?? ids.length} in ${name}`
           + `${sendNow ? ' — the first email is going out now.' : '.'}`,
       );
+      setLanded({ count: ids.length, sequenceId, sequenceName: name });
     } catch (caught) {
       setError(caught);
     } finally {
@@ -350,6 +429,20 @@ export function ImportPage() {
             {status ? (
               <div className="small" data-testid="import-status">
                 {status}
+              </div>
+            ) : null}
+            {landed ? (
+              <div className="small muted" data-testid="import-landed">
+                Where it went:{' '}
+                <Link to="/contacts">Contacts</Link> (imported people are tracked in the
+                CRM){landed.sequenceId ? (
+                  <>
+                    {', and '}
+                    <Link to={`/sequences/${landed.sequenceId}`}>{landed.sequenceName}</Link>
+                    {' for the enrollments and what has been sent'}
+                  </>
+                ) : null}
+                . Nothing is added to a project — enrolling is what starts the outreach.
               </div>
             ) : null}
           </div>

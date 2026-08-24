@@ -384,3 +384,41 @@ export function chunk(items, size = BULK_CHUNK) {
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
 }
+
+// --------------------------------------------------------------------------
+// surviving a navigation
+// --------------------------------------------------------------------------
+
+// The review table lives in component state, so routing to Sequences and back
+// used to unmount it and silently lose the file -- which reads as "the import
+// screen wiped my work". The page keeps the raw text in sessionStorage and
+// re-derives the rows on mount; re-parsing is instant and far smaller to store
+// than the built rows.
+export const IMPORT_STATE_KEY = 'juicebox.import.draft';
+
+// Keys are index-prefixed, so a selection only means anything against the rows
+// it was made on. Dropping unknown keys stops a restored selection from
+// claiming rows that are not there.
+export function pruneChosen(keys, importRows) {
+  const valid = new Set(importRows.filter((r) => r.sendable).map((r) => r.key));
+  return (keys ?? []).filter((key) => valid.has(key));
+}
+
+// Rejects anything that is not the shape we wrote -- a stale key from an older
+// version of this page must not throw on mount.
+export function readImportDraft(raw) {
+  if (!raw) return null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed.text !== 'string' || !parsed.text) return null;
+  return {
+    fileName: typeof parsed.fileName === 'string' ? parsed.fileName : '',
+    text: parsed.text,
+    chosen: Array.isArray(parsed.chosen) ? parsed.chosen.filter((k) => typeof k === 'string') : [],
+    sheetNote: typeof parsed.sheetNote === 'string' ? parsed.sheetNote : '',
+  };
+}

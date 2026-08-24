@@ -14,6 +14,8 @@ import {
   linkedinSlug,
   normalizeEmail,
   parseDelimited,
+  pruneChosen,
+  readImportDraft,
   rowName,
   selectEmails,
   sourceIdFor,
@@ -300,5 +302,53 @@ describe('chunk', () => {
     assert.equal(parts[0].length, BULK_CHUNK);
     assert.equal(parts[1].length, 3);
     assert.deepEqual(chunk([]), []);
+  });
+});
+
+describe('surviving a navigation', () => {
+  const { columns, rows } = parsedFixture(
+    '"Ada","Lovelace","SF","https://linkedin.com/in/ada","ada@gmail.com","Deliverable","","",'
+    + '"","","","","Research Engineer","Meta","","","","",""',
+    '"Bo","Diddley","NY","https://linkedin.com/in/bo","","","","","","","","",'
+    + '"Engineer","Acme","","","","",""',
+  );
+  const importRows = buildImportRows(rows, columns);
+
+  it('keeps a selection that still matches the rows', () => {
+    const keys = importRows.filter((r) => r.sendable).map((r) => r.key);
+    assert.deepEqual(pruneChosen(keys, importRows), keys);
+  });
+
+  it('drops a key from a different file rather than claiming a row', () => {
+    assert.deepEqual(pruneChosen(['0:li:someone-else'], importRows), []);
+    assert.deepEqual(pruneChosen(undefined, importRows), []);
+  });
+
+  it('never restores a row that cannot be mailed', () => {
+    const blocked = importRows.find((r) => !r.sendable);
+    assert.deepEqual(pruneChosen([blocked.key], importRows), []);
+  });
+
+  it('reads back a draft it wrote', () => {
+    const draft = readImportDraft(
+      JSON.stringify({ fileName: 'x.csv', text: 'a,b\n1,2\n', chosen: ['0:a'], sheetNote: 'n' }),
+    );
+    assert.equal(draft.fileName, 'x.csv');
+    assert.equal(draft.chosen.length, 1);
+    assert.equal(draft.sheetNote, 'n');
+  });
+
+  it('refuses junk instead of throwing on mount', () => {
+    assert.equal(readImportDraft(null), null);
+    assert.equal(readImportDraft(''), null);
+    assert.equal(readImportDraft('not json'), null);
+    assert.equal(readImportDraft('{"text":""}'), null);
+    assert.equal(readImportDraft('{"nope":1}'), null);
+  });
+
+  it('tolerates a draft whose fields are the wrong type', () => {
+    const draft = readImportDraft(JSON.stringify({ text: 'a\n1\n', fileName: 7, chosen: 'no' }));
+    assert.equal(draft.fileName, '');
+    assert.deepEqual(draft.chosen, []);
   });
 });

@@ -95,6 +95,13 @@ lint: ## Lint the Python package
 format: ## Autoformat the Python package
 	$(BIN)/python -m ruff format packages/core packages/foray eval
 
+.PHONY: linq-verify linq-setup
+linq-verify: ## Check Linq API credentials and list phone numbers
+	$(PY) deploy/linq_setup.py verify
+
+linq-setup: ## Show Linq intake wiring status (credentials, numbers, webhooks)
+	$(PY) deploy/linq_setup.py status
+
 # ----------------------------------------------------------------- misc ----
 
 .PHONY: build-web

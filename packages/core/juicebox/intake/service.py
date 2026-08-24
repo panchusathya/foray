@@ -654,7 +654,9 @@ def request_intake_call(
 
     number = db.scalar(
         select(IntakeNumber).where(
-            IntakeNumber.org_id == org_id, IntakeNumber.active.is_(True)
+            IntakeNumber.org_id == org_id,
+            IntakeNumber.active.is_(True),
+            IntakeNumber.provider == "retell",
         )
     )
     if number is None:

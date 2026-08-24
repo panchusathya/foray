@@ -21,7 +21,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from ..config import get_settings
+from .linq import LinqSendError, send_message
+
 WEB = "web"
+LINQ = "linq"
 FAKE = "fake"
 
 
@@ -46,6 +50,9 @@ class OutboundMessage:
 
     body: str
     asked_field: str = ""
+    # Stable key for vendor send idempotency. ``conversation._deliver`` fills
+    # ``{thread_id}:{seq}`` when blank so a retry reuses the same key.
+    send_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,7 +92,13 @@ class MessageChannel(Protocol):
         """True where a regulator requires prior express consent to send."""
         ...
 
-    def send(self, *, to_address: str, message: OutboundMessage) -> DeliveryResult: ...
+    def send(
+        self,
+        *,
+        to_address: str,
+        message: OutboundMessage,
+        provider_thread_id: str = "",
+    ) -> DeliveryResult: ...
 
 
 class WebChatChannel:
@@ -107,8 +120,46 @@ class WebChatChannel:
         # unsolicited message to consent to, and no carrier in the path.
         return False
 
-    def send(self, *, to_address: str, message: OutboundMessage) -> DeliveryResult:
+    def send(
+        self,
+        *,
+        to_address: str,
+        message: OutboundMessage,
+        provider_thread_id: str = "",
+    ) -> DeliveryResult:
         return DeliveryResult(status="sent")
+
+
+class LinqChannel:
+    """Linq iMessage / RCS / SMS. Outbound replies go to an existing chat."""
+
+    name = LINQ
+
+    def is_configured(self) -> bool:
+        settings = get_settings()
+        return bool(settings.linq_api_key and settings.linq_from_number)
+
+    def requires_consent(self) -> bool:
+        return True
+
+    def send(
+        self,
+        *,
+        to_address: str,
+        message: OutboundMessage,
+        provider_thread_id: str = "",
+    ) -> DeliveryResult:
+        if not provider_thread_id:
+            raise ChannelError("Linq send requires provider_thread_id (chat id)")
+        try:
+            message_id = send_message(
+                chat_id=provider_thread_id,
+                body=message.body,
+                idempotency_key=message.send_key or message.asked_field or message.body[:255],
+            )
+        except LinqSendError as exc:
+            raise ChannelError(str(exc)) from exc
+        return DeliveryResult(status="sent", provider_native_id=message_id)
 
 
 class FakeChannel:
@@ -132,22 +183,28 @@ class FakeChannel:
     def requires_consent(self) -> bool:
         return self._consent
 
-    def send(self, *, to_address: str, message: OutboundMessage) -> DeliveryResult:
+    def send(
+        self,
+        *,
+        to_address: str,
+        message: OutboundMessage,
+        provider_thread_id: str = "",
+    ) -> DeliveryResult:
         if self.fail_next:
             detail, self.fail_next = self.fail_next, ""
             raise ChannelError(detail)
-        self.sent.append((to_address, message))
+        self.sent.append((to_address, message, provider_thread_id))
         return DeliveryResult(
             status="sent", provider_native_id=f"fake-{len(self.sent)}"
         )
 
     @property
     def bodies(self) -> list[str]:
-        return [message.body for _, message in self.sent]
+        return [item[1].body for item in self.sent]
 
 
 _channels: dict[str, MessageChannel] = {}
-_defaults: dict[str, type] = {WEB: WebChatChannel, FAKE: FakeChannel}
+_defaults: dict[str, type] = {WEB: WebChatChannel, LINQ: LinqChannel, FAKE: FakeChannel}
 
 
 def _load_defaults() -> None:

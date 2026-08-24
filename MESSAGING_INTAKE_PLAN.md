@@ -154,9 +154,23 @@ heuristic path by default.
 
 ---
 
-## Phase 2 — SMS, when Toll-Free Verification clears
+## Phase 2 — Linq iMessage (interim; Twilio SMS when TFV clears)
 
-The seam is in; this is the checklist, not a redesign.
+**Linq is live in code:** `LinqChannel`, `messaging/linq.py`, `POST /v1/intake/linq/webhook`.
+Tester-only — number not advertised. iMessage-only; Android is a known gap.
+
+Shipped on the Linq path:
+
+1. **`LinqChannel` + Standard Webhooks verify** — `message.received` only; org from
+   `IntakeNumber` where `provider == "linq"`.
+2. **Thread lookup by `(provider, provider_thread_id)` first**, then `from_address`.
+3. **`KIND_INTAKE_TURN` enqueued**; never inline (Linq retries ~25 minutes).
+4. **HELP / STOP** — keyword-only opt-out as today.
+5. **Rate caps** — `MAX_INBOUND_PER_THREAD` and org thread cap include `linq_inbound`.
+6. **Voice outbound fix** — `IntakeNumber.provider == "retell"` on dial-out query.
+
+Twilio SMS remains deferred until TFV clears (draft on
+`origin/cursor/messaging-intake-sms-5fd9`). The seam is in; this is the checklist:
 
 1. **An `SmsChannel` implementing `MessageChannel`**, plus a webhook parser
    returning `(provider_native_id, from_address, to_address, body)`. It must

@@ -23,6 +23,10 @@ one.
 
 from __future__ import annotations
 
+import base64
+import json
+import time
+
 import pytest
 from intake_fixtures import COMPLETE_PAYLOAD
 from sqlalchemy import select
@@ -33,6 +37,7 @@ from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 from juicebox.messaging import prompts
 from juicebox.messaging.channels import (
     FAKE,
+    LINQ,
     WEB,
     ChannelError,
     FakeChannel,
@@ -58,6 +63,7 @@ from juicebox.messaging.identity import (
     find_email,
     find_name,
 )
+from juicebox.messaging.linq import sign_webhook
 from juicebox.messaging.records import (
     merge_record,
     persist_preference,
@@ -80,6 +86,7 @@ from juicebox.models import (
     Candidate,
     CandidatePreference,
     IntakeMessage,
+    IntakeNumber,
     IntakeThread,
     Job,
     utcnow,
@@ -1272,3 +1279,278 @@ class TestCompletion:
         assert result.action == ACTION_COMPLETED
         assert identified.status == STATUS_COMPLETE
         assert fake_channel.bodies[-1] == prompts.WRAP_UP_COMPLETE
+
+
+# --------------------------------------------------------------------------
+# Linq webhook
+# --------------------------------------------------------------------------
+
+
+LINQ_WEBHOOK_SECRET = "whsec_" + base64.b64encode(b"linq-test-webhook-secret!!").decode()
+LINQ_OUR_NUMBER = "+14155559001"
+LINQ_CANDIDATE = "+14155550123"
+LINQ_CHAT_ID = "8f392755-6865-4b18-880a-227f9d8b458f"
+LINQ_MSG_ID = "89e3566e-1d13-49e5-a8ee-48490d5bfeb7"
+
+
+@pytest.fixture
+def linq_signing_env(monkeypatch):
+    monkeypatch.setenv("LINQ_WEBHOOK_SECRET", LINQ_WEBHOOK_SECRET)
+    monkeypatch.setenv("LINQ_API_KEY", "linq_test_api_key")
+    monkeypatch.setenv("LINQ_FROM_NUMBER", LINQ_OUR_NUMBER)
+    monkeypatch.setenv("LINQ_ENABLED", "true")
+    from juicebox.config import reset_settings_cache
+    from juicebox.messaging.channels import reset_channels
+
+    reset_settings_cache()
+    reset_channels()
+    yield
+    reset_settings_cache()
+    reset_channels()
+
+
+@pytest.fixture
+def linq_number(session, account):
+    row = IntakeNumber(
+        org_id=account["org_id"],
+        provider="linq",
+        phone=LINQ_OUR_NUMBER,
+        label="linq intake",
+    )
+    session.add(row)
+    session.commit()
+    return row
+
+
+def linq_payload(**overrides):
+    data = {
+        "chat_id": LINQ_CHAT_ID,
+        "from": LINQ_CANDIDATE,
+        "is_group": False,
+        "message": {
+            "id": LINQ_MSG_ID,
+            "parts": [{"type": "text", "value": "Senior backend engineer in SF"}],
+        },
+        "recipient_handle": {"handle": LINQ_OUR_NUMBER},
+    }
+    data.update(overrides)
+    return {
+        "api_version": "v3",
+        "event_type": "message.received",
+        "event_id": "evt-1",
+        "data": data,
+    }
+
+
+def post_linq(client, payload, *, body=None, webhook_id="wh-1", timestamp=None):
+    raw = body if body is not None else json.dumps(payload).encode()
+    ts = str(timestamp if timestamp is not None else int(time.time()))
+    signature = sign_webhook(
+        raw_body=raw,
+        webhook_id=webhook_id,
+        timestamp=ts,
+        secret=LINQ_WEBHOOK_SECRET,
+    )
+    return client.post(
+        "/v1/intake/linq/webhook",
+        content=raw,
+        headers={
+            "webhook-id": webhook_id,
+            "webhook-timestamp": ts,
+            "webhook-signature": signature,
+            "Content-Type": "application/json",
+        },
+    )
+
+
+class TestLinqSignature:
+    @pytest.fixture(autouse=True)
+    def _linq_env(self, linq_signing_env):
+        yield
+
+    def test_a_valid_signature_is_accepted(self, client, linq_number):
+        assert post_linq(client, linq_payload()).status_code == 200
+
+    def test_a_missing_signature_is_refused(self, client, linq_number):
+        response = client.post("/v1/intake/linq/webhook", json=linq_payload())
+        assert response.status_code == 401
+
+    def test_a_tampered_body_is_refused(self, client, linq_number):
+        raw = json.dumps(linq_payload()).encode()
+        signature = sign_webhook(
+            raw_body=raw, webhook_id="wh-1", timestamp=str(int(time.time())), secret=LINQ_WEBHOOK_SECRET
+        )
+        tampered = json.dumps(linq_payload(message={"id": "other", "parts": []})).encode()
+        response = client.post(
+            "/v1/intake/linq/webhook",
+            content=tampered,
+            headers={"webhook-id": "wh-1", "webhook-timestamp": str(int(time.time())), "webhook-signature": signature},
+        )
+        assert response.status_code == 401
+
+    def test_re_serialising_the_body_breaks_verification(self, client, linq_number):
+        raw = json.dumps(linq_payload(), separators=(",", ":")).encode()
+        ts = str(int(time.time()))
+        signature = sign_webhook(
+            raw_body=raw, webhook_id="wh-1", timestamp=ts, secret=LINQ_WEBHOOK_SECRET
+        )
+        respaced = json.dumps(json.loads(raw), indent=2).encode()
+        response = client.post(
+            "/v1/intake/linq/webhook",
+            content=respaced,
+            headers={"webhook-id": "wh-1", "webhook-timestamp": ts, "webhook-signature": signature},
+        )
+        assert response.status_code == 401
+
+    def test_a_wrong_key_is_refused(self, client, linq_number):
+        wrong = "whsec_" + base64.b64encode(b"wrong-key-wrong-key-wrong-key!!").decode()
+        raw = json.dumps(linq_payload()).encode()
+        ts = str(int(time.time()))
+        signature = sign_webhook(raw_body=raw, webhook_id="wh-1", timestamp=ts, secret=wrong)
+        response = client.post(
+            "/v1/intake/linq/webhook",
+            content=raw,
+            headers={"webhook-id": "wh-1", "webhook-timestamp": ts, "webhook-signature": signature},
+        )
+        assert response.status_code == 401
+
+    def test_a_stale_timestamp_is_refused(self, client, linq_number):
+        old = int(time.time()) - 6 * 60
+        assert post_linq(client, linq_payload(), timestamp=old).status_code == 401
+
+    def test_a_future_timestamp_is_refused(self, client, linq_number):
+        ahead = int(time.time()) + 6 * 60
+        assert post_linq(client, linq_payload(), timestamp=ahead).status_code == 401
+
+    @pytest.mark.parametrize("header", ["", "garbage", "v1,notbase64!!!"])
+    def test_a_malformed_header_is_refused(self, client, linq_number, header):
+        raw = json.dumps(linq_payload()).encode()
+        response = client.post(
+            "/v1/intake/linq/webhook",
+            content=raw,
+            headers={
+                "webhook-id": "wh-1",
+                "webhook-timestamp": str(int(time.time())),
+                "webhook-signature": header,
+            },
+        )
+        assert response.status_code == 401
+
+    def test_no_configured_secret_refuses_everything(self, client, linq_number, monkeypatch):
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("LINQ_WEBHOOK_SECRET", "")
+        reset_settings_cache()
+        assert post_linq(client, linq_payload()).status_code == 401
+
+    def test_a_refused_request_writes_nothing(self, client, session, linq_number):
+        client.post("/v1/intake/linq/webhook", json=linq_payload())
+        assert session.scalars(select(IntakeThread)).all() == []
+
+
+class TestLinqWebhook:
+    @pytest.fixture(autouse=True)
+    def _linq_env(self, linq_signing_env):
+        yield
+
+    def test_the_payload_cannot_choose_the_org(
+        self, client, session, linq_number, account
+    ):
+        payload = linq_payload()
+        payload["org_id"] = "org_attacker"
+        payload["data"]["org_id"] = "org_attacker"
+        assert post_linq(client, payload).status_code == 200
+        thread = session.scalars(select(IntakeThread)).one()
+        assert thread.org_id == account["org_id"]
+
+    def test_an_unclaimed_number_is_refused(self, client, session):
+        assert post_linq(client, linq_payload()).status_code == 404
+        assert session.scalars(select(IntakeThread)).all() == []
+
+    def test_a_deactivated_number_is_refused(self, client, session, linq_number):
+        linq_number.active = False
+        session.commit()
+        assert post_linq(client, linq_payload()).status_code == 404
+
+    def test_a_duplicate_message_id_is_a_no_op(self, client, session, linq_number):
+        assert post_linq(client, linq_payload()).status_code == 200
+        assert post_linq(client, linq_payload()).json()["duplicate"] is True
+        jobs = session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all()
+        assert len(jobs) == 1
+
+    def test_group_chats_are_ignored(self, client, session, linq_number):
+        payload = linq_payload(is_group=True)
+        response = post_linq(client, payload)
+        assert response.status_code == 200
+        assert response.json()["reason"] == "group_chat"
+        assert session.scalars(select(IntakeThread)).all() == []
+
+    def test_a_media_only_message_does_not_enqueue_a_turn(self, client, session, linq_number):
+        payload = linq_payload(
+            message={"id": "media-only-1", "parts": [{"type": "media", "url": "https://x/y.jpg"}]}
+        )
+        response = post_linq(client, payload)
+        assert response.status_code == 200
+        assert response.json()["ignored"] is True
+        assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
+
+    def test_stop_suppresses_the_phone(self, client, session, linq_number):
+        payload = linq_payload(
+            message={"id": "stop-1", "parts": [{"type": "text", "value": "STOP"}]}
+        )
+        assert post_linq(client, payload).status_code == 200
+        thread = session.scalars(select(IntakeThread)).one()
+        assert thread.status == "stopped"
+
+    def test_help_replies_without_enqueuing_a_turn(self, client, session, linq_number, fake_channel):
+        set_channel(LINQ, fake_channel)
+        payload = linq_payload(
+            message={"id": "help-1", "parts": [{"type": "text", "value": "help"}]}
+        )
+        response = post_linq(client, payload)
+        assert response.status_code == 200
+        assert response.json()["help"] is True
+        assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
+        assert fake_channel.bodies == [prompts.HELP_REPLY]
+
+    def test_linq_disabled_returns_503(self, client, linq_number, monkeypatch):
+        monkeypatch.setenv("LINQ_ENABLED", "false")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        assert post_linq(client, linq_payload()).status_code == 503
+
+    def test_the_sender_thread_cap_refuses_excess_new_threads(
+        self, client, session, linq_number, monkeypatch
+    ):
+        from juicebox.routers import messaging as messaging_router
+
+        monkeypatch.setattr(messaging_router, "MAX_NEW_THREADS_PER_SENDER_PER_HOUR", 2)
+
+        for index in range(2):
+            payload = linq_payload(
+                chat_id=f"chat-{index}",
+                message={
+                    "id": f"msg-{index}",
+                    "parts": [{"type": "text", "value": f"hello {index}"}],
+                },
+            )
+            assert post_linq(client, payload).status_code == 200
+            thread = session.scalars(
+                select(IntakeThread).where(IntakeThread.status == "active")
+            ).one()
+            thread.status = "complete"
+            session.commit()
+
+        blocked = post_linq(
+            client,
+            linq_payload(
+                chat_id="chat-blocked",
+                message={
+                    "id": "msg-blocked",
+                    "parts": [{"type": "text", "value": "one more"}],
+                },
+            ),
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["detail"] == "Too many new conversations from this sender"

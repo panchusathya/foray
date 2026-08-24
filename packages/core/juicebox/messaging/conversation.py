@@ -68,6 +68,7 @@ from .threads import (
     messages_of,
     record_outbound,
     transcript_of,
+    with_send_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -421,6 +422,18 @@ def _deliver(
     and a channel does not have a session.
     """
     channel = get_channel(thread.channel)
+    if not channel.is_configured():
+        logger.warning(
+            "refusing to send on %s thread %s: channel not configured",
+            thread.channel,
+            thread.id,
+        )
+        return record_outbound(
+            db,
+            thread=thread,
+            message=message,
+            result=DeliveryResult(status="failed", error="channel not configured"),
+        )
     if channel.requires_consent() and not thread.consent_messaging:
         logger.warning("refusing to send on %s thread %s: no consent", thread.channel, thread.id)
         return record_outbound(
@@ -430,12 +443,24 @@ def _deliver(
             result=DeliveryResult(status="failed", error="no messaging consent on file"),
         )
 
+    outbound = with_send_key(db, thread=thread, message=message)
     try:
-        result = channel.send(to_address=thread.from_address, message=message)
+        result = channel.send(
+            to_address=thread.from_address,
+            message=outbound,
+            provider_thread_id=thread.provider_thread_id,
+        )
     except ChannelError as exc:
         logger.warning("intake send failed on thread %s: %s", thread.id, exc.detail)
         result = DeliveryResult(status="failed", error=exc.detail[:400])
-    return record_outbound(db, thread=thread, message=message, result=result)
+    return record_outbound(db, thread=thread, message=outbound, result=result)
+
+
+def deliver(
+    db: Session, *, thread: IntakeThread, message: OutboundMessage
+) -> IntakeMessage | None:
+    """Public entry for routes that need one outbound without running a full turn."""
+    return _deliver(db, thread=thread, message=message)
 
 
 def _wrap_up(db: Session, *, thread: IntakeThread, state: Coverage) -> TurnResult:

@@ -363,8 +363,9 @@ the agent refused. Four things were wrong, and three are the same thing:
 
 ## Messaging intake (`packages/core/juicebox/messaging`)
 
-Candidate intake over text: a web chat widget now, SMS behind the same channel
-adapter when Toll-Free Verification clears. It runs the *same* conversation as
+Candidate intake over text: a web chat widget now, Linq iMessage as the interim
+text channel (tester-only, inbound-first), with Twilio SMS deferred until Toll-Free
+Verification clears. It runs the *same* conversation as
 the voice agent and writes the same `CandidatePreference`; everything that
 decides **what** to ask is `juicebox/intake/` and is shared verbatim. This
 package owns only what is different about text. Plan and phasing live in

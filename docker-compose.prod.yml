@@ -119,6 +119,10 @@ x-app-env: &app_env
   # Where magic links point. The api and worker mint them, so they carry this;
   # the portal container itself never needs it.
   PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+  # The logged-in LinkedIn session the profile scraper drives. Empty is a safe
+  # state: the scrape raises and the thread falls back to asking questions.
+  LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}
+  LINKEDIN_SESSION_PATH: ${LINKEDIN_SESSION_PATH:-}
 
 services:
   db:

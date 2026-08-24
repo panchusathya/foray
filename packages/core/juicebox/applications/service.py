@@ -154,6 +154,30 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
     if candidate is None or posting is None:
         raise ApplicationError("application lost its candidate or posting")
 
+    # A resume with no employment history is not a resume. The onboarding
+    # scrape only learns a current title and a rough tenure, so a candidate
+    # who came in that way has nothing for the generator to work from -- this
+    # is the one moment worth paying the provider for the full history
+    # (enrich.profile_sources). Inline rather than queued: we are already in a
+    # worker job, and a package built now with a blank career cannot be
+    # un-sent later.
+    if not candidate.experiences and candidate.linkedin_url:
+        from ..enrich.profile_sources import paid_lookup
+
+        _, error = paid_lookup(
+            db,
+            org_id=application.org_id,
+            linkedin_url=candidate.linkedin_url,
+            candidate=candidate,
+        )
+        if error:
+            logger.info(
+                "package for %s proceeding without fetched history: %s",
+                application.id,
+                error,
+            )
+        db.refresh(candidate)
+
     preference = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == candidate.id)
     )

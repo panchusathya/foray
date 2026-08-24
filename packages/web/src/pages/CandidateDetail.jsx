@@ -18,7 +18,7 @@ import { NotesPanel } from '../components/NotesPanel.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
 import { Avatar, Badge, ErrorBox, Loading } from '../components/common.jsx';
 import { CRM_STATUSES, CRM_STATUS_LABELS, api } from '../lib/api.js';
-import { formatComp, formatTimeline, intakeApi } from '../lib/intake.js';
+import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../lib/intake.js';
 import { jobsApi } from '../lib/jobs.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -381,6 +381,7 @@ function IntakePanel({ candidateId }) {
                     {inbound ? 'candidate' : 'agent'}
                   </Badge>
                   <span className="muted small">
+                    {!inbound && messageReceipt(message) ? `${messageReceipt(message)} · ` : ''}
                     {message.asked_field ? `asked ${message.asked_field}` : ''}
                   </span>
                 </div>

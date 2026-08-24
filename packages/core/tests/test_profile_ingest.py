@@ -307,3 +307,113 @@ class TestUploadLink:
             path, files={"file": ("cv.pdf", self._pdf(), "application/pdf")}
         )
         assert response.status_code == 409
+
+
+class TestScrapeThenPaidFallback:
+    """Free first, paid second — and only when the free path actually missed.
+
+    The scraper hitting an auth wall says nothing about whether the person
+    exists, so a miss buys the profile rather than dropping the candidate
+    into a question batch they did not need. A scrape that works must not
+    spend anything.
+    """
+
+    def _thread(self, session, account):
+        from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
+        from juicebox.messaging.linkedin_flow import FLOW_LINKEDIN_SHORT
+        from juicebox.messaging.threads import open_thread
+
+        set_channel(LINQ, FakeChannel(consent=True))
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=LINQ,
+            provider="linq",
+            provider_thread_id="chat-fallback",
+            from_address="+14155550199",
+            consent_messaging=True,
+            flow=FLOW_LINKEDIN_SHORT,
+        )
+        thread.contact_linkedin = ADA_URL
+        session.flush()
+        return thread
+
+    def _scrape_job(self, session, account, thread):
+        from juicebox.jobs import KIND_LINKEDIN_SCRAPE
+
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_LINKEDIN_SCRAPE,
+            idempotency_key=f"{KIND_LINKEDIN_SCRAPE}:{thread.id}",
+            payload={"thread_id": thread.id, "linkedin_url": ADA_URL},
+        )
+        job.status = "running"
+        return job
+
+    def test_a_failed_scrape_buys_the_profile(self, session, account):
+        from juicebox.enrich.linkedin_scrape import ScrapeError, set_scraper
+        from juicebox.worker import process_job
+
+        def _auth_wall(url):
+            raise ScrapeError("auth wall")
+
+        set_scraper(_auth_wall)
+        provider = FakeProfileProvider({ADA_URL: SCRAPIN_PAYLOAD})
+        set_profile_provider(provider)
+
+        thread = self._thread(session, account)
+        process_job(session, self._scrape_job(session, account, thread))
+
+        assert provider.calls == [ADA_URL], "the paid provider should have been asked"
+        session.refresh(thread)
+        # The conversation can still confirm what we found...
+        scrape = (thread.record or {}).get("_linkedin", {}).get("scrape") or {}
+        assert scrape.get("current_title") == "Senior Machine Learning Engineer"
+        assert scrape.get("current_employer") == "Modal"
+        # ...and the CRM got the full history the scrape could never provide.
+        candidate = session.scalar(
+            select(Candidate).where(Candidate.source_id == "ada-okonkwo")
+        )
+        assert candidate is not None
+        assert {exp.company for exp in candidate.experiences} == {"Modal", "Stripe"}
+        assert thread.candidate_id == candidate.id
+
+    def test_a_working_scrape_spends_nothing(self, session, account):
+        from juicebox.enrich.linkedin_scrape import LinkedInProfile, set_scraper
+        from juicebox.worker import process_job
+
+        set_scraper(
+            lambda url: LinkedInProfile(
+                url=url, full_name="Ada Okonkwo", current_title="ML Engineer"
+            )
+        )
+        provider = FakeProfileProvider({ADA_URL: SCRAPIN_PAYLOAD})
+        set_profile_provider(provider)
+
+        thread = self._thread(session, account)
+        process_job(session, self._scrape_job(session, account, thread))
+
+        assert provider.calls == [], "a working scrape must not pay for a lookup"
+
+    def test_both_sources_missing_leaves_the_flow_to_ask(self, session, account):
+        from juicebox.enrich.linkedin_scrape import ScrapeError, set_scraper
+        from juicebox.worker import process_job
+
+        def _auth_wall(url):
+            raise ScrapeError("auth wall")
+
+        set_scraper(_auth_wall)
+        set_profile_provider(FakeProfileProvider({}))  # provider 404s too
+
+        thread = self._thread(session, account)
+        job = self._scrape_job(session, account, thread)
+        process_job(session, job)
+
+        # Not a crash and not a stall: the error is recorded so the next turn
+        # falls through to the short question batch.
+        assert job.status == "succeeded"
+        session.refresh(thread)
+        meta = (thread.record or {}).get("_linkedin", {})
+        assert meta.get("error")
+        assert not meta.get("scrape")

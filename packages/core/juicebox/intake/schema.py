@@ -26,7 +26,7 @@ than skipped.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -262,6 +262,20 @@ REQUIRED_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_R
 CORE_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.core)
 ENRICHMENT_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_ENRICHMENT)
 
+# Messaging LinkedIn-first flow. Voice is unchanged. A scrape fills title /
+# location / (management) seniority; the thread then asks at most a handful of
+# leftover required keys rather than the full eleven-field survey.
+LINKEDIN_SHORT_KEYS: tuple[str, ...] = (
+    "spec.job_titles",
+    "spec.seniority",
+    "spec.locations",
+    "spec.remote_ok",
+    "compensation",
+    "timeline",
+    "work_authorization",
+    "ok_to_share_with_clients",
+)
+
 # The ParsedQuery fields intake is allowed to populate. The rest of
 # ParsedQuery (schools, degrees, fields_of_study, min/max years, keywords,
 # title_exclusions, search_text) describes a *company's* filter and has no
@@ -357,20 +371,31 @@ class Coverage:
         }
 
 
-def coverage(record: Mapping[str, Any], *, core_only: bool = False) -> Coverage:
+def coverage(
+    record: Mapping[str, Any],
+    *,
+    core_only: bool = False,
+    gate_keys: Collection[str] | None = None,
+) -> Coverage:
     """Which fields are answered, refused, or still owed.
 
     A key in ``record["declined"]`` counts as covered: the candidate was asked
     and said no, which is a resolved field and must not keep the call alive.
 
-    ``core_only`` may only *narrow* the gate. It never adds questions. ``False``
-    (the default, and the value when no budget was stated) is today's
-    behaviour: every required field keeps the call open.
+    ``core_only`` and ``gate_keys`` may only *narrow* the gate. They never add
+    questions. ``False`` / ``None`` (the default, and the value when no budget
+    was stated) is today's behaviour: every required field keeps the call open.
+    ``gate_keys`` wins when both are passed.
     """
     declined = {
         key for key in (record.get("declined") or []) if isinstance(key, str) and key in FIELDS_BY_KEY
     }
-    gate_keys = set(CORE_KEYS) if core_only else None
+    if gate_keys is not None:
+        selected = set(gate_keys)
+    elif core_only:
+        selected = set(CORE_KEYS)
+    else:
+        selected = None
     required_missing: list[str] = []
     enrichment_missing: list[str] = []
     covered: list[str] = []
@@ -378,7 +403,7 @@ def coverage(record: Mapping[str, Any], *, core_only: bool = False) -> Coverage:
     for spec in FIELDS:
         if spec.key in declined or spec.satisfied_by(record):
             covered.append(spec.key)
-        elif spec.tier == TIER_REQUIRED and (gate_keys is None or spec.key in gate_keys):
+        elif spec.tier == TIER_REQUIRED and (selected is None or spec.key in selected):
             required_missing.append(spec.key)
         elif spec.tier != TIER_REQUIRED:
             enrichment_missing.append(spec.key)
@@ -413,14 +438,18 @@ def deferred_required(record: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def next_questions(
-    record: Mapping[str, Any], limit: int = 3, *, core_only: bool = False
+    record: Mapping[str, Any],
+    limit: int = 3,
+    *,
+    core_only: bool = False,
+    gate_keys: Collection[str] | None = None,
 ) -> list[dict[str, str]]:
     """What to ask next, gate first.
 
     Returned to the agent mid-call, so an empty list for the required tier is
     the signal to start closing rather than to invent another question.
     """
-    state = coverage(record, core_only=core_only)
+    state = coverage(record, core_only=core_only, gate_keys=gate_keys)
     ordered = [*state.required_missing, *state.enrichment_missing]
     out: list[dict[str, str]] = []
     for key in ordered[: max(0, limit)]:

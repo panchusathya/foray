@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..config import get_settings
-from .linq import LinqSendError, send_message
+from .linq import LinqSendError, send_message, stop_typing
 
 WEB = "web"
 LINQ = "linq"
@@ -53,6 +53,12 @@ class OutboundMessage:
     # Stable key for vendor send idempotency. ``conversation._deliver`` fills
     # ``{thread_id}:{seq}`` when blank so a retry reuses the same key.
     send_key: str = ""
+    # Skip the channel's lowercase voice transform. Set it when the body is
+    # mostly quoted data rather than our own prose -- a job card carries an
+    # employer's name and a role title lifted from a posting, and rendering
+    # "ml engineer at anthropic" makes a proper noun look like a typo and the
+    # card harder to skim. Prose stays lowercase; other people's names do not.
+    verbatim: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,6 +157,9 @@ class LinqChannel:
     ) -> DeliveryResult:
         if not provider_thread_id:
             raise ChannelError("Linq send requires provider_thread_id (chat id)")
+        # Drop the typing indicator so iMessage does not keep showing it after
+        # the reply lands. Failures are swallowed inside stop_typing.
+        stop_typing(provider_thread_id)
         try:
             message_id = send_message(
                 chat_id=provider_thread_id,

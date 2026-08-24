@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .enrich.linkedin_url import linkedin_slug
 from .enrich.normalize import NormalizedCandidate, build_doc_text, normalize_candidate
 from .enrich.taxonomy import normalize_seniority, normalize_title
 from .intake.phones import lookup_key
@@ -145,6 +146,21 @@ def owner_of_email(db: Session, *, org_id: str, email: str) -> str | None:
         select(CandidateEmail.candidate_id).where(
             CandidateEmail.org_id == org_id, CandidateEmail.email == address
         )
+    )
+
+
+def owner_of_linkedin(db: Session, *, org_id: str, url: str) -> str | None:
+    """Which candidate already has this LinkedIn profile, if any."""
+    slug = linkedin_slug(url)
+    if not slug:
+        return None
+    return db.scalar(
+        select(Candidate.id)
+        .where(
+            Candidate.org_id == org_id,
+            Candidate.linkedin_url.ilike(f"%/in/{slug}%"),
+        )
+        .limit(1)
     )
 
 

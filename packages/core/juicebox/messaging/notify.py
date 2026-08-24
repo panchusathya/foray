@@ -130,7 +130,13 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             company=posting.company if posting else "the company",
             link=link,
         )
-        row = _deliver(db, thread=thread, message=OutboundMessage(body=body), origin="proactive")
+        # verbatim: names the company and role from the posting.
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=body, verbatim=True),
+            origin="proactive",
+        )
         return {"event": event, "sent": 1 if row is not None else 0}
 
     if event == EVENT_STATUS_CHANGED:

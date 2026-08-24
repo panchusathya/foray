@@ -1,25 +1,21 @@
-"""The recruiting-manager modes: onboarding → profile → managing.
+"""What the recruiting manager does once onboarding is finished.
+
+Onboarding itself is ``conversation._run_linkedin_short`` — intro, LinkedIn
+scrape, confirm, one batched gap-fill. When it wraps up it hands the thread
+here instead of completing it, because completing is silence: ``run_turn``
+never speaks to a complete thread again, and a recruiting manager's line
+going dead mid-search is a product failure, not an end state.
 
 ``conversation.run_turn`` stays the single entry point — its safety rails
 (STOP, suppression, quiet hours, never two outbound in a row) run before this
-module is ever reached, and every send still goes through ``_deliver``. What
-changes per mode is only *what one message says next*:
+module is reached, and every send still goes through ``_deliver``.
 
-* **onboarding** — email, name, then "LinkedIn URL or upload your resume"
-  (the signed link). A captured URL enqueues the paid profile fetch.
-* **profile** — the existing coverage gate, shortened to the core subset. On
-  close the preference persists and the thread moves on. It does **not**
-  complete: a managing thread is permanent, and only ``mode="intake"`` ever
-  reaches ``STATUS_COMPLETE`` — ``run_turn`` is silent forever on a complete
-  thread, which for a recruiting manager is the product dying mid-sentence.
-* **managing** — steady state, intent-routed. Presenting roles writes
-  ``JobProposal`` rows and freezes them on ``last_presented`` so "apply to 2"
-  and "the Goldman one" resolve against exactly what was shown. An "apply" is
-  the per-application yes, bound to the message it arrived in.
-
-Extraction (``_reread``) runs every turn in profile AND managing mode, so
-"actually, make that 260" keeps flowing into the preference and the rescore
-loop no matter what the conversation is nominally about.
+**managing** is intent-routed. Presenting roles writes ``JobProposal`` rows
+and freezes them on ``last_presented`` so "apply to 2" and "the Goldman one"
+resolve against exactly what was shown. An "apply" is the per-application
+yes, bound to the message it arrived in. Extraction (``_reread``) still runs
+every turn, so "actually, make that 260" keeps flowing into the preference
+and the rescore loop no matter what the conversation is nominally about.
 """
 
 from __future__ import annotations
@@ -38,9 +34,7 @@ from ..applications.service import (
     create_application,
     request_package,
 )
-from ..enrich.linkedin_profile import find_linkedin
-from ..intake.schema import FIELDS, coverage, next_questions
-from ..jobs import KIND_PROFILE_INGEST, enqueue
+from ..intake.schema import coverage
 from ..models import (
     Application,
     IntakeMessage,
@@ -48,25 +42,22 @@ from ..models import (
     JobMatch,
     JobPosting,
     JobProposal,
-    Org,
     utcnow,
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_text
 from . import identity, intents, prompts
 from .channels import OutboundMessage
-from .uploads import mint_upload_link
 
 logger = logging.getLogger(__name__)
 
 MODE_INTAKE = "intake"
-MODE_ONBOARDING = "onboarding"
-MODE_PROFILE = "profile"
 MODE_MANAGING = "managing"
 
-MANAGER_MODES = frozenset({MODE_ONBOARDING, MODE_PROFILE, MODE_MANAGING})
-
-CONTACT_LINKEDIN = "contact.linkedin"
+# Which modes take proactive notifications. Onboarding is not one of them:
+# the LinkedIn-short flow is mid-conversation and does not want a card deck
+# arriving on top of its own question.
+MANAGER_MODES = frozenset({MODE_MANAGING})
 
 ACTION_PRESENTED = "presented"
 ACTION_APPLIED = "applied"
@@ -78,177 +69,10 @@ MAX_CARDS_PER_MESSAGE = 3
 def run_manager_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     from .conversation import TurnResult
 
-    if thread.mode == MODE_ONBOARDING:
-        return _onboarding_turn(db, thread=thread, last=last)
-    if thread.mode == MODE_PROFILE:
-        return _profile_turn(db, thread=thread, last=last)
     if thread.mode == MODE_MANAGING:
         return _managing_turn(db, thread=thread, last=last)
     logger.warning("thread %s has unknown mode %r; holding", thread.id, thread.mode)
     return TurnResult("held", thread, coverage(thread.record or {}))
-
-
-# ---------------------------------------------------------------------------
-# onboarding
-# ---------------------------------------------------------------------------
-
-
-def _onboarding_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
-    from .conversation import MAX_ASKS_PER_FIELD, TurnResult, _deliver
-
-    identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
-    _capture_linkedin(db, thread=thread, body=last.body)
-
-    sent = []
-    if not (thread.outbound_count or 0):
-        # The first thing a shared number ever says identifies the org,
-        # discloses the AI, and names the exits. The greeting is one of the
-        # documented exceptions to one-message-per-turn.
-        org = db.get(Org, thread.org_id)
-        greeting = prompts.MANAGER_GREETING.format(
-            org=(getattr(org, "name", "") or "our team").strip()
-        )
-        row = _deliver(db, thread=thread, message=OutboundMessage(body=greeting))
-        if row is not None:
-            sent.append(row)
-
-    counts = thread.asked_counts or {}
-    state = coverage(thread.record or {}, core_only=True)
-
-    def _ask(field_key: str, body: str):
-        row = _deliver(
-            db, thread=thread, message=OutboundMessage(body=body, asked_field=field_key)
-        )
-        if row is not None:
-            sent.append(row)
-        return TurnResult("asked", thread, state, asked_field=field_key, sent=sent)
-
-    if not thread.contact_email and counts.get(identity.CONTACT_EMAIL, 0) < MAX_ASKS_PER_FIELD:
-        return _ask(identity.CONTACT_EMAIL, prompts.ASK_EMAIL_MANAGER)
-    if not thread.contact_name and counts.get(identity.CONTACT_NAME, 0) < MAX_ASKS_PER_FIELD:
-        return _ask(identity.CONTACT_NAME, prompts.ASK_NAME_MANAGER)
-
-    has_profile_source = bool(thread.linkedin_url) or _has_resume(db, thread)
-    if not has_profile_source and counts.get(CONTACT_LINKEDIN, 0) < MAX_ASKS_PER_FIELD:
-        return _ask(
-            CONTACT_LINKEDIN,
-            prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread)),
-        )
-
-    # Everything collected (or the ask cap spent) -- into the interview.
-    identity.link_candidate(db, thread=thread)
-    thread.mode = MODE_PROFILE
-    db.flush()
-    return _profile_turn(db, thread=thread, last=last, prefix=_ack_prefix(thread))
-
-
-def _ack_prefix(thread: IntakeThread) -> str:
-    return prompts.PROFILE_INGEST_ACK if thread.linkedin_url else ""
-
-
-def _capture_linkedin(db: Session, *, thread: IntakeThread, body: str) -> None:
-    if thread.linkedin_url:
-        return
-    url = find_linkedin(body or "")
-    if not url:
-        return
-    thread.linkedin_url = url
-    db.flush()
-    enqueue(
-        db,
-        org_id=thread.org_id,
-        kind=KIND_PROFILE_INGEST,
-        idempotency_key=f"{KIND_PROFILE_INGEST}:{thread.id}:{url}",
-        payload={
-            "linkedin_url": url,
-            "thread_id": thread.id,
-            "candidate_id": thread.candidate_id or "",
-        },
-    )
-
-
-def _has_resume(db: Session, thread: IntakeThread) -> bool:
-    from ..models import CandidateDocument
-
-    return (
-        db.scalar(
-            select(CandidateDocument.id)
-            .where(
-                CandidateDocument.thread_id == thread.id,
-                CandidateDocument.kind == "resume_uploaded",
-            )
-            .limit(1)
-        )
-        is not None
-    )
-
-
-# ---------------------------------------------------------------------------
-# profile: the core coverage gate, without ever completing the thread
-# ---------------------------------------------------------------------------
-
-
-def _profile_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage, prefix: str = ""):
-    from .conversation import (
-        MAX_ASKS_PER_FIELD,
-        TurnResult,
-        _capture,
-        _compose,
-        _deliver,
-        _reread,
-    )
-
-    identity.absorb(thread, body=last.body, asked_field=thread.last_field_asked)
-    _reread(db, thread=thread)
-    _capture(db, thread=thread)
-
-    state = coverage(thread.record or {}, core_only=True)
-    if state.required_complete:
-        _capture(db, thread=thread, force=True)
-        thread.mode = MODE_MANAGING
-        db.flush()
-        row = _deliver(
-            db, thread=thread, message=OutboundMessage(body=prompts.MANAGING_READY)
-        )
-        return TurnResult(
-            "completed_profile", thread, state, sent=[r for r in [row] if r]
-        )
-
-    counts = {k: int(v or 0) for k, v in (thread.asked_counts or {}).items()}
-    question = None
-    for candidate_question in next_questions(
-        thread.record or {}, limit=len(FIELDS), core_only=True
-    ):
-        if counts.get(candidate_question["field"], 0) < MAX_ASKS_PER_FIELD:
-            question = candidate_question
-            break
-
-    if question is None:
-        # Core fields all asked past the cap: move on with what we have
-        # rather than looping. The record persists partial, same as a
-        # dropped call.
-        _capture(db, thread=thread, force=True)
-        thread.mode = MODE_MANAGING
-        db.flush()
-        row = _deliver(
-            db, thread=thread, message=OutboundMessage(body=prompts.MANAGING_READY)
-        )
-        return TurnResult("completed_profile", thread, state, sent=[r for r in [row] if r])
-
-    asks = prompts.question_for(question["field"], question["asks"])
-    body = _compose(
-        asks=asks, topic=question["asks"], last_inbound=last.body or "", known=""
-    )
-    if prefix:
-        body = f"{prefix} {body}"
-    row = _deliver(
-        db,
-        thread=thread,
-        message=OutboundMessage(body=body, asked_field=question["field"]),
-    )
-    return TurnResult(
-        "asked", thread, state, asked_field=question["field"], sent=[r for r in [row] if r]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +91,10 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     presented = list(thread.last_presented or [])
     intent = intents.classify(last.body or "", presented=presented)
 
-    def _say(body: str, action: str = ACTION_ANSWERED):
-        row = _deliver(db, thread=thread, message=OutboundMessage(body=body))
+    def _say(body: str, action: str = ACTION_ANSWERED, *, verbatim: bool = False):
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body, verbatim=verbatim)
+        )
         return TurnResult(action, thread, state, sent=[r for r in [row] if r])
 
     if intent.kind == intents.INTENT_APPLY:
@@ -281,10 +107,11 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         return _say(
             application_status_summary(
                 db, org_id=thread.org_id, candidate_id=thread.candidate_id or ""
-            )
+            ),
+            verbatim=True,
         )
     if intent.kind == intents.INTENT_NETWORKING:
-        return _say(_networking_text(db, thread))
+        return _say(_networking_text(db, thread), verbatim=True)
     if intent.kind == intents.INTENT_PROFILE_ANSWER:
         return _say("Noted — thanks. Anything else you want me looking for?")
     return _say(prompts.MANAGER_FALLBACK)
@@ -530,7 +357,14 @@ def present_matches(
         footer=f"Full cards: {link}",
     )[: prompts.MAX_CARD_MESSAGE_CHARS]
 
-    row = _deliver(db, thread=thread, message=OutboundMessage(body=body), origin=origin)
+    # verbatim: the card quotes employers and role titles out of a posting.
+    # Those are somebody else's proper nouns, not our lowercase voice.
+    row = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, verbatim=True),
+        origin=origin,
+    )
 
     frame = []
     now = utcnow()

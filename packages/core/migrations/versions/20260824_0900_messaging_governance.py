@@ -16,7 +16,7 @@ CANDIDATE_AGENT_PLAN §2-§4, the parts that need schema:
   exact disclosure shown and its version, and revocation as its own fact.
 
 Revision ID: a4c9e17f52b3
-Revises: e5f0a92c7d18
+Revises: a9c4e21b7f50
 """
 
 from __future__ import annotations
@@ -27,7 +27,10 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a4c9e17f52b3"
-down_revision: str | None = "e5f0a92c7d18"
+# Re-parented onto the LinkedIn-first receipts migration during the merge.
+# Both chains were written against e5f0a92c7d18, which would have left
+# alembic with two heads and `upgrade head` refusing to run.
+down_revision: str | None = "a9c4e21b7f50"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

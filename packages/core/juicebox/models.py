@@ -1405,12 +1405,15 @@ class IntakeThread(Base, TimestampMixin):
         ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
-    # web | sms. A plain string, not an enum, so a new channel needs no
+    # web | sms | linq. A plain string, not an enum, so a new channel needs no
     # migration -- IntakeCall.provider is a string for the same reason.
     channel: Mapped[str] = mapped_column(String(16), default="web")
     provider: Mapped[str] = mapped_column(String(32), default="native")
     provider_thread_id: Mapped[str] = mapped_column(String(200), default="")
     entry_point: Mapped[str] = mapped_column(String(24), default="web_widget")
+    # full | linkedin_short. Linq defaults to linkedin_short; web stays on the
+    # original eleven-field gate unless a caller opts in.
+    flow: Mapped[str] = mapped_column(String(32), default="full")
 
     # E.164 for sms, empty for web. to_address is what resolves the org on an
     # inbound text, so it is stored even when the sender is unknown.
@@ -1452,6 +1455,7 @@ class IntakeThread(Base, TimestampMixin):
     # for one. These feed the candidate upsert once the gate closes.
     contact_name: Mapped[str] = mapped_column(String(240), default="")
     contact_email: Mapped[str] = mapped_column(String(255), default="")
+    contact_linkedin: Mapped[str] = mapped_column(String(400), default="")
 
     # The merged intake record, same shape as intake.schema.empty_record().
     record: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -1522,6 +1526,15 @@ class IntakeMessage(Base, TimestampMixin):
         ),
         UniqueConstraint("thread_id", "seq", name="uq_intake_message_seq"),
         Index("ix_intake_messages_thread", "thread_id", "seq"),
+        # Status webhooks (delivered/read) arrive with Linq's message id and no
+        # thread id we trust, so lookup cannot go through the thread-scoped
+        # unique index above.
+        Index(
+            "ix_intake_messages_native_id",
+            "provider_native_id",
+            sqlite_where=text("provider_native_id != ''"),
+            postgresql_where=text("provider_native_id != ''"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("imsg"))
@@ -1542,10 +1555,12 @@ class IntakeMessage(Base, TimestampMixin):
     # | system (STOP acknowledgement, HELP). Budgets in messaging/cadence.py
     # count proactive rows, so the budget cannot drift from what was sent.
     origin: Mapped[str] = mapped_column(String(16), default="reply")
-    # queued | sent | failed | received
+    # queued | sent | delivered | read | failed | received
     status: Mapped[str] = mapped_column(String(24), default="received")
     error: Mapped[str] = mapped_column(String(400), default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
 

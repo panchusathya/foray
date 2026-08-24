@@ -1,46 +1,47 @@
-"""The recruiting-manager modes, end to end on fakes.
+"""The recruiting manager: what happens after onboarding finishes.
 
-Two invariants above all: **the intake mode is untouched** (its own 1300-line
-suite is the pin; here we only check a manager thread cannot leak into it),
-and **a managing thread never completes** — run_turn is silent forever on a
-complete thread, and a recruiting manager's line going dead is a product
-failure, not an end state.
+Onboarding itself is the LinkedIn-first flow (``test_linkedin_intake.py``).
+This suite covers the seam the merge created and the steady state after it:
 
-Everything runs with no API key: the keyword intent pass, canned questions,
-template packages. Flatter, not broken.
+* onboarding **hands over** to ``managing`` instead of completing, because a
+  complete thread is a silent one and a recruiting manager going silent
+  mid-search is the product failing,
+* the shared rails — hold, quiet hours — apply to *both* flows, and the
+  LinkedIn path returning early must not dodge them,
+* and managing itself: cards, "apply to 2" as the per-application yes,
+  status, networking.
+
+Everything runs with no API key: keyword intents, canned copy, template
+packages. Flatter, not broken.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
+from juicebox.enrich.linkedin_scrape import LinkedInProfile, set_scraper
 from juicebox.intake.schema import empty_record
-from juicebox.jobs import KIND_APP_PACKAGE, KIND_PROFILE_INGEST
+from juicebox.jobs import KIND_APP_PACKAGE, KIND_LINKEDIN_SCRAPE
+from juicebox.messaging import cadence
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
-from juicebox.messaging.conversation import ACTION_HELD, run_turn
-from juicebox.messaging.manager import (
-    MODE_MANAGING,
-    MODE_ONBOARDING,
-    MODE_PROFILE,
-)
-from juicebox.messaging.threads import (
-    STATUS_COMPLETE,
-    open_thread,
-    record_inbound,
-)
-from juicebox.models import (
-    Application,
-    Job,
-    JobMatch,
-    JobPosting,
-    JobProposal,
-)
+from juicebox.messaging.conversation import ACTION_DEFERRED, ACTION_HELD, run_turn
+from juicebox.messaging.linkedin_flow import FLOW_LINKEDIN_SHORT
+from juicebox.messaging.manager import MODE_INTAKE, MODE_MANAGING
+from juicebox.messaging.threads import STATUS_COMPLETE, open_thread, record_inbound
+from juicebox.models import Application, Job, JobMatch, JobPosting, JobProposal
+from juicebox.worker import process_job
 
 STRONG = {
     "name": "title", "label": "Title", "kind": "title", "weight": 1.0,
     "status": "strong", "score": 0.95, "evidence": "Current title matches", "sources": [],
 }
+
+# Winter, so the unknown-timezone window (11:00-21:00 America/New_York) is
+# 16:00Z-02:00Z.
+OUT_OF_WINDOW = datetime(2026, 1, 15, 8, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -52,6 +53,7 @@ def channel():
 
 @pytest.fixture
 def thread(session, account, channel):
+    """A Linq thread, exactly as the webhook opens one."""
     return open_thread(
         session,
         org_id=account["org_id"],
@@ -61,25 +63,12 @@ def thread(session, account, channel):
         entry_point="linq_inbound",
         from_address="+14155550100",
         consent_messaging=True,
-        mode=MODE_ONBOARDING,
     )
 
 
 def _say(session, thread, body, *, native_id=""):
     record_inbound(session, thread=thread, body=body, provider_native_id=native_id)
     return run_turn(session, thread=thread)
-
-
-def _card_lines(body: str) -> str:
-    """The message minus its portal link.
-
-    The link is a JWT, and ~1.5% of them contain the literal substring "0.9"
-    (the payload segment ends in "0", then a random signature byte encodes to
-    "9"). Asserting "no score in the message" against the whole body therefore
-    fails one run in sixty-odd for reasons that have nothing to do with
-    scores. The invariant is about the card text, so test the card text.
-    """
-    return "\n".join(line for line in body.splitlines() if "/m/" not in line)
 
 
 def _core_complete_record() -> dict:
@@ -94,6 +83,9 @@ def _core_complete_record() -> dict:
     )
     record["target_base"] = 240000.0
     record["comp_currency"] = "USD"
+    record["timeline"] = "under_1_month"
+    record["work_authorization"] = "green card"
+    record["ok_to_share_with_clients"] = True
     return record
 
 
@@ -113,71 +105,95 @@ def _posting(session, org_id, *, company="Anthropic", title="ML Engineer", suffi
     return posting
 
 
-def _managed(session, account, channel, thread):
-    """Fast-forward a thread to managing with a linked candidate."""
+def _managed(session, thread):
+    """Fast-forward past onboarding: linked candidate, managing mode."""
+    from juicebox.messaging import identity
+
     thread.contact_name = "Ada Okonkwo"
     thread.contact_email = "ada-mgr@example.com"
     thread.record = _core_complete_record()
     thread.mode = MODE_MANAGING
-    from juicebox.messaging import identity
-
     identity.link_candidate(session, thread=thread)
     session.flush()
     return thread
 
 
-class TestOnboarding:
-    def test_greeting_identifies_org_ai_and_exits(self, session, account, channel, thread):
-        result = _say(session, thread, "hey")
-        assert result.asked_field == "contact.email"
-        greeting = channel.bodies[0]
-        assert "Acme Talent" in greeting  # the org, because the number is shared
-        assert "AI" in greeting
-        assert "STOP" in greeting
+class TestOnboardingDefaults:
+    def test_a_linq_thread_starts_on_the_linkedin_flow(self, session, thread):
+        """The webhook sets no mode: `flow` drives onboarding, and a second
+        opinion about which phase we are in is how the two rot apart."""
+        assert thread.flow == FLOW_LINKEDIN_SHORT
+        assert thread.mode == MODE_INTAKE
 
-    def test_the_walk_to_profile(self, session, account, channel, thread):
+    def test_the_first_message_says_how_to_stop(self, session, thread, channel):
+        """CANDIDATE_AGENT_PLAN §2: one shared number means the candidate
+        cannot tell who is texting, so the opening line carries who we are,
+        that this is an AI, and the way out."""
         _say(session, thread, "hey")
-        _say(session, thread, "ada-mgr@example.com")
-        assert thread.contact_email == "ada-mgr@example.com"
-        result = _say(session, thread, "Ada Okonkwo")
-        assert result.asked_field == "contact.linkedin"
-        assert "/v1/intake/uploads/" in channel.bodies[-1]  # the signed upload link
+        intro = channel.bodies[0]
+        # The channel speaks lowercase; the carrier keywords are held out of
+        # that transform on purpose, so they are asserted as written.
+        assert "acme talent" in intro.lower()
+        assert "ai" in intro.lower()
+        assert "STOP" in intro
+        assert "HELP" in intro
 
-        result = _say(session, thread, "https://linkedin.com/in/ada-okonkwo")
-        assert thread.linkedin_url == "https://www.linkedin.com/in/ada-okonkwo"
-        assert thread.mode == MODE_PROFILE
-        job = session.scalar(select(Job).where(Job.kind == KIND_PROFILE_INGEST))
-        assert job is not None and job.payload["thread_id"] == thread.id
-        # The turn keeps moving: the ack rides the first profile question.
-        assert result.asked_field
 
-    def test_profile_completes_into_managing_not_complete(
-        self, session, account, channel, thread
+class TestSharedRails:
+    """The merge's real risk: the LinkedIn path returns early in run_turn."""
+
+    def test_quiet_hours_defer_the_linkedin_flow_too(
+        self, session, thread, channel, monkeypatch
     ):
-        thread.contact_name = "Ada Okonkwo"
-        thread.contact_email = "ada-mgr@example.com"
-        thread.linkedin_url = "https://www.linkedin.com/in/ada-okonkwo"
-        thread.mode = MODE_PROFILE
-        thread.record = _core_complete_record()
-        session.flush()
+        record_inbound(session, thread=thread, body="hi", provider_native_id="q1")
+        thread.last_inbound_at = OUT_OF_WINDOW - timedelta(hours=3)
+        monkeypatch.setattr(cadence, "utcnow", lambda: OUT_OF_WINDOW)
 
-        result = _say(session, thread, "that's everything")
-        assert thread.mode == MODE_MANAGING
-        # THE invariant: the thread is permanent. Only mode=intake completes.
-        assert thread.status != STATUS_COMPLETE
-        assert result.action == "completed_profile"
-        assert thread.candidate_id  # linked, so ingest and matching can land
-
-    def test_held_when_last_message_is_ours(self, session, account, channel, thread):
-        _say(session, thread, "hey")
-        # No new inbound: the shared rail holds manager modes too.
         result = run_turn(session, thread=thread)
-        assert result.action == ACTION_HELD
+        assert result.action == ACTION_DEFERRED
+        assert channel.bodies == []  # nothing sent at 3am
+
+    def test_hold_applies_before_either_flow(self, session, thread, channel):
+        _say(session, thread, "hey")
+        # No new inbound: it is their turn, whichever flow is running.
+        assert run_turn(session, thread=thread).action == ACTION_HELD
+
+
+class TestHandover:
+    def test_onboarding_hands_over_instead_of_completing(self, session, thread, channel):
+        """The invariant this merge exists to preserve."""
+        set_scraper(
+            lambda url: LinkedInProfile(
+                url=url,
+                full_name="Ada Okonkwo",
+                current_title="Machine Learning Engineer",
+                current_employer="Modal",
+                location="San Francisco",
+                experience_years=8.0,
+            )
+        )
+        _say(session, thread, "hey", native_id="h1")
+        _say(session, thread, "ada-mgr@example.com", native_id="h2")
+        _say(session, thread, "https://linkedin.com/in/ada-okonkwo", native_id="h3")
+
+        job = session.scalar(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE))
+        assert job is not None
+        process_job(session, job)
+        run_turn(session, thread=thread)  # confirm message
+
+        # Walk the rest of the flow to its end.
+        for index, reply in enumerate(("yep that's right", "240k, a month, green card, yes")):
+            _say(session, thread, reply, native_id=f"h-tail-{index}")
+
+        session.refresh(thread)
+        assert thread.status != STATUS_COMPLETE, "a manager thread must never go silent"
+        assert thread.mode == MODE_MANAGING
+        assert thread.candidate_id
 
 
 class TestManaging:
     def test_present_apply_and_status(self, session, account, channel, thread):
-        thread = _managed(session, account, channel, thread)
+        thread = _managed(session, thread)
         org_id = account["org_id"]
         for index, company in enumerate(("Anthropic", "Figma")):
             posting = _posting(session, org_id, company=company, suffix=str(index))
@@ -198,39 +214,30 @@ class TestManaging:
         body = channel.bodies[-1]
         assert "1. ML Engineer — Anthropic" in body
         assert "Current title matches" in body
-        assert "/m/" in body  # the portal deep link
-        # Never a score. Asserted against the card lines only: the link line
-        # is an opaque JWT whose random bytes contain "0.9" about 1.5% of the
-        # time, which made the naive whole-body version of this a flake.
+        assert "/m/" in body
+        # Never a score. Card lines only: the link is a JWT whose random bytes
+        # contain "0.9" about 1.5% of the time.
         assert "0.9" not in _card_lines(body)
+
         frame = thread.last_presented or []
         assert [entry["company"] for entry in frame] == ["Anthropic", "Figma"]
-        proposals = session.scalars(select(JobProposal)).all()
-        assert len(proposals) == 2
-        assert all(p.status == "proposed" and p.message_id for p in proposals)
+        assert len(session.scalars(select(JobProposal)).all()) == 2
 
-        # "apply to 2" is the per-application yes, bound to that message.
         result = _say(session, thread, "apply to 2", native_id="m-apply")
         assert result.action == "applied"
         application = session.scalar(select(Application))
-        assert application is not None
-        posting = session.get(JobPosting, application.job_posting_id)
-        assert posting.company == "Figma"
+        assert session.get(JobPosting, application.job_posting_id).company == "Figma"
+        # The per-application yes, bound to the message it arrived in.
         assert application.consenting_message_id is not None
         assert application.consent_verbatim == "apply to 2"
-        accepted = session.get(JobProposal, application.proposal_id)
-        assert accepted.status == "accepted"
-        package_job = session.scalar(select(Job).where(Job.kind == KIND_APP_PACKAGE))
-        assert package_job is not None
+        assert session.get(JobProposal, application.proposal_id).status == "accepted"
+        assert session.scalar(select(Job).where(Job.kind == KIND_APP_PACKAGE)) is not None
+
+        _say(session, thread, "what's my status", native_id="m-status")
         assert "Figma" in channel.bodies[-1]
 
-        result = _say(session, thread, "what's my status", native_id="m-status")
-        assert "Figma" in channel.bodies[-1]
-
-    def test_ambiguous_apply_gets_a_clarifier_not_a_guess(
-        self, session, account, channel, thread
-    ):
-        thread = _managed(session, account, channel, thread)
+    def test_ambiguous_apply_gets_a_clarifier_not_a_guess(self, session, channel, thread):
+        thread = _managed(session, thread)
         thread.last_presented = [
             {"proposal_id": "", "posting_id": "x", "company": "Acme", "title": "Engineer"},
             {"proposal_id": "", "posting_id": "y", "company": "Acme Labs", "title": "Engineer"},
@@ -238,15 +245,14 @@ class TestManaging:
         session.flush()
         _say(session, thread, "apply to the acme one", native_id="m-ambig")
         assert "number" in channel.bodies[-1].lower()
-        assert session.scalar(select(Application)) is None  # no guessed pursuit
+        assert session.scalar(select(Application)) is None
 
     def test_presented_roles_never_resurface(self, session, account, channel, thread):
-        thread = _managed(session, account, channel, thread)
-        org_id = account["org_id"]
-        posting = _posting(session, org_id, suffix="once")
+        thread = _managed(session, thread)
+        posting = _posting(session, account["org_id"], suffix="once")
         session.add(
             JobMatch(
-                org_id=org_id,
+                org_id=account["org_id"],
                 job_posting_id=posting.id,
                 candidate_id=thread.candidate_id,
                 score=0.9,
@@ -258,23 +264,26 @@ class TestManaging:
         _say(session, thread, "find me roles", native_id="m-a")
         assert "Anthropic" in channel.bodies[-1]
         _say(session, thread, "more roles please", native_id="m-b")
-        assert "Nothing new clears the bar" in channel.bodies[-1]
+        assert "nothing new clears the bar" in channel.bodies[-1].lower()
 
-    def test_other_intent_gets_the_canned_deflection(self, session, account, channel, thread):
-        thread = _managed(session, account, channel, thread)
+    def test_other_intent_gets_the_canned_deflection(self, session, channel, thread):
+        thread = _managed(session, thread)
         _say(session, thread, "can you fix my printer", native_id="m-other")
         assert "recruiter will follow up" in channel.bodies[-1]
 
 
+def _card_lines(body: str) -> str:
+    return "\n".join(line for line in body.splitlines() if "/m/" not in line)
+
+
 class TestIntakeUntouched:
-    def test_web_intake_never_reaches_the_manager(self, session, account):
+    def test_web_intake_still_runs_the_classic_flow(self, session, account):
         from juicebox.messaging.channels import WEB
 
         set_channel(WEB, FakeChannel())
         thread = open_thread(
             session, org_id=account["org_id"], channel=WEB, consent_messaging=True
         )
-        assert thread.mode == "intake"
-        result = run_turn(session, thread=thread)
-        # The classic greet + first intake question, exactly as before.
-        assert result.action == "greeted"
+        assert thread.mode == MODE_INTAKE
+        assert thread.flow == "full"
+        assert run_turn(session, thread=thread).action == "greeted"

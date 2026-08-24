@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { api } from '../../lib/api.js';
-import { formatComp, formatTimeline, intakeApi } from '../../lib/intake.js';
+import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../../lib/intake.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -116,7 +116,10 @@ function ThreadReviewBody({ threadId }) {
               <Badge tone={inbound ? 'accent' : 'strong'}>
                 {inbound ? '← candidate' : '→ agent'}
               </Badge>
-              <span className="muted">{when(message.sent_at || message.created_at)}</span>
+              <span className="muted">
+                {!inbound && messageReceipt(message) ? `${messageReceipt(message)} · ` : ''}
+                {when(message.sent_at || message.created_at)}
+              </span>
             </div>
             <pre className="message-body">{message.body || '—'}</pre>
           </div>

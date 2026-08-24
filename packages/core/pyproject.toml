@@ -10,6 +10,9 @@ dependencies = [
     "pydantic>=2.7",
     "email-validator>=2.1",
     "python-multipart>=0.0.9",
+    # Reads an .xlsx a recruiter uploads; see routers/imports.py. CSV needs
+    # nothing -- that is parsed in the browser.
+    "openpyxl>=3.1",
     "numpy>=1.26",
     "httpx>=0.27",
     # 0.78 is the first release whose OutputConfigParam carries `effort` as well
@@ -34,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2.5"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "python-dotenv>=1.0"]
+linkedin = ["playwright>=1.40"]
 
 [project.scripts]
 juicebox = "juicebox.cli:main"

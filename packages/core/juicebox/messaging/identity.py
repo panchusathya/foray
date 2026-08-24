@@ -24,8 +24,10 @@ import re
 
 from sqlalchemy.orm import Session
 
+from ..enrich.linkedin_url import canonical_linkedin_url
+from ..enrich.linkedin_url import find_linkedin as extract_linkedin
 from ..models import Candidate, IntakeThread
-from ..repository import owner_of_email, upsert_candidates
+from ..repository import owner_of_email, owner_of_linkedin, upsert_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +47,12 @@ def _mark_crm_tracked(db: Session, candidate_id: str) -> None:
 # intake.schema key, which is what `asked_field` otherwise holds.
 CONTACT_NAME = "contact.name"
 CONTACT_EMAIL = "contact.email"
+CONTACT_LINKEDIN = "contact.linkedin"
 
 ASKS = {
-    CONTACT_NAME: "First things first — what name should I put on this?",
-    CONTACT_EMAIL: "And the best email to reach you on?",
+    CONTACT_NAME: "first things first — what name should i put on this?",
+    CONTACT_EMAIL: "and the best email to reach you on?",
+    CONTACT_LINKEDIN: "first, drop your linkedin url (or just the /in/ handle)?",
 }
 
 # Set by _wrap_up when a conversation ends with nobody to attach it to, and
@@ -97,13 +101,18 @@ def find_name(body: str) -> str:
     return " ".join(words)
 
 
+def find_linkedin(body: str) -> str:
+    """Canonical ``https://www.linkedin.com/in/{slug}``, or empty."""
+    return extract_linkedin(body)
+
+
 def absorb(thread: IntakeThread, *, body: str, asked_field: str) -> list[str]:
     """Take any contact detail out of an inbound message. Returns what changed.
 
-    An address is read from *any* message, because somebody who volunteers one
-    early should not be asked for it later. A name is read only when the last
-    question asked for one -- otherwise "I'm looking for staff roles" becomes
-    a candidate called "looking for staff roles".
+    An address and a LinkedIn URL are read from *any* message, because somebody
+    who volunteers one early should not be asked for it later. A name is read
+    only when the last question asked for one -- otherwise "I'm looking for
+    staff roles" becomes a candidate called "looking for staff roles".
     """
     changed: list[str] = []
 
@@ -111,6 +120,11 @@ def absorb(thread: IntakeThread, *, body: str, asked_field: str) -> list[str]:
     if email and not thread.contact_email:
         thread.contact_email = email[:255]
         changed.append(CONTACT_EMAIL)
+
+    linkedin = find_linkedin(body)
+    if linkedin and not thread.contact_linkedin:
+        thread.contact_linkedin = linkedin[:400]
+        changed.append(CONTACT_LINKEDIN)
 
     if not thread.contact_name and asked_field == CONTACT_NAME:
         name = find_name(body)
@@ -121,19 +135,30 @@ def absorb(thread: IntakeThread, *, body: str, asked_field: str) -> list[str]:
     return changed
 
 
-def missing_identity(thread: IntakeThread) -> tuple[str, ...]:
+def missing_identity(thread: IntakeThread, *, linkedin_first: bool = False) -> tuple[str, ...]:
     """Contact pseudo-fields still outstanding, in the order to ask them.
 
     Returns every one that is missing rather than just the first, so the
     caller can skip past one it has already asked about twice. Neither has a
     ``declined`` equivalent -- there is no field on the record to mark -- which
     is exactly why the ask cap has to be applied from outside.
+
+    LinkedIn-first threads ask for a URL (and a name if the scrape did not
+    supply one) and skip email: a public widget that required an address
+    before matching would stall people who only texted a profile, and the
+    CRM can hang off ``linkedin_url``.
     """
-    return tuple(
-        key
-        for key, value in ((CONTACT_NAME, thread.contact_name), (CONTACT_EMAIL, thread.contact_email))
-        if not value
-    )
+    if linkedin_first:
+        items = (
+            (CONTACT_LINKEDIN, thread.contact_linkedin),
+            (CONTACT_NAME, thread.contact_name),
+        )
+    else:
+        items = (
+            (CONTACT_NAME, thread.contact_name),
+            (CONTACT_EMAIL, thread.contact_email),
+        )
+    return tuple(key for key, value in items if not value)
 
 
 def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
@@ -144,52 +169,85 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     first inbound message would let anyone fill the CRM by opening a chat and
     typing once; requiring a completed gate makes that cost a whole intake.
 
-    An existing owner of the address always wins. Creating a second row for
-    somebody already in the CRM is worse than not creating one at all -- it
-    splits their history and their preferences across two records.
+    An existing owner of the address or LinkedIn URL always wins. Creating a
+    second row for somebody already in the CRM is worse than not creating one
+    at all -- it splits their history and their preferences across two records.
     """
     if thread.candidate_id:
         _mark_crm_tracked(db, thread.candidate_id)
+        _copy_linkedin(db, thread)
         return thread.candidate_id
 
     email = (thread.contact_email or "").strip().lower()
     name = (thread.contact_name or "").strip()
-    if not email or not name:
+    linkedin = canonical_linkedin_url(thread.contact_linkedin) or (thread.contact_linkedin or "").strip()
+    if not name or not (email or linkedin):
         # Debug, not warning: the gate can close before the contact questions
         # do, so "not yet" is an ordinary intermediate state. The case that
         # actually matters -- a finished thread with nobody to attach it to --
         # is recorded on the thread by ``_wrap_up``.
         logger.debug(
-            "intake thread %s not linkable yet: name=%s email=%s",
+            "intake thread %s not linkable yet: name=%s email=%s linkedin=%s",
             thread.id,
             bool(name),
             bool(email),
+            bool(linkedin),
         )
         return None
 
-    existing = owner_of_email(db, org_id=thread.org_id, email=email)
+    existing = None
+    if linkedin:
+        existing = owner_of_linkedin(db, org_id=thread.org_id, url=linkedin)
+    if not existing and email:
+        existing = owner_of_email(db, org_id=thread.org_id, email=email)
     if existing:
         thread.candidate_id = existing
         _mark_crm_tracked(db, existing)
+        _copy_linkedin(db, thread)
         return existing
+
+    scrape = ((thread.record or {}).get("_linkedin") or {}).get("scrape") or {}
+    payload: dict = {
+        "source": "intake_thread",
+        "source_id": email or linkedin,
+        "full_name": name,
+        "linkedin_url": linkedin,
+    }
+    if email:
+        payload["emails"] = [email]
+    if scrape.get("current_title"):
+        payload["current_title"] = scrape["current_title"]
+    if scrape.get("current_employer"):
+        payload["current_company"] = scrape["current_employer"]
+    if scrape.get("location"):
+        payload["location"] = scrape["location"]
+    if scrape.get("headline"):
+        payload["headline"] = scrape["headline"]
 
     result = upsert_candidates(
         db,
         org_id=thread.org_id,
-        payloads=[
-            {
-                "source": "intake_thread",
-                "source_id": email,
-                "full_name": name,
-                "emails": [email],
-            }
-        ],
+        payloads=[payload],
     )
     if not result.ids:
         return None
     thread.candidate_id = result.ids[0]
     _mark_crm_tracked(db, thread.candidate_id)
+    _copy_linkedin(db, thread)
     return thread.candidate_id
+
+
+def _copy_linkedin(db: Session, thread: IntakeThread) -> None:
+    """Stamp the URL onto the candidate if they do not already have one."""
+    url = canonical_linkedin_url(thread.contact_linkedin) or (thread.contact_linkedin or "").strip()
+    if not url or not thread.candidate_id:
+        return
+    candidate = db.get(Candidate, thread.candidate_id)
+    if candidate is None:
+        return
+    if not (candidate.linkedin_url or "").strip():
+        candidate.linkedin_url = url[:400]
+        db.flush()
 
 
 class AttributionError(RuntimeError):

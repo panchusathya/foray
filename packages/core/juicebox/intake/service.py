@@ -111,12 +111,22 @@ def resolve_candidate_id(db: Session, *, org_id: str, phone: str) -> str | None:
     to confirm something only they would know. That gate lives in the agent
     prompt (Phase 4), not here, but it is the reason this returns an id and not
     a profile.
+
+    The number is put through ``lookup_key`` first, because that is what wrote
+    the column: ``repository.sync_candidate_phones`` stores keys, never raw
+    input. Comparing a raw number against a key happened to work while Retell
+    sent tidy E.164, and would have silently returned ``None`` -- an
+    unattributed call, not an error -- the moment a provider sent
+    ``(213) 431-7465`` or a bare national number. ``lookup_key`` still refuses
+    to guess a country, so an unmatchable number remains unmatched rather than
+    being attached to the wrong person.
     """
-    if not phone:
+    key = lookup_key(phone)
+    if not key:
         return None
     row = db.scalar(
         select(CandidatePhone).where(
-            CandidatePhone.org_id == org_id, CandidatePhone.phone == phone
+            CandidatePhone.org_id == org_id, CandidatePhone.phone == key
         )
     )
     return row.candidate_id if row is not None else None

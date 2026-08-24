@@ -102,14 +102,6 @@ from juicebox.security import signed_intake_token
 
 
 @pytest.fixture
-def fake_channel():
-    """Install a FakeChannel as the web channel and hand it back."""
-    channel = FakeChannel()
-    set_channel(WEB, channel)
-    return channel
-
-
-@pytest.fixture
 def thread(session, account, fake_channel):
     return open_thread(
         session, org_id=account["org_id"], channel=WEB, consent_messaging=True

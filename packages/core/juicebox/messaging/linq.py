@@ -14,7 +14,8 @@ import hmac
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..intake.phones import lookup_key
-from ..models import IntakeNumber
+from ..models import IntakeNumber, IntakeThread
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +239,109 @@ def resolve_linq_org_id(db: Session, *, to_address: str) -> str | None:
         )
     )
     return row.org_id if row is not None else None
+
+
+STATUS_EVENTS = frozenset(
+    {"message.sent", "message.delivered", "message.read", "message.failed"}
+)
+
+
+@dataclass(frozen=True)
+class StatusEvent:
+    event_type: str
+    message_id: str
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
+    failed_at: datetime | None = None
+    error: str = ""
+    raw: dict = field(default_factory=dict)
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def parse_status_event(payload: dict) -> StatusEvent:
+    """Parse a message.sent / delivered / read / failed envelope."""
+    event_type = str(payload.get("event_type") or "").strip()
+    if event_type not in STATUS_EVENTS:
+        raise ValueError(f"unsupported status event {event_type!r}")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("missing data object")
+    nested = data.get("message") if isinstance(data.get("message"), dict) else data
+    message_id = str(nested.get("id") or data.get("id") or "").strip()
+    if not message_id:
+        raise ValueError("no message id in status payload")
+    error = ""
+    err = nested.get("error") or data.get("error") or {}
+    if isinstance(err, dict):
+        error = str(err.get("reason") or err.get("code") or err.get("message") or "")
+    elif err:
+        error = str(err)
+    return StatusEvent(
+        event_type=event_type,
+        message_id=message_id,
+        delivered_at=parse_iso_datetime(nested.get("delivered_at") or data.get("delivered_at")),
+        read_at=parse_iso_datetime(nested.get("read_at") or data.get("read_at")),
+        failed_at=parse_iso_datetime(nested.get("failed_at") or data.get("failed_at")),
+        error=error.strip(),
+        raw=data,
+    )
+
+
+def start_typing(chat_id: str, *, transport: Transport | None = None) -> None:
+    """Best-effort iMessage typing indicator. Failures are swallowed."""
+    _typing_request("POST", chat_id, transport=transport)
+
+
+def stop_typing(chat_id: str, *, transport: Transport | None = None) -> None:
+    _typing_request("DELETE", chat_id, transport=transport)
+
+
+def maybe_start_typing(thread: IntakeThread) -> None:
+    """Show 'typing…' on Linq while a turn or scrape is in flight."""
+    if (thread.channel or "") != "linq" or not thread.provider_thread_id:
+        return
+    try:
+        start_typing(thread.provider_thread_id)
+    except Exception as exc:  # noqa: BLE001 - never fail a turn on a typing blip
+        logger.debug("linq typing indicator failed: %s", exc)
+
+
+def _typing_request(method: str, chat_id: str, *, transport: Transport | None = None) -> None:
+    settings = get_settings()
+    if not settings.linq_api_key or not chat_id:
+        return
+    url = f"{LINQ_API_BASE}/chats/{chat_id}/typing"
+    try:
+        if transport is not None:
+            transport(method, url, {})
+            return
+        if method == "DELETE":
+            httpx.delete(
+                url,
+                headers={"Authorization": f"Bearer {settings.linq_api_key}"},
+                timeout=5.0,
+            )
+        else:
+            httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {settings.linq_api_key}"},
+                timeout=5.0,
+            )
+    except httpx.HTTPError as exc:
+        logger.debug("linq typing %s failed: %s", method, exc)

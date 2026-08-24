@@ -44,6 +44,8 @@ class IntakeTimelineMessage:
     status: str
     created_at: datetime
     sent_at: datetime | None
+    delivered_at: datetime | None = None
+    read_at: datetime | None = None
 
 
 @dataclass
@@ -233,6 +235,8 @@ def intake_threads_for_candidate(
                 status=message.status or "",
                 created_at=message.created_at,
                 sent_at=message.sent_at,
+                delivered_at=message.delivered_at,
+                read_at=message.read_at,
             )
         )
 

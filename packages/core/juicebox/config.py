@@ -409,6 +409,14 @@ class Settings:
         default_factory=lambda: _env_int("PORTAL_OTP_HOURLY_CAP", 3)
     )
 
+    # Who candidate-facing portal mail comes from. Separate from the outreach
+    # sender on purpose: outreach is a named recruiter writing to a candidate,
+    # while a sign-in code is the system talking, and a personal mailbox is
+    # the wrong return address for it. Empty falls back to the outreach
+    # sender, so an unconfigured deployment keeps working.
+    portal_from_email: str = field(default_factory=lambda: _env("PORTAL_FROM_EMAIL", ""))
+    portal_from_name: str = field(default_factory=lambda: _env("PORTAL_FROM_NAME", "Foray"))
+
     # Logged-in LinkedIn session for the intake scraper. JSON cookie array
     # (Playwright storage_state) or a raw ``li_at=...`` string. Never commit.
     linkedin_session_cookie: str = field(

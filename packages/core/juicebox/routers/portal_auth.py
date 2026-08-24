@@ -32,6 +32,7 @@ from ..deps import CommittingRoute, get_db
 from ..models import Candidate, CandidateAuthGrant, CandidateEmail, PortalOtp, utcnow
 from ..outreach.sender import OutboundEmail, get_sender
 from ..portal.links import mint_session_token
+from ..portal.mail import portal_sender
 from ..security import TokenError, decode_access_token
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,7 @@ def otp_request(payload: OtpRequestIn, db: Session = Depends(get_db)) -> dict:
     )
     db.flush()
 
+    from_email, from_name = portal_sender()
     get_sender().send(
         OutboundEmail(
             to=email,
@@ -172,8 +174,8 @@ def otp_request(payload: OtpRequestIn, db: Session = Depends(get_db)) -> dict:
                 "If you didn't request this, you can ignore it."
             ),
             html_body="",
-            from_email=settings.outreach_from_email,
-            from_name="Foray",
+            from_email=from_email,
+            from_name=from_name,
         )
     )
     return accepted

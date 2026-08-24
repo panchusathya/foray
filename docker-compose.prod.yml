@@ -119,6 +119,13 @@ x-app-env: &app_env
   # Where magic links point. The api and worker mint them, so they carry this;
   # the portal container itself never needs it.
   PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+  # Who sign-in codes come from. Separate from OUTREACH_FROM_EMAIL because a
+  # candidate receiving a code has not necessarily met the recruiter whose
+  # mailbox sends the outreach. Empty falls back to the outreach identity.
+  # The SMTP user must be this address or a verified alias of it — Zoho and
+  # most providers reject a From they did not authenticate.
+  PORTAL_FROM_EMAIL: ${PORTAL_FROM_EMAIL:-}
+  PORTAL_FROM_NAME: ${PORTAL_FROM_NAME:-Foray}
   # The proposal bar's score floor. Necessary but never sufficient — vetoes
   # and the explainability gate sit on top. Raising it above 1.0 is the kill
   # switch for candidate-facing job proposals: nothing clears the bar, so the

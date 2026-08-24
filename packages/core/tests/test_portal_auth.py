@@ -179,3 +179,75 @@ class TestOtp:
         assert self._request(client, "ada@example.com").status_code == 202
         session.expire_all()
         assert len(session.scalars(select(PortalOtp)).all()) == 3
+
+
+class TestPortalSender:
+    """Who a sign-in code appears to come from.
+
+    Outreach is a named recruiter writing to someone they are courting. A
+    sign-in code is the system talking, and a candidate who has never met
+    that recruiter should not get an unexplained email from their personal
+    mailbox -- nor should replies land where nobody reads them.
+    """
+
+    def _reload(self, monkeypatch, **env):
+        import juicebox.config as config
+
+        for key, value in env.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        config.reset_settings_cache()
+
+    def test_falls_back_to_the_outreach_identity_when_unset(self, monkeypatch):
+        from juicebox.portal.mail import portal_sender
+
+        self._reload(
+            monkeypatch,
+            PORTAL_FROM_EMAIL="",
+            OUTREACH_FROM_EMAIL="recruiter@example.com",
+            OUTREACH_FROM_NAME="Dana",
+        )
+        assert portal_sender() == ("recruiter@example.com", "Dana")
+
+    def test_a_configured_address_brings_its_own_name(self, monkeypatch):
+        """The pairing rule: address and display name move together.
+
+        Taking the portal address but keeping the outreach display name would
+        put one person's name on another person's mailbox, which reads as
+        impersonation to anyone who looks at the header.
+        """
+        from juicebox.portal.mail import portal_sender
+
+        self._reload(
+            monkeypatch,
+            PORTAL_FROM_EMAIL="vivian@example.com",
+            PORTAL_FROM_NAME="Foray",
+            OUTREACH_FROM_EMAIL="recruiter@example.com",
+            OUTREACH_FROM_NAME="Dana",
+        )
+        email, name = portal_sender()
+        assert (email, name) == ("vivian@example.com", "Foray")
+        assert name != "Dana", "the outreach recruiter's name must not ride along"
+
+    def test_the_otp_email_actually_carries_it(
+        self, client, session, account, candidate, monkeypatch, mailbox
+    ):
+        self._reload(
+            monkeypatch,
+            PORTAL_FROM_EMAIL="vivian@example.com",
+            PORTAL_FROM_NAME="Foray",
+            OUTREACH_FROM_EMAIL="recruiter@example.com",
+            OUTREACH_FROM_NAME="Dana",
+        )
+        session.commit()
+        assert (
+            client.post(
+                "/v1/portal/auth/otp/request", json={"email": "ada@example.com"}
+            ).status_code
+            == 202
+        )
+        sent = mailbox.outbox[-1]
+        assert sent.from_email == "vivian@example.com"
+        assert sent.from_name == "Foray"

@@ -103,6 +103,13 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     intent = intents.classify(last.body or "", presented=presented)
 
     def _say(body: str, action: str = ACTION_ANSWERED, *, verbatim: bool = False):
+        # verbatim copy names companies and roles read out of the database --
+        # rewriting it risks changing a fact, so only the conversational lines
+        # go through the composer.
+        if not verbatim:
+            from .conversation import humanize
+
+            body = humanize(thread, says=body, last_inbound=last.body or "")
         row = _deliver(
             db, thread=thread, message=OutboundMessage(body=body, verbatim=verbatim)
         )

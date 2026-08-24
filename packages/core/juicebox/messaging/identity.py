@@ -215,7 +215,14 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     email = (thread.contact_email or "").strip().lower()
     name = (thread.contact_name or "").strip()
     linkedin = canonical_linkedin_url(thread.contact_linkedin) or (thread.contact_linkedin or "").strip()
-    if not name or not (email or linkedin):
+    if not (email or linkedin):
+        # A name is NOT required. An email address identifies somebody on its
+        # own, and asking "what name should I put on this?" is a form field,
+        # not a conversation -- the name arrives with the LinkedIn profile,
+        # which is the whole reason we ask for the URL. A candidate created
+        # without one gets their real name the moment the profile lands, via
+        # `enrich.promote`.
+        #
         # Debug, not warning: the gate can close before the contact questions
         # do, so "not yet" is an ordinary intermediate state. The case that
         # actually matters -- a finished thread with nobody to attach it to --
@@ -244,7 +251,10 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     payload: dict = {
         "source": "intake_thread",
         "source_id": email or linkedin,
-        "full_name": name,
+        # The address stands in until the profile arrives with a real name.
+        # `promote` overwrites it; a blank here would show as an unnamed row
+        # in the CRM, which is harder to act on than an address.
+        "full_name": name or email or linkedin,
         "linkedin_url": linkedin,
     }
     if email:

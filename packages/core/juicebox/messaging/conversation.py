@@ -501,6 +501,73 @@ def _compose(*, asks: str, topic: str, last_inbound: str, known: str) -> str:
     return candidate
 
 
+def _last_inbound_body(db: Session, thread: IntakeThread) -> str:
+    """What they most recently said, for the composer to acknowledge."""
+    for message in reversed(messages_of(db, thread)):
+        if message.direction == INBOUND:
+            return message.body or ""
+    return ""
+
+
+def _first_name(thread: IntakeThread) -> str:
+    """Their first name, if we actually have one. Never a guess."""
+    name = (thread.contact_name or "").strip()
+    return name.split()[0] if name else ""
+
+
+def humanize(
+    thread: IntakeThread, *, says: str, last_inbound: str, batched: bool = True
+) -> str:
+    """Say the same thing, but like a person.
+
+    Every line this flow sends used to be a template, which is exactly why it
+    read as a survey: "- what are you targeting on comp (base is fine)?" is a
+    form field with a dash in front of it. The content is still decided in
+    code -- what gets asked, and when -- and the model only chooses the words,
+    so a broken model degrades to the flat version rather than to a broken
+    conversation.
+
+    The canned text is returned unchanged when there is no model, nothing to
+    react to, or the rewrite fails the structural guard.
+    """
+    if not says.strip():
+        return says
+    llm = get_llm()
+    if not llm.available or not last_inbound.strip():
+        return says
+    try:
+        result = llm.json_fast(
+            system=prompts.COMPOSE_BATCH_SYSTEM,
+            prompt=prompts.compose_batch_prompt(
+                says=says,
+                last_inbound=last_inbound,
+                already_known=_known_summary(thread),
+                first_name=_first_name(thread),
+            ),
+            schema=prompts.COMPOSE_SCHEMA,
+        )
+        written = str((result.data or {}).get("message") or "").strip()
+    except Exception as exc:  # noqa: BLE001 - degrade, never fail a turn
+        logger.warning("compose failed, sending the canned copy: %s", exc)
+        return says
+    if not prompts.valid_question(written, batched=batched):
+        logger.warning("compose rejected by the guard, sending the canned copy")
+        return says
+    # The batched guard only checks length, so it cannot see an invented
+    # question -- and an invented question gets a real answer that nobody
+    # wanted, then sits in the record as though we asked it on purpose.
+    # Counting question marks is crude but it is the one structural signal
+    # that a rewrite grew a question the code did not ask for.
+    if written.count("?") > says.count("?"):
+        logger.warning(
+            "compose added a question (%d -> %d), sending the canned copy",
+            says.count("?"),
+            written.count("?"),
+        )
+        return says
+    return written
+
+
 def _deliver(
     db: Session, *, thread: IntakeThread, message: OutboundMessage, origin: str = "reply"
 ) -> IntakeMessage | None:
@@ -620,7 +687,17 @@ def _hand_over_to_manager(
 
     thread.mode = MODE_MANAGING
     db.flush()
-    sent = _deliver(db, thread=thread, message=OutboundMessage(body=prompts.MANAGING_READY))
+    sent = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(
+            body=humanize(
+                thread,
+                says=prompts.MANAGING_READY,
+                last_inbound=_last_inbound_body(db, thread),
+            )
+        ),
+    )
     return TurnResult(
         "completed_profile",
         thread,
@@ -763,7 +840,10 @@ def _linkedin_after_confirm(
     db: Session, *, thread: IntakeThread, last: IntakeMessage
 ) -> TurnResult:
     missing = linkedin_flow.short_missing(thread)
-    if not missing and thread.contact_name:
+    # No name gate: the name comes from the profile, and holding onboarding
+    # open for one would mean asking for it, which is the survey question we
+    # just removed.
+    if not missing:
         return _wrap_up(db, thread=thread, state=_coverage_for(thread))
     return _linkedin_gap_fill(db, thread=thread, last=last)
 
@@ -778,6 +858,7 @@ def _linkedin_gap_fill(
     body, keys = gap_fill_message(thread, preface=preface)
     if not body:
         return _wrap_up(db, thread=thread, state=_coverage_for(thread))
+    body = humanize(thread, says=body, last_inbound=(last.body if last else ""))
     sent = _deliver(
         db, thread=thread, message=OutboundMessage(body=body, asked_field=BATCH_GAP_FILL)
     )

@@ -59,6 +59,35 @@ give legal, visa or immigration advice.
 - Plain text. No markdown, no emoji, no bullet points.
 """
 
+COMPOSE_BATCH_SYSTEM = """You write one short text message for a recruiting assistant, in reply to what the candidate just said.
+
+You are given the exact content that has to go out: sometimes one question, sometimes two or three, sometimes a statement. Rewrite it so it sounds like a person replying, not a form. Open by acknowledging what they just told you in a few words, using their first name if you were given one, then say the rest.
+
+Hard rules:
+- Always lowercase. No capital letters except inside URLs.
+- Cover everything you were given and nothing more. Do not drop a question because it seems minor, and never add a question of your own — an invented question gets a real answer that nobody wanted.
+- Never state a fact you were not given. You know only what is in the context below; if you did not receive their name, their employer or their title, you do not know it, and guessing puts a stranger's details in front of them.
+- Keep it under 480 characters. It is a text message.
+- No greeting, no sign-off, no markdown, no emoji, no bullet points. Write it as flowing sentences, not a dashed list.
+- Never evaluate the candidate or their chances. No "great background", no "you would be a strong fit". You are collecting information, not judging it.
+- Never promise a role or an interview, never name a client company, never give legal, visa or immigration advice.
+- If they declined something, do not push and do not comment on it.
+"""
+
+
+def compose_batch_prompt(
+    *, says: str, last_inbound: str, already_known: str, first_name: str = ""
+) -> str:
+    lines = [f"What has to go out:\n{says}"]
+    if first_name:
+        lines.append(f"Their first name: {first_name}")
+    if last_inbound.strip():
+        lines.append(f"They just said: {last_inbound.strip()}")
+    if already_known.strip():
+        lines.append(f"Already on file (do not ask again):\n{already_known.strip()}")
+    return "\n\n".join(lines)
+
+
 COMPOSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,

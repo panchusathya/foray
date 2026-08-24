@@ -64,8 +64,9 @@ GAP_FILL_LINES: dict[str, str] = {
 }
 
 YEARS_LINE = "roughly how many years of experience do you have?"
-# No leading "and": this is rendered as the first bullet of a dashed list,
-# where it came out as "- and what name should i put on this?".
+# Kept for the one place a name is still worth asking for: the manager, when
+# somebody has reached it with no profile and no name at all. The onboarding
+# gap-fill deliberately does not use it.
 NAME_LINE = "what name should i put on this?"
 
 
@@ -210,8 +211,10 @@ def gap_fill_message(thread: IntakeThread, *, preface: str = "") -> tuple[str, l
     lines: list[str] = []
     keys: list[str] = []
 
-    if not (thread.contact_name or "").strip():
-        lines.append(f"- {NAME_LINE}")
+    # The name is NOT asked for. It comes with the LinkedIn profile, which is
+    # what the URL is for; asking anyway turns the opening of a conversation
+    # into a form. When the lookup genuinely fails we would rather have an
+    # unnamed candidate that a recruiter can see than a survey question.
 
     if (
         len(lines) < MAX_GAP_FILL

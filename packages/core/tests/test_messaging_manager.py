@@ -334,11 +334,12 @@ class TestTheFirstLiveThread:
         )
         assert not thread.contact_name
 
-    def test_managing_absorbs_the_answer_it_asked_for(self, session, account, channel, thread):
-        """Ask for a name in managing mode, get one, link the candidate.
+    def test_an_email_alone_is_enough_to_link(self, session, account, channel, thread):
+        """No name question. An address identifies somebody on its own.
 
-        Before the fix the manager asked, the candidate answered, and the
-        answer went nowhere -- so the next turn asked again.
+        The manager used to demand "name and email" from people who had given
+        an email, then drop the answer. Now the email links the candidate and
+        the name arrives with the LinkedIn profile.
         """
         thread.record = _core_complete_record()
         thread.contact_email = "ada-live@example.com"
@@ -346,14 +347,20 @@ class TestTheFirstLiveThread:
         session.flush()
 
         _say(session, thread, "find me roles", native_id="live-1")
-        asked = channel.bodies[-1]
-        assert "name" in asked.lower()
-        assert "email" not in asked.lower(), "the email was already given"
-
-        _say(session, thread, "Sathya", native_id="live-2")
         session.refresh(thread)
-        assert thread.contact_name == "Sathya"
-        assert thread.candidate_id, "a name plus an email is enough to link"
+        assert thread.candidate_id, "an email is enough to link"
+        assert "name" not in channel.bodies[-1].lower(), "must not ask for a name"
+
+    def test_it_still_asks_when_it_has_nothing(self, session, account, channel, thread):
+        """The one case a name is worth asking for: no email, no LinkedIn."""
+        thread.record = _core_complete_record()
+        thread.contact_email = ""
+        thread.contact_linkedin = ""
+        thread.mode = MODE_MANAGING
+        session.flush()
+
+        _say(session, thread, "find me roles", native_id="live-3")
+        assert "email" in channel.bodies[-1].lower()
 
     def test_never_sends_the_same_canned_line_twice(self, session, account, channel, thread):
         """Two identical replies in a row is what made the agent look broken."""
@@ -381,3 +388,70 @@ class TestTheFirstLiveThread:
         assert intents.classify("no rush, show me more", presented=[]).kind != (
             intents.INTENT_DECLINE
         )
+
+
+class TestConversationalVoice:
+    """The flow used to send templates only, which is why it read as a survey.
+
+    The model now chooses the words; the code still chooses what is said and
+    when. Everything here is about that boundary holding.
+    """
+
+    def _llm(self, monkeypatch, message):
+        import juicebox.llm.client as client
+
+        class FakeLLM:
+            available = True
+
+            def json_fast(self, **kwargs):
+                from types import SimpleNamespace
+
+                return SimpleNamespace(data={"message": message})
+
+        monkeypatch.setattr(client, "get_llm", lambda: FakeLLM())
+        import juicebox.messaging.conversation as conv
+
+        monkeypatch.setattr(conv, "get_llm", lambda: FakeLLM())
+
+    def test_no_model_means_the_canned_copy(self, session, thread):
+        from juicebox.messaging.conversation import humanize
+
+        canned = "- what are you targeting on comp (base is fine)?"
+        assert humanize(thread, says=canned, last_inbound="hi") == canned
+
+    def test_a_rewrite_is_used(self, session, thread, monkeypatch):
+        from juicebox.messaging.conversation import humanize
+
+        self._llm(monkeypatch, "got it sathya — what are you targeting on comp?")
+        out = humanize(thread, says="- comp?", last_inbound="i'm sathya")
+        assert out.startswith("got it sathya")
+
+    def test_an_invented_question_is_refused(self, session, thread, monkeypatch):
+        """The guard the batched length check cannot provide.
+
+        A model asked for one question sometimes sends two, and the extra one
+        gets a real answer that lands in the record as though we meant to ask.
+        """
+        from juicebox.messaging.conversation import humanize
+
+        canned = "- what are you targeting on comp (base is fine)?"
+        self._llm(
+            monkeypatch,
+            "got it — what are you targeting on comp? and are you open to relocating?",
+        )
+        assert humanize(thread, says=canned, last_inbound="hi") == canned
+
+    def test_an_over_long_rewrite_is_refused(self, session, thread, monkeypatch):
+        from juicebox.messaging.conversation import humanize
+
+        canned = "- comp?"
+        self._llm(monkeypatch, "x" * 5000)
+        assert humanize(thread, says=canned, last_inbound="hi") == canned
+
+    def test_nothing_to_react_to_means_no_call(self, session, thread, monkeypatch):
+        """No inbound, no rewrite: there is nothing to acknowledge."""
+        from juicebox.messaging.conversation import humanize
+
+        self._llm(monkeypatch, "should not be used")
+        canned = "- comp?"
+        assert humanize(thread, says=canned, last_inbound="") == canned

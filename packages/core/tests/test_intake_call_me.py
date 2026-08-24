@@ -34,7 +34,7 @@ def fake_voice():
 def owned_number(session, account):
     row = IntakeNumber(
         org_id=account["org_id"],
-        provider="fake",
+        provider="retell",
         phone=OUR_NUMBER,
         outbound_agent_id="agent_outbound_1",
     )
@@ -257,7 +257,7 @@ class TestRefusals:
         other = Org(name="Other Firm", slug="other-firm")
         session.add(other)
         session.flush()
-        session.add(IntakeNumber(org_id=other.id, provider="fake", phone=OUR_NUMBER))
+        session.add(IntakeNumber(org_id=other.id, provider="retell", phone=OUR_NUMBER))
         session.commit()
 
         response = call_me(client, account)

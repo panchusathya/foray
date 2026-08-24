@@ -50,6 +50,9 @@ class OutboundMessage:
 
     body: str
     asked_field: str = ""
+    # Stable key for vendor send idempotency. ``conversation._deliver`` fills
+    # ``{thread_id}:{seq}`` when blank so a retry reuses the same key.
+    send_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -152,7 +155,7 @@ class LinqChannel:
             message_id = send_message(
                 chat_id=provider_thread_id,
                 body=message.body,
-                idempotency_key=message.asked_field or message.body[:255],
+                idempotency_key=message.send_key or message.asked_field or message.body[:255],
             )
         except LinqSendError as exc:
             raise ChannelError(str(exc)) from exc

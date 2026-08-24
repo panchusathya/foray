@@ -68,6 +68,7 @@ from .threads import (
     messages_of,
     record_outbound,
     transcript_of,
+    with_send_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -442,16 +443,17 @@ def _deliver(
             result=DeliveryResult(status="failed", error="no messaging consent on file"),
         )
 
+    outbound = with_send_key(db, thread=thread, message=message)
     try:
         result = channel.send(
             to_address=thread.from_address,
-            message=message,
+            message=outbound,
             provider_thread_id=thread.provider_thread_id,
         )
     except ChannelError as exc:
         logger.warning("intake send failed on thread %s: %s", thread.id, exc.detail)
         result = DeliveryResult(status="failed", error=exc.detail[:400])
-    return record_outbound(db, thread=thread, message=message, result=result)
+    return record_outbound(db, thread=thread, message=outbound, result=result)
 
 
 def deliver(

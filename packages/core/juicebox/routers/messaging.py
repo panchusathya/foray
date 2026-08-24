@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..intake.phones import lookup_key
 from ..intake.service import resolve_candidate_id
@@ -65,6 +66,7 @@ PURPOSE_THREAD = "intake-thread"
 # this is the durable floor counted per org rather than per IP.
 MAX_INBOUND_PER_THREAD = 200
 MAX_NEW_THREADS_PER_ORG_PER_HOUR = 20
+MAX_NEW_THREADS_PER_SENDER_PER_HOUR = 5
 _THREAD_CAP_WINDOW = timedelta(hours=1)
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
@@ -146,6 +148,33 @@ def _check_thread_creation_cap(db: Session, *, org_id: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many new conversations for this organization",
+        )
+
+
+def _check_sender_thread_cap(
+    db: Session, *, org_id: str, from_address: str, channel: str
+) -> None:
+    """Refuse when one sender has opened too many conversations recently."""
+    if not from_address:
+        return
+    since = utcnow() - _THREAD_CAP_WINDOW
+    count = (
+        db.scalar(
+            select(func.count())
+            .select_from(IntakeThread)
+            .where(
+                IntakeThread.org_id == org_id,
+                IntakeThread.channel == channel,
+                IntakeThread.from_address == from_address,
+                IntakeThread.created_at >= since,
+            )
+        )
+        or 0
+    )
+    if count >= MAX_NEW_THREADS_PER_SENDER_PER_HOUR:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many new conversations from this sender",
         )
 
 
@@ -237,6 +266,7 @@ def _resolve_or_open_linq_thread(
         if inbound.chat_id and not thread.provider_thread_id:
             thread.provider_thread_id = inbound.chat_id
         return thread
+    _check_sender_thread_cap(db, org_id=org_id, from_address=from_key, channel=LINQ)
     if not LinqChannel().is_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -279,6 +309,18 @@ def linq_webhook(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
         ) from exc
+
+    settings = get_settings()
+    if not settings.linq_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Linq intake is not enabled",
+        )
+    if not LinqChannel().is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Linq channel is not configured",
+        )
 
     try:
         payload = json.loads(raw)

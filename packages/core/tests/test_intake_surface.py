@@ -265,7 +265,7 @@ class TestPhoneSuppression:
         session.add(
             IntakeNumber(
                 org_id=account["org_id"],
-                provider="fake",
+                provider="retell",
                 phone="+18882600142",
                 outbound_agent_id="agent_outbound_1",
             )

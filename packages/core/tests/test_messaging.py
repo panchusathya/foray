@@ -63,6 +63,7 @@ from juicebox.messaging.identity import (
     find_email,
     find_name,
 )
+from juicebox.messaging.linq import sign_webhook
 from juicebox.messaging.records import (
     merge_record,
     persist_preference,
@@ -74,7 +75,6 @@ from juicebox.messaging.suppression import (
     is_blocked,
     looks_like_stop,
 )
-from juicebox.messaging.linq import sign_webhook
 from juicebox.messaging.threads import (
     STATUS_COMPLETE,
     STATUS_STOPPED,
@@ -1512,3 +1512,45 @@ class TestLinqWebhook:
         assert response.json()["help"] is True
         assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
         assert fake_channel.bodies == [prompts.HELP_REPLY]
+
+    def test_linq_disabled_returns_503(self, client, linq_number, monkeypatch):
+        monkeypatch.setenv("LINQ_ENABLED", "false")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        assert post_linq(client, linq_payload()).status_code == 503
+
+    def test_the_sender_thread_cap_refuses_excess_new_threads(
+        self, client, session, linq_number, monkeypatch
+    ):
+        from juicebox.routers import messaging as messaging_router
+
+        monkeypatch.setattr(messaging_router, "MAX_NEW_THREADS_PER_SENDER_PER_HOUR", 2)
+
+        for index in range(2):
+            payload = linq_payload(
+                chat_id=f"chat-{index}",
+                message={
+                    "id": f"msg-{index}",
+                    "parts": [{"type": "text", "value": f"hello {index}"}],
+                },
+            )
+            assert post_linq(client, payload).status_code == 200
+            thread = session.scalars(
+                select(IntakeThread).where(IntakeThread.status == "active")
+            ).one()
+            thread.status = "complete"
+            session.commit()
+
+        blocked = post_linq(
+            client,
+            linq_payload(
+                chat_id="chat-blocked",
+                message={
+                    "id": "msg-blocked",
+                    "parts": [{"type": "text", "value": "one more"}],
+                },
+            ),
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["detail"] == "Too many new conversations from this sender"

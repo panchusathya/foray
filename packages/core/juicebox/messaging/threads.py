@@ -147,6 +147,20 @@ def stopped_thread_exists(db: Session, *, channel: str, from_address: str) -> bo
     )
 
 
+def with_send_key(
+    db: Session, *, thread: IntakeThread, message: OutboundMessage
+) -> OutboundMessage:
+    """Attach a stable vendor idempotency key when the caller did not supply one."""
+    if message.send_key:
+        return message
+    seq = _next_seq(db, thread)
+    return OutboundMessage(
+        body=message.body,
+        asked_field=message.asked_field,
+        send_key=f"{thread.id}:{seq}",
+    )
+
+
 def _next_seq(db: Session, thread: IntakeThread) -> int:
     highest = db.scalar(
         select(func.max(IntakeMessage.seq)).where(IntakeMessage.thread_id == thread.id)

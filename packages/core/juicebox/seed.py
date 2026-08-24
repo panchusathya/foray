@@ -358,6 +358,10 @@ SEQUENCE_STEPS = [
 
 def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
     """Idempotent: re-running tops up candidates without duplicating the workspace."""
+    from .config import get_settings
+    from .intake.phones import lookup_key
+    from .models import IntakeNumber
+
     org = db.scalar(select(Org).where(Org.slug == "demo"))
     if org is None:
         org = Org(name="Juicebox Demo", slug="demo")
@@ -431,6 +435,26 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
             auto_enroll_sequence_id=sequence.id,
         )
         db.add(agent)
+        db.flush()
+
+    linq_phone = get_settings().linq_from_number
+    linq_key = lookup_key(linq_phone) if linq_phone else None
+    if linq_key:
+        linq_row = db.scalar(select(IntakeNumber).where(IntakeNumber.phone == linq_key))
+        if linq_row is None:
+            db.add(
+                IntakeNumber(
+                    org_id=org.id,
+                    phone=linq_key,
+                    provider="linq",
+                    label="linq intake",
+                    active=True,
+                )
+            )
+        elif linq_row.org_id == org.id:
+            linq_row.provider = "linq"
+            linq_row.active = True
+            linq_row.label = linq_row.label or "linq intake"
         db.flush()
 
     return {

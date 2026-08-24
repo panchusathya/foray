@@ -111,6 +111,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     monkeypatch.setenv("EMAIL_PROVIDER", "memory")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("EXA_API_KEY", "")
+    monkeypatch.setenv("SCRAPIN_API_KEY", "")
     # Doubles as the voice webhook signing secret. A real key here would make
     # the signature tests depend on whoever ran them.
     monkeypatch.setenv("RETELL_API_KEY", "")
@@ -154,6 +155,9 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_channels()
     reset_foray()
     set_voice_provider(None)
+    from juicebox.enrich.linkedin_profile import set_profile_provider
+
+    set_profile_provider(None)
 
     if TEST_DATABASE_URL:
         # One shared database, so wipe it between tests instead of relying on a
@@ -183,6 +187,9 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     # Likewise a stubbed Foray client: leaking one would let a later test
     # think enrichment is configured when the deployment has no token.
     set_foray(None)
+    # And a scripted profile provider: a leak would let a later test "fetch"
+    # LinkedIn profiles that were canned for a different scenario.
+    set_profile_provider(None)
     reset_foray()
     # A test that injected a fake voice provider must not leak it forward.
     set_voice_provider(None)

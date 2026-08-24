@@ -24,7 +24,17 @@ import json
 import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -72,6 +82,11 @@ _THREAD_CAP_WINDOW = timedelta(hours=1)
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
 chat_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/chat", tags=["intake"])
 linq_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/linq", tags=["intake"])
+# The resume-upload page a texted link opens. Unauthenticated like the chat
+# routes and gated the same way: a purpose-scoped HMAC bound to one thread.
+upload_router = APIRouter(
+    route_class=CommittingRoute, prefix="/v1/intake/uploads", tags=["intake"]
+)
 
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
@@ -308,6 +323,152 @@ def _resolve_or_open_linq_thread(
         thread_id=thread.id,
     )
     return thread
+
+
+_UPLOAD_PAGE = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send your resume</title>
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; background: #f6f6f4; }}
+  main {{ background: #fff; border-radius: 16px; padding: 28px 24px; margin: 16px;
+          max-width: 420px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }}
+  h1 {{ font-size: 20px; margin: 0 0 8px; }}
+  p {{ color: #555; font-size: 14px; margin: 0 0 20px; }}
+  input[type=file] {{ width: 100%; margin-bottom: 16px; }}
+  button {{ width: 100%; padding: 14px; font-size: 16px; border: 0; border-radius: 10px;
+            background: #1a3c34; color: #fff; }}
+  .ok {{ color: #1a7f4f; font-weight: 600; }}
+</style>
+<main>
+  <h1>Send your resume</h1>
+  <p>PDF only, up to 10&nbsp;MB. It goes straight to your recruiter&#8217;s intake
+     &mdash; you can head back to the conversation after.</p>
+  <form method="post" enctype="multipart/form-data" action="?token={token}">
+    <input type="file" name="file" accept="application/pdf" required>
+    <button type="submit">Upload</button>
+  </form>
+</main>
+"""
+
+_UPLOAD_DONE = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resume received</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; background: #f6f6f4; }
+  main { background: #fff; border-radius: 16px; padding: 28px 24px; margin: 16px;
+         max-width: 420px; box-shadow: 0 2px 12px rgba(0,0,0,.08); text-align: center; }
+  h1 { font-size: 20px; color: #1a7f4f; }
+  p { color: #555; font-size: 14px; }
+</style>
+<main>
+  <h1>Got it &#10003;</h1>
+  <p>Your resume is in. You can close this tab and head back to the conversation.</p>
+</main>
+"""
+
+
+def _upload_thread(db: Session, thread_id: str, token: str) -> IntakeThread:
+    from ..messaging.uploads import verify_upload_token
+
+    if not verify_upload_token(thread_id, token):
+        raise _UNAUTHORIZED
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None or thread.status == "stopped":
+        raise _UNAUTHORIZED
+    return thread
+
+
+@upload_router.get("/{thread_id}")
+def upload_page(thread_id: str, token: str = Query(default=""), db: Session = Depends(get_db)):
+    """The page the texted link opens. A GET has no side effects, so a link
+    preview prefetch cannot consume anything."""
+    from fastapi.responses import HTMLResponse
+
+    _upload_thread(db, thread_id, token)
+    return HTMLResponse(_UPLOAD_PAGE.format(token=token))
+
+
+@upload_router.post("/{thread_id}")
+async def upload_resume(
+    thread_id: str,
+    file: UploadFile = File(...),
+    token: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    """Store the PDF against the thread's candidate and queue the parse.
+
+    Requires the thread to be linkable (name + email captured) -- the agent
+    only sends this link after onboarding collects both, and a public
+    endpoint that created candidate rows from nothing would let anyone fill
+    the CRM by tapping a forwarded link.
+    """
+    from fastapi.responses import HTMLResponse
+
+    from .. import storage
+    from ..jobs import KIND_DOC_PARSE
+    from ..messaging import identity
+    from ..models import CandidateDocument
+    from .documents import _PDF_MAGIC, _read_capped
+
+    thread = _upload_thread(db, thread_id, token)
+
+    candidate_id = thread.candidate_id or identity.link_candidate(db, thread=thread)
+    if not candidate_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="We need your name and email first — reply in the conversation.",
+        )
+
+    data = await _read_capped(file)
+    if not data.startswith(_PDF_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only PDF files are accepted",
+        )
+
+    doc = CandidateDocument(
+        org_id=thread.org_id,
+        candidate_id=candidate_id,
+        kind="resume_uploaded",
+        filename=(file.filename or "resume.pdf")[:255],
+        content_type="application/pdf",
+        status="uploaded",
+        source="upload",
+        thread_id=thread.id,
+    )
+    db.execute(
+        CandidateDocument.__table__.update()
+        .where(
+            CandidateDocument.candidate_id == candidate_id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+        )
+        .values(is_default=False)
+    )
+    doc.is_default = True
+    db.add(doc)
+    db.flush()
+
+    relpath = storage.document_relpath(
+        org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id
+    )
+    size, digest = storage.save_bytes(relpath, data)
+    doc.storage_path = relpath
+    doc.size_bytes = size
+    doc.sha256 = digest
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_DOC_PARSE,
+        idempotency_key=f"{KIND_DOC_PARSE}:{doc.id}",
+        payload={"document_id": doc.id},
+    )
+    return HTMLResponse(_UPLOAD_DONE, status_code=201)
 
 
 @linq_router.post("/webhook")

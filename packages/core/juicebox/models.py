@@ -142,11 +142,18 @@ class Candidate(Base, TimestampMixin):
     current_title: Mapped[str] = mapped_column(String(240), default="")
     current_title_normalized: Mapped[str] = mapped_column(String(240), default="")
     current_company: Mapped[str] = mapped_column(String(240), default="")
-    # normalize_company(current_company), maintained by repository._apply so
+    # normalize_company(current_company), stamped by an ORM flush listener so
     # warm-contact lookups filter in SQL instead of loading the whole org.
     current_company_normalized: Mapped[str] = mapped_column(
         String(240), default="", server_default="", index=True
     )
+    # Negative cache for the paid LinkedIn profile fetch (AGENTS.md house
+    # rule): a real miss is stamped so it is never paid for twice; a provider
+    # outage is NOT, so a quota wall cannot mark somebody unfetchable forever.
+    profile_ingest_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    profile_ingest_error: Mapped[str] = mapped_column(String(400), default="", server_default="")
     current_company_domain: Mapped[str] = mapped_column(String(240), default="")
 
     seniority: Mapped[str] = mapped_column(String(40), default="unknown")

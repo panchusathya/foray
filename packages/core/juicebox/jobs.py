@@ -69,6 +69,11 @@ KIND_INTAKE_EXTRACT = "intake.extract"
 # by an upload landing; never on ensure_ticks.
 KIND_DOC_PARSE = "docs.parse"
 
+# Fetching one LinkedIn profile through the paid provider and promoting it
+# onto the CRM. Worker-only by design: the webhook that receives a URL
+# enqueues and returns, so a public request path never spends money.
+KIND_PROFILE_INGEST = "profile.ingest"
+
 # Building one application package: tailored resume PDF, cover letter, form
 # answers. User-initiated ("apply to 2", a swipe, a recruiter click); never on
 # ensure_ticks. Idempotency keys carry a timestamp because a rebuild is a

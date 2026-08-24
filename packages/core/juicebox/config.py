@@ -375,6 +375,16 @@ class Settings:
         default_factory=lambda: float(_env("PROPOSAL_SCORE_FLOOR", "0.55"))
     )
 
+    # --- LinkedIn profile ingestion (paid, worker-only) ----------------------
+    scrapin_api_key: str = field(default_factory=lambda: _env("SCRAPIN_API_KEY", ""))
+    scrapin_api_base: str = field(
+        default_factory=lambda: _env("SCRAPIN_API_BASE", "https://api.scrapin.io")
+    )
+    # A profile fetched (or found missing) within this window is not re-paid.
+    profile_ingest_recheck_days: int = field(
+        default_factory=lambda: _env_int("PROFILE_INGEST_RECHECK_DAYS", 30)
+    )
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

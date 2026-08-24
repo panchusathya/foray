@@ -10,7 +10,7 @@ import logging
 import os
 import socket
 import time
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -36,6 +36,7 @@ from .jobs import (
     KIND_MAILBOX_SYNC_ONE,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
+    KIND_PROFILE_INGEST,
     KIND_REPLY_DRAFT,
     claim,
     enqueue,
@@ -636,11 +637,137 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
     # "failed" upload the candidate would be asked to redo for our benefit.
     doc.status = "ready"
     db.flush()
+
+    promoted = {}
+    if structured and doc.candidate_id:
+        # Promotion is additive by construction (enrich.promote), so applying
+        # it automatically after a parse is safe: nothing present is rewritten,
+        # summary and skills move only into blanks, and the resume.v1 stays on
+        # this row for review and future re-promotion.
+        from .enrich.promote import payload_from_resume_v1, promote
+        from .jobmatch.engine import enqueue_match_for_candidate
+        from .models import Candidate
+
+        candidate = db.get(Candidate, doc.candidate_id)
+        if candidate is not None:
+            parsed = payload_from_resume_v1(
+                structured, fallback_name=candidate.full_name or ""
+            )
+            result = promote(db, org_id=job.org_id, parsed=parsed, candidate=candidate)
+            promoted = {
+                "added_experiences": result.added_experiences,
+                "added_educations": result.added_educations,
+                "filled_fields": result.filled_fields,
+            }
+            enqueue_match_for_candidate(db, candidate, now=now)
+
     return {
         "document_id": doc.id,
         "parsed": bool(structured),
         "error": error,
         "text_chars": len(doc.text_extracted or ""),
+        **promoted,
+    }
+
+
+def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
+    """Fetch one LinkedIn profile and promote it onto the CRM.
+
+    The cache discipline is the whole design: a fresh check is skipped, a real
+    miss is stamped, a provider failure re-raises so the queue's backoff
+    retries it -- and never stamps, so a vendor's quota wall cannot mark a
+    person permanently unfetchable.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select as _select
+
+    from .config import get_settings as _get_settings
+    from .enrich.linkedin_profile import (
+        ProfileNotFound,
+        get_profile_provider,
+        linkedin_slug,
+        map_profile,
+    )
+    from .enrich.promote import promote
+    from .jobmatch.engine import enqueue_match_for_candidate
+    from .models import Candidate, CandidateDocument, IntakeThread
+
+    linkedin_url = str(job.payload.get("linkedin_url") or "")
+    slug = linkedin_slug(linkedin_url)
+    if not slug:
+        return {"skipped": "not a linkedin profile url", "url": linkedin_url}
+
+    candidate = None
+    candidate_id = job.payload.get("candidate_id") or ""
+    if candidate_id:
+        candidate = db.get(Candidate, candidate_id)
+        if candidate is not None and candidate.org_id != job.org_id:
+            return {"skipped": "org_mismatch"}
+    if candidate is None:
+        candidate = db.scalar(
+            _select(Candidate).where(
+                Candidate.org_id == job.org_id,
+                Candidate.source == "linkedin_ingest",
+                Candidate.source_id == slug,
+            )
+        )
+
+    settings = _get_settings()
+    if candidate is not None and candidate.profile_ingest_checked_at is not None:
+        checked = candidate.profile_ingest_checked_at
+        if checked.tzinfo is None:
+
+            checked = checked.replace(tzinfo=UTC)
+        if now - checked < timedelta(days=settings.profile_ingest_recheck_days):
+            return {"skipped": "recently_checked", "candidate_id": candidate.id}
+
+    provider = get_profile_provider()
+    try:
+        raw = provider.fetch(linkedin_url)
+    except ProfileNotFound:
+        if candidate is not None:
+            candidate.profile_ingest_checked_at = now
+            candidate.profile_ingest_error = "profile not found or not visible"
+            db.flush()
+        return {"not_found": True, "url": linkedin_url}
+
+    parsed = map_profile(raw, linkedin_url=linkedin_url)
+    result = promote(db, org_id=job.org_id, parsed=parsed, candidate=candidate)
+    promoted = db.get(Candidate, result.candidate_id)
+    if promoted is None:
+        return {"skipped": "promotion produced no candidate", "url": linkedin_url}
+    promoted.profile_ingest_checked_at = now
+    promoted.profile_ingest_error = ""
+
+    # The parse artifact, for review and for re-promotion under future rules.
+    db.add(
+        CandidateDocument(
+            org_id=job.org_id,
+            candidate_id=promoted.id,
+            kind="other",
+            filename=f"linkedin-{slug}.json",
+            content_type="application/json",
+            status="ready",
+            structured=parsed,
+            source="linkedin_ingest",
+            thread_id=job.payload.get("thread_id") or None,
+        )
+    )
+
+    thread_id = job.payload.get("thread_id") or ""
+    if thread_id:
+        thread = db.get(IntakeThread, thread_id)
+        if thread is not None and thread.org_id == job.org_id and not thread.candidate_id:
+            thread.candidate_id = promoted.id
+
+    enqueue_match_for_candidate(db, promoted, now=now)
+    db.flush()
+    return {
+        "candidate_id": promoted.id,
+        "created": result.created,
+        "added_experiences": result.added_experiences,
+        "added_educations": result.added_educations,
     }
 
 
@@ -703,6 +830,7 @@ HANDLERS = {
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
+    KIND_PROFILE_INGEST: _handle_profile_ingest,
 }
 
 

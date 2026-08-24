@@ -567,6 +567,14 @@ def linq_webhook(
 
     if looks_like_stop(inbound.body):
         handle_stop(db, thread=thread)
+        # The single confirmation a carrier expects, and the last thing this
+        # thread will ever send. The web path acks through run_turn's STOP
+        # branch; this path returns before the turn, so it has to ack here or
+        # a texter who opts out gets silence where every other channel
+        # confirms. Routed through `deliver` deliberately: `run_turn` refuses
+        # to send to a stopped thread, which is the correct rule everywhere
+        # except this one message.
+        deliver(db, thread=thread, message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT))
         return {"status": "accepted", "stopped": True, "message_id": message.id}
 
     if looks_like_help(inbound.body):

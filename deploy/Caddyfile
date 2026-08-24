@@ -17,3 +17,14 @@
 		reverse_proxy web:80
 	}
 }
+
+# The candidate portal. A separate site block onto a separate container, so
+# the recruiter SPA is not merely hidden from this domain -- it is not served
+# here at all, and the portal's own nginx proxies only /v1/portal/. The
+# candidate-facing surface therefore cannot reach a recruiter endpoint even
+# if a route were mis-registered upstream.
+{$PORTAL_DOMAIN} {
+	handle {
+		reverse_proxy portal:80
+	}
+}

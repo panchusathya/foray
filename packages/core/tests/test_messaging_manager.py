@@ -70,6 +70,18 @@ def _say(session, thread, body, *, native_id=""):
     return run_turn(session, thread=thread)
 
 
+def _card_lines(body: str) -> str:
+    """The message minus its portal link.
+
+    The link is a JWT, and ~1.5% of them contain the literal substring "0.9"
+    (the payload segment ends in "0", then a random signature byte encodes to
+    "9"). Asserting "no score in the message" against the whole body therefore
+    fails one run in sixty-odd for reasons that have nothing to do with
+    scores. The invariant is about the card text, so test the card text.
+    """
+    return "\n".join(line for line in body.splitlines() if "/m/" not in line)
+
+
 def _core_complete_record() -> dict:
     record = empty_record()
     record["spec"].update(
@@ -186,8 +198,11 @@ class TestManaging:
         body = channel.bodies[-1]
         assert "1. ML Engineer — Anthropic" in body
         assert "Current title matches" in body
-        assert "0.9" not in body  # never a score
         assert "/m/" in body  # the portal deep link
+        # Never a score. Asserted against the card lines only: the link line
+        # is an opaque JWT whose random bytes contain "0.9" about 1.5% of the
+        # time, which made the naive whole-body version of this a flake.
+        assert "0.9" not in _card_lines(body)
         frame = thread.last_presented or []
         assert [entry["company"] for entry in frame] == ["Anthropic", "Figma"]
         proposals = session.scalars(select(JobProposal)).all()

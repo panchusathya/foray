@@ -1525,13 +1525,27 @@ class TestLinqWebhook:
         assert response.json()["ignored"] is True
         assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
 
-    def test_stop_suppresses_the_phone(self, client, session, linq_number):
+    def test_stop_suppresses_the_phone(self, client, session, linq_number, fake_channel):
+        set_channel(LINQ, fake_channel)
         payload = linq_payload(
             message={"id": "stop-1", "parts": [{"type": "text", "value": "STOP"}]}
         )
         assert post_linq(client, payload).status_code == 200
         thread = session.scalars(select(IntakeThread)).one()
         assert thread.status == "stopped"
+        # Parity with the web path: exactly one acknowledgement, the last
+        # thing this thread ever sends. Carriers expect it, and silence after
+        # an opt-out reads as the opt-out not working.
+        assert fake_channel.bodies == [prompts.STOP_ACKNOWLEDGEMENT]
+
+    def test_an_apple_id_sender_is_not_truncated(self, client, session, linq_number):
+        """An iMessage sender can be an email, and a truncated one is a thread
+        the STOP lookup can never find again."""
+        handle = "a-very-long-apple-id-address-for-testing@icloud-example-domain.com"
+        payload = linq_payload(**{"from": handle})
+        assert post_linq(client, payload).status_code == 200
+        thread = session.scalars(select(IntakeThread)).one()
+        assert thread.from_address == handle
 
     def test_help_replies_without_enqueuing_a_turn(self, client, session, linq_number, fake_channel):
         set_channel(LINQ, fake_channel)

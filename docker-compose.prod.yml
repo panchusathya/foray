@@ -116,6 +116,9 @@ x-app-env: &app_env
   # serves uploads and downloads. Back this volume up alongside pgdata: the
   # rows in candidate_documents are only the metadata half.
   JUICEBOX_FILE_STORAGE_DIR: /app/data/files
+  # Where magic links point. The api and worker mint them, so they carry this;
+  # the portal container itself never needs it.
+  PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
 
 services:
   db:
@@ -272,12 +275,30 @@ services:
       timeout: 5s
       retries: 3
 
+  # The candidate portal (apply.goforay.io). A separate image and a separate
+  # nginx from `web` on purpose: its config proxies only /v1/portal/, so the
+  # recruiter API is not reachable from the candidate domain at all.
+  portal:
+    build:
+      context: packages/portal
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging: *default_logging
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     logging: *default_logging
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+      PORTAL_DOMAIN: ${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     ports:
       - "80:80"
@@ -289,6 +310,7 @@ services:
       - caddy_config:/config
     depends_on:
       - web
+      - portal
 
 volumes:
   pgdata:

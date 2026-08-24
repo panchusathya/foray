@@ -1414,7 +1414,12 @@ class IntakeThread(Base, TimestampMixin):
 
     # E.164 for sms, empty for web. to_address is what resolves the org on an
     # inbound text, so it is stored even when the sender is unknown.
-    from_address: Mapped[str] = mapped_column(String(64), default="")
+    #
+    # 255, not 64: an iMessage sender is not always a phone number. Apple ID
+    # email addresses arrive here too, and a truncated sender address is a
+    # thread that can never be found again -- including for the STOP lookup,
+    # which is the one that must never fail.
+    from_address: Mapped[str] = mapped_column(String(255), default="")
     to_address: Mapped[str] = mapped_column(String(64), default="")
 
     # active | complete | stopped. Dormancy is deliberately not a status: it is

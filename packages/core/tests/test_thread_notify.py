@@ -197,7 +197,10 @@ class TestEvents:
 
         body = channel.bodies[-1]
         assert "1. ML Engineer — Anthropic" in body
-        assert "0.9" not in body
+        # Card lines only: the portal link is a JWT whose random bytes contain
+        # "0.9" about 1.5% of the time (see test_messaging_manager._card_lines).
+        card_lines = "\n".join(line for line in body.splitlines() if "/m/" not in line)
+        assert "0.9" not in card_lines
         # Recorded as proactive, so it spends the nudge budget.
         row = session.scalar(
             select(IntakeMessage)

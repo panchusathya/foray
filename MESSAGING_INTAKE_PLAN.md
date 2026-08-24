@@ -323,16 +323,20 @@ texting them to ask.
 
 ### Blocking — these change what gets built
 
-1. **Sourced or inbound only?** Will we ever initiate a text to a candidate who
-   did not ask? If never, written-consent capture disappears and this gets
-   materially simpler and safer. If sometimes, we need a consent-provenance
-   record — source, timestamp, the exact disclosure text shown and its version
-   — because in a dispute the consent artifact *is* the defence.
-2. **One Juicebox number, or one per org?** The biggest hidden fork, because
-   Juicebox is org-scoped. A shared number means candidates get texts from a
-   number they do not recognise and one tenant's complaint rate degrades
-   delivery for every other tenant. Per-org means a provisioning and
-   brand-registration workflow per customer, with weeks of lead time each.
+1. ~~Sourced or inbound only?~~ — **decided 2026-08-23 (Tushar): both, mostly
+   inbound.** So consent-provenance capture is in scope: source, timestamp, the
+   exact disclosure text and its version. The rule that keeps "mostly inbound"
+   architectural rather than aspirational is that first contact never happens by
+   text — it happens on a channel we already have a basis for (outreach email,
+   or the voice call now that `intake_calls.sms_opt_in` is captured), and the
+   thread is opened by *their* reply. See `CANDIDATE_AGENT_PLAN.md` §2.
+2. ~~One Juicebox number, or one per org?~~ — **decided 2026-08-23 (Tushar):
+   one shared number for everything**, `+1 (628) 386-5454`, calls and texts
+   alike. This takes on the cross-tenant reputation coupling knowingly, so the
+   three mitigations are not optional: a per-org outbound budget in the send
+   path, an opt-out-rate circuit breaker per org, and the org named in the first
+   message of every thread — a shared number cannot identify the sender, so the
+   message has to. `CANDIDATE_AGENT_PLAN.md` §2.
 3. **Nudge cadence.** Proposed and awaiting confirmation: first nudge at 48h of
    silence, at most 2 per thread, at least 72h apart, never after a wrap-up or
    an opt-out.

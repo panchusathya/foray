@@ -119,13 +119,24 @@ def find_active_thread(db: Session, *, channel: str, from_address: str) -> Intak
 def find_by_provider_id(
     db: Session, *, provider: str, provider_thread_id: str
 ) -> IntakeThread | None:
+    """The *open* conversation for this vendor chat, if any.
+
+    Finished threads are ignored on purpose. Linq reuses the same ``chat_id``
+    for every later text in that iMessage thread; if we bound the next inbound
+    to a ``complete`` row, the worker would start the typing indicator and
+    then send nothing.
+    """
     if not provider_thread_id:
         return None
     return db.scalar(
-        select(IntakeThread).where(
+        select(IntakeThread)
+        .where(
             IntakeThread.provider == provider,
             IntakeThread.provider_thread_id == provider_thread_id,
+            IntakeThread.status == STATUS_ACTIVE,
         )
+        .order_by(IntakeThread.created_at.desc())
+        .limit(1)
     )
 
 

@@ -575,7 +575,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     the two channels cannot drift into asking different questions.
     """
     from .messaging.conversation import run_turn
-    from .messaging.linq import maybe_start_typing
+    from .messaging.linq import maybe_start_typing, maybe_stop_typing
     from .models import IntakeThread
 
     thread_id = job.payload.get("thread_id") or ""
@@ -586,6 +586,11 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "org_mismatch"}
     maybe_start_typing(thread)
     result = run_turn(db, thread=thread)
+    # A complete/blocked/held turn never goes through LinqChannel.send, which
+    # is the other place we stop typing. Leave the indicator up only while a
+    # scrape is in flight — that job keeps it on until the confirm message.
+    if not result.sent:
+        maybe_stop_typing(thread)
     return {
         "thread_id": thread.id,
         "action": result.action,

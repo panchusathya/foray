@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from test_messaging import LINQ_OUR_NUMBER, LINQ_WEBHOOK_SECRET, _say, post_linq
+from test_messaging import LINQ_OUR_NUMBER, LINQ_WEBHOOK_SECRET, _say, linq_payload, post_linq
 
 from juicebox.enrich.linkedin_scrape import LinkedInProfile, set_scraper
 from juicebox.jobs import KIND_LINKEDIN_SCRAPE
@@ -29,8 +29,8 @@ from juicebox.messaging.linkedin_flow import (
     confirm_message,
 )
 from juicebox.messaging.prompts import lowercase_outbound, valid_question
-from juicebox.messaging.threads import open_thread
-from juicebox.models import Candidate, IntakeMessage, IntakeNumber, Job
+from juicebox.messaging.threads import STATUS_COMPLETE, open_thread
+from juicebox.models import Candidate, IntakeMessage, IntakeNumber, IntakeThread, Job
 from juicebox.repository import owner_of_linkedin, upsert_candidates
 from juicebox.worker import process_job
 
@@ -365,3 +365,28 @@ class TestLinqReceipts:
         session.refresh(outbound)
         assert outbound.status == "failed"
         assert "undeliverable" in outbound.error
+
+    def test_a_finished_chat_opens_a_new_thread_on_the_next_text(
+        self, client, session, linq_number
+    ):
+        first = post_linq(client, linq_payload())
+        assert first.status_code == 200
+        original = session.scalars(select(IntakeThread)).one()
+        original.status = STATUS_COMPLETE
+        session.commit()
+
+        again = post_linq(
+            client,
+            linq_payload(
+                message={
+                    "id": "msg-restart",
+                    "parts": [{"type": "text", "value": "hey"}],
+                }
+            ),
+        )
+        assert again.status_code == 200
+        threads = session.scalars(select(IntakeThread).order_by(IntakeThread.created_at)).all()
+        assert len(threads) == 2
+        assert threads[1].id != original.id
+        assert threads[1].status == "active"
+        assert again.json()["thread_id"] == threads[1].id

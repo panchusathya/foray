@@ -322,6 +322,16 @@ def maybe_start_typing(thread: IntakeThread) -> None:
         logger.debug("linq typing indicator failed: %s", exc)
 
 
+def maybe_stop_typing(thread: IntakeThread) -> None:
+    """Clear 'typing…' when a turn ends without sending (held / already done)."""
+    if (thread.channel or "") != "linq" or not thread.provider_thread_id:
+        return
+    try:
+        stop_typing(thread.provider_thread_id)
+    except Exception as exc:  # noqa: BLE001 - never fail a turn on a typing blip
+        logger.debug("linq typing indicator stop failed: %s", exc)
+
+
 def _typing_request(method: str, chat_id: str, *, transport: Transport | None = None) -> None:
     settings = get_settings()
     if not settings.linq_api_key or not chat_id:

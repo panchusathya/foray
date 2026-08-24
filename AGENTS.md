@@ -548,6 +548,15 @@ afterwards. Non-obvious points:
   Juicebox profile URL, then an address, then a name slug. That is what makes
   re-uploading two overlapping exports update rather than duplicate — the same
   free idempotency the Foray importer gets from a GitHub login.
+- **An `.xlsx` makes one round trip and comes back as CSV.** A workbook is a zip
+  of XML the browser cannot read, so `POST /v1/imports/workbook` converts the
+  first sheet with `openpyxl` and returns delimited text; the client-side mapper,
+  the review table and their tests then carry on unchanged. That route persists
+  nothing -- it is a format conversion, so no `CommittingRoute` and no audit row
+  -- and keeping the conversion there rather than the whole import is what
+  preserves "nothing is written until the recruiter presses the button". It
+  reports the other sheet names, because data on tab two would otherwise look
+  like an empty file.
 - **An export can have no email columns at all.** Which columns a Juicebox
   export carries depends on what the user ticked, so every column is optional
   and looked up by name; the page says so rather than importing profiles nobody

@@ -64,6 +64,7 @@ export function ImportPage() {
   const [importRows, setImportRows] = useState([]);
   const [chosen, setChosen] = useState(() => new Set());
   const [showAll, setShowAll] = useState(false);
+  const [sheetNote, setSheetNote] = useState('');
 
   const [sequences, setSequences] = useState([]);
   const [sequenceId, setSequenceId] = useState('');
@@ -103,23 +104,41 @@ export function ImportPage() {
     setStatus('');
     setParseError('');
     setFileName(file.name);
-
-    if (/\.xlsx?$/i.test(file.name)) {
-      setImportRows([]);
-      setColumns({});
-      setParseError(
-        'That is an Excel workbook, which this screen cannot read. Open it and '
-          + '"Save as" CSV — or re-download from Juicebox, which exports CSV natively.',
-      );
-      return;
-    }
+    setSheetNote('');
 
     let text = '';
-    try {
-      text = await file.text();
-    } catch {
-      setParseError('Could not read that file.');
-      return;
+    if (/\.xlsx?m?$/i.test(file.name)) {
+      // A workbook is a zip of XML the browser cannot read, so it makes one
+      // round trip to be converted. Nothing is stored by that route -- the
+      // review-before-writing property is unchanged.
+      setBusy('reading');
+      try {
+        const converted = await api.workbookToCsv(file);
+        text = converted.delimited ?? '';
+        if ((converted.sheets ?? []).length > 1) {
+          setSheetNote(
+            `Read the sheet “${converted.sheet}”. This workbook also has: `
+              + `${converted.sheets.filter((s) => s !== converted.sheet).join(', ')}.`,
+          );
+        }
+        if (converted.truncated) {
+          setSheetNote((note) => `${note} Only the first rows were read — the sheet is very large.`);
+        }
+      } catch (caught) {
+        setImportRows([]);
+        setColumns({});
+        setError(caught);
+        setBusy('');
+        return;
+      }
+      setBusy('');
+    } else {
+      try {
+        text = await file.text();
+      } catch {
+        setParseError('Could not read that file.');
+        return;
+      }
     }
 
     const { headers, rows } = parseDelimited(text);
@@ -167,6 +186,7 @@ export function ImportPage() {
     setChosen(new Set());
     setParseError('');
     setStatus('');
+    setSheetNote('');
     setError(null);
     if (inputRef.current) inputRef.current.value = '';
   }
@@ -227,7 +247,7 @@ export function ImportPage() {
           <input
             ref={inputRef}
             type="file"
-            accept=".csv,.tsv,.txt,text/csv"
+            accept=".csv,.tsv,.txt,.xlsx,.xlsm,text/csv"
             data-testid="import-file"
             onChange={(event) => onFile(event.target.files?.[0])}
           />
@@ -238,9 +258,12 @@ export function ImportPage() {
           ) : null}
         </div>
         <div className="small muted">
-          A Juicebox export with the contact columns ticked — “Personal Email” and “Work
-          Email”. An export without them imports profiles nobody can be mailed.
+          A Juicebox export (.csv) or an Excel workbook (.xlsx), with the contact columns
+          ticked — “Personal Email” and “Work Email”. An export without them imports
+          profiles nobody can be mailed.
         </div>
+        {busy === 'reading' ? <div className="small muted">Reading the workbook…</div> : null}
+        {sheetNote ? <div className="small muted" data-testid="import-sheet">{sheetNote}</div> : null}
         {parseError ? <Empty>{parseError}</Empty> : null}
       </div>
 

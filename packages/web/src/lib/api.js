@@ -51,6 +51,29 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return payload;
 }
 
+// Multipart, so it cannot go through request() -- setting Content-Type by hand
+// would override the boundary the browser generates and the server would reject
+// the body. Nothing is persisted by this route; it converts and returns.
+async function upload(path, file) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const token = getToken();
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const text = await response.text();
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text;
+  }
+  if (!response.ok) throw new ApiError(response.status, payload?.detail ?? payload);
+  return payload;
+}
+
 /**
  * Query string for the Contacts grid. Only keys the caller actually set are
  * sent, so the API's own defaults stay authoritative.
@@ -107,6 +130,8 @@ export const api = {
       { method: 'POST' },
     ),
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
+  // Converts an uploaded .xlsx to CSV text; the browser does the mapping.
+  workbookToCsv: (file) => upload('/v1/imports/workbook', file),
   // Buys contact details for sourced candidates. Goes through /v1 rather than
   // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends
   // money, so it needs a principal and a reason attached.

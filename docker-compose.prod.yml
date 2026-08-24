@@ -108,6 +108,28 @@ x-app-env: &app_env
   # pick it up — editing the file in an editor is not enough.
   EXA_API_KEY: ${EXA_API_KEY:-}
   LINQ_API_KEY: ${LINQ_API_KEY:-}
+  # --- voice intake (Retell) -------------------------------------------------
+  # RETELL_API_KEY doubles as the webhook signing secret: Retell signs with the
+  # API key, so an unset value makes `providers.RetellProvider.verify` refuse
+  # EVERY webhook -- deliberately, because accepting unsigned bodies would turn
+  # a misconfiguration into an open write endpoint that also spends money. The
+  # symptom is a 401 per delivery, no intake_calls rows, and calls that exist
+  # only on Retell's side. This anchor enumerates variables explicitly, so a key
+  # sitting in .env and NOT listed here never reaches the container.
+  RETELL_API_KEY: ${RETELL_API_KEY:-}
+  VOICE_PROVIDER: ${VOICE_PROVIDER:-retell}
+  RETELL_WEBHOOK_TOLERANCE_SECONDS: ${RETELL_WEBHOOK_TOLERANCE_SECONDS:-300}
+  # Persona. Must agree with RECRUITER_NAME in deploy/retell_agents.py or the
+  # agent greets as one name and refers to itself by another.
+  INTAKE_RECRUITER_NAME: ${INTAKE_RECRUITER_NAME:-Vivian}
+  # Digit-grouped so TTS reads it as a number, not noise.
+  INTAKE_SMS_NUMBER_SPOKEN: ${INTAKE_SMS_NUMBER_SPOKEN:-}
+  INTAKE_COVERAGE_FAST_MODEL: ${INTAKE_COVERAGE_FAST_MODEL:-true}
+  INTAKE_CORE_ONLY_MINUTES: ${INTAKE_CORE_ONLY_MINUTES:-4}
+  # Leave false until 10DLC clears: it flips a spoken close that promises a
+  # text, and promising one nothing can send is worse than not offering it.
+  SMS_ENABLED: ${SMS_ENABLED:-false}
+  SMS_FROM_NUMBER: ${SMS_FROM_NUMBER:-}
   LINQ_WEBHOOK_SECRET: ${LINQ_WEBHOOK_SECRET:-}
   LINQ_FROM_NUMBER: ${LINQ_FROM_NUMBER:-}
   LINQ_ENABLED: ${LINQ_ENABLED:-false}

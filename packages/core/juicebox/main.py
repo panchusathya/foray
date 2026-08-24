@@ -67,6 +67,32 @@ async def lifespan(_app: FastAPI):
     yield
 
 
+def _voice_webhooks_ready() -> bool:
+    """Can the intake webhook verify a signature at all?
+
+    Asks the provider rather than reading the setting, so a provider whose
+    verification does not need a key (the fake one in tests) reports ready and
+    a future provider with different credentials needs no change here.
+    """
+    from .intake.providers import SignatureError, get_voice_provider
+
+    try:
+        provider = get_voice_provider()
+        # An empty body with an obviously-bogus signature: a provider missing
+        # its key raises before it ever looks at the signature, which is the
+        # state worth reporting. Anything else means the key is present and the
+        # request was simply not signed by it.
+        provider.verify(raw_body=b"", signature="v=0,d=0")
+    except SignatureError as exc:
+        return "no Retell API key configured" not in str(exc)
+    except Exception:  # noqa: BLE001 - a health check must never 500
+        # Any other failure reads as not ready, which is the safe direction:
+        # claiming the line works when we cannot tell is the one answer that
+        # loses calls.
+        return False
+    return True
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
@@ -125,6 +151,15 @@ def create_app() -> FastAPI:
             "llm_reason": llm.unavailable_reason,
             "llm_usage": llm.usage(),
             "embeddings": get_embedder().name,
+            # Reported for the same reason `llm` is: a subsystem that is
+            # configured-off looks identical to one that is broken, and this
+            # one fails silently. With no RETELL_API_KEY, `verify` refuses
+            # every webhook -- correctly, since accepting unsigned bodies would
+            # be worse -- so calls happen, cost money, and are never stored,
+            # leaving one log line per delivery as the only trace. It cost a
+            # day of lost calls once. `false` here means the phone line cannot
+            # record anything.
+            "voice_webhooks": _voice_webhooks_ready(),
         }
 
     return app

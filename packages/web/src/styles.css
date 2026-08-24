@@ -143,6 +143,7 @@ button, input, textarea, select {
 .stack { display: flex; flex-direction: column; gap: 14px; }
 .grid { display: grid; gap: 14px; }
 .grid.two { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .grid.four { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 
 .muted { color: var(--muted); }

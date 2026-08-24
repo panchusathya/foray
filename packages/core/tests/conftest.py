@@ -211,6 +211,16 @@ def mailbox():
 
 
 @pytest.fixture
+def fake_channel():
+    """Install a FakeChannel as the web channel and hand it back."""
+    from juicebox.messaging.channels import WEB, FakeChannel, set_channel
+
+    channel = FakeChannel()
+    set_channel(WEB, channel)
+    return channel
+
+
+@pytest.fixture
 def client():
     from juicebox.main import create_app
 

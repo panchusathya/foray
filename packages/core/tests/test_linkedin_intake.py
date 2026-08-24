@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from test_messaging import _say, post_linq
+from test_messaging import LINQ_OUR_NUMBER, LINQ_WEBHOOK_SECRET, _say, post_linq
 
 from juicebox.enrich.linkedin_scrape import LinkedInProfile, set_scraper
 from juicebox.jobs import KIND_LINKEDIN_SCRAPE
@@ -25,7 +25,7 @@ from juicebox.messaging.linkedin_flow import (
 )
 from juicebox.messaging.prompts import lowercase_outbound, valid_question
 from juicebox.messaging.threads import open_thread
-from juicebox.models import Candidate, IntakeMessage, Job
+from juicebox.models import Candidate, IntakeMessage, IntakeNumber, Job
 from juicebox.repository import owner_of_linkedin, upsert_candidates
 from juicebox.worker import process_job
 
@@ -61,6 +61,35 @@ def _finish_scrape(session, thread, profile=None):
     job = session.scalars(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE)).one()
     process_job(session, job)
     return run_turn(session, thread=thread)
+
+
+@pytest.fixture
+def linq_signing_env(monkeypatch):
+    monkeypatch.setenv("LINQ_WEBHOOK_SECRET", LINQ_WEBHOOK_SECRET)
+    monkeypatch.setenv("LINQ_API_KEY", "linq_test_api_key")
+    monkeypatch.setenv("LINQ_FROM_NUMBER", LINQ_OUR_NUMBER)
+    monkeypatch.setenv("LINQ_ENABLED", "true")
+    from juicebox.config import reset_settings_cache
+    from juicebox.messaging.channels import reset_channels
+
+    reset_settings_cache()
+    reset_channels()
+    yield
+    reset_settings_cache()
+    reset_channels()
+
+
+@pytest.fixture
+def linq_number(session, account):
+    row = IntakeNumber(
+        org_id=account["org_id"],
+        provider="linq",
+        phone=LINQ_OUR_NUMBER,
+        label="linq intake",
+    )
+    session.add(row)
+    session.commit()
+    return row
 
 
 class TestLinkedinShortFlow:
@@ -207,7 +236,7 @@ class TestLinkedinIdentity:
 class TestLinkedinCopy:
     def test_confirm_and_gap_fill_are_lowercase_batches(self):
         profile = _profile()
-        confirm = confirm_message(profile)
+        confirm = lowercase_outbound(confirm_message(profile))
         assert "software engineer" in confirm
         assert valid_question(confirm, batched=True)
 

@@ -53,6 +53,7 @@ from ..messaging.schemas import (
 )
 from ..messaging.suppression import handle_stop, looks_like_help, looks_like_stop
 from ..messaging.threads import (
+    STATUS_STOPPED,
     apply_status_event,
     find_active_thread,
     find_by_provider_id,
@@ -281,6 +282,25 @@ def _resolve_or_open_linq_thread(
         )
     to_key = lookup_key(inbound.to_address) or inbound.to_address
     candidate_id = resolve_candidate_id(db, org_id=org_id, phone=from_key)
+    # Linq reuses chat_id forever. (provider, chat_id) is unique while the
+    # key is non-empty, so a finished row would 500 on the next inbound
+    # instead of starting a new intake — and the worker would show typing
+    # with no message. Release the key; keep stopped threads attached so
+    # STOP still binds to the sender.
+    leftover = db.scalar(
+        select(IntakeThread)
+        .where(
+            IntakeThread.provider == "linq",
+            IntakeThread.provider_thread_id == inbound.chat_id,
+        )
+        .order_by(IntakeThread.created_at.desc())
+        .limit(1)
+    )
+    if leftover is not None:
+        if leftover.status == STATUS_STOPPED:
+            return leftover
+        leftover.provider_thread_id = ""
+        db.flush()
     return open_thread(
         db,
         org_id=org_id,

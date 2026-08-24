@@ -1,4 +1,11 @@
-"""Reply drafts: generation, Graph draft creation, notification, worker wiring."""
+"""Reply drafts: generation, Graph draft creation, notification, worker wiring.
+
+The feature ships **off** (``REPLY_DRAFTING_ENABLED``), so this module turns it
+on explicitly. That is deliberate rather than incidental: without it
+``test_no_job_for_opt_out_replies`` would pass for the wrong reason -- zero
+jobs because the feature is disabled, not because the opt-out was respected.
+``TestKillSwitch`` covers the off state.
+"""
 
 import pytest
 from test_mailbox_sync import (
@@ -14,6 +21,17 @@ from juicebox.integrations.reply_drafting import create_reply_draft, generate_re
 from juicebox.integrations.sync import sync_mailbox
 from juicebox.models import MailboxConnection, Message, ReplyDraft
 from juicebox.outreach.sequencer import enroll_candidates, record_reply, run_due
+
+
+@pytest.fixture(autouse=True)
+def drafting_enabled(monkeypatch):
+    """Every test below exercises the feature, so switch it on."""
+    from juicebox.config import reset_settings_cache
+
+    monkeypatch.setenv("REPLY_DRAFTING_ENABLED", "true")
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
 
 
 class FakeDraftClient(FakeDeltaClient):
@@ -213,3 +231,85 @@ class TestReplyDraftsApi:
         assert rows[0]["intent"] == "interested"
         assert rows[0]["generated_by"] == "template"
         assert rows[0]["web_link"].startswith("https://outlook.office.com")
+
+
+class TestKillSwitch:
+    """The feature ships off, and off means off at both gates.
+
+    One gate is not enough. Stopping only the enqueue leaves jobs that were
+    queued before the switch was thrown, and those would still write into a
+    mailbox we do not own. Stopping only the worker leaves a queue filling up
+    with work nobody wants.
+    """
+
+    # No class-level autouse fixture on purpose: it would run before
+    # ``replied_org``, so the stale-job test would have no queued job to
+    # process and would pass without testing anything. Each test throws the
+    # switch at the moment that matters instead.
+
+    @staticmethod
+    def _set(monkeypatch, value):
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("REPLY_DRAFTING_ENABLED", value)
+        reset_settings_cache()
+
+    def test_off_by_default(self, monkeypatch):
+        """No env var set at all: the feature is still off."""
+        from juicebox.config import get_settings, reset_settings_cache
+
+        monkeypatch.delenv("REPLY_DRAFTING_ENABLED", raising=False)
+        reset_settings_cache()
+        assert get_settings().reply_drafting_enabled is False
+
+    def test_a_reply_queues_nothing(self, session, account, outreach_fixture, monkeypatch):
+        from juicebox.jobs import KIND_REPLY_DRAFT
+        from juicebox.models import Job
+
+        connection = MailboxConnection(
+            org_id=account["org_id"],
+            address="recruiter@goforay.io",
+            inbox_delta_link="https://graph.test/delta?token=init",
+        )
+        session.add(connection)
+        session.flush()
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        sequence.sender_mode = "fixed"
+        sequence.mailbox_id = connection.id
+        install_graph_sender()
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+
+        self._set(monkeypatch, "false")
+        fake = FakeDraftClient()
+        fake.queue(_inbound(body="Sounds interesting, tell me more.", graph_id="in-off"))
+        sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
+        session.commit()
+
+        assert session.query(Job).filter_by(kind=KIND_REPLY_DRAFT).count() == 0
+        assert fake.reply_drafts == [], "nothing may be written into the mailbox"
+        assert session.query(ReplyDraft).count() == 0
+
+    def test_a_job_queued_before_the_switch_does_not_run(self, session, replied_org, monkeypatch):
+        """Queued while enabled, processed after: it must not draft."""
+        from juicebox.jobs import KIND_REPLY_DRAFT
+        from juicebox.models import Job
+        from juicebox.worker import process_job
+
+        # The replied_org fixture ran with the module fixture on, so a job
+        # exists -- exactly the state a real deployment is in at the moment
+        # somebody switches the feature off.
+        job = session.query(Job).filter_by(kind=KIND_REPLY_DRAFT).one()
+
+        self._set(monkeypatch, "false")
+        fake = replied_org["fake"]
+        install_graph(lambda db, conn: fake)
+        process_job(session, job)
+        session.commit()
+
+        assert session.query(ReplyDraft).count() == 0
+        assert fake.reply_drafts == [], "a stale job must not write into the mailbox"
+        assert fake.sent_messages == [], "and must not email the owner either"

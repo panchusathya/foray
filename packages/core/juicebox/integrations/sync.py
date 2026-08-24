@@ -424,8 +424,14 @@ def _enqueue_reply_draft(
     db: Session, *, connection: MailboxConnection, native_id: str
 ) -> None:
     """Queue drafting for one recorded reply. Opt-outs and automation get none."""
+    from ..config import get_settings
     from ..jobs import KIND_REPLY_DRAFT, enqueue
     from .reply_drafting import NO_DRAFT_INTENTS
+
+    # Off by default. Gated here so nothing is queued, and again in the worker
+    # so anything already queued when it was switched off stays unrun.
+    if not get_settings().reply_drafting_enabled:
+        return
 
     inbound = db.scalar(
         select(Message).where(

@@ -272,8 +272,14 @@ def _handle_mailbox_sync_one(db: Session, job: Job, now) -> dict[str, Any]:
 
 
 def _handle_reply_draft(db: Session, job: Job, now) -> dict[str, Any]:
+    from .config import get_settings
     from .integrations.reply_drafting import create_reply_draft
     from .models import Message
+
+    # The second half of the kill switch: a job queued before the feature was
+    # switched off must not still write into somebody's mailbox.
+    if not get_settings().reply_drafting_enabled:
+        return {"skipped": "reply_drafting_disabled"}
 
     inbound = db.get(Message, job.payload.get("inbound_message_id"))
     connection = db.get(MailboxConnection, job.payload.get("mailbox_id"))

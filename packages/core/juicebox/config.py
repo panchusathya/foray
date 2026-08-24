@@ -194,6 +194,14 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
+    # Auto-drafting a reply into the user's Drafts folder when a candidate
+    # answers. Off: the drafts were not good enough to be worth the noise, and
+    # the feature is loud in two places at once -- it writes into a mailbox we
+    # do not own and emails the owner to say so. Turning it on again should
+    # wait until the draft quality is worth both.
+    reply_drafting_enabled: bool = field(
+        default_factory=lambda: _env_bool("REPLY_DRAFTING_ENABLED", False)
+    )
     # Send-floor copied from Foray. 0 disables it (the default until the
     # measured reach_score distribution is known). Unscored addresses are
     # never blocked; only a stored score below the floor is.

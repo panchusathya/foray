@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { ErrorNote, Screen } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
+import { once } from '../lib/once.js';
 import { useAuth } from '../lib/auth.jsx';
 
 // The magic-link landing. Loading this page is a plain GET with no side
@@ -17,8 +18,11 @@ export function MagicLinkPage() {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .exchange(token)
+    // once(): the grant is single-use, so the request itself is deduped, not
+    // just the state update. StrictMode's second mount would otherwise spend
+    // the grant on a request whose result nobody reads, and the person's own
+    // tap would report an expired link. See lib/once.js.
+    once(token, () => api.exchange(token))
       .then(async (result) => {
         if (cancelled) return;
         await signIn(result.access_token);

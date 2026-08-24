@@ -10,6 +10,7 @@ import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
 import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
+import { ImportPage } from './pages/Import.jsx';
 import { LoginPage } from './pages/Login.jsx';
 import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
@@ -26,6 +27,7 @@ const NAV = [
   { to: '/projects', label: 'Projects' },
   { to: '/jobs', label: 'Jobs' },
   { to: '/sequences', label: 'Sequences' },
+  { to: '/import', label: 'Import' },
   { to: '/contacts', label: 'Contacts' },
   { to: '/intake', label: 'Intake' },
   { to: '/analytics', label: 'Analytics' },
@@ -139,6 +141,7 @@ export function App() {
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:postingId" element={<JobDetailPage />} />
           <Route path="/rematch" element={<Navigate to="/jobs?view=rematch" replace />} />
+          <Route path="/import" element={<ImportPage />} />
           <Route path="/sequences" element={<SequencesPage />} />
           <Route path="/sequences/:sequenceId" element={<SequenceEditorPage />} />
           <Route path="/outreach" element={<Navigate to="/sequences" replace />} />

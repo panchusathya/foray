@@ -523,12 +523,42 @@ def _reach_score_for(address: str, scores: dict) -> int | None:
     return None
 
 
+def _email_reach_scores(candidate: Candidate) -> dict:
+    """Every address score we hold, whichever importer wrote it.
+
+    Scores used to be read from ``raw.foray.email_reach`` alone, because Foray
+    was the only thing that produced them. The CSV importer scores addresses
+    too -- it has Juicebox's own Deliverable/Risky/Undeliverable verdict -- and
+    writing those under ``foray`` to be seen would be a lie about where they
+    came from, so the lookup spans namespaces instead.
+
+    ``foray`` is merged last so it still wins on a conflict: its scores are
+    measured, and this function must not change what an existing Foray-sourced
+    candidate resolves to.
+    """
+    payload = candidate.raw if isinstance(candidate.raw, dict) else {}
+    merged: dict = {}
+    for namespace in sorted(payload):
+        if namespace == "foray":
+            continue
+        section = payload.get(namespace)
+        if not isinstance(section, dict):
+            continue
+        scores = section.get("email_reach")
+        if isinstance(scores, dict):
+            merged.update(scores)
+    foray = payload.get("foray")
+    if isinstance(foray, dict) and isinstance(foray.get("email_reach"), dict):
+        merged.update(foray["email_reach"])
+    return merged
+
+
 def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None]:
     """First address that clears the reach-score floor, preserving list order.
 
-    The floor skips; it does not re-rank. Unscored addresses (no entry in
-    ``raw.foray.email_reach``) pass, because the gate only applies when we
-    actually scored them. Returns ``(address, error)``; ``error`` is
+    The floor skips; it does not re-rank. Unscored addresses (no ``email_reach``
+    entry under any namespace in ``raw``) pass, because the gate only applies
+    when we actually scored them. Returns ``(address, error)``; ``error`` is
     ``reach_score_below_floor`` when every scored address is below ``floor``.
     """
     emails = [normalize_email(raw or "") for raw in (candidate.emails or [])]
@@ -537,10 +567,7 @@ def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None
         return "", None
     if floor <= 0:
         return emails[0], None
-    payload = candidate.raw if isinstance(candidate.raw, dict) else {}
-    scores = (payload.get("foray") or {}).get("email_reach") or {}
-    if not isinstance(scores, dict):
-        scores = {}
+    scores = _email_reach_scores(candidate)
     saw_score = False
     for addr in emails:
         score = _reach_score_for(addr, scores)

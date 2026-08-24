@@ -1,0 +1,386 @@
+// Turns a Juicebox CSV export into CandidateIn payloads for /v1/candidates/bulk.
+//
+// Pure and dependency-free so it can be unit-tested without a browser, exactly
+// like forayImport.js -- and for the same reason: the mapping decisions here
+// (which address the sequencer will mail, which rows are excluded) are the ones
+// worth asserting, and they should not need a DOM to check.
+//
+// Parsing happens in the browser rather than server-side on purpose. It means
+// the recruiter sees every row, and picks which ones to take, BEFORE anything
+// is written -- and it needs no upload endpoint, no multipart handling, and no
+// half-imported file to clean up if they change their mind.
+
+// --------------------------------------------------------------------------
+// parsing
+// --------------------------------------------------------------------------
+
+// A real CSV parser, not a split(','). The Juicebox export quotes every field
+// and its Location and Education columns contain commas ("San Francisco Bay
+// Area, California, United States"), so a naive split silently shifts every
+// column after the first comma -- which shows up as emails landing in the
+// wrong field rather than as an error.
+export function parseDelimited(text, { delimiter = '' } = {}) {
+  const body = stripBom(text ?? '');
+  if (!body.trim()) return { headers: [], rows: [] };
+  const sep = delimiter || sniffDelimiter(body);
+
+  const table = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  let i = 0;
+
+  while (i < body.length) {
+    const ch = body[i];
+
+    if (quoted) {
+      if (ch === '"') {
+        // A doubled quote inside a quoted field is one literal quote.
+        if (body[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        quoted = false;
+        i += 1;
+        continue;
+      }
+      field += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"' && field === '') {
+      quoted = true;
+      i += 1;
+      continue;
+    }
+    if (ch === sep) {
+      row.push(field);
+      field = '';
+      i += 1;
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') {
+      // Treat CRLF as one terminator, and skip blank lines rather than
+      // emitting a one-empty-field row for them.
+      if (ch === '\r' && body[i + 1] === '\n') i += 1;
+      row.push(field);
+      field = '';
+      if (row.some((cell) => cell !== '')) table.push(row);
+      row = [];
+      i += 1;
+      continue;
+    }
+    field += ch;
+    i += 1;
+  }
+  row.push(field);
+  if (row.some((cell) => cell !== '')) table.push(row);
+
+  const [headerRow = [], ...dataRows] = table;
+  const headers = headerRow.map((h) => h.trim());
+  const rows = dataRows.map((cells) => {
+    const record = {};
+    headers.forEach((header, index) => {
+      record[header] = (cells[index] ?? '').trim();
+    });
+    return record;
+  });
+  return { headers, rows };
+}
+
+function stripBom(text) {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+// Decided on the header line only. Counting separators across the whole file
+// would be swayed by commas inside quoted prose, which is the common case here.
+function sniffDelimiter(body) {
+  const firstLine = body.split(/\r?\n/, 1)[0] ?? '';
+  const tabs = (firstLine.match(/\t/g) ?? []).length;
+  const commas = (firstLine.match(/,/g) ?? []).length;
+  return tabs > commas ? '\t' : ',';
+}
+
+// --------------------------------------------------------------------------
+// column detection
+// --------------------------------------------------------------------------
+
+// Juicebox exports differ by which columns the user ticked -- one of the sample
+// files has no email columns at all -- so every field is looked up by name and
+// every one is optional. Matching is case- and space-insensitive because header
+// casing is not a contract anyone promised us.
+const COLUMNS = {
+  firstName: ['first name', 'firstname'],
+  lastName: ['last name', 'lastname'],
+  fullName: ['name', 'full name', 'candidate name'],
+  personalEmail: ['personal email', 'personal e-mail'],
+  personalEmailStatus: ['personal email verification', 'personal email status'],
+  workEmail: ['work email', 'work e-mail', 'business email'],
+  workEmailStatus: ['work email verification', 'work email status'],
+  email: ['email', 'e-mail', 'email address'],
+  emailStatus: ['email verification', 'email status'],
+  phones: ['phone numbers', 'phone number', 'phone'],
+  location: ['location'],
+  linkedin: ['linkedin', 'linkedin url', 'linkedin profile'],
+  github: ['github', 'github url'],
+  currentTitle: ['current title', 'title'],
+  currentCompany: ['current org name', 'current company', 'company'],
+  education: ['education'],
+  totalExperience: ['total experience (years)', 'total experience'],
+  profileUrl: ['juicebox profile url', 'profile url'],
+};
+
+function canonical(header) {
+  return String(header ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function detectColumns(headers = []) {
+  const seen = new Map();
+  for (const header of headers) seen.set(canonical(header), header);
+  const found = {};
+  for (const [role, aliases] of Object.entries(COLUMNS)) {
+    for (const alias of aliases) {
+      if (seen.has(alias)) {
+        found[role] = seen.get(alias);
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+// Does this file carry any address at all? The answer changes what the page can
+// offer, and saying so up front beats importing 79 people who can never be
+// mailed.
+export function hasEmailColumn(columns = {}) {
+  return Boolean(columns.personalEmail || columns.workEmail || columns.email);
+}
+
+// --------------------------------------------------------------------------
+// email selection
+// --------------------------------------------------------------------------
+
+// Juicebox's verification vocabulary, mapped onto the reach scores the
+// sequencer already understands (`raw.*.email_reach`, gated by
+// settings.min_reach_score). Deliberately the same mechanism Foray imports use
+// rather than a second one.
+export const VERIFICATION_SCORES = {
+  deliverable: 90,
+  risky: 40,
+  undeliverable: 0,
+};
+
+export function verificationOf(value) {
+  const key = String(value ?? '').trim().toLowerCase();
+  return key in VERIFICATION_SCORES ? key : '';
+}
+
+// Undeliverable addresses are dropped here rather than left to the reach-score
+// floor. FORAY_MIN_REACH_SCORE defaults to 0, and _sendable_address short-
+// circuits on `floor <= 0` and returns emails[0] unconditionally -- so on a
+// default install a known-bad address would be mailed. The floor is a second
+// line of defence, not the first one.
+export function selectEmails(row, columns) {
+  const candidates = [];
+  const push = (address, status, kind) => {
+    const email = normalizeEmail(address);
+    if (!email) return;
+    const verification = verificationOf(status);
+    if (verification === 'undeliverable') {
+      candidates.push({ email, verification, kind, excluded: true });
+      return;
+    }
+    candidates.push({ email, verification, kind, excluded: false });
+  };
+
+  // Personal before work, and that order is load-bearing rather than cosmetic:
+  // emails[0] is the address send_step actually mails, and a work address in
+  // front of a personal one puts a recruiting pitch in somebody's work inbox.
+  push(row[columns.personalEmail], row[columns.personalEmailStatus], 'personal');
+  push(row[columns.workEmail], row[columns.workEmailStatus], 'work');
+  push(row[columns.email], row[columns.emailStatus], 'unknown');
+
+  const deduped = [];
+  const seen = new Set();
+  for (const entry of candidates) {
+    if (seen.has(entry.email)) continue;
+    seen.add(entry.email);
+    deduped.push(entry);
+  }
+  return {
+    usable: deduped.filter((e) => !e.excluded),
+    excluded: deduped.filter((e) => e.excluded),
+  };
+}
+
+export function normalizeEmail(value) {
+  const trimmed = String(value ?? '').trim().toLowerCase();
+  if (!trimmed || !trimmed.includes('@')) return '';
+  // One address per cell in every export seen so far, but a separator would
+  // otherwise become part of the address and fail server-side validation.
+  const first = trimmed.split(/[,;\s]+/).find((part) => part.includes('@')) ?? '';
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(first) ? first : '';
+}
+
+// --------------------------------------------------------------------------
+// row -> CandidateIn
+// --------------------------------------------------------------------------
+
+export function rowName(row, columns) {
+  const full = (row[columns.fullName] ?? '').trim();
+  if (full) return full;
+  const first = (row[columns.firstName] ?? '').trim();
+  const last = (row[columns.lastName] ?? '').trim();
+  return `${first} ${last}`.trim();
+}
+
+// A stable key so re-uploading an overlapping export updates rather than
+// duplicates -- the same free idempotency forayImport.js gets from the GitHub
+// login. LinkedIn first because it is present on every row of every sample
+// export; the Juicebox profile URL is a fine second, and a name-and-company
+// slug is the last resort for a file carrying neither.
+export function sourceIdFor(row, columns) {
+  const linkedin = linkedinSlug(row[columns.linkedin]);
+  if (linkedin) return `li:${linkedin}`;
+  const profile = (row[columns.profileUrl] ?? '').trim();
+  if (profile) return `jb:${profile}`;
+  const email = normalizeEmail(row[columns.personalEmail])
+    || normalizeEmail(row[columns.workEmail])
+    || normalizeEmail(row[columns.email]);
+  if (email) return `email:${email}`;
+  const name = rowName(row, columns).toLowerCase().replace(/\s+/g, '-');
+  const company = (row[columns.currentCompany] ?? '').toLowerCase().replace(/\s+/g, '-');
+  return name ? `name:${name}${company ? `@${company}` : ''}` : '';
+}
+
+// Strip protocol, host, query and trailing slash so the same profile written
+// three ways yields one key.
+export function linkedinSlug(url) {
+  const raw = String(url ?? '').trim();
+  if (!raw) return '';
+  const match = raw.match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (match) return decodeURIComponent(match[1]).toLowerCase();
+  return raw.includes('linkedin.com') ? '' : raw.replace(/\/+$/, '').toLowerCase();
+}
+
+function parseYears(value) {
+  const n = Number.parseFloat(String(value ?? '').replace(/[^\d.]/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export const CSV_SOURCE = 'juicebox_csv';
+
+export function juiceboxRowToCandidate(row, columns) {
+  const { usable, excluded } = selectEmails(row, columns);
+  const emails = usable.map((e) => e.email);
+
+  // Only scored addresses go in email_reach: _sendable_address treats an
+  // unscored address as passing, "because the gate only applies when we
+  // actually scored them", and inventing a score for a blank verification
+  // column would turn silence into a claim.
+  const emailReach = {};
+  for (const entry of usable) {
+    if (entry.verification) emailReach[entry.email] = VERIFICATION_SCORES[entry.verification];
+  }
+
+  const payload = {
+    source: CSV_SOURCE,
+    source_id: sourceIdFor(row, columns),
+    full_name: rowName(row, columns),
+    location: (row[columns.location] ?? '').trim(),
+    linkedin_url: (row[columns.linkedin] ?? '').trim(),
+    github_url: (row[columns.github] ?? '').trim(),
+    current_title: (row[columns.currentTitle] ?? '').trim(),
+    current_company: (row[columns.currentCompany] ?? '').trim(),
+    emails,
+    raw: {
+      juicebox_csv: {
+        email_reach: emailReach,
+        // Kept so a later "why was this one skipped?" is answerable from the
+        // record instead of from the original file.
+        excluded_emails: excluded.map((e) => ({ email: e.email, reason: e.verification })),
+        education: (row[columns.education] ?? '').trim(),
+        profile_url: (row[columns.profileUrl] ?? '').trim(),
+      },
+    },
+  };
+
+  // years_experience must be omitted rather than sent as 0 when unknown:
+  // normalize_candidate only computes it from experiences when it arrives as
+  // None, so a 0 here permanently zeroes a value we could have derived.
+  const years = parseYears(row[columns.totalExperience]);
+  if (years !== null) payload.years_experience = years;
+
+  return payload;
+}
+
+// --------------------------------------------------------------------------
+// what the page needs to show
+// --------------------------------------------------------------------------
+
+// One pass over the file producing everything the review table renders, so the
+// row list and the counts can never disagree.
+export function buildImportRows(rows, columns) {
+  return rows.map((row, index) => {
+    const { usable, excluded } = selectEmails(row, columns);
+    const name = rowName(row, columns);
+    const sourceId = sourceIdFor(row, columns);
+    let blocked = '';
+    if (!name) blocked = 'no name';
+    else if (!sourceId) blocked = 'nothing to identify them by';
+    else if (!usable.length) blocked = excluded.length ? 'only an undeliverable address' : 'no email';
+    return {
+      key: `${index}:${sourceId || name || index}`,
+      index,
+      name,
+      title: (row[columns.currentTitle] ?? '').trim(),
+      company: (row[columns.currentCompany] ?? '').trim(),
+      location: (row[columns.location] ?? '').trim(),
+      primaryEmail: usable[0]?.email ?? '',
+      primaryKind: usable[0]?.kind ?? '',
+      verification: usable[0]?.verification ?? '',
+      excludedEmails: excluded,
+      blocked,
+      sendable: !blocked,
+      payload: blocked ? null : juiceboxRowToCandidate(row, columns),
+    };
+  });
+}
+
+// Every number here is a reason a row will or will not be mailed, so the page
+// can say which -- "no email" and "we dropped a bad one" look identical from a
+// bare importable count.
+export function summarizeImport(importRows) {
+  const total = importRows.length;
+  const sendable = importRows.filter((r) => r.sendable).length;
+  const undeliverableOnly = importRows.filter((r) => r.blocked === 'only an undeliverable address').length;
+  const noEmail = importRows.filter((r) => r.blocked === 'no email').length;
+  const unnamed = importRows.filter((r) => r.blocked === 'no name').length;
+  const unidentified = importRows.filter((r) => r.blocked === 'nothing to identify them by').length;
+  return { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified };
+}
+
+export function describeImport(summary) {
+  const { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified } = summary;
+  if (!total) return 'No rows in that file.';
+  const parts = [`${total} ${total === 1 ? 'row' : 'rows'}`, `${sendable} with a usable email`];
+  if (noEmail) parts.push(`${noEmail} with no email`);
+  if (undeliverableOnly) {
+    parts.push(`${undeliverableOnly} whose only address is undeliverable`);
+  }
+  if (unnamed) parts.push(`${unnamed} with no name`);
+  if (unidentified) parts.push(`${unidentified} with nothing to identify them by`);
+  return `${parts.join(', ')}.`;
+}
+
+// Chunked because /v1/candidates/bulk caps a request at 5000 candidates, and a
+// 4MB export is well within a file a recruiter will actually drag in.
+export const BULK_CHUNK = 500;
+
+export function chunk(items, size = BULK_CHUNK) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}

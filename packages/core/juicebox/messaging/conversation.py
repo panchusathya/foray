@@ -687,17 +687,11 @@ def _hand_over_to_manager(
 
     thread.mode = MODE_MANAGING
     db.flush()
-    sent = _deliver(
-        db,
-        thread=thread,
-        message=OutboundMessage(
-            body=humanize(
-                thread,
-                says=prompts.MANAGING_READY,
-                last_inbound=_last_inbound_body(db, thread),
-            )
-        ),
-    )
+    # Not composed, on purpose. This line lists the literal phrases the intent
+    # router matches on -- "what's my status", "find me roles", "who should I
+    # talk to". A paraphrase teaches somebody a command that then does not
+    # work, which is worse than sounding slightly flat once.
+    sent = _deliver(db, thread=thread, message=OutboundMessage(body=prompts.MANAGING_READY))
     return TurnResult(
         "completed_profile",
         thread,

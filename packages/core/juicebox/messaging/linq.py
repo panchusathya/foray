@@ -331,17 +331,21 @@ def _typing_request(method: str, chat_id: str, *, transport: Transport | None = 
         if transport is not None:
             transport(method, url, {})
             return
+        headers = {"Authorization": f"Bearer {settings.linq_api_key}"}
         if method == "DELETE":
-            httpx.delete(
-                url,
-                headers={"Authorization": f"Bearer {settings.linq_api_key}"},
-                timeout=5.0,
-            )
+            response = httpx.delete(url, headers=headers, timeout=5.0)
         else:
-            httpx.post(
-                url,
-                headers={"Authorization": f"Bearer {settings.linq_api_key}"},
-                timeout=5.0,
+            response = httpx.post(url, headers=headers, timeout=5.0)
+        # httpx does not raise on 4xx/5xx, so without this a wrong endpoint or
+        # a plan that does not include typing indicators looks identical to
+        # success and the dots never appear with nothing in the logs to say
+        # why. Still best-effort -- we log and move on, never fail a turn.
+        if response.status_code >= 400:
+            logger.warning(
+                "linq typing %s -> %s (%s)",
+                method,
+                response.status_code,
+                (response.text or "")[:200],
             )
     except httpx.HTTPError as exc:
-        logger.debug("linq typing %s failed: %s", method, exc)
+        logger.warning("linq typing %s failed: %s", method, exc)

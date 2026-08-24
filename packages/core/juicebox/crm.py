@@ -5,12 +5,12 @@ them.
 
 **What counts as tracking.** ``crm_tracked`` widens the thread-sync privacy
 guard (see ``integrations/matching.py``), so it must only ever mean "someone
-deliberately put this person in the CRM". There are five places that qualify —
-adding to a project, enrolling in a sequence, creating a contact by hand,
-promoting a discovered one, and setting a status or tag — and exactly one
-function that does it, because five open-coded assignments is how one of them
-ends up missing or, worse, how a stray profile edit starts retaining somebody's
-mail.
+deliberately put this person in the CRM". Places that qualify — adding to a
+project, enrolling in a sequence, creating a contact by hand, promoting a
+discovered one, setting a status or tag, and linking a completed or attributed
+intake (messaging or voice) — all go through exactly one function, because
+open-coded assignments are how one of them ends up missing or, worse, how a
+stray profile edit starts retaining somebody's mail.
 
 **What a hand edit means.** A field a human typed is recorded in
 ``manual_fields`` and re-applied over imported data by ``repository._apply``.
@@ -65,9 +65,9 @@ UNION_FIELDS = ("emails", "phones")
 def track(candidate: Candidate) -> None:
     """Mark a person as deliberately in the CRM.
 
-    Call this from the five explicit CRM actions and nowhere else. In
-    particular *not* from a plain profile edit: correcting a job title must not
-    quietly start retaining that person's mailbox history.
+    Call this from the explicit CRM actions (and intake link/attribute) and
+    nowhere else. In particular *not* from a plain profile edit: correcting a
+    job title must not quietly start retaining that person's mailbox history.
     """
     candidate.crm_tracked = True
 

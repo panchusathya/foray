@@ -95,7 +95,7 @@ export function ContactHistory({ candidateId, onCount }) {
   if (timeline.loading) return <Loading label="Loading contact history…" />;
   if (timeline.error) return <ErrorBox error={timeline.error} />;
 
-  const { stats, threads, events = [] } = timeline.data;
+  const { stats, threads, events = [], intake_threads: intakeThreads = [] } = timeline.data;
   return (
     <div className="stack" data-testid="contact-history">
       <div className="grid four">
@@ -130,6 +130,14 @@ export function ContactHistory({ candidateId, onCount }) {
         </div>
       ) : null}
 
+      {intakeThreads.length ? (
+        <div className="stack" style={{ gap: 8 }} data-testid="intake-threads">
+          {intakeThreads.map((thread) => (
+            <IntakeThreadHistory key={thread.thread_id} thread={thread} />
+          ))}
+        </div>
+      ) : null}
+
       {threads.length ? (
         threads.map((thread, index) => (
           <Thread
@@ -144,6 +152,46 @@ export function ContactHistory({ candidateId, onCount }) {
           connect Outlook thread sync in Settings to also see mail you write by hand.
         </Empty>
       )}
+    </div>
+  );
+}
+
+function IntakeThreadHistory({ thread }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="stack" style={{ gap: 6 }} data-testid="intake-thread-history">
+      <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
+        <span className="thread-head">
+          <span className="thread-subject">
+            {open ? '▾' : '▸'} Intake · {thread.channel}
+          </span>
+          <span className="thread-meta muted small">
+            {thread.messages.length} message{thread.messages.length === 1 ? '' : 's'} ·{' '}
+            {shortDate(thread.last_at)}
+          </span>
+        </span>
+      </button>
+      {open
+        ? thread.messages.map((message) => {
+            const inbound = message.direction === 'inbound';
+            return (
+              <div
+                key={message.id}
+                className="card stack"
+                style={{ gap: 6 }}
+                data-testid="intake-history-message"
+              >
+                <div className="row small spread">
+                  <Badge tone={inbound ? 'accent' : 'strong'}>
+                    {inbound ? '← candidate' : '→ agent'}
+                  </Badge>
+                  <span className="muted small">{when(message.sent_at || message.created_at)}</span>
+                </div>
+                <pre className="message-body">{message.body || '—'}</pre>
+              </div>
+            );
+          })
+        : null}
     </div>
   );
 }

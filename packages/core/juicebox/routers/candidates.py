@@ -32,6 +32,7 @@ from ..outreach.history import (
     candidate_timeline,
     contact_rollup_subquery,
     intake_events_for_candidate,
+    intake_threads_for_candidate,
 )
 from ..repository import owner_of_email, upsert_candidates
 from ..schemas import (
@@ -46,6 +47,8 @@ from ..schemas import (
     CandidateTimelineOut,
     EventOut,
     HistoryStatsOut,
+    IntakeTimelineMessageOut,
+    IntakeTimelineThreadOut,
     MessageOut,
     ThreadOut,
 )
@@ -725,6 +728,9 @@ def get_candidate_timeline(
     events = intake_events_for_candidate(
         db, org_id=principal.org_id, candidate_id=candidate_id
     )
+    intake_threads = intake_threads_for_candidate(
+        db, org_id=principal.org_id, candidate_id=candidate_id
+    )
     return CandidateTimelineOut(
         stats=HistoryStatsOut(**stats.__dict__),
         threads=[
@@ -737,6 +743,27 @@ def get_candidate_timeline(
             for thread in threads
         ],
         events=[EventOut.model_validate(row) for row in events],
+        intake_threads=[
+            IntakeTimelineThreadOut(
+                thread_id=thread.thread_id,
+                channel=thread.channel,
+                status=thread.status,
+                last_at=thread.last_at,
+                messages=[
+                    IntakeTimelineMessageOut(
+                        id=message.id,
+                        direction=message.direction,
+                        body=message.body,
+                        asked_field=message.asked_field,
+                        status=message.status,
+                        created_at=message.created_at,
+                        sent_at=message.sent_at,
+                    )
+                    for message in thread.messages
+                ],
+            )
+            for thread in intake_threads
+        ],
     )
 
 

@@ -713,10 +713,29 @@ class EventOut(BaseModel):
     created_at: datetime
 
 
+class IntakeTimelineMessageOut(BaseModel):
+    id: str
+    direction: str
+    body: str
+    asked_field: str = ""
+    status: str = ""
+    created_at: datetime
+    sent_at: datetime | None = None
+
+
+class IntakeTimelineThreadOut(BaseModel):
+    thread_id: str
+    channel: str
+    status: str
+    last_at: datetime | None = None
+    messages: list[IntakeTimelineMessageOut] = Field(default_factory=list)
+
+
 class CandidateTimelineOut(BaseModel):
     stats: HistoryStatsOut
     threads: list[ThreadOut]
     events: list[EventOut] = Field(default_factory=list)
+    intake_threads: list[IntakeTimelineThreadOut] = Field(default_factory=list)
 
 
 class RunSequenceResponse(BaseModel):
@@ -976,6 +995,7 @@ class CandidatePreferenceOut(BaseModel):
     id: str
     candidate_id: str
     source_call_id: str | None
+    source_thread_id: str | None = None
     spec: dict[str, Any] = Field(default_factory=dict)
     schema_version: str
     employment_status: str
@@ -1060,6 +1080,27 @@ class IntakeThreadSummary(BaseModel):
     last_inbound_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+
+
+class IntakeMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    direction: str
+    body: str
+    asked_field: str = ""
+    status: str = ""
+    seq: int = 0
+    created_at: datetime
+    sent_at: datetime | None = None
+
+
+class IntakeThreadOut(IntakeThreadSummary):
+    """Full thread for the recruiter detail / candidate Intake tab."""
+
+    messages: list[IntakeMessageOut] = Field(default_factory=list)
+    record: dict[str, Any] = Field(default_factory=dict)
+    fields_missing: list[Any] = Field(default_factory=list)
 
 
 class IntakeThreadPatch(BaseModel):

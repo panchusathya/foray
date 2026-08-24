@@ -456,6 +456,8 @@ class TestIdentity:
         from juicebox.messaging.identity import link_candidate
 
         assert link_candidate(session, thread=identified) == existing
+        session.refresh(session.get(Candidate, existing))
+        assert session.get(Candidate, existing).crm_tracked is True
 
 
 # --------------------------------------------------------------------------
@@ -788,6 +790,35 @@ class TestChatApi:
         assert pref.source_call_id is None
         candidate = session.get(Candidate, pref.candidate_id)
         assert candidate.full_name == "Ada Lovelace"
+        assert candidate.crm_tracked is True
+
+        listed = client.get(
+            "/v1/candidates",
+            headers=account["headers"],
+            params={"scope": "crm"},
+        ).json()
+        assert any(row["id"] == candidate.id for row in listed)
+
+        preference = client.get(
+            f"/v1/intake/preferences/{candidate.id}",
+            headers=account["headers"],
+        ).json()
+        assert preference["source_thread_id"] == thread_id
+        assert preference["source_call_id"] is None
+
+        detail = client.get(
+            f"/v1/intake/threads/{thread_id}",
+            headers=account["headers"],
+        )
+        assert detail.status_code == 200, detail.text
+        assert len(detail.json()["messages"]) >= 2
+
+        timeline = client.get(
+            f"/v1/candidates/{candidate.id}/timeline",
+            headers=account["headers"],
+        ).json()
+        assert any(row["thread_id"] == thread_id for row in timeline["intake_threads"])
+        assert timeline["intake_threads"][0]["messages"]
 
     def test_an_unanswerable_conversation_still_terminates(
         self, client, widget_token, session

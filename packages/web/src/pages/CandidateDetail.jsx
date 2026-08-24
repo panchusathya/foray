@@ -290,6 +290,10 @@ function IntakePanel({ candidateId }) {
     if (!pref.data?.source_call_id) return null;
     return intakeApi.getCall(pref.data.source_call_id);
   }, [pref.data?.source_call_id]);
+  const thread = useAsync(async () => {
+    if (!pref.data?.source_thread_id) return null;
+    return intakeApi.getThread(pref.data.source_thread_id);
+  }, [pref.data?.source_thread_id]);
   const [confirmError, setConfirmError] = useState(null);
 
   if (pref.loading) return <Loading label="Loading intake…" />;
@@ -300,6 +304,7 @@ function IntakePanel({ candidateId }) {
 
   const record = pref.data;
   const answers = call.data?.field_answers ?? [];
+  const messages = thread.data?.messages ?? [];
 
   async function confirm() {
     setConfirmError(null);
@@ -329,6 +334,11 @@ function IntakePanel({ candidateId }) {
             <div>{record.work_authorization || '—'}</div>
           </div>
         </div>
+        {record.source_thread_id ? (
+          <div className="small muted">
+            Source: messaging thread ({thread.data?.channel || '…'})
+          </div>
+        ) : null}
         {record.review_needed ? (
           <div className="small muted">Review: {record.review_reason || 'needs a look'}</div>
         ) : null}
@@ -359,9 +369,30 @@ function IntakePanel({ candidateId }) {
             ))}
           </tbody>
         </table>
-      ) : (
-        <div className="card empty">No per-field provenance on the source call.</div>
-      )}
+      ) : null}
+      {messages.length ? (
+        <div className="stack" style={{ gap: 6 }} data-testid="intake-thread-messages">
+          {messages.map((message) => {
+            const inbound = message.direction === 'inbound';
+            return (
+              <div key={message.id} className="card stack" style={{ gap: 4 }}>
+                <div className="row small spread">
+                  <Badge tone={inbound ? 'accent' : 'strong'}>
+                    {inbound ? 'candidate' : 'agent'}
+                  </Badge>
+                  <span className="muted small">
+                    {message.asked_field ? `asked ${message.asked_field}` : ''}
+                  </span>
+                </div>
+                <pre className="message-body">{message.body || '—'}</pre>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {!answers.length && !messages.length ? (
+        <div className="card empty">No per-field provenance on the source conversation.</div>
+      ) : null}
     </div>
   );
 }

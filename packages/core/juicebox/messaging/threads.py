@@ -94,6 +94,22 @@ def open_thread(
     return thread
 
 
+def find_active_thread(db: Session, *, channel: str, from_address: str) -> IntakeThread | None:
+    """The open conversation for this sender on this channel, if any."""
+    if not from_address:
+        return None
+    return db.scalar(
+        select(IntakeThread)
+        .where(
+            IntakeThread.channel == channel,
+            IntakeThread.from_address == from_address,
+            IntakeThread.status == STATUS_ACTIVE,
+        )
+        .order_by(IntakeThread.last_inbound_at.desc(), IntakeThread.created_at.desc())
+        .limit(1)
+    )
+
+
 def find_by_provider_id(
     db: Session, *, provider: str, provider_thread_id: str
 ) -> IntakeThread | None:

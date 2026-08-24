@@ -115,6 +115,10 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     # the signature tests depend on whoever ran them.
     monkeypatch.setenv("RETELL_API_KEY", "")
     monkeypatch.setenv("VOICE_PROVIDER", "retell")
+    monkeypatch.setenv("LINQ_API_KEY", "")
+    monkeypatch.setenv("LINQ_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("LINQ_FROM_NUMBER", "")
+    monkeypatch.setenv("LINQ_ENABLED", "false")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("BASE_URL", "http://testserver")
     # Retry logic is asserted by call counts, so don't actually sleep for it.

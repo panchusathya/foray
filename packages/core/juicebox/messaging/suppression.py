@@ -16,9 +16,8 @@ Two lookups, because there are two ways to be on it:
   only to the conversation it arrived in, and the next inbound text would open
   a fresh thread and start asking questions again.
 
-The address path is a stopgap that closes before SMS ships, not a design: the
-right fix is a phone column on ``Suppression``, which is a change to a table
-the voice branch also writes to and so is deliberately not made here.
+``Suppression`` also carries a phone column now; ``handle_stop`` writes known
+numbers there so outreach and voice can see the same opt-out.
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ logger = logging.getLogger(__name__)
 # message, not searched for inside it: "stop me if you've heard this one" is
 # not an opt-out, and treating it as one loses a candidate silently.
 STOP_WORDS = frozenset({"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "revoke"})
+HELP_WORDS = frozenset({"help", "info"})
 
 # The em and en dashes are built with chr() rather than typed: a literal one
 # is indistinguishable from a hyphen in most editors, and stripping the wrong
@@ -47,6 +47,10 @@ _PUNCTUATION = ".,!?;:'\"()[]{}-" + chr(0x2014) + chr(0x2013)
 
 def looks_like_stop(body: str) -> bool:
     return (body or "").strip().strip(_PUNCTUATION).strip().lower() in STOP_WORDS
+
+
+def looks_like_help(body: str) -> bool:
+    return (body or "").strip().strip(_PUNCTUATION).strip().lower() in HELP_WORDS
 
 
 def candidate_emails(db: Session, *, org_id: str, candidate_id: str) -> list[str]:

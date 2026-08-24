@@ -20,15 +20,23 @@ enough to read or extend somebody else's intake.
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal
-from ..messaging.channels import WEB
-from ..messaging.conversation import run_turn
+from ..intake.phones import lookup_key
+from ..intake.service import resolve_candidate_id
+from ..jobs import KIND_INTAKE_TURN, enqueue
+from ..messaging import prompts
+from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
+from ..messaging.conversation import deliver, run_turn
+from ..messaging.linq import SignatureError as LinqSignatureError
+from ..messaging.linq import parse_inbound, resolve_linq_org_id, verify_webhook
 from ..messaging.schemas import (
     ChatMessageIn,
     ChatMessageOut,
@@ -36,9 +44,18 @@ from ..messaging.schemas import (
     ChatStartIn,
     WidgetTokenOut,
 )
-from ..messaging.threads import messages_of, open_thread, record_inbound
+from ..messaging.suppression import handle_stop, looks_like_help, looks_like_stop
+from ..messaging.threads import (
+    find_active_thread,
+    find_by_provider_id,
+    messages_of,
+    open_thread,
+    record_inbound,
+)
 from ..models import IntakeThread, Org, utcnow
 from ..security import signed_intake_token, verify_intake_token
+
+logger = logging.getLogger(__name__)
 
 PURPOSE_WIDGET = "intake-widget"
 PURPOSE_THREAD = "intake-thread"
@@ -52,10 +69,16 @@ _THREAD_CAP_WINDOW = timedelta(hours=1)
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake", tags=["intake"])
 chat_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/chat", tags=["intake"])
+linq_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/linq", tags=["intake"])
 
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
 )
+
+
+async def raw_body(request: Request) -> bytes:
+    """Unmodified request body for webhook signature verification."""
+    return await request.body()
 
 
 @router.get("/widget-token", response_model=WidgetTokenOut)
@@ -105,7 +128,7 @@ def _session_out(db: Session, thread: IntakeThread, *, action: str = "") -> Chat
 
 
 def _check_thread_creation_cap(db: Session, *, org_id: str) -> None:
-    """Refuse when this org has opened too many widget conversations recently."""
+    """Refuse when this org has opened too many public conversations recently."""
     since = utcnow() - _THREAD_CAP_WINDOW
     count = (
         db.scalar(
@@ -113,7 +136,7 @@ def _check_thread_creation_cap(db: Session, *, org_id: str) -> None:
             .select_from(IntakeThread)
             .where(
                 IntakeThread.org_id == org_id,
-                IntakeThread.entry_point == "web_widget",
+                IntakeThread.entry_point.in_(("web_widget", "linq_inbound")),
                 IntakeThread.created_at >= since,
             )
         )
@@ -192,3 +215,143 @@ def post_message(
 
     result = run_turn(db, thread=thread)
     return _session_out(db, thread, action=result.action)
+
+
+def _resolve_or_open_linq_thread(
+    db: Session,
+    *,
+    org_id: str,
+    inbound,
+) -> IntakeThread:
+    from ..messaging.linq import InboundLinq
+
+    assert isinstance(inbound, InboundLinq)
+    from_key = lookup_key(inbound.from_address) or inbound.from_address
+    thread = find_by_provider_id(
+        db, provider="linq", provider_thread_id=inbound.chat_id
+    )
+    if thread is not None:
+        return thread
+    thread = find_active_thread(db, channel=LINQ, from_address=from_key)
+    if thread is not None:
+        if inbound.chat_id and not thread.provider_thread_id:
+            thread.provider_thread_id = inbound.chat_id
+        return thread
+    if not LinqChannel().is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Linq channel is not configured",
+        )
+    to_key = lookup_key(inbound.to_address) or inbound.to_address
+    candidate_id = resolve_candidate_id(db, org_id=org_id, phone=from_key)
+    return open_thread(
+        db,
+        org_id=org_id,
+        channel=LINQ,
+        provider="linq",
+        provider_thread_id=inbound.chat_id,
+        entry_point="linq_inbound",
+        candidate_id=candidate_id,
+        from_address=from_key,
+        to_address=to_key,
+        consent_messaging=True,
+    )
+
+
+@linq_router.post("/webhook")
+def linq_webhook(
+    raw: bytes = Depends(raw_body),
+    webhook_id: str = Header(default="", alias="webhook-id"),
+    webhook_timestamp: str = Header(default="", alias="webhook-timestamp"),
+    webhook_signature: str = Header(default="", alias="webhook-signature"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Linq inbound message.received. Verify, record, queue, return."""
+    try:
+        verify_webhook(
+            raw_body=raw,
+            webhook_id=webhook_id,
+            timestamp=webhook_timestamp,
+            signature=webhook_signature,
+        )
+    except LinqSignatureError as exc:
+        logger.warning("Linq signature rejected: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature"
+        ) from exc
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid JSON"
+        ) from exc
+
+    event_type = str(payload.get("event_type") or "")
+    if event_type != "message.received":
+        return {"status": "ignored", "event_type": event_type}
+
+    try:
+        inbound = parse_inbound(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    if inbound.is_group:
+        return {"status": "ignored", "reason": "group_chat"}
+
+    if not inbound.provider_native_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No message id in payload"
+        )
+
+    org_id = resolve_linq_org_id(db, to_address=inbound.to_address)
+    if org_id is None:
+        logger.warning("Linq message to unclaimed or inactive number %r", inbound.to_address)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No org owns this number"
+        )
+
+    thread = find_by_provider_id(
+        db, provider="linq", provider_thread_id=inbound.chat_id
+    )
+    if thread is None:
+        _check_thread_creation_cap(db, org_id=org_id)
+        thread = _resolve_or_open_linq_thread(db, org_id=org_id, inbound=inbound)
+
+    if thread.inbound_count >= MAX_INBOUND_PER_THREAD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="This conversation has reached its message limit",
+        )
+
+    message, created = record_inbound(
+        db,
+        thread=thread,
+        body=inbound.body,
+        provider_native_id=inbound.provider_native_id,
+        raw=inbound.raw,
+    )
+    if not created:
+        return {"status": "accepted", "duplicate": True, "message_id": message.id}
+
+    if looks_like_stop(inbound.body):
+        handle_stop(db, thread=thread)
+        return {"status": "accepted", "stopped": True, "message_id": message.id}
+
+    if looks_like_help(inbound.body):
+        deliver(db, thread=thread, message=OutboundMessage(body=prompts.HELP_REPLY))
+        return {"status": "accepted", "help": True, "message_id": message.id}
+
+    if not inbound.body.strip():
+        return {"status": "accepted", "ignored": True, "message_id": message.id}
+
+    enqueue(
+        db,
+        org_id=org_id,
+        kind=KIND_INTAKE_TURN,
+        idempotency_key=f"{KIND_INTAKE_TURN}:{message.id}",
+        payload={"thread_id": thread.id},
+    )
+    return {"status": "accepted", "message_id": message.id, "thread_id": thread.id}

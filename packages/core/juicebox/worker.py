@@ -580,6 +580,8 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     thread = db.get(IntakeThread, thread_id)
     if thread is None:
         return {"skipped": "thread not found", "thread_id": thread_id}
+    if thread.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
     result = run_turn(db, thread=thread)
     return {
         "thread_id": thread.id,

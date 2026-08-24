@@ -325,6 +325,12 @@ class Settings:
         default_factory=lambda: _env("SMS_FROM_NUMBER", "+18882600142")
     )
 
+    # --- messaging (Linq iMessage) -----------------------------------------
+    linq_api_key: str = field(default_factory=lambda: _env("LINQ_API_KEY", ""))
+    linq_webhook_secret: str = field(default_factory=lambda: _env("LINQ_WEBHOOK_SECRET", ""))
+    linq_from_number: str = field(default_factory=lambda: _env("LINQ_FROM_NUMBER", ""))
+    linq_enabled: bool = field(default_factory=lambda: _env_bool("LINQ_ENABLED", False))
+
     @property
     def resolved_llm_provider(self) -> str:
         """``anthropic`` | ``openrouter`` | ``none``.

@@ -48,7 +48,7 @@ def _call(session, org_id, *, candidate_id=None, provider_call_id="prov-1", **ex
         "provider_call_id": provider_call_id,
         "entry_point": "inbound",
         "from_number": "+14155550123",
-        "to_number": "+18882600142",
+        "to_number": "+16283865454",
         "status": "completed",
         "transcript": TRANSCRIPT,
     }
@@ -266,7 +266,7 @@ class TestPhoneSuppression:
             IntakeNumber(
                 org_id=account["org_id"],
                 provider="retell",
-                phone="+18882600142",
+                phone="+16283865454",
                 outbound_agent_id="agent_outbound_1",
             )
         )

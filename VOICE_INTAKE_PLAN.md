@@ -40,10 +40,9 @@ what lets a caller who refuses to discuss comp still finish the call.
 evaluated and dropped — capable, but it would have owned the agent runtime too.
 No Phase 1 code changed through either switch; see "Provider adapter".
 
-**Phase 1.5 — number provisioned. ✅** `+1 (888) 260-0142` is live in the `Foray`
-Retell workspace, showing `Provider: Twilio`. It is toll-free rather than the
-local 415 originally chosen; see "It is toll-free, which is a trade" for the
-consequence and the two add-ons that mitigate it.
+**Phase 1.5 — number provisioned. ✅** First `+1 (888) 260-0142`, toll-free,
+bought through Retell; see "The toll-free detour" for the trade it forced and
+why it was unwound.
 
 **Superseded (2026-08-23): the live number is now the local `+1 (628) 386-5454`**,
 bought on our own Twilio account and brought into Retell over the SIP trunk
@@ -65,7 +64,7 @@ permitted questions, protected categories have no field to land in, and the
 intake path carries no score, rank, or recommendation. TCPA SMS opt-in is now
 asked at wrap-up and captured per call (`intake_calls.sms_opt_in`, migration
 `e5f0a92c7d18`, latched like `consent_recording`) so lawful opt-ins accumulate
-while texting itself waits on the entity and toll-free verification.
+while texting itself waits on the entity and 10DLC registration.
 
 **Phase 2 complete.** 45 new tests, full suite 853 passed, ruff clean. Shipped:
 
@@ -269,9 +268,15 @@ and one outbound agent per number. That maps onto the two conversations exactly 
 A candidate who misses the outbound call, or wants to update us later, redials
 the number in their call history and lands on the inbound agent.
 
-### It is toll-free, which is a trade
+### The toll-free detour (superseded 2026-08-23, kept for the reasoning)
 
-`888` is toll-free, not the local 415 originally chosen. That is *better* for a
+The line is now the local `+1 (628) 386-5454`, which unwinds this trade: a
+local number is better on the outbound leg and no worse inbound. The two
+trust add-ons below still apply — they are now bought on the Twilio side
+(`deploy/NUMBER_CHECKLIST.md`) rather than as Retell add-ons, because the
+number is ours. What follows is the original reasoning.
+
+`888` was toll-free, not the local 415 originally chosen. That is *better* for a
 published inbound status line and *worse* for the outbound "call me" flow, where
 toll-free reads as a call centre and answer rates suffer. Two mitigations, both
 Retell add-ons and both worth buying:
@@ -288,10 +293,12 @@ If outbound answer rates still disappoint, add a **local** number for outbound
 only and keep the toll-free number as the published inbound line. Retell allows a
 different agent per direction, so this needs no code change.
 
-### SMS is a different track on toll-free
+### SMS registration follows whichever number sends
 
-Toll-free numbers do **not** use A2P 10DLC. They use **Toll-Free Verification**,
-a separate process with its own lead time. Voice is unaffected; only the
+Toll-free numbers do **not** use A2P 10DLC — they use **Toll-Free
+Verification**. The move to the local 628 puts us back on **A2P 10DLC**
+(brand + campaign, under the legal entity), which is the path
+`deploy/NUMBER_CHECKLIST.md` now tracks. Voice is unaffected; only the
 review-link-by-text depends on it, so it must not gate Phase 2.
 
 ### The two webhooks are not the same thing

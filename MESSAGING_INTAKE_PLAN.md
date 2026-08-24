@@ -154,7 +154,12 @@ heuristic path by default.
 
 ---
 
-## Phase 2 — Linq iMessage (interim; Twilio SMS when TFV clears)
+## Phase 2 — Linq iMessage (interim; Twilio SMS when 10DLC clears)
+
+*(The Twilio half was "when Toll-Free Verification clears". The line moved to the
+local `+1 (628) 386-5454` on 2026-08-23, so that path is A2P 10DLC — brand plus
+campaign, under the legal entity. iMessage via Linq needs neither, which is why
+it is the interim channel. See `deploy/NUMBER_CHECKLIST.md`.)*
 
 **Linq is live in code:** `LinqChannel`, `messaging/linq.py`, `POST /v1/intake/linq/webhook`.
 Tester-only — number not advertised. iMessage-only; Android is a known gap.

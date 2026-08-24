@@ -118,6 +118,9 @@ whether to extend or add alongside.
 
 ## 4. Start with web chat, not SMS
 
+*(Superseded 2026-08-23: the line is now the local `+1 (628) 386-5454`, so
+this is the 10DLC path, not Toll-Free Verification. Original text follows.)*
+
 The provisioned number `+1 (888) 260-0142` is **toll-free**, and the Retell API
 confirms `custom_sms_enabled: false` — **SMS is not available on it today.**
 Toll-free SMS also requires Toll-Free Verification (not A2P 10DLC), which has

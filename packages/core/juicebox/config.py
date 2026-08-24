@@ -311,18 +311,18 @@ class Settings:
     intake_recruiter_name: str = field(
         default_factory=lambda: _env("INTAKE_RECRUITER_NAME", "Vivian")
     )
-    # Digit-grouped: TTS reads "+18882600142" as noise, and the whole point is
+    # Digit-grouped: TTS reads "+16283865454" as noise, and the whole point is
     # that the candidate recognises the sender.
     intake_sms_number_spoken: str = field(
         default_factory=lambda: _env(
-            "INTAKE_SMS_NUMBER_SPOKEN", "eight eight eight, two six zero, zero one four two"
+            "INTAKE_SMS_NUMBER_SPOKEN", "six two eight, three eight six, five four five four"
         )
     )
     # Flips one spoken close sentence. The SMS sender itself lives on
     # feat/messaging-intake; this flag must not promise a text that cannot send.
     sms_enabled: bool = field(default_factory=lambda: _env_bool("SMS_ENABLED", False))
     sms_from_number: str = field(
-        default_factory=lambda: _env("SMS_FROM_NUMBER", "+18882600142")
+        default_factory=lambda: _env("SMS_FROM_NUMBER", "+16283865454")
     )
 
     # --- messaging (Linq iMessage) -----------------------------------------

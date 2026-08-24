@@ -142,7 +142,7 @@ command reference is in `packages/foray/README.md`. Non-obvious points:
 
 Candidate-side intake by phone: a web widget places a call, and a dial-in number
 takes process updates. Retell is the agent platform, on a Twilio number
-imported into it (+1 888 260-0142). Plan and phasing live in
+imported into it (+1 628 386-5454). Plan and phasing live in
 `VOICE_INTAKE_PLAN.md`. Non-obvious points:
 
 - **The gate is data, not an instruction.** `schema.coverage()` decides when a
@@ -391,8 +391,8 @@ the agent refused. Four things were wrong, and three are the same thing:
 ## Messaging intake (`packages/core/juicebox/messaging`)
 
 Candidate intake over text: a web chat widget now, Linq iMessage as the interim
-text channel (tester-only, inbound-first), with Twilio SMS deferred until Toll-Free
-Verification clears. It runs the *same* conversation as
+text channel (tester-only, inbound-first), with Twilio SMS deferred until 10DLC
+registration clears. It runs the *same* conversation as
 the voice agent and writes the same `CandidatePreference`; everything that
 decides **what** to ask is `juicebox/intake/` and is shared verbatim. This
 package owns only what is different about text. Plan and phasing live in

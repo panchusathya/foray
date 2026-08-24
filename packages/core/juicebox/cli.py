@@ -286,7 +286,7 @@ def cmd_intake_number(args: argparse.Namespace) -> int:
         if not key:
             print(
                 f"cannot normalise {args.number!r} to E.164. Give the full "
-                "international form, e.g. +18882600142."
+                "international form, e.g. +16283865454."
             )
             return 2
 
@@ -378,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake_number = sub.add_parser(
         "intake-number", help="register a voice intake phone number against an org"
     )
-    intake_number.add_argument("number", nargs="?", default="", help="E.164, e.g. +18882600142")
+    intake_number.add_argument("number", nargs="?", default="", help="E.164, e.g. +16283865454")
     intake_number.add_argument("--org", default="")
     intake_number.add_argument("--provider", default="retell")
     intake_number.add_argument("--label", default="")

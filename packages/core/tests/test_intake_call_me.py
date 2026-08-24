@@ -18,7 +18,7 @@ from sqlalchemy import select
 from juicebox.intake.providers import FakeVoiceProvider, set_voice_provider
 from juicebox.models import Candidate, CandidatePhone, IntakeCall, IntakeNumber, Suppression
 
-OUR_NUMBER = "+18882600142"
+OUR_NUMBER = "+16283865454"
 TARGET = "+14155550123"
 
 

@@ -70,9 +70,9 @@ AGENT_MODEL = "gpt-4.1-mini"
 # 11labs-Kate (more corporate). Judge through a phone speaker, not a demo page.
 VOICE_ID = "11labs-Myra"
 
-# Spoken so TTS does not read +18882600142 as noise. Recognition of the
+# Spoken so TTS does not read +16283865454 as noise. Recognition of the
 # follow-up sender is the entire point of saying it.
-SMS_NUMBER_SPOKEN = "eight eight eight, two six zero, zero one four two"
+SMS_NUMBER_SPOKEN = "six two eight, three eight six, five four five four"
 RECRUITER_NAME = "Vivian"
 
 # Slightly under 1.0 so she does not sound rushed.

@@ -34,7 +34,7 @@ from juicebox.models import (
 )
 from juicebox.repository import sync_candidate_phones
 
-OUR_NUMBER = "+18882600142"
+OUR_NUMBER = "+16283865454"
 CANDIDATE_NUMBER = "+14155550123"
 STRANGER_NUMBER = "+14155559999"
 API_KEY = "key_test_signing_secret"

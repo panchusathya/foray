@@ -19,7 +19,7 @@ status itself needs no migration -- ``applications.status`` is a plain
 ``models.py`` like every other status in this schema.
 
 Revision ID: c4e81b7f3a26
-Revises: c4a17e2b8d63
+Revises: e5a1c73f4b28
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4e81b7f3a26"
-down_revision: str | None = "c4a17e2b8d63"
+down_revision: str | None = "e5a1c73f4b28"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

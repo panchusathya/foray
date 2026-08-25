@@ -136,11 +136,14 @@ def main() -> int:
             numbers.add(ours)
 
         if call.get("call_status") not in {"ended", "error"}:
-            print(f"  skip  {cid[:30]:32} status={call.get('call_status')}")
+            print(f"  skip  {cid:36} status={call.get('call_status')}")
             skipped += 1
             continue
 
-        line = f"  {cid[:30]:32} {direction:9} ours={ours or '-':14} theirs={theirs or '-':14} tscript={tlen:5}"
+        # Not truncated: --call-id matches exactly, and this listing is where
+        # you copy an id from. A shortened id is one that cannot be pasted back
+        # into the tool that printed it.
+        line = f"  {cid:36} {direction:9} ours={ours or '-':14} theirs={theirs or '-':14} tscript={tlen:5}"
         if args.dry_run:
             print(f"  plan{line}")
             continue

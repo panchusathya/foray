@@ -34,11 +34,13 @@ from ..intake.providers import (
     EVENT_ANALYZED,
     EVENT_ENDED,
     EVENT_IGNORED,
+    EVENT_INBOUND,
     SignatureError,
     get_voice_provider,
     loads,
 )
 from ..intake.service import (
+    CALLER_UNKNOWN,
     CallRequestError,
     apply_budget,
     attribute_call,
@@ -46,7 +48,9 @@ from ..intake.service import (
     coverage_snapshot,
     empty_coverage,
     find_call,
+    inbound_call_context,
     parse_minutes_available,
+    preference_record,
     record_call_event,
     request_intake_call,
     resolve_org_id,
@@ -118,6 +122,13 @@ def intake_webhook(
     provider = _verified(raw, x_retell_signature)
     event = provider.parse_event(loads(raw))
 
+    if event.kind == EVENT_INBOUND:
+        # Answered before the call-id check, because this event legitimately has
+        # none -- the call does not exist yet. It is also the only event whose
+        # *response* the provider reads, and it is on the critical path of a
+        # ringing phone, so it does no writes and cannot 404.
+        return _inbound_answer(db, provider_name=provider.name, event=event)
+
     if not event.provider_call_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No call id in payload"
@@ -155,6 +166,40 @@ def intake_webhook(
         "created": created,
         "extraction_queued": queued,
     }
+
+
+def _inbound_answer(db: Session, *, provider_name: str, event) -> dict:
+    """Tell the agent who is ringing, in the shape Retell reads back.
+
+    Retell takes ``dynamic_variables`` from this response and interpolates them
+    into the prompt before the agent opens its mouth. That timing is the entire
+    feature: it is the only moment at which the line can know the caller without
+    asking, so everything the returning-candidate branch needs has to be here.
+
+    **Never fails the call.** A ringing phone is a person waiting, and a 4xx or
+    an exception here makes Retell drop the call rather than answer it plainly.
+    So an unclaimed number, an unknown caller and a broken lookup all resolve to
+    the same thing -- the unknown-caller variables -- and the agent runs a normal
+    first intake. The worst outcome is a returning candidate answering a couple
+    of questions we already had; the alternative is a dead line.
+    """
+    org_id = resolve_org_id(db, event, provider=provider_name)
+    if org_id is None:
+        # Logged at warning like the lifecycle path, because it means a live
+        # number is not claimed in intake_numbers -- but answered, not refused.
+        logger.warning(
+            "inbound ring for unclaimed number %r; answering as unknown caller",
+            event.our_number,
+        )
+        variables = dict(CALLER_UNKNOWN)
+    else:
+        try:
+            variables = inbound_call_context(db, org_id=org_id, phone=event.counterparty_number)
+        except Exception:  # a ringing phone outranks anything this lookup can hit
+            logger.exception("inbound caller lookup failed; answering as unknown caller")
+            variables = dict(CALLER_UNKNOWN)
+
+    return {"call_inbound": {"dynamic_variables": variables}}
 
 
 class CallMeRequest(BaseModel):
@@ -231,15 +276,32 @@ def intake_coverage(
         return empty_coverage()
 
     known = ""
+    on_file = None
     if call is not None and call.candidate_id:
         # Pre-call facts must not count as call answers, or the gate closes on
         # questions nobody asked.
         candidate = db.get(Candidate, call.candidate_id)
         if candidate is not None:
             known = f"name: {candidate.full_name}"
+        # The stored preference is a different thing from `known` and is used
+        # for the opposite purpose: not "was this said today" but "do we still
+        # need to ask it at all". Without it a returning candidate is walked
+        # through the entire intake again, which is the dial-in line failing to
+        # know them just as surely as asking who they are would be.
+        stored = db.scalar(
+            select(CandidatePreference).where(
+                CandidatePreference.candidate_id == call.candidate_id
+            )
+        )
+        if stored is not None:
+            on_file = preference_record(stored)
 
     return coverage_snapshot(
-        transcript, known=known, minutes_available=minutes_available, call=call
+        transcript,
+        known=known,
+        minutes_available=minutes_available,
+        call=call,
+        on_file=on_file,
     )
 
 

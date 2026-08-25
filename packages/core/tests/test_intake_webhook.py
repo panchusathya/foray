@@ -852,3 +852,296 @@ def _filled_required() -> dict:
         }
     )
     return record
+
+
+# --------------------------------------------------------------------------
+# who is ringing
+# --------------------------------------------------------------------------
+
+
+def inbound_payload(from_number=CANDIDATE_NUMBER, to_number=OUR_NUMBER):
+    """Retell's `call_inbound`: a different shape, and no call id.
+
+    The call does not exist yet -- that is the point of the event, and why it
+    cannot go through the same call-id path as the lifecycle webhooks.
+    """
+    return {
+        "event": "call_inbound",
+        "call_inbound": {
+            "agent_id": "agent_1",
+            "from_number": from_number,
+            "to_number": to_number,
+        },
+    }
+
+
+def _preference(session, candidate, **overrides):
+    from juicebox.models import CandidatePreference
+
+    row = CandidatePreference(
+        org_id=candidate.org_id,
+        candidate_id=candidate.id,
+        spec={"job_titles": ["staff backend engineer"], "locations": ["austin"]},
+        employment_status="employed_searching",
+        timeline="under_1_month",
+        target_base=250000.0,
+        active_processes=[{"company": "Stripe", "stage": "onsite"}],
+        confidential_items=["do not contact my current employer"],
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    session.add(row)
+    session.commit()
+    return row
+
+
+class TestRingTimeRecognition:
+    """The dial-in line knows who is calling before it speaks.
+
+    Everything here runs on the `call_inbound` webhook, which fires while the
+    phone is ringing. What it returns is interpolated into the agent's prompt,
+    so these assertions are the difference between a returning candidate being
+    greeted and being interrogated.
+    """
+
+    def test_a_known_caller_is_recognised_before_the_agent_speaks(
+        self, client, session, signer, owned_number, account
+    ):
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload())
+        assert response.status_code == 200
+        variables = response.json()["call_inbound"]["dynamic_variables"]
+        assert variables["caller_known"] == "true"
+        assert variables["caller_first_name"] == person.first_name
+
+    def test_an_unknown_number_is_a_first_conversation(
+        self, client, session, signer, owned_number, account
+    ):
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload(from_number=STRANGER_NUMBER))
+        variables = response.json()["call_inbound"]["dynamic_variables"]
+        assert variables["caller_known"] == "false"
+        assert variables["caller_first_name"] == ""
+        assert variables["caller_on_file"] == ""
+
+    def test_a_withheld_caller_id_is_a_first_conversation(
+        self, client, session, signer, owned_number, account
+    ):
+        """No special case needed: the placeholder yields no lookup key, so it
+        matches nobody, so nothing is recalled to whoever is actually calling."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload(from_number=ANONYMOUS_NUMBER))
+        assert response.json()["call_inbound"]["dynamic_variables"]["caller_known"] == "false"
+
+    def test_the_record_is_handed_over_so_it_can_be_read_back(
+        self, client, session, signer, owned_number, account
+    ):
+        """Refusing a candidate their own answers was the bug. The agent can
+        only repeat what it was given, so the content has to be here."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        on_file = variables["caller_on_file"]
+        assert "staff backend engineer" in on_file
+        assert "austin" in on_file
+        assert "250,000" in on_file
+        assert "Stripe" in on_file
+
+    def test_a_known_caller_with_no_record_yet_is_still_greeted(
+        self, client, session, signer, owned_number, account
+    ):
+        """In the CRM but never interviewed: worth a name, with nothing to recall."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_known"] == "true"
+        assert variables["caller_first_name"] == person.first_name
+        assert variables["caller_on_file"] == ""
+
+    def test_confidential_items_are_handed_over_flagged_as_theirs_to_raise(
+        self, client, session, signer, owned_number, account
+    ):
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        on_file = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]["caller_on_file"]
+        assert "asked us to keep quiet: do not contact my current employer" in on_file
+
+    def test_an_unclaimed_number_answers_rather_than_dropping_the_call(
+        self, client, session, signer, account
+    ):
+        """No `owned_number` fixture: nobody has claimed the line.
+
+        The lifecycle webhook 404s here, and should. This one must not -- a
+        refusal at ring time is a dead phone for whoever dialled it.
+        """
+        response = post(client, signer, inbound_payload())
+        assert response.status_code == 200
+        assert response.json()["call_inbound"]["dynamic_variables"]["caller_known"] == "false"
+
+    def test_it_still_requires_a_signature(self, client, owned_number):
+        assert client.post("/v1/intake/webhook", json=inbound_payload()).status_code == 401
+
+    def test_ringing_writes_nothing(self, client, session, signer, owned_number, account):
+        """It is on the critical path of a ringing phone and the call has no id
+        yet, so there is nothing to write and it must not try."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        post(client, signer, inbound_payload())
+        assert session.scalars(select(IntakeCall)).all() == []
+
+    def test_every_variable_is_a_string(
+        self, client, session, signer, owned_number, account
+    ):
+        """Retell rejects a non-string dynamic variable, and a rejected response
+        means the agent starts with no context at all."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables and all(isinstance(v, str) for v in variables.values())
+
+    def test_the_prompt_defaults_cover_every_variable_we_send(
+        self, client, session, signer, owned_number, account
+    ):
+        """The deploy script's fallback set must match this one key for key, or
+        a webhook timeout leaves the agent saying `{{caller_known}}` aloud."""
+        from juicebox.intake.service import CALLER_UNKNOWN
+
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert set(variables) == set(CALLER_UNKNOWN)
+
+
+class TestReturningCallerCoverage:
+    """A returning caller is not walked through the whole intake again."""
+
+    def test_what_is_on_file_counts_towards_the_gate(self, session, account):
+        from juicebox.intake.service import coverage_snapshot, preference_record
+        from juicebox.models import CandidatePreference
+
+        row = CandidatePreference(
+            org_id=account["org_id"], candidate_id="c1", **_stored_from(_filled_required())
+        )
+        on_file = preference_record(row)
+
+        # Nothing said yet on this call, but the record is complete.
+        snapshot = coverage_snapshot("Agent: Hi.\nCandidate: Hi.", on_file=on_file, fast=False)
+        assert snapshot["wrap_up"] is True
+        assert snapshot["still_needed"] == []
+
+    def test_without_the_record_the_same_call_owes_everything(self, session, account):
+        from juicebox.intake.service import coverage_snapshot
+
+        snapshot = coverage_snapshot("Agent: Hi.\nCandidate: Hi.", fast=False)
+        assert snapshot["wrap_up"] is False
+        assert snapshot["still_needed"]
+
+    def test_this_call_overrides_what_was_on_file(self):
+        from juicebox.intake.service import merge_records
+
+        merged = merge_records(
+            {"timeline": "under_1_month", "spec": {"locations": ["austin"]}},
+            {"timeline": "over_3_months", "spec": {"locations": ["denver"]}},
+        )
+        assert merged["timeline"] == "over_3_months"
+        assert merged["spec"]["locations"] == ["denver"]
+
+    def test_a_topic_not_raised_today_keeps_what_we_had(self):
+        """Silence is not a retraction -- a call about one thing must not wipe
+        everything else the candidate ever told us."""
+        from juicebox.intake.service import merge_records
+
+        merged = merge_records(
+            {"timeline": "under_1_month", "spec": {"locations": ["austin"]}},
+            {"timeline": "", "spec": {"locations": []}},
+        )
+        assert merged["timeline"] == "under_1_month"
+        assert merged["spec"]["locations"] == ["austin"]
+
+
+def _stored_from(record: dict) -> dict:
+    """The columns `upsert_preference` would write for this record."""
+    return {
+        "spec": record["spec"],
+        "employment_status": record["employment_status"],
+        "timeline": record["timeline"],
+        "target_base": record["target_base"],
+        "work_authorization": record["work_authorization"],
+        "active_processes": record["active_processes"],
+        "ok_to_share_with_clients": record["ok_to_share_with_clients"],
+    }
+
+
+class TestRecentTextRecall:
+    """"You texted us about X" is the other way a returning call opens."""
+
+    def _texted(self, session, candidate, body, *, direction="inbound"):
+        from juicebox.models import IntakeMessage, IntakeThread
+
+        thread = IntakeThread(
+            org_id=candidate.org_id,
+            candidate_id=candidate.id,
+            channel="sms",
+            provider="linq",
+            from_address=CANDIDATE_NUMBER,
+        )
+        session.add(thread)
+        session.flush()
+        session.add(
+            IntakeMessage(
+                org_id=candidate.org_id,
+                thread_id=thread.id,
+                seq=1,
+                direction=direction,
+                body=body,
+            )
+        )
+        session.commit()
+        return thread
+
+    def test_the_last_thing_they_texted_is_offered_as_an_opener(
+        self, client, session, signer, owned_number, account
+    ):
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Got the Stripe onsite booked for Thursday")
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == "Got the Stripe onsite booked for Thursday"
+
+    def test_our_own_outbound_text_is_not_quoted_back_at_them(
+        self, client, session, signer, owned_number, account
+    ):
+        """Reciting our own nudge is a receipt, not recognition."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Just checking in!", direction="outbound")
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == ""
+
+    def test_a_stale_text_is_not_raised(
+        self, client, session, signer, owned_number, account
+    ):
+        """"You mentioned last month" invites a correction, not a conversation."""
+        from datetime import timedelta
+
+        from juicebox.models import IntakeMessage, utcnow
+
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Still looking, no rush")
+        message = session.scalars(select(IntakeMessage)).one()
+        message.created_at = utcnow() - timedelta(days=45)
+        session.commit()
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == ""

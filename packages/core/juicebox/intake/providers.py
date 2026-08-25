@@ -35,6 +35,12 @@ RETELL_API_BASE = "https://api.retellai.com"
 # updates, the whole transfer lifecycle); anything unmapped becomes "ignored"
 # rather than an error, because a provider adding an event type must not start
 # failing our webhook.
+# Fired while the phone is still ringing, before the agent says anything. It is
+# the only point at which we can tell the agent who is calling, so it is what
+# makes the dial-in line recognise a returning candidate instead of asking.
+# Alone among the events it carries no call id -- the call does not exist yet --
+# and alone among them the provider reads our *response*.
+EVENT_INBOUND = "inbound_ringing"
 EVENT_STARTED = "started"
 EVENT_ENDED = "ended"
 EVENT_ANALYZED = "analyzed"
@@ -142,6 +148,10 @@ _RETELL_EVENTS = {
     "call_analyzed": EVENT_ANALYZED,
 }
 
+# `call_inbound` puts its fields under their own key rather than under `call`,
+# and the object holds only the three things known while the phone rings.
+_RETELL_INBOUND_EVENT = "call_inbound"
+
 
 class RetellProvider:
     """Retell AI.
@@ -205,9 +215,40 @@ class RetellProvider:
 
     def parse_event(self, payload: dict[str, Any]) -> CallEvent:
         event = str(payload.get("event") or "")
+        if event == _RETELL_INBOUND_EVENT:
+            return self._inbound_to_event(payload)
         call = payload.get("call")
         call = call if isinstance(call, dict) else {}
         return self._call_to_event(_RETELL_EVENTS.get(event, EVENT_IGNORED), call)
+
+    def _inbound_to_event(self, payload: dict[str, Any]) -> CallEvent:
+        """The ringing event. Same ``CallEvent`` shape, almost all of it empty.
+
+        ``direction`` is set by hand because the payload does not carry one: an
+        inbound webhook is inbound by definition, and without it ``our_number``
+        and ``counterparty_number`` would both return "" and the org would not
+        resolve.
+
+        The numbers go through ``lookup_key`` exactly as the lifecycle events
+        do, so a withheld caller ID collapses to "" here too and the call is
+        answered as a stranger's. That is the correct outcome and it needs no
+        special case: nobody has been identified, so nothing is recalled.
+        """
+        inbound = payload.get(_RETELL_INBOUND_EVENT)
+        inbound = inbound if isinstance(inbound, dict) else {}
+        return CallEvent(
+            kind=EVENT_INBOUND,
+            # No call id exists yet. Retell mints one only once the call
+            # connects, so anything keyed on it has to wait for `call_started`.
+            provider_call_id="",
+            direction=DIRECTION_INBOUND,
+            call_type="phone_call",
+            from_number=lookup_key(inbound.get("from_number"))
+            or str(inbound.get("from_number") or ""),
+            to_number=lookup_key(inbound.get("to_number")) or str(inbound.get("to_number") or ""),
+            agent_id=str(inbound.get("agent_id") or ""),
+            raw=payload,
+        )
 
     def parse_function_call(self, payload: dict[str, Any]) -> tuple[CallEvent, dict[str, Any]]:
         """A custom-function request: ``{name, call, args}``.

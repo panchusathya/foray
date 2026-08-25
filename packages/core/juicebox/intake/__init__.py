@@ -19,7 +19,7 @@ from .extract import (
     known_context,
     normalize_record,
 )
-from .phones import lookup_key, lookup_keys
+from .phones import SENTINEL_NUMBERS, is_sentinel_number, lookup_key, lookup_keys
 from .schema import (
     CORE_KEYS,
     ENRICHMENT_KEYS,
@@ -45,6 +45,7 @@ __all__ = [
     "FIELDS_BY_KEY",
     "REQUIRED_KEYS",
     "SCHEMA_VERSION",
+    "SENTINEL_NUMBERS",
     "SPEC_FIELDS",
     "Coverage",
     "ExtractionResult",
@@ -54,6 +55,7 @@ __all__ = [
     "diff_records",
     "empty_record",
     "extract_intake",
+    "is_sentinel_number",
     "known_context",
     "lookup_key",
     "lookup_keys",

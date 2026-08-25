@@ -666,6 +666,42 @@ class TestPhoneLookupKey:
     def test_unusable_numbers_are_dropped_not_approximated(self):
         assert lookup_keys(["555-0123", "+14155550123"]) == ["+14155550123"]
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "+266696687",  # ANONYMOUS
+            "+1266696687",  # ...as a North American carrier passes it on
+            "+7378742833",  # RESTRICTED
+            "+86282452253",  # UNAVAILABLE
+            "+94844353",  # WITHHELD
+            "0000000000",  # what a switch sends for "no caller ID"
+            "+10000000000",
+            "9999999999",
+        ],
+    )
+    def test_a_caller_id_sentinel_gets_no_key(self, raw):
+        """A withheld caller ID is not a number, however well-formed it looks.
+
+        These are shaped like valid E.164 and used to pass, which made every
+        anonymous caller share one key -- the exact wrong-person match this
+        module exists to prevent.
+        """
+        assert lookup_key(raw) == ""
+
+    def test_sentinels_never_reach_the_projection(self):
+        assert lookup_keys(["+266696687", "+14155550123"]) == ["+14155550123"]
+
+    def test_two_withheld_callers_do_not_share_a_key(self):
+        """The collision itself, stated directly: no key means no match, so the
+        second anonymous caller cannot be identified as the first."""
+        assert lookup_key("+266696687") == lookup_key("+266696687") == ""
+
+    def test_a_real_number_is_not_mistaken_for_a_sentinel(self):
+        """The region-strip and repeated-digit rules must not eat real numbers."""
+        assert lookup_key("+12666966870") == "+12666966870"
+        assert lookup_key("+14155550123") == "+14155550123"
+        assert lookup_key("(415) 555-0123") == "+14155550123"
+
 
 class TestPhoneProjection:
     def _candidate(self, session, org_id, name, phones, source_id):

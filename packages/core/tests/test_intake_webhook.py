@@ -37,6 +37,9 @@ from juicebox.repository import sync_candidate_phones
 OUR_NUMBER = "+16283865454"
 CANDIDATE_NUMBER = "+14155550123"
 STRANGER_NUMBER = "+14155559999"
+# What the network sends when caller ID is withheld: the keypad spelling of
+# ANONYMOUS. Every withheld caller arrives as this exact string.
+ANONYMOUS_NUMBER = "+266696687"
 API_KEY = "key_test_signing_secret"
 
 TRANSCRIPT = (
@@ -495,6 +498,36 @@ class TestExtraction:
         _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         post(client, signer, call_payload(from_number=STRANGER_NUMBER))
         assert session.scalars(select(IntakeCall)).one().candidate_id is None
+
+    def test_a_withheld_caller_id_is_not_linked_to_anyone(
+        self, client, session, signer, owned_number, account
+    ):
+        """The disclosure bug, end to end.
+
+        A candidate record already carries the ANONYMOUS placeholder -- however
+        it got there, an import or a call placed before the fix. The next person
+        to withhold their caller ID arrives looking exactly the same, and must
+        still come out unidentified rather than wearing that candidate's name.
+        """
+        person = _candidate(session, account["org_id"], phones=[ANONYMOUS_NUMBER])
+        # The number never made it into the lookup projection in the first place.
+        assert person.phones == [ANONYMOUS_NUMBER]
+        post(client, signer, call_payload(from_number=ANONYMOUS_NUMBER))
+        assert session.scalars(select(IntakeCall)).one().candidate_id is None
+
+    def test_two_withheld_callers_are_not_linked_to_each_other(
+        self, client, session, signer, owned_number, account
+    ):
+        """Two strangers, one placeholder. Neither may become the other."""
+        post(client, signer, call_payload(from_number=ANONYMOUS_NUMBER))
+        post(
+            client,
+            signer,
+            call_payload(call_id="call_second", from_number=ANONYMOUS_NUMBER),
+        )
+        rows = session.scalars(select(IntakeCall)).all()
+        assert len(rows) == 2
+        assert [row.candidate_id for row in rows] == [None, None]
 
     def test_a_number_belonging_to_another_org_does_not_match(
         self, client, session, signer, owned_number, account

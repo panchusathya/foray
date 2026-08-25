@@ -43,11 +43,16 @@ export const CONTACT_COLUMNS = {
   intake_confirmed: { label: 'Confirmed', width: 110, sort: null },
 };
 
+// No 'phones' column here on purpose. The default grid has a width budget --
+// `e2e/contacts-grid.spec.js` holds it under 1200px, which is the whole reason
+// the address moved into the name cell rather than keeping a column of its own
+// -- and a 150px phone column spends the entire remaining margin. The number
+// rides in the name cell instead, where a row with no address has a spare line
+// anyway. Views with fewer columns (Intake) can afford the real column.
 const DEFAULT_COLUMNS = [
   'full_name',
   'current_title',
   'current_company',
-  'phones',
   'last_emailed_at',
   'last_reply_at',
   'touches',

@@ -1033,6 +1033,11 @@ class IntakeCallSummary(BaseModel):
     entry_point: str
     from_number: str
     to_number: str
+    # What the caller said they were called and where to reach them. On the
+    # review queue this is the difference between "unknown caller" and a row a
+    # recruiter can attribute in one click.
+    contact_name: str = ""
+    contact_email: str = ""
     status: str
     duration_seconds: int
     required_complete: bool

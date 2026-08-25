@@ -259,6 +259,70 @@ imported into it (+1 628 386-5454). Plan and phasing live in
   `manual_fields` across twenty more columns makes an already subtle mechanism
   carry weight it was not built for.
 
+### Who called (`intake/contact.py`, `service.link_caller`)
+
+- **The inbound agent asked for a name and an email long before anything
+  stored them.** Step 3 of the inbound prompt has always been "ask for their
+  name and the email they use with Foray, so a recruiter can find them"; the
+  answer was transcribed and dropped. Every caller whose number was not already
+  in `candidate_phones` therefore produced a completed intake with no person
+  attached, waiting on a human to retype an address that was in the transcript.
+  `IntakeCall.contact_name` / `contact_email` are that answer.
+- **Identity is not a preference, on either channel.** These live beside the
+  record, never inside it -- same rule `IntakeThread.contact_name` follows, same
+  reason: `spec` is `ParsedQuery`'s vocabulary and a name has no counterpart on
+  the job side. They are also outside `coverage()`: a caller who will not give a
+  name has still completed an intake, and gating the wrap-up on identity would
+  keep a finished call alive over a field the matcher never reads.
+- **An address identifies somebody; a number does not.** An address the caller
+  spoke may attribute the record to its owner. It may **not** write the calling
+  number onto that person's row -- "somebody who knows Priya's address called
+  from this phone" is not "this is Priya's phone", and a wrong row in
+  `candidate_phones` reads that person's comp and pipeline to whoever dialled.
+  The email-matched path leaves `UNVERIFIED_NUMBER_REASON` on the call, and
+  `attribute_call` -- a human who has read the transcript -- is the only path
+  that promotes the number.
+- **A name is not an identity and creates nobody.** There are four Priya
+  Ramans. Text sets the same bar for the same reason.
+- **Creating anybody needs the call to have captured something**, not a closed
+  gate. `coverage(...).covered` is the guard `attribute_thread` already uses.
+  The gate was the first version and it was wrong: the heuristic path can hardly
+  ever close one, so on an install with no `ANTHROPIC_API_KEY` -- the install
+  this stack is built to run on -- it read as "never create anybody".
+- **`_LEAD_INS` is why a spoken address is read correctly or not at all.** Three
+  independent rules keep the decoder honest and each is a real failure: the last
+  token must be a known suffix, or "reach me at priya dot raman" reads the
+  *local* part as a domain and yields `me@priya.raman`; the word to the left must
+  be a lead-in, or "priya raman at gmail dot com" (no spoken separator between
+  the names) matches from "raman" and yields somebody else's mailbox; and the
+  assembled string has to satisfy the ordinary address regex. Where the reading
+  is ambiguous -- `priyaraman` or `priya.raman`? -- nothing is the only safe
+  answer. `email_in_turn`'s cue gate is a *second* line of defence, not the
+  first: "I work at Google dot com" survives the decoder and is stopped there.
+- **A `review_reason` may never contain `"; "`.** `_join_reasons` uses it as the
+  separator, so a reason holding one splits into two segments and stops matching
+  itself. The first version of `_clear_identity_review` was an equality check
+  against a single string, and the moment a call could carry two reasons it
+  silently stopped clearing anything -- every attributed call stayed on the
+  review queue forever. `test_no_reason_contains_the_separator` pins it.
+- **`counterparty_number` exists because `from_number` is us on an outbound
+  call.** Reading it as the candidate's is how our own intake line ends up in
+  `candidate_phones`, pointing the dial-in caller lookup at whoever last had a
+  row written.
+- **`repository.merge_contact_details` is the one writer for "they told us their
+  email/number/name".** Voice and text had drifted: the call path added a phone
+  and an address and ignored the name, the thread path wrote none of the three
+  onto the candidate at all -- so a texter's number never reached
+  `candidate_phones` and the dial-in line did not recognise them when they rang.
+  It owns three rules that are each easy to get wrong alone: a detail somebody
+  else owns is reported as a conflict rather than taken (appending to
+  `Candidate.emails` first leaves the JSON column claiming an address the
+  projection does not have, which reads as ownership everywhere except the
+  index); a placeholder name loses to a real one but a real name never loses to
+  another real one (that is a merge question, not an import); and a newly
+  learned address for a suppressed person is suppressed too, or do-not-contact
+  is defeated by the person mentioning a second mailbox.
+
 ### The webhook and the mid-call gate (phase 2)
 
 - **A number must be registered before it can take a call.** `intake_numbers`

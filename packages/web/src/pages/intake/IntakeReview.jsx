@@ -172,7 +172,7 @@ function CallRow({ row, onDone }) {
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
         <span className="thread-head">
           <span className="thread-subject">
-            {open ? '▾' : '▸'} Call · {row.from_number || 'unknown'}
+            {open ? '▾' : '▸'} Call · {row.contact_name || row.contact_email || row.from_number || 'unknown'}
           </span>
           <span className="thread-meta muted small">
             {when(row.started_at || row.created_at)}

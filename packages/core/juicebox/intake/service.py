@@ -35,7 +35,12 @@ from ..models import (
     utcnow,
 )
 from ..outreach.suppressions import is_suppressed
-from ..repository import sync_candidate_emails, sync_candidate_phones
+from ..repository import (
+    merge_contact_details,
+    owner_of_email,
+    sync_candidate_emails,
+    sync_candidate_phones,
+)
 from .extract import ExtractionResult, extract_intake, known_context
 from .phones import lookup_key
 from .providers import (
@@ -54,6 +59,29 @@ STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETED = "completed"
 STATUS_EXTRACTED = "extracted"
 STATUS_FAILED = "failed"
+
+# Written when a call ends with nobody to attach it to, and cleared by
+# ``attribute_call`` when a human says who it was. One constant so the writer
+# and the reader cannot drift into two different strings -- the same rule
+# ``messaging.identity.UNATTRIBUTED_REASON`` records.
+UNIDENTIFIED_REASON = "caller not identified"
+
+# The number is what the caller's *device* claims, and ANI is spoofable. So a
+# call matched to a person by the email they spoke is attributed -- the record
+# is theirs -- but the number is not written onto their row, because "somebody
+# who knows Priya's address called from this phone" is not "this is Priya's
+# phone", and a wrong row in ``candidate_phones`` points the dial-in line at
+# the wrong person's comp and pipeline. ``attribute_call`` is where a human
+# promotes it.
+# No "; " inside the text: ``_join_reasons`` uses it as the separator, so a
+# reason containing one splits into two segments and stops matching itself --
+# which is how the first version of this left every attributed call on the
+# review queue. ``test_no_reason_contains_the_separator`` pins it.
+UNVERIFIED_NUMBER_REASON = "caller matched by email, number not added"
+
+# An address arrived but the conversation captured nothing to attach to it.
+NOTHING_CAPTURED_REASON = "caller identified but nothing was captured"
+
 
 # How many questions the mid-call check hands back. One at a time keeps the
 # conversation a conversation; a list of six becomes an interrogation, and the
@@ -101,6 +129,17 @@ def find_call(db: Session, *, provider: str, provider_call_id: str) -> IntakeCal
             IntakeCall.provider_call_id == provider_call_id,
         )
     )
+
+
+def counterparty_number(call: IntakeCall) -> str:
+    """The number of the person on the other end, whichever way we dialled.
+
+    On an inbound call that is ``from_number``. On an outbound one ``from_number``
+    is *our* intake line, so reading it as the candidate's is how our own number
+    ends up in ``candidate_phones`` -- pointing the dial-in line's caller
+    lookup at whoever last had a row written.
+    """
+    return call.to_number if call.entry_point == "outbound" else call.from_number
 
 
 def resolve_candidate_id(db: Session, *, org_id: str, phone: str) -> str | None:
@@ -327,6 +366,9 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
     call.review_reason = result.review_reason[:400]
     call.status = STATUS_EXTRACTED
 
+    record_contact(call, result)
+    link_caller(db, call)
+
     if call.candidate_id:
         upsert_preference(db, call=call, result=result)
     else:
@@ -334,7 +376,7 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         # match engine until a human says who this was. Auto-creating a
         # Candidate from a cold inbound call would put strangers in the CRM.
         call.review_needed = True
-        call.review_reason = _join_reasons(call.review_reason, "caller not identified")
+        call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
     write_field_answers(db, call=call, result=result)
 
@@ -353,6 +395,137 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
     )
     db.flush()
     return result
+
+
+def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
+    """Latch the caller's stated name and address onto the call.
+
+    Latched, not assigned, for the reason ``consent_recording`` is: a replay
+    against a better prompt, or a second pass that reads the transcript less
+    well, must not blank an answer an earlier pass captured. There is nothing
+    else on the row that records the caller said it.
+    """
+    if result.contact_name and not call.contact_name:
+        call.contact_name = result.contact_name[:240]
+    if result.contact_email and not call.contact_email:
+        call.contact_email = result.contact_email[:255]
+
+
+def link_caller(db: Session, call: IntakeCall) -> str | None:
+    """Resolve an unattributed call to a candidate from what the caller said.
+
+    The inbound agent has always asked for a name and the email they use with
+    us. Until this existed the answer was transcribed and dropped, so every
+    caller whose number was not already in ``candidate_phones`` produced an
+    unattributed record -- a completed intake that the match engine could not
+    see, waiting on a human to retype an address that was in the transcript.
+
+    Three rules, in this order:
+
+    **An existing owner of the address always wins.** Splitting somebody's
+    history across two rows is worse than not creating one, which is the rule
+    ``messaging.identity.link_candidate`` already follows.
+
+    **An address is required to create anybody.** A name is not an identity --
+    there are four Priya Ramans -- and a row created from one is a duplicate
+    waiting to happen. This is the same bar the text channel sets, and the
+    reason it sets it: an address identifies a person on its own.
+
+    **Creating anybody at all needs a completed intake.** ``AGENTS.md`` records
+    that a cold inbound call must not put a stranger in the CRM, and the text
+    channel spends the same currency: requiring the gate to have closed makes a
+    junk row cost a whole intake rather than one sentence. A caller who is new
+    to us is asked to run the full intake anyway, so this is not a case the
+    product avoids -- it is the case it is built for.
+
+    Returns the candidate id, or None when the call stays unattributed.
+    """
+    if call.candidate_id:
+        return call.candidate_id
+
+    address = (call.contact_email or "").strip().lower()
+    name = (call.contact_name or "").strip()
+    if not address:
+        if name:
+            call.review_reason = _join_reasons(
+                call.review_reason, "caller gave a name but no email"
+            )
+        return None
+
+    owner = owner_of_email(db, org_id=call.org_id, email=address)
+    if owner is not None:
+        candidate = db.get(Candidate, owner)
+        if candidate is not None:
+            call.candidate_id = candidate.id
+            # No phone: see UNVERIFIED_NUMBER_REASON.
+            merge_contact_details(db, candidate, name=name)
+            call.review_needed = True
+            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
+            _track(db, candidate)
+            return candidate.id
+
+    if not coverage(call.extracted or {}).covered:
+        # They gave an address and nothing else. A wrong number that ends with
+        # "sorry -- oh, I'm Priya, priya@example.com" is not an intake, and a
+        # row created from it is a stranger in the CRM under a real address.
+        # Same guard ``attribute_thread`` applies before writing a preference,
+        # and deliberately NOT "the gate closed": the heuristic path can hardly
+        # ever close a gate, so that bar would read as "never" on an install
+        # with no API key -- exactly the install this stack is built to run on.
+        call.review_reason = _join_reasons(call.review_reason, NOTHING_CAPTURED_REASON)
+        return None
+
+    if is_suppressed(db, org_id=call.org_id, email=address):
+        # On the do-not-contact list under an address we had not linked to a
+        # row. Creating one now would put a person who asked to be left alone
+        # back into the CRM as a fresh contact.
+        call.review_reason = _join_reasons(
+            call.review_reason, "caller is on the do-not-contact list"
+        )
+        return None
+
+    number = counterparty_number(call)
+    first, last = split_name(name)
+    candidate = Candidate(
+        org_id=call.org_id,
+        source="intake-call",
+        # Unique per person under uq_candidate_source and stable, so a second
+        # call from the same person updates rather than duplicating. The address
+        # rather than the number, because the address is what identified them.
+        source_id=address,
+        full_name=name or address,
+        first_name=first,
+        last_name=last,
+        emails=[address],
+        # Safe here in a way it is not on the branch above: this row exists
+        # only because this caller described themselves, so the number that
+        # placed the call is theirs by construction rather than by assertion.
+        phones=[number] if number else [],
+    )
+    db.add(candidate)
+    db.flush()
+    sync_candidate_emails(db, candidate)
+    sync_candidate_phones(db, candidate)
+    call.candidate_id = candidate.id
+    _track(db, candidate)
+    record_event(
+        db,
+        org_id=call.org_id,
+        type="intake.caller_identified",
+        subject_type="intake_call",
+        subject_id=call.id,
+        payload={"candidate_id": candidate.id, "created": True},
+    )
+    return candidate.id
+
+
+def _track(db: Session, candidate: Candidate) -> None:
+    """Put an intake-linked person on the default Contacts grid."""
+    # Late import: crm -> outreach -> sequencer -> crm cycles at module load.
+    from ..crm import track
+
+    track(candidate)
+    db.flush()
 
 
 def upsert_preference(
@@ -463,14 +636,39 @@ def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResu
 
 
 def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> IntakeCall:
-    """A human says who an unidentified caller was."""
-    from ..crm import track
+    """A human says who an unidentified caller was.
 
+    This is the assertion caller ID cannot make. A recruiter picking a person
+    off the review queue has listened to the call or read the transcript, so the
+    number, the address and the name the caller gave all belong to that row --
+    which is why this is the one path that writes the calling number into
+    ``candidate_phones``, and therefore the one that makes the dial-in line
+    recognise them next time.
+
+    The address is still refused if somebody else owns it. That is not a
+    contradiction of the above: a recruiter can be sure who they were talking
+    to and still be about to staple the conversation to the wrong of two rows,
+    and ``merge_contact_details`` reports the clash rather than moving an
+    address between people. Same rule ``attribute_thread`` follows.
+    """
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.org_id != call.org_id:
         raise CallRequestError("That candidate is not in this workspace.")
     call.candidate_id = candidate.id
-    track(candidate)
+    merged = merge_contact_details(
+        db,
+        candidate,
+        name=call.contact_name,
+        email=call.contact_email,
+        phone=counterparty_number(call),
+    )
+    if merged.conflicts:
+        call.review_needed = True
+        call.review_reason = _join_reasons(
+            call.review_reason,
+            f"already owned by somebody else: {', '.join(merged.conflicts)}",
+        )
+    _track(db, candidate)
     for row in db.scalars(
         select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
     ):
@@ -487,11 +685,41 @@ def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> Intak
             review_reason=call.review_reason,
         )
         upsert_preference(db, call=call, result=result)
-    if call.review_reason == "caller not identified":
-        call.review_needed = False
-        call.review_reason = ""
+    _clear_identity_review(call)
     db.flush()
     return call
+
+
+# Every reason this function is allowed to retire. Attribution answers exactly
+# one question -- who was that -- so it may clear only the flags raised by not
+# knowing, and must leave a low-confidence bucket or a core-mode trim standing.
+_IDENTITY_REASONS = frozenset(
+    {
+        UNIDENTIFIED_REASON,
+        UNVERIFIED_NUMBER_REASON,
+        "caller gave a name but no email",
+        NOTHING_CAPTURED_REASON,
+    }
+)
+
+
+def _clear_identity_review(call: IntakeCall) -> None:
+    """Drop the identity reasons from the review note, keep the rest.
+
+    ``review_reason`` used to hold one string and this was an equality check.
+    It now holds joined segments -- a caller can be both unidentified and
+    low-confidence on timeline -- so an equality check silently stopped
+    clearing anything the moment a second reason appeared, and every attributed
+    call stayed on the review queue forever.
+    """
+    remaining = [
+        part
+        for part in (call.review_reason or "").split("; ")
+        if part and part not in _IDENTITY_REASONS
+    ]
+    call.review_reason = "; ".join(remaining)[:400]
+    if not remaining:
+        call.review_needed = False
 
 
 def confirm_preference(
@@ -509,15 +737,16 @@ def _known_for(db: Session, call: IntakeCall) -> str:
     A name we already had is not something the candidate said on this call, and
     counting it as covered would close the gate on a question nobody asked.
     """
+    number = counterparty_number(call)
     if not call.candidate_id:
-        return known_context(phone=call.from_number)
+        return known_context(phone=number)
     candidate = db.get(Candidate, call.candidate_id)
     if candidate is None:
-        return known_context(phone=call.from_number)
+        return known_context(phone=number)
     return known_context(
         name=candidate.full_name,
         email=candidate.primary_email or "",
-        phone=call.from_number,
+        phone=number,
     )
 
 
@@ -787,7 +1016,7 @@ def _find_or_create_candidate(
     if existing_id:
         candidate = db.get(Candidate, existing_id)
         if candidate is not None:
-            _merge_contact_details(db, candidate, phone=phone, email=email, name=name)
+            merge_contact_details(db, candidate, phone=phone, email=email, name=name)
             track(candidate)
             return candidate
 
@@ -801,7 +1030,7 @@ def _find_or_create_candidate(
         if owner is not None:
             candidate = db.get(Candidate, owner.candidate_id)
             if candidate is not None:
-                _merge_contact_details(db, candidate, phone=phone, email=address, name=name)
+                merge_contact_details(db, candidate, phone=phone, email=address, name=name)
                 track(candidate)
                 return candidate
 
@@ -824,24 +1053,6 @@ def _find_or_create_candidate(
     sync_candidate_phones(db, candidate)
     track(candidate)
     return candidate
-
-
-def _merge_contact_details(
-    db: Session, candidate: Candidate, *, phone: str, email: str, name: str
-) -> None:
-    """Add what the form told us without overwriting what we knew."""
-    changed = False
-    if phone and phone not in (candidate.phones or []):
-        candidate.phones = [*(candidate.phones or []), phone]
-        sync_candidate_phones(db, candidate)
-        changed = True
-    address = (email or "").strip().lower()
-    if address and address not in (candidate.emails or []):
-        candidate.emails = [*(candidate.emails or []), address]
-        sync_candidate_emails(db, candidate)
-        changed = True
-    if changed:
-        db.flush()
 
 
 def coverage_snapshot(

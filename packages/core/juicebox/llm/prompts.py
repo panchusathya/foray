@@ -764,6 +764,7 @@ Rules:
 - `declined` lists fields they were asked about and refused to answer. A refusal is an answer; it stops us asking again.
 - `low_confidence` lists fields where the transcript is ambiguous, garbled, or you are guessing. Be generous with it — a flagged field gets a human's attention, an unflagged wrong one reaches a client.
 - Never record age, race, religion, health, family or immigration status beyond a plain statement of work authorisation, even if the candidate volunteers it.
+- `contact_name` and `contact_email` are the caller's own name and email address, and ONLY if they said them on this call. These are how a recruiter finds the right person, so a wrong one is worse than none: leave either empty rather than guessing, never copy a name or address that belongs to somebody else they mentioned, and never write a placeholder like "unknown" or a sentence explaining that they did not say. An address spoken aloud ("priya dot raman at gmail dot com") should be written in normal form ("priya.raman@gmail.com").
 """
 
 _INTAKE_SPEC_SCHEMA: dict[str, Any] = {
@@ -845,9 +846,26 @@ INTAKE_EXTRACT_SCHEMA: dict[str, Any] = {
         "ok_to_share_verbatim",
         "declined",
         "low_confidence",
+        "contact_name",
+        "contact_email",
     ],
     "properties": {
         "spec": _INTAKE_SPEC_SCHEMA,
+        "contact_name": {
+            "type": "string",
+            "description": (
+                "The caller's own name, exactly as they gave it, or \"\" if they "
+                "did not. Never a placeholder and never a sentence."
+            ),
+        },
+        "contact_email": {
+            "type": "string",
+            "description": (
+                "The caller's own email address in normal form "
+                "(name@example.com), or \"\" if they did not give one. Convert a "
+                "spoken address; never invent a domain."
+            ),
+        },
         "employment_status": {
             "type": "string",
             "enum": [

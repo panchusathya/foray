@@ -8,6 +8,8 @@ the recruiter's window — list, inspect, transition, rebuild packages. A
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,10 +23,11 @@ from ..applications.service import (
 )
 from ..applications.state import TransitionError, transition
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
-from ..models import APPLICATION_STATUSES, Application, Candidate, JobPosting
+from ..models import APPLICATION_STATUSES, Application, Candidate, Event, JobPosting
 from ..schemas import (
     ApplicationCreate,
     ApplicationDetailOut,
+    ApplicationHistoryEntry,
     ApplicationOut,
     ApplicationPatch,
     ApplicationTransitionIn,
@@ -47,15 +50,66 @@ def _load(db: Session, application_id: str, org_id: str) -> Application:
     return application
 
 
-def _detail(db: Session, application: Application) -> ApplicationDetailOut:
+def _history(db: Session, application: Application) -> list[ApplicationHistoryEntry]:
+    """Replay this application's recorded moves, oldest first.
+
+    Every transition already writes ``application.status_changed``; reading it
+    back is cheaper and truer than a parallel table, which could disagree with
+    the row it describes.
+    """
+    rows = db.scalars(
+        select(Event)
+        .where(
+            Event.org_id == application.org_id,
+            Event.subject_type == "application",
+            Event.subject_id == application.id,
+            Event.type == "application.status_changed",
+        )
+        .order_by(Event.created_at.asc())
+    ).all()
+    entries = []
+    for row in rows:
+        payload = row.payload or {}
+        stated = payload.get("occurred_at")
+        entries.append(
+            ApplicationHistoryEntry(
+                at=row.created_at,
+                occurred_at=_parse_stamp(stated),
+                from_status=str(payload.get("from") or ""),
+                to_status=str(payload.get("to") or ""),
+                actor=str(payload.get("actor") or ""),
+                note=str(payload.get("reason") or ""),
+            )
+        )
+    return entries
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    """A hand-entered date that no longer parses is dropped, never fatal."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _detail(
+    db: Session, application: Application, *, with_history: bool = False
+) -> ApplicationDetailOut:
+    # History is off by default: the list route calls this per row, and one
+    # event query per application is a page of N+1 nobody reads.
     posting = db.get(JobPosting, application.job_posting_id)
     candidate = db.get(Candidate, application.candidate_id)
     documents = list(current_documents(db, application).values())
     out = ApplicationDetailOut.model_validate(application)
     out.company = posting.company if posting else ""
     out.title = posting.title if posting else ""
+    out.posting_url = posting.source_url if posting else ""
     out.candidate_name = candidate.full_name if candidate else ""
     out.documents = [CandidateDocumentOut.model_validate(doc) for doc in documents]
+    if with_history:
+        out.history = _history(db, application)
     return out
 
 
@@ -128,7 +182,7 @@ def get_application(
     db: Session = Depends(get_db),
     principal: Principal = Depends(get_principal),
 ) -> ApplicationDetailOut:
-    return _detail(db, _load(db, application_id, principal.org_id))
+    return _detail(db, _load(db, application_id, principal.org_id), with_history=True)
 
 
 @router.patch("/{application_id}", response_model=ApplicationOut)
@@ -170,6 +224,7 @@ def transition_application(
             actor="recruiter",
             actor_id=principal.user_id,
             reason=payload.reason,
+            occurred_at=payload.occurred_at,
         )
     except TransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

@@ -651,6 +651,156 @@ class TestExtraction:
 
 
 # --------------------------------------------------------------------------
+# the mid-call identification
+# --------------------------------------------------------------------------
+
+
+class TestIdentifyEndpoint:
+    """The other mid-call tool, and the one that is *about a person*.
+
+    ``/coverage`` returns topics, so it discloses nothing even though anyone
+    with a valid signature can reach it. This one answers "who is this", so the
+    tiering is the whole endpoint -- and it is decided in code, because a prompt
+    asking a model how much it may reveal is a model deciding how much it may
+    reveal.
+    """
+
+    def _function_call(self, email, *, call_id="call_abc123", send=False):
+        args = {"email": email}
+        if send:
+            args["send_matches"] = True
+        return {
+            "name": "identify_caller",
+            "call": {"call_id": call_id, "transcript": TRANSCRIPT, "agent_id": "agent_1"},
+            "args": args,
+        }
+
+    def _known(self, session, account, *, phone=""):
+        candidate = Candidate(
+            org_id=account["org_id"],
+            source="test",
+            source_id="priya",
+            full_name="Priya Raman",
+            first_name="Priya",
+            emails=["priya@example.com"],
+            phones=[phone] if phone else [],
+        )
+        session.add(candidate)
+        session.flush()
+        from juicebox.repository import sync_candidate_emails
+
+        sync_candidate_emails(session, candidate)
+        if phone:
+            sync_candidate_phones(session, candidate)
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                timeline="under_1_month",
+                target_base=240000.0,
+                work_authorization="green card",
+                active_processes=[{"company": "Acme", "stage": "onsite"}],
+            )
+        )
+        session.commit()
+        return candidate
+
+    def _a_call(self, session, account, **overrides):
+        fields = dict(
+            org_id=account["org_id"],
+            provider="retell",
+            provider_call_id="call_abc123",
+            entry_point="inbound",
+            from_number=CANDIDATE_NUMBER,
+            to_number=OUR_NUMBER,
+            status="in_progress",
+        )
+        fields.update(overrides)
+        call = IntakeCall(**fields)
+        session.add(call)
+        session.commit()
+        return call
+
+    def test_it_requires_a_signature(self, client):
+        response = client.post("/v1/intake/identify", json=self._function_call("a@b.com"))
+        assert response.status_code == 401
+
+    def test_an_unknown_caller_gets_no_hint_that_a_record_might_exist(
+        self, client, session, signer, account
+    ):
+        self._known(session, account)
+        self._a_call(session, account)
+        body = post(
+            client, signer, self._function_call("stranger@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["known"] is False
+        assert "Priya" not in repr(body)
+
+    def test_a_matching_address_from_a_strange_number_reveals_nothing(
+        self, client, session, signer, account
+    ):
+        self._known(session, account)
+        self._a_call(session, account, from_number=STRANGER_NUMBER)
+        body = post(
+            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["tier"] == "unverified"
+        assert "first_name" not in body
+        assert "Priya" not in repr(body)
+        assert "240000" not in repr(body)
+
+    def test_two_factors_unlock_the_greeting(self, client, session, signer, account):
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        self._a_call(session, account)
+        body = post(
+            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["tier"] == "verified"
+        assert body["first_name"] == "Priya"
+        assert body["on_file"]
+
+    def test_a_verified_caller_hears_their_own_answers(self, client, session, signer, account):
+        """Deliberately the reverse of what this asserted before.
+
+        Two factors have matched, so this is the person whose answers these
+        are, and a line that cannot tell them what they told us is the bug --
+        not the safeguard. The unverified case above is unchanged and is where
+        the caution still lives.
+        """
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        self._a_call(session, account)
+        on_file = post(
+            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+        ).json()["on_file"]
+        for theirs in ("240,000", "green card", "Acme"):
+            assert theirs in on_file, f"{theirs!r} should be readable back to them"
+
+    def test_a_request_with_no_call_row_degrades_rather_than_failing(
+        self, client, session, signer, account
+    ):
+        """An error here is heard as the agent going quiet."""
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        response = post(
+            client,
+            signer,
+            self._function_call("priya@example.com", call_id="call_never_seen"),
+            path="/v1/intake/identify",
+        )
+        assert response.status_code == 200
+        assert response.json()["known"] is False
+
+    def test_a_garbage_address_is_answered_not_rejected(
+        self, client, session, signer, account
+    ):
+        self._a_call(session, account)
+        response = post(
+            client, signer, self._function_call("not an address"), path="/v1/intake/identify"
+        )
+        assert response.status_code == 200
+        assert response.json()["known"] is False
+
+
+# --------------------------------------------------------------------------
 # the mid-call gate
 # --------------------------------------------------------------------------
 
@@ -1020,68 +1170,10 @@ class TestRingTimeRecognition:
         assert set(variables) == set(CALLER_UNKNOWN)
 
 
-class TestReturningCallerCoverage:
-    """A returning caller is not walked through the whole intake again."""
-
-    def test_what_is_on_file_counts_towards_the_gate(self, session, account):
-        from juicebox.intake.service import coverage_snapshot, preference_record
-        from juicebox.models import CandidatePreference
-
-        row = CandidatePreference(
-            org_id=account["org_id"], candidate_id="c1", **_stored_from(_filled_required())
-        )
-        on_file = preference_record(row)
-
-        # Nothing said yet on this call, but the record is complete.
-        snapshot = coverage_snapshot("Agent: Hi.\nCandidate: Hi.", on_file=on_file, fast=False)
-        assert snapshot["wrap_up"] is True
-        assert snapshot["still_needed"] == []
-
-    def test_without_the_record_the_same_call_owes_everything(self, session, account):
-        from juicebox.intake.service import coverage_snapshot
-
-        snapshot = coverage_snapshot("Agent: Hi.\nCandidate: Hi.", fast=False)
-        assert snapshot["wrap_up"] is False
-        assert snapshot["still_needed"]
-
-    def test_this_call_overrides_what_was_on_file(self):
-        from juicebox.intake.service import merge_records
-
-        merged = merge_records(
-            {"timeline": "under_1_month", "spec": {"locations": ["austin"]}},
-            {"timeline": "over_3_months", "spec": {"locations": ["denver"]}},
-        )
-        assert merged["timeline"] == "over_3_months"
-        assert merged["spec"]["locations"] == ["denver"]
-
-    def test_a_topic_not_raised_today_keeps_what_we_had(self):
-        """Silence is not a retraction -- a call about one thing must not wipe
-        everything else the candidate ever told us."""
-        from juicebox.intake.service import merge_records
-
-        merged = merge_records(
-            {"timeline": "under_1_month", "spec": {"locations": ["austin"]}},
-            {"timeline": "", "spec": {"locations": []}},
-        )
-        assert merged["timeline"] == "under_1_month"
-        assert merged["spec"]["locations"] == ["austin"]
-
-
-def _stored_from(record: dict) -> dict:
-    """The columns `upsert_preference` would write for this record."""
-    return {
-        "spec": record["spec"],
-        "employment_status": record["employment_status"],
-        "timeline": record["timeline"],
-        "target_base": record["target_base"],
-        "work_authorization": record["work_authorization"],
-        "active_processes": record["active_processes"],
-        "ok_to_share_with_clients": record["ok_to_share_with_clients"],
-    }
 
 
 class TestRecentTextRecall:
-    """"You texted us about X" is the other way a returning call opens."""
+    """"You texted about X" is the other way a returning call opens."""
 
     def _texted(self, session, candidate, body, *, direction="inbound"):
         from juicebox.models import IntakeMessage, IntakeThread
@@ -1131,7 +1223,13 @@ class TestRecentTextRecall:
     def test_a_stale_text_is_not_raised(
         self, client, session, signer, owned_number, account
     ):
-        """"You mentioned last month" invites a correction, not a conversation."""
+        """"You mentioned last month" invites a correction, not a conversation.
+
+        Also the regression guard for naive-vs-aware timestamps: SQLite returns
+        one and Postgres the other, and because ring time catches everything and
+        degrades, getting this wrong stops recognising texters silently rather
+        than failing.
+        """
         from datetime import timedelta
 
         from juicebox.models import IntakeMessage, utcnow

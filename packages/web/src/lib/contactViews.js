@@ -33,6 +33,9 @@ export const CONTACT_COLUMNS = {
   status: { label: 'Status', width: 120, sort: null },
   tags: { label: 'Tags', width: 160, sort: null },
   emails: { label: 'Email', width: 210, sort: null },
+  // Intake gave us numbers for people the CRM only had addresses for, and a
+  // number nobody can see is a number nobody rings.
+  phones: { label: 'Phone', width: 150, sort: null },
   created_at: { label: 'Added', width: 110, sort: 'created' },
   intake_timeline: { label: 'Timeline', width: 130, sort: null },
   intake_target_comp: { label: 'Target comp', width: 120, sort: null, numeric: true },
@@ -40,6 +43,12 @@ export const CONTACT_COLUMNS = {
   intake_confirmed: { label: 'Confirmed', width: 110, sort: null },
 };
 
+// No 'phones' column here on purpose. The default grid has a width budget --
+// `e2e/contacts-grid.spec.js` holds it under 1200px, which is the whole reason
+// the address moved into the name cell rather than keeping a column of its own
+// -- and a 150px phone column spends the entire remaining margin. The number
+// rides in the name cell instead, where a row with no address has a spare line
+// anyway. Views with fewer columns (Intake) can afford the real column.
 const DEFAULT_COLUMNS = [
   'full_name',
   'current_title',
@@ -143,6 +152,9 @@ export const CONTACT_VIEWS = [
     columns: [
       'full_name',
       'current_title',
+      // The intake views are where a phone matters most: these are people who
+      // rang or texted, and the number is how a recruiter follows up.
+      'phones',
       'intake_timeline',
       'intake_target_comp',
       'intake_match_count',

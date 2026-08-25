@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -37,7 +37,12 @@ from ..models import (
     utcnow,
 )
 from ..outreach.suppressions import is_suppressed
-from ..repository import sync_candidate_emails, sync_candidate_phones
+from ..repository import (
+    merge_contact_details,
+    owner_of_email,
+    sync_candidate_emails,
+    sync_candidate_phones,
+)
 from .extract import ExtractionResult, extract_intake, known_context
 from .phones import lookup_key
 from .providers import (
@@ -48,13 +53,12 @@ from .providers import (
     ProviderCallError,
     get_voice_provider,
 )
+from .records import EXTENSION_FIELDS, merge_record, record_from_preference
 from .schema import (
     FIELDS,
-    FIELDS_BY_KEY,
     SCHEMA_VERSION,
     coverage,
     deferred_required,
-    empty_record,
     is_filled,
     read_path,
 )
@@ -65,6 +69,29 @@ STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETED = "completed"
 STATUS_EXTRACTED = "extracted"
 STATUS_FAILED = "failed"
+
+# Written when a call ends with nobody to attach it to, and cleared by
+# ``attribute_call`` when a human says who it was. One constant so the writer
+# and the reader cannot drift into two different strings -- the same rule
+# ``messaging.identity.UNATTRIBUTED_REASON`` records.
+UNIDENTIFIED_REASON = "caller not identified"
+
+# The number is what the caller's *device* claims, and ANI is spoofable. So a
+# call matched to a person by the email they spoke is attributed -- the record
+# is theirs -- but the number is not written onto their row, because "somebody
+# who knows Priya's address called from this phone" is not "this is Priya's
+# phone", and a wrong row in ``candidate_phones`` points the dial-in line at
+# the wrong person's comp and pipeline. ``attribute_call`` is where a human
+# promotes it.
+# No "; " inside the text: ``_join_reasons`` uses it as the separator, so a
+# reason containing one splits into two segments and stops matching itself --
+# which is how the first version of this left every attributed call on the
+# review queue. ``test_no_reason_contains_the_separator`` pins it.
+UNVERIFIED_NUMBER_REASON = "caller matched by email, number not added"
+
+# An address arrived but the conversation captured nothing to attach to it.
+NOTHING_CAPTURED_REASON = "caller identified but nothing was captured"
+
 
 # How many questions the mid-call check hands back. One at a time keeps the
 # conversation a conversation; a list of six becomes an interrogation, and the
@@ -112,6 +139,17 @@ def find_call(db: Session, *, provider: str, provider_call_id: str) -> IntakeCal
             IntakeCall.provider_call_id == provider_call_id,
         )
     )
+
+
+def counterparty_number(call: IntakeCall) -> str:
+    """The number of the person on the other end, whichever way we dialled.
+
+    On an inbound call that is ``from_number``. On an outbound one ``from_number``
+    is *our* intake line, so reading it as the candidate's is how our own number
+    ends up in ``candidate_phones`` -- pointing the dial-in line's caller
+    lookup at whoever last had a row written.
+    """
+    return call.to_number if call.entry_point == "outbound" else call.from_number
 
 
 def resolve_candidate_id(db: Session, *, org_id: str, phone: str) -> str | None:
@@ -346,6 +384,9 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
     call.review_reason = result.review_reason[:400]
     call.status = STATUS_EXTRACTED
 
+    record_contact(call, result)
+    link_caller(db, call)
+
     if call.candidate_id:
         upsert_preference(db, call=call, result=result)
     else:
@@ -353,7 +394,7 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         # match engine until a human says who this was. Auto-creating a
         # Candidate from a cold inbound call would put strangers in the CRM.
         call.review_needed = True
-        call.review_reason = _join_reasons(call.review_reason, "caller not identified")
+        call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
     write_field_answers(db, call=call, result=result)
 
@@ -374,17 +415,159 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
     return result
 
 
+def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
+    """Latch the caller's stated name and address onto the call.
+
+    Latched, not assigned, for the reason ``consent_recording`` is: a replay
+    against a better prompt, or a second pass that reads the transcript less
+    well, must not blank an answer an earlier pass captured. There is nothing
+    else on the row that records the caller said it.
+    """
+    if result.contact_name and not call.contact_name:
+        call.contact_name = result.contact_name[:240]
+    if result.contact_email and not call.contact_email:
+        call.contact_email = result.contact_email[:255]
+
+
+def link_caller(db: Session, call: IntakeCall) -> str | None:
+    """Resolve an unattributed call to a candidate from what the caller said.
+
+    The inbound agent has always asked for a name and the email they use with
+    us. Until this existed the answer was transcribed and dropped, so every
+    caller whose number was not already in ``candidate_phones`` produced an
+    unattributed record -- a completed intake that the match engine could not
+    see, waiting on a human to retype an address that was in the transcript.
+
+    Three rules, in this order:
+
+    **An existing owner of the address always wins.** Splitting somebody's
+    history across two rows is worse than not creating one, which is the rule
+    ``messaging.identity.link_candidate`` already follows.
+
+    **An address is required to create anybody.** A name is not an identity --
+    there are four Priya Ramans -- and a row created from one is a duplicate
+    waiting to happen. This is the same bar the text channel sets, and the
+    reason it sets it: an address identifies a person on its own.
+
+    **Creating anybody at all needs a completed intake.** ``AGENTS.md`` records
+    that a cold inbound call must not put a stranger in the CRM, and the text
+    channel spends the same currency: requiring the gate to have closed makes a
+    junk row cost a whole intake rather than one sentence. A caller who is new
+    to us is asked to run the full intake anyway, so this is not a case the
+    product avoids -- it is the case it is built for.
+
+    Returns the candidate id, or None when the call stays unattributed.
+    """
+    if call.candidate_id:
+        return call.candidate_id
+
+    address = (call.contact_email or "").strip().lower()
+    name = (call.contact_name or "").strip()
+    if not address:
+        if name:
+            call.review_reason = _join_reasons(
+                call.review_reason, "caller gave a name but no email"
+            )
+        return None
+
+    owner = owner_of_email(db, org_id=call.org_id, email=address)
+    if owner is not None:
+        candidate = db.get(Candidate, owner)
+        if candidate is not None:
+            call.candidate_id = candidate.id
+            # No phone: see UNVERIFIED_NUMBER_REASON.
+            merge_contact_details(db, candidate, name=name)
+            call.review_needed = True
+            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
+            _track(db, candidate)
+            return candidate.id
+
+    if not coverage(call.extracted or {}).covered:
+        # They gave an address and nothing else. A wrong number that ends with
+        # "sorry -- oh, I'm Priya, priya@example.com" is not an intake, and a
+        # row created from it is a stranger in the CRM under a real address.
+        # Same guard ``attribute_thread`` applies before writing a preference,
+        # and deliberately NOT "the gate closed": the heuristic path can hardly
+        # ever close a gate, so that bar would read as "never" on an install
+        # with no API key -- exactly the install this stack is built to run on.
+        call.review_reason = _join_reasons(call.review_reason, NOTHING_CAPTURED_REASON)
+        return None
+
+    if is_suppressed(db, org_id=call.org_id, email=address):
+        # On the do-not-contact list under an address we had not linked to a
+        # row. Creating one now would put a person who asked to be left alone
+        # back into the CRM as a fresh contact.
+        call.review_reason = _join_reasons(
+            call.review_reason, "caller is on the do-not-contact list"
+        )
+        return None
+
+    number = counterparty_number(call)
+    first, last = split_name(name)
+    candidate = Candidate(
+        org_id=call.org_id,
+        source="intake-call",
+        # Unique per person under uq_candidate_source and stable, so a second
+        # call from the same person updates rather than duplicating. The address
+        # rather than the number, because the address is what identified them.
+        source_id=address,
+        full_name=name or address,
+        first_name=first,
+        last_name=last,
+        emails=[address],
+        # Safe here in a way it is not on the branch above: this row exists
+        # only because this caller described themselves, so the number that
+        # placed the call is theirs by construction rather than by assertion.
+        phones=[number] if number else [],
+    )
+    db.add(candidate)
+    db.flush()
+    sync_candidate_emails(db, candidate)
+    sync_candidate_phones(db, candidate)
+    call.candidate_id = candidate.id
+    _track(db, candidate)
+    record_event(
+        db,
+        org_id=call.org_id,
+        type="intake.caller_identified",
+        subject_type="intake_call",
+        subject_id=call.id,
+        payload={"candidate_id": candidate.id, "created": True},
+    )
+    return candidate.id
+
+
+def _track(db: Session, candidate: Candidate) -> None:
+    """Put an intake-linked person on the default Contacts grid."""
+    # Late import: crm -> outreach -> sequencer -> crm cycles at module load.
+    from ..crm import track
+
+    track(candidate)
+    db.flush()
+
+
 def upsert_preference(
     db: Session, *, call: IntakeCall, result: ExtractionResult
 ) -> CandidatePreference:
-    """Write the preference row, one per candidate.
+    """Merge this call's reading into the candidate's preference row.
 
-    Never clears a field that a human has confirmed: if ``confirmed_at`` is set,
-    a later machine reading of another call is recorded on the call and the row
-    is flagged rather than overwritten. A recruiter correcting a record and
-    watching a re-run undo it is how people stop trusting the system.
+    **A merge, not a write.** This assigned every column from the call's record
+    until now, which meant a call erased whatever another channel had captured
+    about the same person: somebody who texted their comp expectation and then
+    rang to mention an offer came out of the call with the comp blanked, because
+    a three-minute conversation about one thing does not re-state the other
+    thing. The text path had a monotonic merge from the start for the same
+    reason a thread needs one -- filled beats empty, newer beats older, and
+    ``declined`` accumulates -- and it is exactly the rule that makes this safe.
+    ``intake.records`` now owns it and both paths call it.
+
+    The confirmed-row rule is unchanged and is deliberately *not* the text
+    channel's rule. A thread is the candidate's own words, which outrank a
+    recruiter's transcription, so it writes and clears the confirmation. A call
+    is a machine reading of audio, so it defers: the record stays on the call
+    and the row is flagged. A recruiter correcting a record and watching a
+    re-run undo it is how people stop trusting the system.
     """
-    record = result.record
     state = result.coverage
     row = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == call.candidate_id)
@@ -392,6 +575,7 @@ def upsert_preference(
     if row is None:
         row = CandidatePreference(org_id=call.org_id, candidate_id=call.candidate_id)
         db.add(row)
+        merged = merge_record(None, result.record)
     elif row.confirmed_at is not None:
         row.review_needed = True
         row.review_reason = _join_reasons(
@@ -399,27 +583,20 @@ def upsert_preference(
         )
         db.flush()
         return row
+    else:
+        merged = merge_record(record_from_preference(row), result.record)
 
     row.source_call_id = call.id
-    row.spec = record.get("spec") or {}
-    row.schema_version = SCHEMA_VERSION
-    row.employment_status = record.get("employment_status") or ""
-    row.reason_for_looking = record.get("reason_for_looking") or ""
-    row.timeline = record.get("timeline") or ""
-    row.urgency_driver = record.get("urgency_driver") or ""
-    row.target_base = record.get("target_base")
-    row.target_total = record.get("target_total")
-    row.comp_currency = record.get("comp_currency") or ""
-    row.comp_flexibility_notes = record.get("comp_flexibility_notes") or ""
-    row.equity_importance = record.get("equity_importance") or ""
-    row.work_authorization = (record.get("work_authorization") or "")[:120]
-    row.willing_to_relocate = record.get("willing_to_relocate")
-    row.active_processes = record.get("active_processes") or []
-    row.offers_in_hand = record.get("offers_in_hand") or []
-    row.highlights = record.get("highlights") or []
-    row.confidential_items = record.get("confidential_items") or []
-    row.ok_to_share_with_clients = record.get("ok_to_share_with_clients")
-    row.declined = record.get("declined") or []
+    # Exactly one provenance link is set. The *content* still merges, so
+    # somebody who texted and later called keeps both halves -- this only
+    # records which conversation last wrote the row.
+    row.source_thread_id = None
+    row.spec = merged["spec"]
+    row.schema_version = merged.get("schema_version") or SCHEMA_VERSION
+    for name in EXTENSION_FIELDS:
+        setattr(row, name, merged[name])
+    row.work_authorization = (merged.get("work_authorization") or "")[:120]
+    row.declined = merged["declined"]
     row.low_confidence = list(result.low_confidence)
     row.fields_missing = list(state.required_missing)
     row.review_needed = result.review_needed
@@ -439,9 +616,16 @@ def _enqueue_preference_match(
     candidate = db.get(Candidate, call.candidate_id)
     if candidate is None:
         return
+    from ..jobmatch.discover_candidate import enqueue_discovery_for_candidate
     from ..jobmatch.engine import enqueue_match_for_candidate
 
     enqueue_match_for_candidate(db, candidate, preference=preference)
+    # And go looking for postings that do not exist yet, exactly as the thread
+    # path does. Scoring against the book we happen to hold is half the job:
+    # AGENTS.md records that these two writers diverge silently because they
+    # never conflict textually, and this was one of the divergences -- a caller
+    # got matched against today's postings and a texter got a search.
+    enqueue_discovery_for_candidate(db, candidate=candidate, preference=preference)
 
 
 def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResult) -> None:
@@ -482,14 +666,39 @@ def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResu
 
 
 def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> IntakeCall:
-    """A human says who an unidentified caller was."""
-    from ..crm import track
+    """A human says who an unidentified caller was.
 
+    This is the assertion caller ID cannot make. A recruiter picking a person
+    off the review queue has listened to the call or read the transcript, so the
+    number, the address and the name the caller gave all belong to that row --
+    which is why this is the one path that writes the calling number into
+    ``candidate_phones``, and therefore the one that makes the dial-in line
+    recognise them next time.
+
+    The address is still refused if somebody else owns it. That is not a
+    contradiction of the above: a recruiter can be sure who they were talking
+    to and still be about to staple the conversation to the wrong of two rows,
+    and ``merge_contact_details`` reports the clash rather than moving an
+    address between people. Same rule ``attribute_thread`` follows.
+    """
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.org_id != call.org_id:
         raise CallRequestError("That candidate is not in this workspace.")
     call.candidate_id = candidate.id
-    track(candidate)
+    merged = merge_contact_details(
+        db,
+        candidate,
+        name=call.contact_name,
+        email=call.contact_email,
+        phone=counterparty_number(call),
+    )
+    if merged.conflicts:
+        call.review_needed = True
+        call.review_reason = _join_reasons(
+            call.review_reason,
+            f"already owned by somebody else: {', '.join(merged.conflicts)}",
+        )
+    _track(db, candidate)
     for row in db.scalars(
         select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
     ):
@@ -506,11 +715,41 @@ def attribute_call(db: Session, *, call: IntakeCall, candidate_id: str) -> Intak
             review_reason=call.review_reason,
         )
         upsert_preference(db, call=call, result=result)
-    if call.review_reason == "caller not identified":
-        call.review_needed = False
-        call.review_reason = ""
+    _clear_identity_review(call)
     db.flush()
     return call
+
+
+# Every reason this function is allowed to retire. Attribution answers exactly
+# one question -- who was that -- so it may clear only the flags raised by not
+# knowing, and must leave a low-confidence bucket or a core-mode trim standing.
+_IDENTITY_REASONS = frozenset(
+    {
+        UNIDENTIFIED_REASON,
+        UNVERIFIED_NUMBER_REASON,
+        "caller gave a name but no email",
+        NOTHING_CAPTURED_REASON,
+    }
+)
+
+
+def _clear_identity_review(call: IntakeCall) -> None:
+    """Drop the identity reasons from the review note, keep the rest.
+
+    ``review_reason`` used to hold one string and this was an equality check.
+    It now holds joined segments -- a caller can be both unidentified and
+    low-confidence on timeline -- so an equality check silently stopped
+    clearing anything the moment a second reason appeared, and every attributed
+    call stayed on the review queue forever.
+    """
+    remaining = [
+        part
+        for part in (call.review_reason or "").split("; ")
+        if part and part not in _IDENTITY_REASONS
+    ]
+    call.review_reason = "; ".join(remaining)[:400]
+    if not remaining:
+        call.review_needed = False
 
 
 def confirm_preference(
@@ -522,22 +761,56 @@ def confirm_preference(
     return preference
 
 
-def _known_for(db: Session, call: IntakeCall) -> str:
+def known_for_call(db: Session, call: IntakeCall | None) -> str:
     """Pre-call facts, so the extractor does not bank them as call answers.
 
     A name we already had is not something the candidate said on this call, and
     counting it as covered would close the gate on a question nobody asked.
+
+    Note the asymmetry with ``prior_preference_record``, which deliberately
+    *does* seed the gate: identity is something the agent may still have to ask
+    for, because it cannot verify who is on the phone, while a stated preference
+    is something we genuinely already know and re-asking wastes the call.
     """
+    if call is None:
+        return ""
+    number = counterparty_number(call)
     if not call.candidate_id:
-        return known_context(phone=call.from_number)
+        return known_context(phone=number)
     candidate = db.get(Candidate, call.candidate_id)
     if candidate is None:
-        return known_context(phone=call.from_number)
+        return known_context(phone=number)
     return known_context(
         name=candidate.full_name,
         email=candidate.primary_email or "",
-        phone=call.from_number,
+        phone=number,
     )
+
+
+# Kept as a private alias: ``extract_call`` has always called it by this name.
+_known_for = known_for_call
+
+
+def prior_preference_record(db: Session, candidate_id: str | None) -> dict[str, Any] | None:
+    """What we already know about this person, in record shape, or None.
+
+    This is what stops a returning candidate being re-interviewed. Somebody who
+    answered eleven questions by text last week and rings to say an offer came
+    in was being asked the eleven again, because the gate is computed from this
+    call's transcript and nothing else -- so a two-minute update call ran to the
+    fifteen-minute ceiling asking things we could already answer.
+
+    Only ever used to *seed the gate*. It is not written to ``call.extracted``:
+    the call record is evidence about this conversation, and folding in things
+    the caller never said would make a transcript and a record disagree. The
+    merge in ``upsert_preference`` is what keeps both halves afterwards.
+    """
+    if not candidate_id:
+        return None
+    row = db.scalar(
+        select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
+    )
+    return record_from_preference(row) if row is not None else None
 
 
 def _join_reasons(existing: str, addition: str) -> str:
@@ -619,7 +892,12 @@ def inbound_call_context(db: Session, *, org_id: str, phone: str) -> dict[str, s
         "caller_first_name": (candidate.first_name or "").strip(),
         "caller_since": _last_contact_phrase(db, org_id=org_id, candidate_id=candidate_id),
         "caller_recent_text": _recent_text_phrase(db, org_id=org_id, candidate_id=candidate_id),
-        "caller_on_file": _on_file_summary(preference),
+        # `record_from_preference` takes a row, not an optional one -- a caller
+        # in the CRM who has never been interviewed has no preference row, and
+        # is still someone we greet by name with nothing to read back.
+        "caller_on_file": (
+            _on_file_summary(record_from_preference(preference)) if preference else ""
+        ),
         "caller_open_topics": _open_topics(preference),
     }
 
@@ -684,33 +962,42 @@ def _recent_text_phrase(db: Session, *, org_id: str, candidate_id: str) -> str:
     return " ".join((message.body or "").split())[:300]
 
 
-def _on_file_summary(preference: CandidatePreference | None) -> str:
+def _on_file_summary(record: dict[str, Any] | None) -> str:
     """Everything they told us, in their own terms, ready to be read back.
 
-    Composed as plain lines rather than handed over as JSON: the agent reads
-    this aloud, and a model given ``{"target_base": 210000}`` will say "two one
-    zero zero zero zero" often enough to matter.
+    Takes a record rather than the row so both paths that recognise a caller --
+    ring time by caller ID, and ``identify_caller`` by address plus number --
+    hand the agent the identical text. A caller who is recognised should hear
+    the same thing regardless of which route got there.
 
-    ``confidential_items`` is included, and the prompt is what governs it. This
-    is the candidate's own line and their own words -- refusing to repeat back
-    what they themselves asked us to hold quiet is the bug being fixed here, not
-    a protection. What the field still governs is the *client*-facing view, and
+    Composed as labelled lines rather than JSON because the agent reads this
+    aloud, and a model given ``{"target_base": 210000}`` will say "two one zero
+    zero zero zero" often enough to matter.
+
+    ``confidential_items`` is included, and the prompt governs it. This is the
+    candidate's own line and their own words -- refusing to repeat back what
+    they themselves asked us to hold quiet is the bug being fixed here, not a
+    protection. What the field still governs is the *client*-facing view, and
     nothing in this path writes one.
     """
-    if preference is None:
+    if not record:
         return ""
-    spec = preference.spec if isinstance(preference.spec, dict) else {}
+    spec = record.get("spec") if isinstance(record.get("spec"), dict) else {}
 
     def listed(value: Any) -> str:
+        if isinstance(value, bool):
+            return "yes" if value else "no"
         if isinstance(value, list):
-            return ", ".join(str(v).strip() for v in value if str(v).strip())
+            return ", ".join(_flatten(v) for v in value if _flatten(v))
         return str(value or "").strip()
 
+    def worded(value: Any) -> str:
+        return str(value or "").replace("_", " ").strip()
+
+    base, total = record.get("target_base"), record.get("target_total")
     money = ""
-    if preference.target_base or preference.target_total:
-        amount = preference.target_base or preference.target_total
-        label = "base" if preference.target_base else "total comp"
-        money = f"{int(amount):,} {label}".replace(",", ",")
+    if base or total:
+        money = f"{int(base or total):,} {'base' if base else 'total comp'}"
 
     lines = [
         ("roles", listed(spec.get("job_titles"))),
@@ -720,19 +1007,19 @@ def _on_file_summary(preference: CandidatePreference | None) -> str:
         ("must-haves", listed(spec.get("must_have_skills"))),
         ("industries", listed(spec.get("industries"))),
         ("company stage", listed(spec.get("company_stages"))),
-        ("situation", preference.employment_status.replace("_", " ")),
-        ("why looking", preference.reason_for_looking),
-        ("timeline", preference.timeline.replace("_", " ")),
-        ("what is driving it", preference.urgency_driver),
+        ("situation", worded(record.get("employment_status"))),
+        ("why looking", listed(record.get("reason_for_looking"))),
+        ("timeline", worded(record.get("timeline"))),
+        ("what is driving it", listed(record.get("urgency_driver"))),
         ("targeting", money),
-        ("on comp flexibility", preference.comp_flexibility_notes),
-        ("equity", preference.equity_importance),
-        ("work authorisation", preference.work_authorization),
-        ("in process with", listed(preference.active_processes)),
-        ("offers in hand", listed(preference.offers_in_hand)),
-        ("highlights they gave", listed(preference.highlights)),
-        ("asked us to keep quiet", listed(preference.confidential_items)),
-        ("declined to answer", listed(preference.declined)),
+        ("on comp flexibility", listed(record.get("comp_flexibility_notes"))),
+        ("equity", worded(record.get("equity_importance"))),
+        ("work authorisation", listed(record.get("work_authorization"))),
+        ("in process with", listed(record.get("active_processes"))),
+        ("offers in hand", listed(record.get("offers_in_hand"))),
+        ("highlights they gave", listed(record.get("highlights"))),
+        ("asked us to keep quiet", listed(record.get("confidential_items"))),
+        ("declined to answer", listed(record.get("declined"))),
     ]
     text = "\n".join(f"{label}: {value}" for label, value in lines if value)
     if len(text) <= _ON_FILE_LIMIT:
@@ -748,72 +1035,16 @@ def _on_file_summary(preference: CandidatePreference | None) -> str:
     return "\n".join(kept)
 
 
-def preference_record(preference: CandidatePreference | None) -> dict[str, Any]:
-    """The stored preference back in ``schema`` record shape.
+def _flatten(value: Any) -> str:
+    """One list entry as a spoken phrase.
 
-    The inverse of what ``upsert_preference`` writes, and it exists so the
-    coverage gate can count what a returning caller already told us. Without it
-    the gate reads only this call's transcript, decides a candidate of two years'
-    standing has answered nothing, and marches them back through the entire
-    intake -- which is the same "we don't know you" failure as the prompt's, one
-    layer down and much harder to spot, because the agent is only doing what the
-    tool told it.
-
-    Note this is deliberately *not* how the extractor's ``known`` block works.
-    That one exists to stop pre-call facts being recorded as things said on this
-    call, and it must keep doing exactly that: the two mechanisms answer
-    different questions -- "what did they say today?" versus "what do we still
-    need to ask?" -- and conflating them is what would let a name we imported
-    close the gate on a question nobody asked.
+    ``active_processes`` and ``offers_in_hand`` hold dicts ({"company": ...,
+    "stage": ...}), and str() on those reads the braces and quotes out loud.
     """
-    record = empty_record()
-    if preference is None:
-        return record
-    spec = preference.spec if isinstance(preference.spec, dict) else {}
-    record["spec"] = {**record["spec"], **spec}
-    record.update(
-        {
-            "employment_status": preference.employment_status or "",
-            "reason_for_looking": preference.reason_for_looking or "",
-            "timeline": preference.timeline or "",
-            "urgency_driver": preference.urgency_driver or "",
-            "target_base": preference.target_base,
-            "target_total": preference.target_total,
-            "comp_currency": preference.comp_currency or "",
-            "comp_flexibility_notes": preference.comp_flexibility_notes or "",
-            "equity_importance": preference.equity_importance or "",
-            "work_authorization": preference.work_authorization or "",
-            "willing_to_relocate": preference.willing_to_relocate,
-            "active_processes": list(preference.active_processes or []),
-            "offers_in_hand": list(preference.offers_in_hand or []),
-            "highlights": list(preference.highlights or []),
-            "confidential_items": list(preference.confidential_items or []),
-            "ok_to_share_with_clients": preference.ok_to_share_with_clients,
-            "declined": list(preference.declined or []),
-        }
-    )
-    return record
-
-
-def merge_records(on_file: dict[str, Any], said: dict[str, Any]) -> dict[str, Any]:
-    """``said`` wins wherever it actually says something.
-
-    A candidate ringing to change their mind must be able to. So an answer given
-    on this call overwrites the stored one, and a blank one does not -- a
-    question that never came up today leaves what we had standing rather than
-    erasing it.
-    """
-    merged = {**on_file}
-    for key, value in said.items():
-        if key == "spec":
-            spec = dict(on_file.get("spec") or {})
-            for spec_key, spec_value in (value or {}).items():
-                if is_filled(spec_value):
-                    spec[spec_key] = spec_value
-            merged["spec"] = spec
-        elif is_filled(value):
-            merged[key] = value
-    return merged
+    if isinstance(value, dict):
+        parts = [str(v).strip() for v in value.values() if str(v or "").strip()]
+        return " -- ".join(parts)
+    return str(value or "").strip()
 
 
 def _open_topics(preference: CandidatePreference | None) -> str:
@@ -827,6 +1058,8 @@ def _open_topics(preference: CandidatePreference | None) -> str:
         return ""
     missing = [key for key in (preference.fields_missing or []) if isinstance(key, str)]
     declined = {key for key in (preference.declined or []) if isinstance(key, str)}
+    from .schema import FIELDS_BY_KEY
+
     asks = [
         FIELDS_BY_KEY[key].asks
         for key in missing
@@ -957,6 +1190,233 @@ def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None
         "already_covered": covered_count,
         "progress_line": "" if complete else progress_line(outstanding),
         "guidance": _wrap_up_guidance() if complete else _NEEDED_GUIDANCE,
+    }
+
+
+# --------------------------------------------------------------------------
+# mid-call identification
+# --------------------------------------------------------------------------
+
+# Disclosure tiers, most restrictive first. The name is what the agent gets told
+# it may do, so the tier is the answer rather than a thing the model works out.
+TIER_UNKNOWN = "unknown"
+TIER_UNVERIFIED = "unverified"
+TIER_VERIFIED = "verified"
+
+_IDENTIFY_UNKNOWN = (
+    "Nobody matches that address. Say a recruiter will follow up, and if they "
+    "are new, run the full intake -- ask how much time they have and pass it "
+    "as minutes_available."
+)
+
+# The rule AGENTS.md records: caller ID authorises accepting an update, never
+# disclosing one. ANI is spoofable, so an address that matches a record proves
+# only that the caller knows the address -- which is exactly what somebody
+# phoning about a person they know would also know. Nothing goes back, not even
+# a first name: "am I speaking to Priya?" confirms a person is in our CRM, and
+# on a recruiting line that is itself a disclosure -- it tells a caller that a
+# named individual is job-hunting.
+_IDENTIFY_UNVERIFIED = (
+    "Do not read anything back to them -- not their name, not their record, "
+    "not whether we have one. You cannot confirm who is on the phone. Take "
+    "whatever they want to tell you, say a recruiter will confirm the details "
+    "with them directly, and carry on."
+)
+
+_IDENTIFY_VERIFIED = (
+    "This is them: the address matches the record and the call came from a "
+    "number already on it. Greet them by first name and ask what has changed. "
+    "on_file is their own record in their own words -- if they ask what they "
+    "told you, or what you have, read it back plainly: the figure, the "
+    "company, the date. Do not volunteer anything under 'asked us to keep "
+    "quiet'; it is theirs to raise. on_file says nothing about client "
+    "feedback or where a submission stands, so for those say a recruiter will "
+    "follow up."
+)
+
+_IDENTIFY_OFFER_MATCHES = (
+    " There are roles on file worth sending them. Offer, in these words: "
+    '"I can text you the ones I have -- want me to?" Never say how many, '
+    "never name a company, and never suggest they are a fit -- if they say "
+    "yes, call this tool again with send_matches true and confirm it is on "
+    "its way."
+)
+
+_IDENTIFY_SENT = (
+    " The roles are on their way by text. Say so, and do not describe them."
+)
+
+# What a verified caller may hear *about*, as opposed to hear. A topic says we
+# hold something so the agent can ask whether it changed; a value would be the
+# thing ANI cannot authorise. Comp, work authorisation, live processes and
+# offers are deliberately absent even at the verified tier: two factors are
+# better than one and still not good enough to read somebody's salary or
+# interview pipeline down a phone line, and the first live call already showed
+# the agent being asked to do exactly that.
+_SPEAKABLE_TOPICS: tuple[tuple[str, str], ...] = (
+    ("spec.job_titles", "the kind of role you are going after"),
+    ("spec.locations", "where you want to work"),
+    ("timeline", "your timing"),
+    ("employment_status", "your current situation"),
+    ("spec.must_have_skills", "the work you want to be doing"),
+)
+
+
+def _speakable(record: dict[str, Any]) -> list[str]:
+    """Topic lines for a caller we could not verify by number.
+
+    Topics, never values: this is the tier where somebody knew an email address
+    and nothing more, so the most it can confirm is which subjects were
+    discussed. It is what the *unverified* path would say if it said anything,
+    kept as the conservative shape for a caller who reached us from a number we
+    do not hold.
+    """
+    return [
+        label for path, label in _SPEAKABLE_TOPICS if is_filled(read_path(record, path))
+    ]
+
+
+def _match_count(db: Session, *, org_id: str, candidate_id: str) -> int:
+    from ..models import JobMatch
+
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(JobMatch)
+            .where(
+                JobMatch.org_id == org_id,
+                JobMatch.candidate_id == candidate_id,
+                JobMatch.status != "dismissed",
+            )
+        )
+        or 0
+    )
+
+
+def identify_caller(
+    db: Session,
+    *,
+    call: IntakeCall | None,
+    email: str,
+    send_matches: bool = False,
+) -> dict[str, Any]:
+    """Look a caller up mid-call, and decide how much may be said back.
+
+    The inbound line's most common caller is somebody we already know, ringing
+    to say something changed. Until now the agent had no way to find them, so
+    it opened every such call by asking for a name and an email and then could
+    do nothing with either -- and the caller heard a company that does not
+    recognise them.
+
+    Disclosure is tiered **in code**, not in the prompt, because a prompt asking
+    a model to decide how much it may reveal is a model deciding how much it may
+    reveal. Three tiers:
+
+    ``unknown``
+        No record. Nothing to disclose, and nothing implied about whether one
+        exists.
+
+    ``unverified``
+        The address matches a record, but the call did not come from a number on
+        it. **Nothing goes back at all** -- not a first name, not the fact that
+        a record exists. Knowing somebody's email address is not evidence of
+        being them, and on a recruiting line confirming that a named person is
+        in our CRM tells the caller that person is job-hunting. The update is
+        still accepted: ``AGENTS.md`` -- caller ID authorises accepting one,
+        never disclosing one.
+
+    ``verified``
+        The address matches *and* the call came from a number already on the
+        row. Two independent factors: something they have and something they
+        know, which is the bar ``AGENTS.md`` sets for reading state back. Even
+        then only *topics* go back, never values -- see ``_SPEAKABLE_TOPICS``.
+
+    ``send_matches`` is the second use of the same tool: the caller said yes to
+    the offer, so queue the text. Verified callers only, and it goes out through
+    ``messaging.notify``, so every gate that protects an unprompted text still
+    applies -- consent, quiet hours, suppression, the nudge budget.
+    """
+    address = (email or "").strip().lower()
+    org_id = call.org_id if call is not None else ""
+    if not (address and org_id):
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    owner = owner_of_email(db, org_id=org_id, email=address)
+    if owner is None:
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    candidate = db.get(Candidate, owner)
+    if candidate is None:
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    # Latch what they said, whatever tier this lands in: the address is how a
+    # recruiter finds them afterwards, and it is the one thing an unverified
+    # call still gets to contribute.
+    if not call.contact_email:
+        call.contact_email = address[:255]
+
+    number_on_file = resolve_candidate_id(
+        db, org_id=org_id, phone=counterparty_number(call)
+    ) == candidate.id
+    if not number_on_file:
+        # The record is theirs to the extent we can tell, so the call is
+        # attributed -- but the number is not written onto the row, and the
+        # review note says why.
+        if not call.candidate_id:
+            call.candidate_id = candidate.id
+            call.review_needed = True
+            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
+            db.flush()
+        return {
+            "tier": TIER_UNVERIFIED,
+            "known": True,
+            "guidance": _IDENTIFY_UNVERIFIED,
+        }
+
+    record = prior_preference_record(db, candidate.id) or {}
+    sent = False
+    can_text = False
+    if _match_count(db, org_id=org_id, candidate_id=candidate.id):
+        from ..messaging.notify import EVENT_MATCHES_READY, manager_thread_for, notify_candidate
+
+        # Only offerable if there is somewhere to send it. A candidate with no
+        # standing text line has not consented to one, and bootstrapping a
+        # thread from a phone call is a TCPA question, not a plumbing one.
+        can_text = manager_thread_for(db, org_id=org_id, candidate_id=candidate.id) is not None
+        if can_text and send_matches:
+            sent = (
+                notify_candidate(
+                    db,
+                    org_id=org_id,
+                    candidate_id=candidate.id,
+                    event=EVENT_MATCHES_READY,
+                    subject_id=call.id,
+                )
+                is not None
+            )
+
+    guidance = _IDENTIFY_VERIFIED
+    if sent:
+        guidance += _IDENTIFY_SENT
+    elif can_text:
+        guidance += _IDENTIFY_OFFER_MATCHES
+
+    return {
+        "tier": TIER_VERIFIED,
+        "known": True,
+        "first_name": candidate.first_name or "",
+        # Values, not topics. Two independent factors have matched -- an address
+        # they knew and a number they called from -- so this is the person whose
+        # answers these are, and declining to repeat them back is the failure,
+        # not the safeguard. Same summary the ring-time path hands over, so a
+        # caller hears the same thing whichever route recognised them.
+        "on_file": _on_file_summary(record),
+        # Deliberately a boolean, not a count. ``AGENTS.md`` forbids the agent
+        # quoting a number of roles, because a candidate hears a number as a
+        # promise -- and that rule does not stop applying just because the
+        # number would be true.
+        "roles_to_send": can_text and not sent,
+        "guidance": guidance,
     }
 
 
@@ -1096,7 +1556,7 @@ def _find_or_create_candidate(
     if existing_id:
         candidate = db.get(Candidate, existing_id)
         if candidate is not None:
-            _merge_contact_details(db, candidate, phone=phone, email=email, name=name)
+            merge_contact_details(db, candidate, phone=phone, email=email, name=name)
             track(candidate)
             return candidate
 
@@ -1110,7 +1570,7 @@ def _find_or_create_candidate(
         if owner is not None:
             candidate = db.get(Candidate, owner.candidate_id)
             if candidate is not None:
-                _merge_contact_details(db, candidate, phone=phone, email=address, name=name)
+                merge_contact_details(db, candidate, phone=phone, email=address, name=name)
                 track(candidate)
                 return candidate
 
@@ -1135,24 +1595,6 @@ def _find_or_create_candidate(
     return candidate
 
 
-def _merge_contact_details(
-    db: Session, candidate: Candidate, *, phone: str, email: str, name: str
-) -> None:
-    """Add what the form told us without overwriting what we knew."""
-    changed = False
-    if phone and phone not in (candidate.phones or []):
-        candidate.phones = [*(candidate.phones or []), phone]
-        sync_candidate_phones(db, candidate)
-        changed = True
-    address = (email or "").strip().lower()
-    if address and address not in (candidate.emails or []):
-        candidate.emails = [*(candidate.emails or []), address]
-        sync_candidate_emails(db, candidate)
-        changed = True
-    if changed:
-        db.flush()
-
-
 def coverage_snapshot(
     transcript: str,
     *,
@@ -1160,7 +1602,7 @@ def coverage_snapshot(
     fast: bool = True,
     minutes_available: int | None = None,
     call: IntakeCall | None = None,
-    on_file: dict[str, Any] | None = None,
+    prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What the agent still owes us, computed from what has actually been said.
 
@@ -1168,32 +1610,42 @@ def coverage_snapshot(
     three minutes without the model having to guess how long it has been
     talking, and keeps an evasive one going without a timer forcing it shut.
 
-    ``on_file`` is a returning caller's stored record. Given one, the gate is
-    computed over it merged with this call, so a candidate who told us their
-    target comp last month is not asked for it again -- the second call covers
-    what changed, not the whole form. Extraction still runs on the transcript
-    alone, so what gets *written* is only what was said today.
+    ``prior`` is what other channels already captured about this person (see
+    ``prior_preference_record``). It is merged *under* this call's reading, so
+    the transcript always wins where the two disagree -- "actually, make that
+    260" said on the phone overrides 240 from a text thread -- and a returning
+    candidate is only asked about genuine gaps. A caller whose record was
+    already complete can therefore be told to wrap up on the very first check,
+    which is correct: the inbound line's job for a returning candidate is "what
+    has changed", not a re-interview.
     """
     if call is not None:
         apply_budget(call, minutes_available)
         minutes_available = call.minutes_available
     core_only = core_only_for(minutes_available)
     result = extract_intake(transcript, known=known, fast=fast)
-    # Gate on the merge, deferrals on the merge: both answer "what is still
-    # missing for this person", and neither is a claim about this transcript.
-    against = merge_records(on_file, result.record) if on_file else result.record
-    state = coverage(against, core_only=core_only)
+    # Merged for the *gate* only. Never written to call.extracted: that record
+    # is evidence about this conversation.
+    seeded = merge_record(prior, result.record) if prior else result.record
+    state = coverage(seeded, core_only=core_only)
     if call is not None and core_only and state.required_complete:
-        skipped = list(deferred_required(against))
+        skipped = list(deferred_required(seeded))
         call.deferred_fields = skipped
         if skipped:
             call.review_needed = True
             call.review_reason = _join_reasons(
-                call.review_reason, "core-mode trim; deferred fields unasked"
+                call.review_reason, "core-mode trim, deferred fields unasked"
             )
-    return _snapshot(state, covered_count=len(state.covered), record=against)
+    return _snapshot(state, covered_count=len(state.covered), record=seeded)
 
 
-def empty_coverage() -> dict[str, Any]:
-    """Snapshot for a call with nothing said yet, without a model round trip."""
-    return _snapshot(coverage({}), covered_count=0)
+def empty_coverage(prior: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Snapshot for a call with nothing said yet, without a model round trip.
+
+    Still seeded: the first ``check_coverage`` of a returning candidate's call
+    often arrives before they have said anything substantive, and answering it
+    with the full eleven questions is what sends a two-minute update call down
+    the whole interview again.
+    """
+    state = coverage(prior or {})
+    return _snapshot(state, covered_count=len(state.covered), record=prior)

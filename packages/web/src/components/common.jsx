@@ -78,6 +78,22 @@ export function Stat({ value, label }) {
   );
 }
 
+/**
+ * A Stat that opens the list it counts.
+ *
+ * Same markup as Stat so the two never drift apart visually -- a number you
+ * can click and one you cannot should not look like different components,
+ * they should look like the same tile with a cursor.
+ */
+export function StatLink({ value, label, to }) {
+  return (
+    <Link className="card stat is-link" to={to} data-testid="stat-link">
+      <div className="value">{value}</div>
+      <div className="label">{label}</div>
+    </Link>
+  );
+}
+
 export function Badge({ tone = '', children }) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }

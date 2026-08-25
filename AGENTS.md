@@ -259,6 +259,132 @@ imported into it (+1 628 386-5454). Plan and phasing live in
   `manual_fields` across twenty more columns makes an already subtle mechanism
   carry weight it was not built for.
 
+### Who called (`intake/contact.py`, `service.link_caller`)
+
+- **The inbound agent asked for a name and an email long before anything
+  stored them.** Step 3 of the inbound prompt has always been "ask for their
+  name and the email they use with Foray, so a recruiter can find them"; the
+  answer was transcribed and dropped. Every caller whose number was not already
+  in `candidate_phones` therefore produced a completed intake with no person
+  attached, waiting on a human to retype an address that was in the transcript.
+  `IntakeCall.contact_name` / `contact_email` are that answer.
+- **Identity is not a preference, on either channel.** These live beside the
+  record, never inside it -- same rule `IntakeThread.contact_name` follows, same
+  reason: `spec` is `ParsedQuery`'s vocabulary and a name has no counterpart on
+  the job side. They are also outside `coverage()`: a caller who will not give a
+  name has still completed an intake, and gating the wrap-up on identity would
+  keep a finished call alive over a field the matcher never reads.
+- **An address identifies somebody; a number does not.** An address the caller
+  spoke may attribute the record to its owner. It may **not** write the calling
+  number onto that person's row -- "somebody who knows Priya's address called
+  from this phone" is not "this is Priya's phone", and a wrong row in
+  `candidate_phones` reads that person's comp and pipeline to whoever dialled.
+  The email-matched path leaves `UNVERIFIED_NUMBER_REASON` on the call, and
+  `attribute_call` -- a human who has read the transcript -- is the only path
+  that promotes the number.
+- **A name is not an identity and creates nobody.** There are four Priya
+  Ramans. Text sets the same bar for the same reason.
+- **Creating anybody needs the call to have captured something**, not a closed
+  gate. `coverage(...).covered` is the guard `attribute_thread` already uses.
+  The gate was the first version and it was wrong: the heuristic path can hardly
+  ever close one, so on an install with no `ANTHROPIC_API_KEY` -- the install
+  this stack is built to run on -- it read as "never create anybody".
+- **`_LEAD_INS` is why a spoken address is read correctly or not at all.** Three
+  independent rules keep the decoder honest and each is a real failure: the last
+  token must be a known suffix, or "reach me at priya dot raman" reads the
+  *local* part as a domain and yields `me@priya.raman`; the word to the left must
+  be a lead-in, or "priya raman at gmail dot com" (no spoken separator between
+  the names) matches from "raman" and yields somebody else's mailbox; and the
+  assembled string has to satisfy the ordinary address regex. Where the reading
+  is ambiguous -- `priyaraman` or `priya.raman`? -- nothing is the only safe
+  answer. `email_in_turn`'s cue gate is a *second* line of defence, not the
+  first: "I work at Google dot com" survives the decoder and is stopped there.
+- **A `review_reason` may never contain `"; "`.** `_join_reasons` uses it as the
+  separator, so a reason holding one splits into two segments and stops matching
+  itself. The first version of `_clear_identity_review` was an equality check
+  against a single string, and the moment a call could carry two reasons it
+  silently stopped clearing anything -- every attributed call stayed on the
+  review queue forever. `test_no_reason_contains_the_separator` pins it.
+- **`counterparty_number` exists because `from_number` is us on an outbound
+  call.** Reading it as the candidate's is how our own intake line ends up in
+  `candidate_phones`, pointing the dial-in caller lookup at whoever last had a
+  row written.
+- **`repository.merge_contact_details` is the one writer for "they told us their
+  email/number/name".** Voice and text had drifted: the call path added a phone
+  and an address and ignored the name, the thread path wrote none of the three
+  onto the candidate at all -- so a texter's number never reached
+  `candidate_phones` and the dial-in line did not recognise them when they rang.
+  It owns three rules that are each easy to get wrong alone: a detail somebody
+  else owns is reported as a conflict rather than taken (appending to
+  `Candidate.emails` first leaves the JSON column claiming an address the
+  projection does not have, which reads as ownership everywhere except the
+  index); a placeholder name loses to a real one but a real name never loses to
+  another real one (that is a merge question, not an import); and a newly
+  learned address for a suppressed person is suppressed too, or do-not-contact
+  is defeated by the person mentioning a second mailbox.
+
+### One person, two channels (`intake/records.py`, `service.identify_caller`)
+
+`AGENTS.md` already records that `messaging.records.persist_preference` and
+`intake.service.upsert_preference` upsert the same row and never conflict
+textually, so they diverge silently. Three divergences had accumulated, and all
+three are now closed:
+
+- **A call used to overwrite what a text had captured.** `upsert_preference`
+  assigned every column from the call's record, so somebody who texted their
+  comp expectation and then rang to mention an offer came out of the call with
+  the comp blanked -- a three-minute conversation about one thing does not
+  re-state the other thing. Both paths now call the monotonic merge, which moved
+  to `intake/records.py` (`messaging.records` re-exports it, so the callers that
+  grew up around that module are unchanged). It lives in `intake` because
+  `messaging` imports `intake` and the other direction is a cycle.
+- **The mid-call gate knew nothing about the stored record.** It is computed
+  from this call's transcript, so a candidate who answered eleven questions by
+  text last week was asked the eleven again and a two-minute update call ran to
+  the fifteen-minute ceiling. `prior_preference_record` seeds it. The seed goes
+  *under* the transcript, so "actually, make that 260" said out loud still wins,
+  and it is deliberately **never written to `call.extracted`** -- that record is
+  evidence about this conversation, and folding in things the caller never said
+  makes a transcript and a record disagree.
+- **Only the text path asked for job discovery.** A caller got scored against
+  today's postings while a texter got a search for postings that did not exist
+  yet.
+
+Note the asymmetry between `known_for_call` and `prior_preference_record`, which
+look like the same idea and are not: **identity** must not count as covered
+(the agent may still have to ask for it, because it cannot verify who is on the
+phone), while a **stated preference** genuinely is known and re-asking it wastes
+the call.
+
+`identify_caller` is the tool that makes the returning-caller case work at all
+-- the inbound agent has always asked for a name and an email and previously
+could do nothing with either, so the caller heard a company that did not
+recognise them. Its rules:
+
+- **The tier is decided in code, never in the prompt.** A prompt asking a model
+  how much it may reveal is a model deciding how much it may reveal.
+- **`unverified` discloses nothing, not even a first name.** Knowing somebody's
+  address is not evidence of being them -- it is exactly what a person phoning
+  *about* them would also know. And on a recruiting line, confirming that a
+  named individual is in our CRM tells the caller that person is job-hunting.
+  The update is still accepted: caller ID authorises accepting one, never
+  disclosing one.
+- **`verified` needs two factors**: the stated address matches the row *and* the
+  call came from a number already on it. Something they know and something they
+  have, which is the bar this file already set for reading state back.
+- **Even `verified` gets topics, never values.** `_SPEAKABLE_TOPICS` omits comp,
+  work authorisation, live processes and offers on purpose: two factors is
+  better than one and still not good enough to read somebody's salary or
+  interview pipeline down a phone line.
+- **`roles_to_send` is a boolean, not a count.** The shared rules forbid the
+  agent quoting a number of roles because a candidate hears a number as a
+  promise, and that does not stop being true because the number would be
+  accurate.
+- **Texting the roles goes through `messaging.notify`**, so every gate that
+  protects an unprompted text still applies. It is therefore only offerable to
+  a candidate who already has a manager-mode thread: bootstrapping one from a
+  phone call is a TCPA question, not a plumbing one.
+
 ### The webhook and the mid-call gate (phase 2)
 
 - **A number must be registered before it can take a call.** `intake_numbers`
@@ -517,6 +643,66 @@ package owns only what is different about text. Plan and phasing live in
   recording and a call has no message counts. Merging them is the `IntakeSession`
   refactor, which a review queue should not force.
 
+
+## Phone numbers in the UI (`packages/web/src/lib/phone.js`)
+
+- **One formatter, because E.164 reads badly and guessing reads wrong.** The API
+  stores what `intake.phones.lookup_key` produced, which is correct and
+  unambiguous and makes `+14155550123` a string a person has to decode before
+  they can dial it. Only North American numbers get the grouped form: a country
+  code is one to three digits and the national grouping differs by country, so a
+  general "insert spaces every three" reformats a real London number into one
+  that looks wrong to anybody who knows it. For everything else the stored
+  E.164 *is* the presentation -- unfamiliar, but never misleading.
+- **`telHref` always dials the raw digits.** The pretty form is for reading.
+- **`CandidateSummary.phones` is empty on the search path** and that is honest,
+  not a gap: search hits are built from the in-memory `CandidateDoc`, which
+  carries addresses and not numbers, and no search surface shows a phone. It is
+  why the field has a default.
+- **`PhoneEditor`'s warning is about lookups, not deliverability.** A number
+  stored without a country code is real data a recruiter can still ring; what it
+  cannot do is match an inbound call, because `lookup_key` refuses to guess a
+  country. Saying so beats rejecting it. Nothing else about the editor is new --
+  `crm.patch_candidate` has always had `phones` in `EDITABLE_FIELDS`, in
+  `UNION_FIELDS`, and syncing the projection; only the UI was missing.
+
+## Consent copy (`messaging/prompts.py`, `messaging/consent.py`)
+
+- **No greeting recites the opt-out any more, and that is a deliberate trade
+  with a documented cost.** "you can stop any time", "Reply STOP any time to
+  opt out, HELP for info", and the sentence after the voice consent question
+  are all gone. `INTAKE_COMPLIANCE.md` §6a carries the argument (an opt-out
+  recital in a *first* message is the strongest available cue that what follows
+  is bulk, which produces the complaint it was meant to prevent) **and the
+  exposure** (it cuts against `CANDIDATE_AGENT_PLAN` §2's three-disclosure
+  rule, and 10DLC campaign review may simply reject a first message without
+  opt-out language, which throttles a shared sender for every tenant on it).
+  `SMS_ENABLEMENT.md` makes re-reviewing it a blocker on enablement rather
+  than a copy tweak afterwards. If review asks for it back, it goes in the
+  **first outbound message only** -- not every greeting, and not the voice
+  wrap-up, which is not an SMS.
+- **Removing a sentence about a mechanism is not removing the mechanism.** STOP
+  still stops, HELP still answers, `handle_stop` still writes the suppression
+  row and the stopped thread, the single acknowledgement a carrier expects
+  still goes out, and `lowercase_outbound` still holds the keywords out of the
+  voice transform whether or not any current message contains one.
+  `test_intake_consent_copy.py::TestKeywordsStillWork` exists so a later edit
+  cannot slide from the copy into the handling.
+- **The consent *question* is not copy.** "Can I text you updates at this
+  number?" is the TCPA opt-in itself and is unchanged, word for word. What was
+  removed is the sentence that followed it -- which landed immediately before
+  the candidate answered, so the last thing they heard was a reason to say no.
+  The prompt now also tells the agent not to supply that sentence itself, and
+  to answer plainly if a caller asks how to stop.
+- **Disclosure versions are the reason this is safe to change at all.**
+  `web-widget-v2`, `inbound-text-v2`, `voice-wrapup-v2`. Rows written under
+  `-v1` keep describing what those people actually saw, which is why
+  `ConsentRecord` stores the text rather than a pointer to it. Bump the version
+  whenever the wording moves; never edit a disclosure string in place without
+  one.
+- **Three tests used to assert the recitals were present.** They now assert the
+  two disclosures that survive -- the org is named, the AI is disclosed -- which
+  is the part that was always load-bearing.
 
 ## CSV candidate import (`packages/web/src/lib/csvImport.js`)
 

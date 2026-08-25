@@ -129,11 +129,14 @@ never hear about your internal state.
   most valuable one you can ask. Then recap the two or three most important
   facts back to them for confirmation, close the way `guidance` tells you to
   -- it is written for whichever follow-up is actually live -- and then ask, in
-  these words: "Last thing -- can I text you updates at this number? You can
-  reply STOP any time to opt out." Only an explicit, unambiguous yes is a yes;
-  hesitation, "I guess", silence, or "email is better" is a no, and you must
-  not re-ask or reframe to get a yes -- a soft yes recorded as consent is worse
-  than a no. Then thank them and end the call. When you name the number, it is
+  these words: "Last thing -- can I text you updates at this number?" Only an
+  explicit, unambiguous yes is a yes; hesitation, "I guess", silence, or "email
+  is better" is a no, and you must not re-ask or reframe to get a yes -- a soft
+  yes recorded as consent is worse than a no. Do not add anything about
+  stopping or opting out, and do not read out any keywords -- the question is
+  the consent, and reciting the mechanism turns it into a sales line. If they
+  ask how to stop, tell them plainly they can reply STOP to any text. Then
+  thank them and end the call. When you name the number, it is
   {sms_number_spoken}.
 
 If `progress_line` is present, say it, then ask the next question. If it is
@@ -317,6 +320,15 @@ Do not imply you know them, and do not open with "what's changed" or "since we
 last spoke" -- there is no last time, and claiming one invites a correction
 instead of an answer.
 
+Once you have their email, pass it to `identify_caller` and follow the
+`guidance` it returns. This is not a lookup you announce or ask permission
+for -- you already have the address, and the call is being attached to the
+right person with it. Most of the time it will tell you to carry on exactly as
+you are. Occasionally the number they are calling from is new to us but the
+address is not, and then it will tell you what you may say; do what it says and
+nothing more. If it tells you to reveal nothing, that is a normal call -- do
+not apologise, do not hint, just carry on with the intake.
+
 ## Recording
 
 Whichever branch you are on, say the call is recorded so a recruiter can read
@@ -325,6 +337,19 @@ caller this is one short sentence after the greeting, not a formality to
 re-open the relationship with. If they say no, take a brief message and end the
 call.
 {_shared_rules(SMS_NUMBER_SPOKEN)}"""
+
+IDENTIFY_TOOL_DESCRIPTION = (
+    "Attach this call to the right person using the email address they gave "
+    "you. Only needed when caller_known is false -- when it is true the caller "
+    "was already recognised from their number before you picked up, and "
+    "calling this changes nothing. Do NOT ask for an address in order to call "
+    "this; pass the one you collected anyway so a recruiter can find them. "
+    "Returns guidance -- follow it exactly, it decides what you may say back. "
+    "It may tell you to reveal nothing at all, including whether we have a "
+    "record; that is normal and is not an error, so do not apologise or "
+    "explain it. Call it a second time with send_matches true only if they "
+    "said yes to being texted the roles."
+)
 
 COVERAGE_TOOL_DESCRIPTION = (
     "Check what this intake call still needs and whether you may wrap up. Call "
@@ -433,7 +458,37 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                     },
                     "required": [],
                 },
-            }
+            },
+            {
+                "type": "custom",
+                "name": "identify_caller",
+                "description": IDENTIFY_TOOL_DESCRIPTION,
+                "url": f"{base}/v1/intake/identify",
+                "speak_during_execution": False,
+                "speak_after_execution": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "email": {
+                            "type": "string",
+                            "description": (
+                                "The email address the caller gave, exactly as "
+                                "they gave it. Convert a spoken address to "
+                                "normal form: \"priya dot raman at gmail dot "
+                                "com\" is priya.raman@gmail.com."
+                            ),
+                        },
+                        "send_matches": {
+                            "type": "boolean",
+                            "description": (
+                                "True only when the caller has just said yes to "
+                                "being texted the roles. Omit otherwise."
+                            ),
+                        },
+                    },
+                    "required": ["email"],
+                },
+            },
         ],
     }
 

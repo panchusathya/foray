@@ -1,4 +1,4 @@
-"""Who is on the other end.
+"""Who is on the other end of a text thread.
 
 A caller identifies themselves by the number they dialled from. A stranger in
 a web chat identifies themselves by nothing at all, so a text thread has to ask
@@ -12,7 +12,13 @@ the job side, so a ``contact_name`` key inside ``spec`` would be a field
 notes. They live on ``IntakeThread`` instead, and reach the domain as an
 ordinary candidate row.
 
-Extraction here is deliberately regex-only, with no model path. An address is
+What "looks like a name" and what "looks like an address" now live in
+``intake.contact``, because voice asks the same two questions and a second
+definition of either is a second answer to it. This module keeps only what is
+different about a *thread*: which pseudo-field is outstanding, how an inbound
+message is absorbed, and how the conversation reaches a candidate row.
+
+Extraction is deliberately regex-only, with no model path. An address is
 unambiguous, and a name arrives as the answer to the question that just asked
 for one -- neither needs judgement, and both need to work with no API key.
 """
@@ -20,14 +26,19 @@ for one -- neither needs judgement, and both need to work with no API key.
 from __future__ import annotations
 
 import logging
-import re
 
 from sqlalchemy.orm import Session
 
 from ..enrich.linkedin_url import canonical_linkedin_url
 from ..enrich.linkedin_url import find_linkedin as extract_linkedin
+from ..intake.contact import find_email, find_name, first_segment
 from ..models import Candidate, IntakeThread
-from ..repository import owner_of_email, owner_of_linkedin, upsert_candidates
+from ..repository import (
+    merge_contact_details,
+    owner_of_email,
+    owner_of_linkedin,
+    upsert_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +53,7 @@ def _mark_crm_tracked(db: Session, candidate_id: str) -> None:
     if candidate is not None:
         track(candidate)
         db.flush()
+
 
 # Pseudo-fields. Namespaced with a dot so they can never collide with an
 # intake.schema key, which is what `asked_field` otherwise holds.
@@ -62,56 +74,10 @@ ASKS = {
 # writer and the reader cannot drift into two different strings.
 UNATTRIBUTED_REASON = "no contact details, preferences not attached to a candidate"
 
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-# "I'm", "my name is", "it's", "this is", "name:" and friends.
-_NAME_LEAD = re.compile(
-    r"^\s*(?:hi|hey|hello)?[,\s]*"
-    r"(?:(?:my\s+name\s+is|i\s*am|i'm|its|it's|this\s+is|name)\s*[:\-]?\s*)?",
-    re.IGNORECASE,
-)
-_NAME_TRAILING_PUNCT = re.compile(r"[\s.,;:!?]+$")
-
-MAX_NAME_WORDS = 4
-MAX_NAME_CHARS = 80
-
-
-def find_email(body: str) -> str:
-    match = _EMAIL.search(body or "")
-    return match.group(0).strip().lower() if match else ""
-
-
-def find_name(body: str) -> str:
-    """A name, or empty when the text does not plainly look like one.
-
-    Only ever called on the answer to the name question, so the bar is "does
-    this look like a name" rather than "find a name in this sentence". Empty is
-    the safe answer: it costs one repeat of an easy question, whereas a wrong
-    name reaches a client on a profile.
-    """
-    text = _EMAIL.sub(" ", body or "")
-    text = _NAME_LEAD.sub("", text, count=1)
-    text = _NAME_TRAILING_PUNCT.sub("", text).strip()
-    if not text or len(text) > MAX_NAME_CHARS:
-        return ""
-    if any(ch.isdigit() or ch == "@" for ch in text):
-        return ""
-    words = text.split()
-    if not 1 <= len(words) <= MAX_NAME_WORDS:
-        return ""
-    if not all(any(ch.isalpha() for ch in word) for word in words):
-        return ""
-    return " ".join(words)
-
 
 def find_linkedin(body: str) -> str:
     """Canonical ``https://www.linkedin.com/in/{slug}``, or empty."""
     return extract_linkedin(body)
-
-
-# One batched question gets one batched answer: "Sathya, 2 yrs, 150k". Every
-# segment is still judged by ``find_name`` -- this only decides where to look,
-# it does not lower the bar for what counts as a name.
-_BATCH_SPLIT = re.compile(r"[,;\n]")
 
 
 def find_name_in_batch(body: str) -> str:
@@ -119,18 +85,10 @@ def find_name_in_batch(body: str) -> str:
 
     ``find_name`` refuses anything containing a digit, which is right for a
     single answer and wrong here: the gap-fill asks for name, years and comp
-    at once, so "Sathya, 2 yrs, 150k" loses the name entirely.
-
-    Only the FIRST segment is considered, because the name line is always the
-    first question in ``gap_fill_message``. Scanning every segment for the
-    first thing that looks like a name reads "150k, asap" as a candidate
-    called Asap -- answering the other questions and skipping this one would
-    put a wrong name on a profile that goes in front of employers. Failing
-    here costs one repeat of an easy question, which is the same trade
-    ``find_name`` already makes.
+    at once, so "Sathya, 2 yrs, 150k" loses the name entirely. Only the FIRST
+    segment is considered -- ``intake.contact.first_segment`` records why.
     """
-    first = _BATCH_SPLIT.split(body or "", maxsplit=1)[0]
-    return find_name(first)
+    return find_name(first_segment(body))
 
 
 def absorb(
@@ -209,6 +167,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     """
     if thread.candidate_id:
         _mark_crm_tracked(db, thread.candidate_id)
+        _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
         return thread.candidate_id
@@ -245,6 +204,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     if existing:
         thread.candidate_id = existing
         _mark_crm_tracked(db, existing)
+        _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
         return existing
@@ -282,9 +242,57 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         return None
     thread.candidate_id = result.ids[0]
     _mark_crm_tracked(db, thread.candidate_id)
+    _copy_contact(db, thread)
     _copy_linkedin(db, thread)
     _copy_experience(db, thread)
     return thread.candidate_id
+
+
+def _copy_contact(db: Session, thread: IntakeThread) -> None:
+    """Push the name, the address and the texting number onto the candidate.
+
+    This is the half of thread intake that was missing. ``link_candidate``
+    resolved a conversation to a row and stopped there, so an existing contact
+    who texted in got their preferences and nothing else -- their address never
+    joined ``candidate_emails``, their number never reached
+    ``candidate_phones``, and the dial-in line did not recognise them when they
+    rang from the phone they had just been texting from.
+
+    The number is merged here, where ``intake.service.link_caller`` refuses to.
+    That is not inconsistent: a thread reaches this function only after the
+    coverage gate closed, which takes a back-and-forth we drove -- we sent to
+    that number and it answered, repeatedly. A single inbound call proves only
+    what the caller's device claims.
+
+    ``from_address`` is only ever offered as a phone. An iMessage sender can be
+    an Apple ID email address, and ``lookup_key`` returns nothing for one, so it
+    is simply not merged: an Apple ID is usually a real mailbox, but "usually"
+    is not a basis for adding an address that outreach will then mail.
+    """
+    if not thread.candidate_id:
+        return
+    candidate = db.get(Candidate, thread.candidate_id)
+    if candidate is None:
+        return
+    merged = merge_contact_details(
+        db,
+        candidate,
+        name=thread.contact_name,
+        email=thread.contact_email,
+        phone=thread.from_address,
+    )
+    if merged.conflicts:
+        thread.review_needed = True
+        thread.review_reason = _join_reasons(
+            thread.review_reason,
+            f"already owned by somebody else: {', '.join(merged.conflicts)}",
+        )
+        db.flush()
+
+
+def _join_reasons(existing: str, addition: str) -> str:
+    parts = [p for p in [(existing or "").strip(), addition] if p]
+    return "; ".join(parts)[:400]
 
 
 def _copy_linkedin(db: Session, thread: IntakeThread) -> None:
@@ -367,6 +375,9 @@ def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) ->
 
     thread.candidate_id = candidate.id
     _mark_crm_tracked(db, candidate.id)
+    _copy_contact(db, thread)
+    _copy_linkedin(db, thread)
+    _copy_experience(db, thread)
 
     # Whatever the conversation captured now has a person to hang off. Guarded
     # on there being something: attributing an empty thread must not write an

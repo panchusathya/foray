@@ -98,6 +98,14 @@ class SubmissionContext:
         return [doc for doc in (self.resume, self.cover_letter) if doc is not None]
 
 
+#: Keys inside ``SubmissionResult.verification`` that hold a credential. They
+#: are encrypted before the row is written and decrypted only to hand back to
+#: the adapter resuming the run -- ``applications/submission.py`` owns both
+#: halves. A parked Workday attempt carries the portal password we generated,
+#: and a column readable in a database dump is not where that belongs.
+SECRET_VERIFICATION_KEYS = ("password",)
+
+
 @dataclass
 class SubmissionResult:
     """The verdict on one attempt.

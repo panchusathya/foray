@@ -84,7 +84,14 @@ export function ApplicationsPage() {
   );
 }
 
-const STEPS = ['prepared', 'awaiting_consent', 'submitted', 'acknowledged', 'interviewing'];
+const STEPS = [
+  'prepared',
+  'awaiting_consent',
+  'submitting',
+  'submitted',
+  'acknowledged',
+  'interviewing',
+];
 
 export function ApplicationDetailPage() {
   const { applicationId } = useParams();

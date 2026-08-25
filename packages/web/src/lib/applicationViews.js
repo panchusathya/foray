@@ -12,7 +12,16 @@ export const APPLICATION_VIEWS = [
     id: 'open',
     label: 'In flight',
     blurb: 'Everything still moving — prepared, awaiting the candidate, or out with an employer.',
-    statuses: ['draft', 'prepared', 'awaiting_consent', 'submitted', 'acknowledged', 'interviewing', 'offer'],
+    statuses: [
+      'draft',
+      'prepared',
+      'awaiting_consent',
+      'submitting',
+      'submitted',
+      'acknowledged',
+      'interviewing',
+      'offer',
+    ],
   },
   {
     id: 'review',

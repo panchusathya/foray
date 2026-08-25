@@ -173,3 +173,17 @@ an external API; the 4 GB VM benefits from a swap file during embedding runs
 - **Postgres is the only stateful service** — the `pgdata` volume plus the
   nightly dump is the whole backup story. `caddy_data` only caches
   certificates and re-issues if lost.
+- **`filedata` needs a one-time chown on stacks created before Aug 2026.**
+  Candidate documents live on the `filedata` volume at `/app/data/files`. The
+  image now creates that directory owned by uid 10001, but Docker only seeds
+  ownership into an *empty* volume — an existing one stays `root:root`, and
+  every package build fails with
+  `[Errno 13] Permission denied: /app/data/files/org_...`. Fix it once:
+
+  ```sh
+  docker compose -f docker-compose.prod.yml run --rm --user root api \
+    chown -R 10001:10001 /app/data/files
+  ```
+
+  Then rebuild api and worker. `ls -ld` inside the api container should show
+  `juicebox` as the owner.

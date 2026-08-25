@@ -34,6 +34,7 @@ import {
   resolveParams,
   viewById,
 } from '../lib/contactViews.js';
+import { allPhones, primaryPhone, telHref } from '../lib/phone.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import {
   countOnPage,
@@ -89,6 +90,14 @@ function Cell({ column, row }) {
       const email = (row.emails ?? [])[0];
       // Name and address in one cell, which is how you actually identify
       // somebody, and frees the column the address used to take.
+      //
+      // The number is the fallback rather than a second line: intake creates
+      // people who have a phone and no address, and those rows used to read
+      // "no email" while holding the only way to reach them. A third line
+      // would grow every row to buy nothing for the rows that already have an
+      // address, and a phone column would blow the grid's width budget --
+      // see the note on DEFAULT_COLUMNS.
+      const phone = email ? '' : primaryPhone(row);
       return (
         <span className="identity">
           <Avatar name={row.full_name} />
@@ -101,6 +110,10 @@ function Cell({ column, row }) {
             {email ? (
               <span className="cell-sub mono" title={(row.emails ?? []).join(', ')}>
                 {email}
+              </span>
+            ) : phone ? (
+              <span className="cell-sub mono" title={allPhones(row)}>
+                {phone}
               </span>
             ) : (
               <span className="cell-sub muted">no email</span>
@@ -164,6 +177,16 @@ function Cell({ column, row }) {
       ) : (
         <span className="muted">—</span>
       );
+    case 'phones': {
+      const phone = primaryPhone(row);
+      return phone ? (
+        <a className="mono" href={telHref(row.phones[0])} title={allPhones(row)}>
+          {phone}
+        </a>
+      ) : (
+        <span className="muted">—</span>
+      );
+    }
     case 'created_at':
       return <DateCell value={row.created_at} />;
     case 'intake_timeline':

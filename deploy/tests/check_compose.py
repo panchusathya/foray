@@ -39,6 +39,14 @@ def check_staging_isolation() -> None:
     _must("5432/juicebox" not in stripped, "staging DATABASE_URL must not target unsuffixed juicebox")
     _must("5432/foray" not in stripped, "staging FORAY_DATABASE_URL must not target unsuffixed foray")
     _must("EMAIL_PROVIDER: console" in STAGING, "staging must hard-wire EMAIL_PROVIDER=console")
+    _must(
+        "APPLY_SUBMITTER: console" in STAGING,
+        "staging must hard-wire APPLY_SUBMITTER=console",
+    )
+    _must(
+        "${APPLY_SUBMITTER" not in STAGING,
+        "staging must not interpolate APPLY_SUBMITTER -- it would inherit prod's",
+    )
     _must("JUICEBOX_ENV: staging" in STAGING, "staging must set JUICEBOX_ENV=staging")
     _must("${STAGING_SECRET_KEY:?" in STAGING, "staging SECRET_KEY must come from ${STAGING_SECRET_KEY:?}")
     _must("${SMTP" not in STAGING, "staging must not interpolate SMTP credentials")

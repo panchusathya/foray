@@ -13,7 +13,7 @@ import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
 import { ImportPage } from './pages/Import.jsx';
 import { LoginPage } from './pages/Login.jsx';
-import { ProjectDetailPage, ProjectsPage } from './pages/Projects.jsx';
+import { ProjectDetailPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
 import { SourcingPage } from './pages/Sourcing.jsx';
@@ -25,7 +25,6 @@ const NAV = [
   { to: '/', label: 'Home', end: true },
   { to: '/search', label: 'Search' },
   { to: '/sourcing', label: 'Sourcing' },
-  { to: '/projects', label: 'Projects' },
   { to: '/jobs', label: 'Jobs' },
   { to: '/applications', label: 'Applications' },
   { to: '/sequences', label: 'Sequences' },
@@ -36,47 +35,42 @@ const NAV = [
   { to: '/settings', label: 'Settings' },
 ];
 
-function CurrentProjectSection() {
+/**
+ * The project picker, at the top of the sidebar where the thing you are
+ * working *in* belongs.
+ *
+ * It used to sit below eleven nav links as a heading, a dropdown and three
+ * sub-links, which read as a fourth navigation section rather than as context.
+ * It is now just the picker: the shortcuts it carried are one click away on
+ * the project's own page, and the roster it needed a "Projects" nav item for
+ * lives on Home.
+ */
+function ProjectPicker() {
   const { projects, project, setProject } = useCurrentProject();
 
-  if (!projects.length) {
-    return (
-      <div className="sidebar-section">
-        <div className="sidebar-heading">Current project</div>
-        <NavLink to="/projects" className="nav-link sub">
+  return (
+    <div className="project-picker">
+      <label className="sidebar-heading" htmlFor="project-switcher">
+        Project
+      </label>
+      {projects.length ? (
+        <select
+          id="project-switcher"
+          className="project-switcher"
+          value={project?.id ?? ''}
+          onChange={(event) => setProject(event.target.value)}
+        >
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <NavLink to="/" className="nav-link sub">
           Create your first project
         </NavLink>
-      </div>
-    );
-  }
-
-  return (
-    <div className="sidebar-section">
-      <div className="sidebar-heading">Current project</div>
-      <select
-        className="project-switcher"
-        value={project?.id ?? ''}
-        onChange={(event) => setProject(event.target.value)}
-      >
-        {projects.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
-          </option>
-        ))}
-      </select>
-      {project ? (
-        <>
-          <NavLink to={`/projects/${project.id}`} className="nav-link sub">
-            Shortlist
-          </NavLink>
-          <NavLink to="/agents" className="nav-link sub">
-            Agent
-          </NavLink>
-          <NavLink to="/search" className="nav-link sub">
-            Searches
-          </NavLink>
-        </>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -99,9 +93,11 @@ function Shell({ children }) {
   return (
     <div className="shell">
       <nav className="sidebar">
-        <div className="brand">
-          <BrandMark /> Foray
+        <div className="brand brand-lockup">
+          <BrandMark />
+          <span>Foray</span>
         </div>
+        <ProjectPicker />
         {NAV.map((item) => (
           <NavLink
             key={item.to}
@@ -112,7 +108,6 @@ function Shell({ children }) {
             {item.label}
           </NavLink>
         ))}
-        <CurrentProjectSection />
         <div className="sidebar-footer">
           <div>{user?.name || user?.email}</div>
           <button type="button" className="tiny ghost" onClick={logout} style={{ marginTop: 8 }}>
@@ -138,7 +133,7 @@ export function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/sourcing" element={<SourcingPage />} />
-          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects" element={<Navigate to="/" replace />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:postingId" element={<JobDetailPage />} />

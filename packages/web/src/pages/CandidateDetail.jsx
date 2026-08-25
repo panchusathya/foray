@@ -13,11 +13,14 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { ContactHistory } from '../components/ContactHistory.jsx';
 import { EmailEditor } from '../components/EmailEditor.jsx';
+import { PhoneEditor } from '../components/PhoneEditor.jsx';
 import { InlineField } from '../components/InlineField.jsx';
 import { NotesPanel } from '../components/NotesPanel.jsx';
+import { ReviewReason } from '../components/ReviewReason.jsx';
 import { TagEditor } from '../components/TagEditor.jsx';
 import { Avatar, Badge, ErrorBox, Loading } from '../components/common.jsx';
 import { CRM_STATUSES, CRM_STATUS_LABELS, api, applicationStatusTone } from '../lib/api.js';
+import { primaryPhone } from '../lib/phone.js';
 import { statusLabel } from './Applications.jsx';
 import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../lib/intake.js';
 import { jobsApi } from '../lib/jobs.js';
@@ -107,7 +110,10 @@ export function CandidateDetailPage() {
               person.headline ||
               'No title on file'}
           </p>
-          <p className="mono small muted">{(person.emails ?? [])[0] || 'No email on file'}</p>
+          <p className="mono small muted">
+            {[(person.emails ?? [])[0], primaryPhone(person)].filter(Boolean).join(' · ') ||
+              'No email or phone on file'}
+          </p>
         </div>
         <div className="row" style={{ gap: 8, alignItems: 'center' }}>
           {status !== 'none' ? (
@@ -189,6 +195,14 @@ export function CandidateDetailPage() {
               <EmailEditor
                 candidateId={candidateId}
                 emails={person.emails}
+                onChanged={candidate.reload}
+              />
+            </div>
+            <div className="stack small">
+              <strong className="small">Phone numbers</strong>
+              <PhoneEditor
+                candidateId={candidateId}
+                phones={person.phones}
                 onChanged={candidate.reload}
               />
             </div>
@@ -344,7 +358,7 @@ function IntakePanel({ candidateId }) {
           </div>
         ) : null}
         {record.review_needed ? (
-          <div className="small muted">Review: {record.review_reason || 'needs a look'}</div>
+          <ReviewReason reason={record.review_reason} fallback="Needs a look." />
         ) : null}
         {record.confirmed_at ? (
           <Badge>confirmed</Badge>

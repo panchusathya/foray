@@ -1200,6 +1200,20 @@ class IntakeCall(Base, TimestampMixin):
     # narrow the required set (gate_mode=core); it never adds questions.
     minutes_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gate_mode: Mapped[str] = mapped_column(String(8), default="full", server_default="full")
+
+    # What the caller said their name and email were. The inbound agent has
+    # always asked for both -- "so a recruiter can find them" -- and until
+    # these columns existed the answer was spoken, transcribed, and thrown
+    # away, so every call from a number we did not already know landed
+    # unattributed.
+    #
+    # Deliberately NOT in ``extracted``: that record is the preference record,
+    # normalised through ``ParsedQuery``, and a name has no counterpart on the
+    # job side. Same rule ``IntakeThread.contact_name`` follows, and the same
+    # reason -- a ``contact_name`` inside ``spec`` is a field
+    # ``jobmatch.engine`` cannot score.
+    contact_name: Mapped[str] = mapped_column(String(240), default="", server_default="")
+    contact_email: Mapped[str] = mapped_column(String(255), default="", server_default="")
     # Required keys skipped by a core-mode trim. Empty is "never trimmed";
     # a listed key is unasked-on-purpose, not forgotten.
     deferred_fields: Mapped[list] = mapped_column(JSON, default=list)

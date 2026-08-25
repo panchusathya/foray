@@ -13,6 +13,8 @@ never launched, and the default submitter cannot reach an employer at all.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -976,3 +978,98 @@ class TestTheThreadPath:
             monkeypatch.undo()
         assert "hand-off" in result["submission"]
         assert attempts_used(session, application) == 0
+
+
+class TestParkedCredentialsAreNotReadableAtRest:
+    """A parked Workday run carries the portal password we generated for it.
+
+    It has to survive between the two legs, so it lives on the attempt row --
+    which is exactly the place a database dump reads. Same treatment as mailbox
+    OAuth tokens and `ats_accounts.token_blob`.
+    """
+
+    def test_the_password_is_encrypted_on_the_row_and_restored_for_the_adapter(
+        self, session, account, candidate, aliased
+    ):
+        from juicebox.applications.submission import _seal, _unseal
+
+        parked = {
+            "stage": "account_created",
+            "username": "anna+abc@goforay.io",
+            "password": "hunter2-generated",
+            "run": {"steps": ["browser opened"]},
+        }
+        sealed = _seal(parked)
+        assert "password" not in sealed
+        assert "hunter2-generated" not in json.dumps(sealed)
+        # Everything that makes a parked run diagnosable stays readable.
+        assert sealed["stage"] == "account_created"
+        assert sealed["run"] == {"steps": ["browser opened"]}
+
+        assert _unseal(sealed)["password"] == "hunter2-generated"
+
+    def test_an_unreadable_blob_ends_the_run_instead_of_raising(self, caplog):
+        """SECRET_KEY rotated under a parked attempt. The adapter then has no
+        credential and reports needs_human, which a person can act on."""
+        from juicebox.applications.submission import _unseal
+
+        recovered = _unseal({"stage": "account_created", "secret_blob": "not-a-fernet-token"})
+        assert "password" not in recovered
+        assert recovered["stage"] == "account_created"
+
+    def test_a_parked_attempt_stores_no_plaintext_secret(
+        self, session, account, candidate, aliased
+    ):
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        registry.set_submitter(
+            "greenhouse",
+            MemorySubmitter(
+                result=SubmissionResult(
+                    ok=False,
+                    method="browser",
+                    needs_verification=True,
+                    verification={"stage": "account_created", "password": "s3cret-generated"},
+                )
+            ),
+        )
+        try:
+            submit_application(session, application)
+        finally:
+            registry.reset_overrides()
+
+        row = session.query(ApplicationSubmission).one()
+        assert "s3cret-generated" not in json.dumps(row.verification)
+        assert row.verification["stage"] == "account_created"
+
+    def test_the_recruiter_api_returns_the_run_log_and_nothing_else(
+        self, session, account, candidate, client, aliased
+    ):
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="workday",
+                method="browser",
+                status="needs_verification",
+                verification={
+                    "stage": "account_created",
+                    "secret_blob": "encrypted-blob-here",
+                    "run": {"steps": ["browser opened"], "filled": {"first_name": "Ada"}},
+                },
+            )
+        )
+        session.commit()
+
+        body = client.get(
+            f"/v1/applications/{application.id}/submissions", headers=account["headers"]
+        ).json()
+        entry = body["submissions"][0]
+        assert entry["run"]["filled"] == {"first_name": "Ada"}
+        # The blob is never in the response at all, encrypted or not.
+        assert "secret_blob" not in json.dumps(entry)

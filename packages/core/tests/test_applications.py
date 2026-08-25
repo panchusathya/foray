@@ -614,3 +614,83 @@ class TestPerOrgFloor:
             PROPOSAL_FLOOR_EXEMPT_CANDIDATES="",
         )
         assert floor_for("org_ours", "cand_anyone") == 1.1
+
+
+class TestUpdateHistory:
+    """Recording an employer update, and reading the trail back.
+
+    The buttons on the detail page were the whole feature and they kept
+    nothing: not what was said, not when it happened. Both now ride on the
+    ``application.status_changed`` event the state machine already writes, so
+    there is one record rather than two that can disagree.
+    """
+
+    def _application(self, client, session, account, candidate):
+        posting = _posting(session, account["org_id"])
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+        _consented(application, session)
+        transition(session, application, to_status="prepared", actor="agent")
+        transition(session, application, to_status="submitted", actor="recruiter")
+        session.commit()
+        return application
+
+    def test_a_recorded_update_keeps_the_note_and_the_date_it_happened(
+        self, client, session, account, candidate
+    ):
+        application = self._application(client, session, account, candidate)
+        response = client.post(
+            f"/v1/applications/{application.id}/transition",
+            json={
+                "to_status": "interviewing",
+                "reason": "Recruiter called: first round next Tuesday.",
+                "occurred_at": "2026-08-20T12:00:00+00:00",
+            },
+            headers=account["headers"],
+        )
+        assert response.status_code == 200, response.text
+
+        detail = client.get(
+            f"/v1/applications/{application.id}", headers=account["headers"]
+        ).json()
+        latest = detail["history"][-1]
+        assert latest["to_status"] == "interviewing"
+        assert latest["from_status"] == "submitted"
+        assert latest["note"] == "Recruiter called: first round next Tuesday."
+        assert latest["occurred_at"].startswith("2026-08-20")
+        # The two clocks stay separate: when it happened is not when we typed it.
+        assert latest["at"] != latest["occurred_at"]
+
+    def test_the_history_is_the_whole_trail_oldest_first(
+        self, client, session, account, candidate
+    ):
+        application = self._application(client, session, account, candidate)
+        detail = client.get(
+            f"/v1/applications/{application.id}", headers=account["headers"]
+        ).json()
+        assert [entry["to_status"] for entry in detail["history"]] == ["prepared", "submitted"]
+
+    def test_an_update_with_no_stated_date_records_none(
+        self, client, session, account, candidate
+    ):
+        """Absent means "now", and the UI falls back to the event's own clock."""
+        application = self._application(client, session, account, candidate)
+        client.post(
+            f"/v1/applications/{application.id}/transition",
+            json={"to_status": "rejected"},
+            headers=account["headers"],
+        )
+        detail = client.get(
+            f"/v1/applications/{application.id}", headers=account["headers"]
+        ).json()
+        assert detail["history"][-1]["occurred_at"] is None
+
+    def test_the_list_route_does_not_carry_history(self, client, session, account, candidate):
+        """One event query per row is a page of N+1 nobody reads."""
+        self._application(client, session, account, candidate)
+        rows = client.get("/v1/applications", headers=account["headers"]).json()
+        assert rows and all(row["history"] == [] for row in rows)

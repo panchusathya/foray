@@ -618,6 +618,151 @@ class TestExtraction:
 
 
 # --------------------------------------------------------------------------
+# the mid-call identification
+# --------------------------------------------------------------------------
+
+
+class TestIdentifyEndpoint:
+    """The other mid-call tool, and the one that is *about a person*.
+
+    ``/coverage`` returns topics, so it discloses nothing even though anyone
+    with a valid signature can reach it. This one answers "who is this", so the
+    tiering is the whole endpoint -- and it is decided in code, because a prompt
+    asking a model how much it may reveal is a model deciding how much it may
+    reveal.
+    """
+
+    def _function_call(self, email, *, call_id="call_abc123", send=False):
+        args = {"email": email}
+        if send:
+            args["send_matches"] = True
+        return {
+            "name": "identify_caller",
+            "call": {"call_id": call_id, "transcript": TRANSCRIPT, "agent_id": "agent_1"},
+            "args": args,
+        }
+
+    def _known(self, session, account, *, phone=""):
+        candidate = Candidate(
+            org_id=account["org_id"],
+            source="test",
+            source_id="priya",
+            full_name="Priya Raman",
+            first_name="Priya",
+            emails=["priya@example.com"],
+            phones=[phone] if phone else [],
+        )
+        session.add(candidate)
+        session.flush()
+        from juicebox.repository import sync_candidate_emails
+
+        sync_candidate_emails(session, candidate)
+        if phone:
+            sync_candidate_phones(session, candidate)
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                timeline="under_1_month",
+                target_base=240000.0,
+                work_authorization="green card",
+                active_processes=[{"company": "Acme", "stage": "onsite"}],
+            )
+        )
+        session.commit()
+        return candidate
+
+    def _a_call(self, session, account, **overrides):
+        fields = dict(
+            org_id=account["org_id"],
+            provider="retell",
+            provider_call_id="call_abc123",
+            entry_point="inbound",
+            from_number=CANDIDATE_NUMBER,
+            to_number=OUR_NUMBER,
+            status="in_progress",
+        )
+        fields.update(overrides)
+        call = IntakeCall(**fields)
+        session.add(call)
+        session.commit()
+        return call
+
+    def test_it_requires_a_signature(self, client):
+        response = client.post("/v1/intake/identify", json=self._function_call("a@b.com"))
+        assert response.status_code == 401
+
+    def test_an_unknown_caller_gets_no_hint_that_a_record_might_exist(
+        self, client, session, signer, account
+    ):
+        self._known(session, account)
+        self._a_call(session, account)
+        body = post(
+            client, signer, self._function_call("stranger@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["known"] is False
+        assert "Priya" not in repr(body)
+
+    def test_a_matching_address_from_a_strange_number_reveals_nothing(
+        self, client, session, signer, account
+    ):
+        self._known(session, account)
+        self._a_call(session, account, from_number=STRANGER_NUMBER)
+        body = post(
+            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["tier"] == "unverified"
+        assert "first_name" not in body
+        assert "Priya" not in repr(body)
+        assert "240000" not in repr(body)
+
+    def test_two_factors_unlock_the_greeting(self, client, session, signer, account):
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        self._a_call(session, account)
+        body = post(
+            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+        ).json()
+        assert body["tier"] == "verified"
+        assert body["first_name"] == "Priya"
+        assert body["on_file"]
+
+    def test_even_a_verified_caller_hears_no_values(self, client, session, signer, account):
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        self._a_call(session, account)
+        blob = repr(
+            post(
+                client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
+            ).json()
+        )
+        for secret in ("240000", "green card", "Acme"):
+            assert secret not in blob, f"{secret!r} reached the agent"
+
+    def test_a_request_with_no_call_row_degrades_rather_than_failing(
+        self, client, session, signer, account
+    ):
+        """An error here is heard as the agent going quiet."""
+        self._known(session, account, phone=CANDIDATE_NUMBER)
+        response = post(
+            client,
+            signer,
+            self._function_call("priya@example.com", call_id="call_never_seen"),
+            path="/v1/intake/identify",
+        )
+        assert response.status_code == 200
+        assert response.json()["known"] is False
+
+    def test_a_garbage_address_is_answered_not_rejected(
+        self, client, session, signer, account
+    ):
+        self._a_call(session, account)
+        response = post(
+            client, signer, self._function_call("not an address"), path="/v1/intake/identify"
+        )
+        assert response.status_code == 200
+        assert response.json()["known"] is False
+
+
+# --------------------------------------------------------------------------
 # the mid-call gate
 # --------------------------------------------------------------------------
 

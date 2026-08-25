@@ -41,8 +41,9 @@ export function LoginPage() {
     <div className="auth-shell">
       <form className="card auth-card stack" onSubmit={submit}>
         <div>
-          <h1>
-            <BrandMark /> Foray
+          <h1 className="brand-lockup">
+            <BrandMark />
+            <span>Foray</span>
           </h1>
           <p className="muted small">
             Foray into your <em className="marker">next hire</em>.

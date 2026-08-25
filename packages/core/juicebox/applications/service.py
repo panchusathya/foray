@@ -319,6 +319,7 @@ def application_status_summary(db: Session, *, org_id: str, candidate_id: str) -
         "draft": "being prepared",
         "prepared": "package ready for your review",
         "awaiting_consent": "waiting on your OK",
+        "submitting": "being sent now",
         "submitted": "submitted",
         "acknowledged": "received by the employer",
         "interviewing": "interviewing",

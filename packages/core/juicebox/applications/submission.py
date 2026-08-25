@@ -36,7 +36,12 @@ from . import alias, limits
 from .ats import detect
 from .service import ApplicationError, current_documents
 from .state import TransitionError, has_consent, transition
-from .submit.base import Attachment, SubmissionContext, SubmissionResult
+from .submit.base import (
+    SECRET_VERIFICATION_KEYS,
+    Attachment,
+    SubmissionContext,
+    SubmissionResult,
+)
 from .submit.registry import get_submitter
 
 logger = logging.getLogger(__name__)
@@ -228,7 +233,7 @@ def _finish(
     attempt.confirmation_ref = result.confirmation_ref[:400]
     attempt.error = (result.error or "")[:600]
     attempt.artifacts = list(result.artifacts)
-    attempt.verification = dict(result.verification)
+    attempt.verification = _seal(result.verification)
     attempt.finished_at = utcnow() if result.status != "needs_verification" else None
     if result.method:
         attempt.method = result.method
@@ -284,6 +289,44 @@ def _finish(
         logger.info("could not park application %s after a failed attempt", application.id)
 
 
+def _seal(verification: dict) -> dict:
+    """Encrypt the credential keys before the attempt row is written.
+
+    Everything else in ``verification`` -- the run log, the stage, the tenant --
+    stays readable, because that is what makes a parked attempt diagnosable.
+    Only the secrets move behind ``integrations/crypto``, the same treatment
+    mailbox OAuth tokens and ``ats_accounts.token_blob`` already get.
+    """
+    payload = dict(verification or {})
+    secrets_held = {key: payload.pop(key) for key in SECRET_VERIFICATION_KEYS if key in payload}
+    if secrets_held:
+        from ..integrations.crypto import encrypt_json
+
+        payload["secret_blob"] = encrypt_json(secrets_held)
+    return payload
+
+
+def _unseal(verification: dict | None) -> dict:
+    """The adapter's view: secrets put back, blob removed.
+
+    A blob that no longer decrypts (SECRET_KEY rotated under a parked run) is
+    dropped rather than raised on -- the adapter then reports that it has no
+    credential and the attempt ends as ``needs_human``, which is the honest
+    outcome and one a person can act on.
+    """
+    payload = dict(verification or {})
+    blob = payload.pop("secret_blob", "")
+    if not blob:
+        return payload
+    from ..integrations.crypto import decrypt_json
+
+    try:
+        payload.update(decrypt_json(str(blob)))
+    except ValueError as exc:
+        logger.warning("a parked submission's credential could not be read: %s", exc)
+    return payload
+
+
 def resume_verification(db: Session, attempt: ApplicationSubmission) -> dict[str, Any]:
     """Second leg of a parked attempt: the code or link arrived, carry on.
 
@@ -320,7 +363,7 @@ def resume_verification(db: Session, attempt: ApplicationSubmission) -> dict[str
     db.flush()
     ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
     try:
-        result = resume(ctx, dict(attempt.verification or {}))
+        result = resume(ctx, _unseal(attempt.verification))
     except Exception as exc:
         _finish(db, application, attempt, SubmissionResult(ok=False, error=str(exc)[:600]))
         raise

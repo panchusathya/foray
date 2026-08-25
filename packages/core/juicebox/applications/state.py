@@ -83,6 +83,7 @@ def transition(
     actor: str,
     actor_id: str | None = None,
     reason: str = "",
+    occurred_at: datetime | None = None,
     now: datetime | None = None,
 ) -> Application:
     """Move one application one step, with every guard in one place."""
@@ -135,7 +136,20 @@ def transition(
         subject_type="application",
         subject_id=application.id,
         actor_id=actor_id,
-        payload={"from": previous, "to": to_status, "actor": actor, "reason": reason},
+        payload={
+            "from": previous,
+            "to": to_status,
+            "actor": actor,
+            "reason": reason,
+            # Only recorded when it differs from "now" -- a stamp equal to
+            # created_at adds nothing, and the history renders the event's own
+            # clock when this is absent.
+            **(
+                {"occurred_at": occurred_at.isoformat()}
+                if occurred_at is not None
+                else {}
+            ),
+        },
     )
 
     # A recruiter moving the pursuit is news to the candidate; a candidate's

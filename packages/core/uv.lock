@@ -752,6 +752,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+apply = [
+    { name = "playwright" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -777,6 +780,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pgvector", marker = "extra == 'postgres'", specifier = ">=0.2.5" },
+    { name = "playwright", marker = "extra == 'apply'", specifier = ">=1.40" },
     { name = "playwright", marker = "extra == 'linkedin'", specifier = ">=1.40" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.7" },
@@ -792,7 +796,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["postgres", "dev", "linkedin"]
+provides-extras = ["postgres", "dev", "linkedin", "apply"]
 
 [[package]]
 name = "mako"

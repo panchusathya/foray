@@ -269,6 +269,9 @@ def _verify(db: Session, candidate: Candidate, url: str) -> dict:
     if not clicked:
         return {"action": "failed", "reason": "verification link did not open"}
 
+    # Merge into the stored payload without touching `secret_blob`: these two
+    # keys are not secrets, and re-sealing here would mean decrypting a
+    # credential this function has no use for.
     state = dict(attempt.verification or {})
     state["verified_at"] = utcnow().isoformat()
     state["verification_url"] = url

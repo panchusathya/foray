@@ -32,29 +32,41 @@ SOURCE_PORTAL = "portal"
 
 # Versioned disclosure texts. Bump the version whenever the wording changes so
 # old rows keep describing what was actually shown at the time.
+# v2 dropped the "and you can stop any time" clause from the greeting. The
+# version is what makes that safe to do: old rows keep describing the wording
+# those people actually saw, which is the entire point of storing the text
+# rather than a reference to it.
 DISCLOSURE_WEB_WIDGET = (
     "Person opened the intake chat widget and typed a message. Greeting shown: "
     '"Hi — I\'m the intake assistant for {org}. I\'m an AI, and I\'m here to '
     "take a few details so a recruiter can match you to the right roles. It "
-    'takes a couple of minutes and you can stop any time."'
+    'takes a couple of minutes."'
 )
-DISCLOSURE_WEB_WIDGET_VERSION = "web-widget-v1"
+DISCLOSURE_WEB_WIDGET_VERSION = "web-widget-v2"
 
+# v2: the first reply no longer recites STOP/HELP. The keywords are still
+# honoured -- that is a code path, not a sentence -- so this now says what is
+# actually true of the message rather than what it used to contain.
 DISCLOSURE_INBOUND_TEXT = (
     "Person texted our number first, unprompted. Prior express consent is the "
-    "inbound message itself; the first reply identifies the org, discloses the "
-    "AI, and STOP/HELP are honoured per carrier keywords."
+    "inbound message itself; the first reply identifies the org and discloses "
+    "the AI. STOP/HELP are honoured per carrier keywords, and STOP is answered "
+    "with a single acknowledgement, though neither is recited in the greeting."
 )
-DISCLOSURE_INBOUND_TEXT_VERSION = "inbound-text-v1"
+DISCLOSURE_INBOUND_TEXT_VERSION = "inbound-text-v2"
 
 # The voice wrap-up question, verbatim from INTAKE_COMPLIANCE.md §6 and the
 # deployed agent definition. Consent is for application updates, not marketing.
+# v2 dropped the opt-out sentence that followed the question. The *question* is
+# the consent and is unchanged -- removing the recital does not weaken what was
+# asked, and keeping the version honest is what lets a dispute about a v1 grant
+# still be answered with the words that person heard.
 DISCLOSURE_VOICE_SMS = (
-    "Asked at call wrap-up, verbatim: \"Can I text you updates at this number? "
-    'You can reply STOP any time to opt out." Only an explicit, unambiguous '
-    "yes is recorded as consent."
+    'Asked at call wrap-up, verbatim: "Can I text you updates at this number?" '
+    "Only an explicit, unambiguous yes is recorded as consent; the agent does "
+    "not re-ask or reframe. STOP is honoured on any later message."
 )
-DISCLOSURE_VOICE_SMS_VERSION = "voice-wrapup-v1"
+DISCLOSURE_VOICE_SMS_VERSION = "voice-wrapup-v2"
 
 
 def record_consent(

@@ -112,14 +112,25 @@ button, input, textarea, select {
   font-size: 19px;
   padding: 0 10px 18px;
 }
+/*
+ * The mark is ~12px tall next to a wordmark set at 19px in the sidebar and
+ * 32px on the login card, so `vertical-align` can only ever be right at one
+ * of them -- which is why it sat low. Both lockups are flex rows instead, and
+ * the mark is centred by the box.
+ */
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.1;
+}
 /* The landing's logo mark: a 2×2 grid of squares, three purple, one gold. */
 .brand-glyph {
-  display: inline-grid;
+  display: grid;
   grid-template-columns: repeat(2, 5px);
   grid-auto-rows: 5px;
   gap: 2.5px;
-  vertical-align: -1px;
-  margin-right: 4px;
+  flex: 0 0 auto;
 }
 .brand-glyph i { background: var(--accent); border-radius: 1px; opacity: 0.95; }
 .brand-glyph i:nth-child(2) { opacity: 0.5; }
@@ -143,6 +154,15 @@ button, input, textarea, select {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+/* Above the nav rather than below it: this is the context every link runs in,
+   so it reads as a setting, not as a twelfth destination. */
+.project-picker {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
 }
 .sidebar-heading {
   font-size: 11px;
@@ -368,6 +388,80 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .stat { text-align: left; }
 .stat .value { font-size: 26px; font-family: var(--mono); }
 .stat .label { color: var(--muted); font-size: 13px; }
+/* A KPI tile that opens the list it counts. Same tile, plus a cursor and a
+   lift -- a clickable number and a static one must not look like different
+   components. */
+.stat.is-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+.stat.is-link:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+.stat.is-link:hover .label { color: var(--text); }
+
+/* ---------- home: waiting-on-you, activity, projects ---------- */
+
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  margin: 0 -10px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+a.todo-row:hover { background: var(--tint); }
+.todo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 7px;
+  flex: 0 0 auto;
+  background: var(--muted);
+}
+.todo-dot.urgent { background: var(--miss); }
+.todo-dot.waiting { background: var(--partial); }
+.todo-dot.ready { background: var(--accent); }
+.todo-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.todo-title { font-size: 14px; }
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  margin: 0 -10px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+.activity-row.is-link:hover { background: var(--tint); }
+/* Right-aligned so eight timestamps form a column you can scan instead of a
+   ragged edge that follows the badge width. */
+.activity-when { margin-left: auto; white-space: nowrap; }
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.project-row.current { border-left: 2px solid var(--accent); padding-left: 10px; margin-left: -12px; }
+.project-row-main { flex: 1 1 220px; min-width: 0; }
+.project-row-name { font-weight: 500; text-decoration: none; }
+.project-row-name:hover { text-decoration: underline; }
+.project-row-actions { flex: 0 0 auto; gap: 8px; align-items: center; }
+.project-form { border-bottom: 1px solid var(--border); padding-bottom: 14px; }
+/* A link that carries an action, sized like the `tiny` buttons beside it. */
+.tiny-link { font-size: 12.5px; color: var(--accent-light); text-decoration: none; }
+.tiny-link:hover { text-decoration: underline; }
 
 /* ---------- sequence editor + modal ---------- */
 
@@ -796,3 +890,57 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   scrollbar-width: thin;
   scrollbar-color: rgba(42, 33, 64, 0.25) transparent;
 }
+
+/* ---------- jobs / applications detail ---------- */
+
+/* Sits beside a title in a table cell, so it must not inherit the row's
+   font-size or it reads as part of the role name. */
+.jd-link {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.jd-link:hover { color: var(--accent-light); text-decoration: underline; }
+
+.record-update-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .record-update-fields { grid-template-columns: 1fr; }
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.history-row:first-child { border-top: none; }
+.history-when { padding-top: 3px; }
+
+/* ---------- intake: why a record is held back ---------- */
+
+/*
+ * `review_reason` arrives as one semicolon-joined audit line of field keys.
+ * It is the right thing to store and the wrong thing to read, so it is split
+ * into clauses (lib/reviewReason.js) and each one gets a marker, a heading and
+ * its fields as chips.
+ */
+.review-reason { display: flex; flex-direction: column; gap: 8px; }
+.review-clause { display: flex; gap: 8px; align-items: flex-start; }
+.review-marker {
+  width: 3px;
+  align-self: stretch;
+  min-height: 18px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  flex: 0 0 auto;
+}
+.review-marker.miss { background: var(--miss); }
+.review-marker.partial { background: var(--partial); }
+.review-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.review-fields .badge { font-size: 11.5px; }

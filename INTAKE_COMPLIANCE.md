@@ -62,8 +62,7 @@ decisions rather than suggestions.
 
 ## 6. SMS — TCPA consent, captured now, used later
 
-The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?
-You can reply STOP any time to opt out."*
+The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
 
 - Only an explicit, unambiguous yes counts. Hesitation, "I guess", or "email
   is better" is recorded as no. The agent never re-asks or reframes to convert
@@ -76,6 +75,58 @@ You can reply STOP any time to opt out."*
 - Consent is for **application updates**. It does not cover marketing, and the
   10DLC campaign registration will be granted on that use case (see
   `deploy/NUMBER_CHECKLIST.md`).
+
+## 6a. Why the opt-out recitals were removed — and what that costs
+
+Every greeting and the voice wrap-up used to carry a sentence about stopping:
+*"you can stop any time"* on the web and LinkedIn-first threads, *"Reply STOP
+any time to opt out, HELP for info"* on the candidate-agent greeting, and *"You
+can reply STOP any time to opt out"* after the voice consent question. All four
+are gone. **Only the sentences are gone.** STOP still stops, HELP still answers,
+`handle_stop` still writes the suppression row and the stopped thread, and the
+single STOP acknowledgement a carrier expects still goes out. Removing a
+sentence about a mechanism is not removing the mechanism, and
+`TestKeywordsStillWork` in `test_intake_consent_copy.py` exists so that
+distinction cannot quietly collapse.
+
+**The argument for removing them.** An opt-out recital in a *first* message is
+the single strongest cue that what follows is bulk. Candidates read it as a
+marketing blast, which is the read that produces the complaint the recital was
+supposed to prevent — so on a one-to-one conversational channel it is
+self-defeating. On the voice call it is worse than self-defeating: it lands
+immediately after the consent question, so the last thing the candidate hears
+before answering is a reason to say no, and the question stops sounding like a
+question.
+
+**The exposure this creates, stated plainly.** This is a judgement call, not a
+free win, and it cuts against two things previously written down here:
+
+- `CANDIDATE_AGENT_PLAN` §2 asked the candidate-agent greeting to carry three
+  things — who we are, that this is an AI, and how to stop. It now carries two.
+  A shared sender serves every tenant, so the candidate cannot identify us from
+  the number, and a person who wants out and does not remember the keyword has
+  no in-message answer. Their remaining options are replying anything at all
+  (the agent handles "stop messaging me" as an intent, but that is a model
+  reading, not a carrier keyword) or ignoring us.
+- **Carrier review may reject this.** 10DLC campaign review and the periodic
+  audits that follow look for opt-out language in message content, and some
+  vetting flows treat its absence in a first message as a fail regardless of
+  channel semantics. Complaint rate is what actually gets a shared sender
+  throttled, and the hypothesis here — that no recital produces *fewer*
+  complaints than one — is unmeasured. If it is wrong, it is wrong in the
+  direction of a number that stops delivering for every tenant on it.
+
+**Therefore:** this is a reversible copy change with no schema behind it, and it
+must be re-examined before SMS goes live rather than after. `SMS_ENABLEMENT.md`
+carries that item. If 10DLC review asks for opt-out language, put it back — in
+the *first outbound message only*, not in every greeting, and not in the voice
+wrap-up, which is not an SMS at all.
+
+**Disclosure records are versioned, so nothing about the past is rewritten.**
+`web-widget-v2`, `inbound-text-v2` and `voice-wrapup-v2` describe the new
+wording; rows written under `-v1` keep describing what those people actually
+saw. That is the whole reason `ConsentRecord` stores the disclosure text instead
+of a pointer to it.
 
 ## 7. Data handling
 

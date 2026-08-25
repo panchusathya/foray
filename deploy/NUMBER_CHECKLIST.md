@@ -79,8 +79,9 @@ lawful opt-ins accumulate in the meantime (`intake_calls.sms_opt_in`).
        the use case as recruiting/application-status updates with the exact
        opt-in language below.
 3. [ ] Opt-in evidence for the verification form: the agent asks, verbatim,
-       *"Can I text you updates at this number? You can reply STOP any time to
-       opt out."* — captured per call in the transcript, flagged in
+       *"Can I text you updates at this number?"* — and nothing about
+       stopping; the question is the consent, and reciting the opt-out
+       mechanism turns it into a sales line (INTAKE_COMPLIANCE.md §6a) — captured per call in the transcript, flagged in
        `intake_calls.sms_opt_in`, latched true only on an explicit yes.
 4. [ ] **STOP/HELP handling** wired and tested before the first campaign
        message. STOP must actually stop; the database flag is consent to start,

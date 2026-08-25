@@ -9,7 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .enrich.linkedin_url import linkedin_slug
-from .enrich.normalize import NormalizedCandidate, build_doc_text, normalize_candidate
+from .enrich.normalize import (
+    NormalizedCandidate,
+    build_doc_text,
+    normalize_candidate,
+    split_name,
+)
 from .enrich.taxonomy import normalize_seniority, normalize_title
 from .intake.phones import lookup_key
 from .llm.embeddings import get_embedder
@@ -135,6 +140,142 @@ def sync_candidate_phones(db: Session, candidate: Candidate) -> None:
             )
         )
     db.flush()
+
+
+@dataclass
+class ContactMerge:
+    """What ``merge_contact_details`` actually did. Empty means nothing changed."""
+
+    emails_added: tuple[str, ...] = ()
+    phones_added: tuple[str, ...] = ()
+    named: bool = False
+    # Details this person gave that somebody else already owns. Not written --
+    # see the docstring -- and worth a human's attention, because one of the two
+    # records is wrong and only a person can say which.
+    conflicts: tuple[str, ...] = ()
+    # A detail withheld because this person is on the do-not-contact list, and
+    # a newly learned address for them has to join it or the list is bypassed
+    # by the act of learning a second address.
+    suppressed: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.emails_added or self.phones_added or self.named)
+
+
+# What a row is called when nobody has told us a name yet. ``link_candidate``
+# and ``_find_or_create_candidate`` both fall back to an address or a number so
+# the CRM shows something actionable rather than a blank cell, which means the
+# real name arriving later has to be able to displace it -- otherwise the first
+# channel to reach somebody permanently decides what they are called.
+def is_placeholder_name(candidate: Candidate) -> bool:
+    name = (candidate.full_name or "").strip()
+    if not name:
+        return True
+    if "@" in name:
+        return True
+    # A number, however punctuated: "+14155550123", "(415) 555-0123".
+    return not any(ch.isalpha() for ch in name)
+
+
+def merge_contact_details(
+    db: Session,
+    candidate: Candidate,
+    *,
+    name: str = "",
+    email: str = "",
+    phone: str = "",
+) -> ContactMerge:
+    """Add what a conversation learned without overwriting what we knew.
+
+    The one writer for "this person told us their email/number/name", shared by
+    voice and text. They had drifted: the call path added a phone and an address
+    and ignored the name, the thread path wrote neither onto the candidate at
+    all -- so a texter's number never reached ``candidate_phones`` and the
+    dial-in line did not recognise them when they rang.
+
+    Three rules that are easy to get wrong separately and so live here once:
+
+    **A detail somebody else owns is never taken.** ``sync_candidate_emails``
+    already refuses to steal a claimed row, but appending to
+    ``Candidate.emails`` first would leave the JSON column claiming an address
+    the projection does not have -- a half-write that reads as ownership
+    everywhere except the index. Conflicts are reported instead, for a human.
+
+    **A placeholder name loses to a real one.** See ``is_placeholder_name``.
+    A real name is never overwritten by another real name: two people disagreeing
+    about somebody's name is a merge question, not an import.
+
+    **A new address for a suppressed person is suppressed too.** Otherwise
+    do-not-contact is defeated by the person mentioning a second mailbox.
+
+    Passing ``phone`` asserts this number belongs to this candidate. Caller ID
+    is not that assertion -- see ``intake.service.link_caller``.
+    """
+    from .outreach.suppressions import is_suppressed, normalize_email, suppress
+
+    address = normalize_email(email)
+    key = lookup_key(phone) if phone else ""
+
+    emails_added: list[str] = []
+    phones_added: list[str] = []
+    conflicts: list[str] = []
+    suppressed: list[str] = []
+
+    blocked = any(
+        is_suppressed(db, org_id=candidate.org_id, email=existing)
+        for existing in (candidate.emails or [])
+    ) or any(is_suppressed(db, org_id=candidate.org_id, phone=existing)
+             for existing in (candidate.phones or []))
+
+    if address and address not in (candidate.emails or []):
+        owner = owner_of_email(db, org_id=candidate.org_id, email=address)
+        if owner and owner != candidate.id:
+            conflicts.append(address)
+        else:
+            candidate.emails = [*(candidate.emails or []), address]
+            sync_candidate_emails(db, candidate)
+            emails_added.append(address)
+            if blocked:
+                suppress(db, org_id=candidate.org_id, email=address, reason="unsubscribe")
+                suppressed.append(address)
+
+    if key:
+        owned = {lookup_key(existing) for existing in (candidate.phones or [])}
+        if key not in owned:
+            claimed = db.scalar(
+                select(CandidatePhone.candidate_id).where(
+                    CandidatePhone.org_id == candidate.org_id, CandidatePhone.phone == key
+                )
+            )
+            if claimed and claimed != candidate.id:
+                conflicts.append(key)
+            else:
+                candidate.phones = [*(candidate.phones or []), key]
+                sync_candidate_phones(db, candidate)
+                phones_added.append(key)
+                if blocked:
+                    suppress(db, org_id=candidate.org_id, phone=key, reason="unsubscribe")
+                    suppressed.append(key)
+
+    named = False
+    real_name = (name or "").strip()
+    if real_name and is_placeholder_name(candidate):
+        first, last = split_name(real_name)
+        candidate.full_name = real_name[:200]
+        candidate.first_name = first
+        candidate.last_name = last
+        named = True
+
+    if emails_added or phones_added or named:
+        db.flush()
+
+    return ContactMerge(
+        emails_added=tuple(emails_added),
+        phones_added=tuple(phones_added),
+        named=named,
+        conflicts=tuple(conflicts),
+        suppressed=tuple(suppressed),
+    )
 
 
 def owner_of_email(db: Session, *, org_id: str, email: str) -> str | None:

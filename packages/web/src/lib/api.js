@@ -210,6 +210,9 @@ export const api = {
   funnel: (projectId) =>
     request(`/v1/analytics/funnel${projectId ? `?project_id=${projectId}` : ''}`),
   activity: () => request('/v1/analytics/activity?limit=25'),
+  // What is stuck and waiting on a person. Keys and counts only — the copy
+  // and the destinations live in lib/todo.js.
+  todo: () => request('/v1/analytics/todo'),
 
   // Mailboxes are a tenant-wide pool, so these are not scoped to a user.
   // Connect stays per-provider because the OAuth round trip is.

@@ -1063,7 +1063,14 @@ def record_reply(
         type="outreach.replied",
         subject_type="message",
         subject_id=message.id,
-        payload={"intent": verdict.intent, "confidence": verdict.confidence},
+        payload={
+            "intent": verdict.intent,
+            "confidence": verdict.confidence,
+            # The subject is a message, which has no page. Every other
+            # outreach event names the person here; this one did not, so a
+            # reply was the one activity row nobody could click through.
+            "candidate_id": message.candidate_id,
+        },
     )
     db.flush()
     return verdict

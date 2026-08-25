@@ -34,7 +34,6 @@ import {
   resolveParams,
   viewById,
 } from '../lib/contactViews.js';
-import { formatPhone } from '../lib/phone.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import {
   countOnPage,
@@ -88,9 +87,8 @@ function Cell({ column, row }) {
   switch (column) {
     case 'full_name': {
       const email = (row.emails ?? [])[0];
-      const phone = formatPhone((row.phones ?? [])[0]);
-      // Name and contact details in one cell, which is how you actually
-      // identify somebody, and frees the columns they used to take.
+      // Name and address in one cell, which is how you actually identify
+      // somebody, and frees the column the address used to take.
       return (
         <span className="identity">
           <Avatar name={row.full_name} />
@@ -100,12 +98,9 @@ function Cell({ column, row }) {
             <Link to={`/contacts/${row.id}`} title={row.full_name}>
               {row.full_name}
             </Link>
-            {email || phone ? (
-              <span
-                className="cell-sub mono"
-                title={[...(row.emails ?? []), ...(row.phones ?? []).map(formatPhone)].join(', ')}
-              >
-                {[email, phone].filter(Boolean).join(' · ')}
+            {email ? (
+              <span className="cell-sub mono" title={(row.emails ?? []).join(', ')}>
+                {email}
               </span>
             ) : (
               <span className="cell-sub muted">no email</span>
@@ -165,14 +160,6 @@ function Cell({ column, row }) {
       return row.emails?.length ? (
         <span className="mono muted" title={row.emails.join(', ')}>
           {row.emails[0]}
-        </span>
-      ) : (
-        <span className="muted">—</span>
-      );
-    case 'phones':
-      return row.phones?.length ? (
-        <span className="mono muted" title={row.phones.map(formatPhone).join(', ')}>
-          {formatPhone(row.phones[0])}
         </span>
       ) : (
         <span className="muted">—</span>

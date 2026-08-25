@@ -419,6 +419,13 @@ LOCATION_ALIASES = {
     "sfo": "san francisco",
     "bay area": "san francisco",
     "sf bay area": "san francisco",
+    # LinkedIn's own words. This is the single most common location string in
+    # the product -- every profile scraped out of the Bay Area says it -- and
+    # without the alias it matched nothing: not "san francisco", not
+    # "san francisco ca", not the metro table, which lists "bay area" but
+    # never the phrase LinkedIn actually writes.
+    "san francisco bay area": "san francisco",
+    "greater san francisco bay area": "san francisco",
     "silicon valley": "san francisco",
     "nyc": "new york",
     "new york city": "new york",
@@ -448,10 +455,29 @@ METRO_MEMBERS = {
 }
 
 
+#: Trailing US state codes. A job board writes "San Francisco, CA" and a
+#: profile writes "San Francisco"; they are the same place, and comparing the
+#: slugs made them a hard miss. Only stripped when something is left over, so
+#: a location that IS a state ("CA") keeps its name.
+_US_STATE_CODES = frozenset({
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "dc", "fl", "ga", "hi",
+    "id", "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn",
+    "ms", "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh",
+    "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa",
+    "wv", "wi", "wy", "pr",
+})
+
+
 def normalize_location(value: str) -> str:
     slug = slugify_text(value)
     if not slug:
         return ""
+    aliased = LOCATION_ALIASES.get(slug)
+    if aliased:
+        return aliased
+    head, _, tail = slug.rpartition(" ")
+    if head and tail in _US_STATE_CODES:
+        slug = head
     return LOCATION_ALIASES.get(slug, slug)
 
 

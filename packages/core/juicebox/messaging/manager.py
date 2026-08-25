@@ -94,7 +94,13 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         asked_field=thread.last_field_asked or "",
     )
     _reread(db, thread=thread)
-    _capture(db, thread=thread)
+    # force=True, unlike intake. Past the handover there is already a candidate
+    # and a preference row, and the only question is whether this row stays
+    # current -- "actually, make that 260" has to reach matching whatever the
+    # coverage gate thinks. Unforced, `_capture` returns early on an open gate,
+    # and the gate for a text-onboarded candidate is open by design now that
+    # onboarding stops after the profile confirm.
+    _capture(db, thread=thread, force=True)
     if not thread.candidate_id:
         identity.link_candidate(db, thread=thread)
     state = coverage(thread.record or {})
@@ -315,6 +321,30 @@ def eligible_matches(
     return pairs
 
 
+def _request_discovery(db: Session, *, thread: IntakeThread, candidate_id: str) -> bool:
+    """Kick off a search for this candidate on request. True when one is queued.
+
+    False for the two honest reasons: nobody to search for, or a spec too thin
+    to search on (``queries_for`` refuses to spend a credit on "jobs"). Both
+    keep the old canned line, which is accurate in those cases.
+    """
+    from ..jobmatch.discover_candidate import enqueue_discovery_on_request
+    from ..models import Candidate, CandidatePreference
+
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None or candidate.org_id != thread.org_id:
+        return False
+    preference = db.scalar(
+        select(CandidatePreference).where(
+            CandidatePreference.org_id == thread.org_id,
+            CandidatePreference.candidate_id == candidate_id,
+        )
+    )
+    if preference is None:
+        return False
+    return enqueue_discovery_on_request(db, candidate=candidate, preference=preference) is not None
+
+
 def _fresh(db, thread, first: str, second: str) -> str:
     """``first``, unless we just said it -- then ``second``.
 
@@ -387,12 +417,22 @@ def present_matches(
     if not pairs:
         if quiet:
             return None
+        # Asked directly and holding nothing: go and look before answering.
+        # Reading the book we happen to have is the whole of what "find me
+        # roles" used to do, so a candidate whose spec had never been searched
+        # -- or whose spec was searched once, at handover, before any of it was
+        # parsed -- got "nothing clears the bar" from a search that had never
+        # run. Capped at one billed sweep per candidate per day.
+        searching = _request_discovery(db, thread=thread, candidate_id=candidate_id)
+        body = (
+            "Looking now — I'll text you as soon as something worth your time turns up."
+            if searching
+            else "Nothing new clears the bar right now — I'll text you when something does."
+        )
         row = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(
-                body="Nothing new clears the bar right now — I'll text you when something does."
-            ),
+            message=OutboundMessage(body=body),
             origin=origin,
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])

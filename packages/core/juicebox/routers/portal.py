@@ -322,7 +322,15 @@ def get_application(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    return _application_out(db, _application(db, principal, application_id))
+    application = _application(db, principal, application_id)
+    # The package was rendered before the candidate answered the follow-up the
+    # package itself prompted, so a blank comp answer here may already have an
+    # answer on the preference row. Fold those in on read rather than leaving
+    # the candidate looking at a form field they filled in yesterday by text.
+    from ..applications.followups import refill_from_preference
+
+    refill_from_preference(db, application)
+    return _application_out(db, application)
 
 
 @router.post("/applications/{application_id}/approve")

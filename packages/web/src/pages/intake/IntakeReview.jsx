@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
+import { ReviewReason } from '../../components/ReviewReason.jsx';
 import { api } from '../../lib/api.js';
 import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../../lib/intake.js';
 import { useAsync } from '../../lib/useAsync.js';
@@ -146,7 +147,7 @@ function ThreadRow({ row, onDone }) {
       </button>
       <div className="row spread">
         <div>
-          <div className="small">{row.review_reason || 'Needs a look.'}</div>
+          <ReviewReason reason={row.review_reason} />
           <div className="small muted">
             {who || 'no contact details'} · {row.inbound_count} in / {row.outbound_count} out
           </div>
@@ -182,7 +183,7 @@ function CallRow({ row, onDone }) {
       <div className="row spread">
         <div>
           <Badge tone="partial">{row.status}</Badge>
-          <div className="small">{row.review_reason || 'Needs a look.'}</div>
+          <ReviewReason reason={row.review_reason} />
         </div>
         {row.candidate_id ? (
           <Link to={`/contacts/${row.candidate_id}`}>Open record</Link>

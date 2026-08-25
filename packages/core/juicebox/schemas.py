@@ -1141,6 +1141,11 @@ class ApplicationCreate(BaseModel):
 class ApplicationTransitionIn(BaseModel):
     to_status: str
     reason: str = ""
+    # When the thing actually happened, which is rarely when somebody got
+    # round to typing it in. Nothing in the state machine reads it -- it is
+    # recorded on the event so the history reads as the employer's timeline
+    # rather than ours. Absent means "now".
+    occurred_at: datetime | None = None
 
 
 class ApplicationPatch(BaseModel):
@@ -1201,10 +1206,31 @@ class ApplicationOut(BaseModel):
     updated_at: datetime
 
 
+class ApplicationHistoryEntry(BaseModel):
+    """One recorded move, replayed from the event log.
+
+    Read out of ``events`` rather than a table of its own: every transition
+    already writes ``application.status_changed`` with exactly this content,
+    and a second copy would be one more thing that can disagree with the row.
+    """
+
+    at: datetime
+    occurred_at: datetime | None = None
+    from_status: str = ""
+    to_status: str = ""
+    actor: str = ""
+    note: str = ""
+
+
 class ApplicationDetailOut(ApplicationOut):
-    """List row plus joined display fields and current documents."""
+    """List row plus joined display fields, current documents and history."""
 
     company: str = ""
     title: str = ""
     candidate_name: str = ""
+    # The posting's own URL, which is not `submission_url`: that one is where a
+    # human applies and is often blank. This is the JD, and it is what somebody
+    # scanning the list actually wants to open.
+    posting_url: str = ""
     documents: list[CandidateDocumentOut] = Field(default_factory=list)
+    history: list[ApplicationHistoryEntry] = Field(default_factory=list)

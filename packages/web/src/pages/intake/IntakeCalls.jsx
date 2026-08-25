@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
+import { ReviewReason } from '../../components/ReviewReason.jsx';
 import { formatComp, formatTimeline, intakeApi } from '../../lib/intake.js';
 import { useAsync } from '../../lib/useAsync.js';
 
@@ -101,7 +102,7 @@ function CallCard({ row }) {
         )}
       </div>
       {row.review_needed ? (
-        <div className="small muted">{row.review_reason || 'Needs a look.'}</div>
+        <ReviewReason reason={row.review_reason} />
       ) : null}
       {open ? <CallDetail callId={row.id} /> : null}
     </div>

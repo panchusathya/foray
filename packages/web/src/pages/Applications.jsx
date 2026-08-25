@@ -83,8 +83,25 @@ export function ApplicationsPage() {
                   <Link to={`/applications/${row.id}`}>{row.candidate_name || 'Candidate'}</Link>
                 </td>
                 <td>
-                  <div>{row.title}</div>
-                  <div className="muted small">{row.company}</div>
+                  {/* The role is what people scan this table for, so it opens
+                      the application; the posting itself is one hop further
+                      out and gets its own link when we have the URL. */}
+                  <Link to={`/applications/${row.id}`}>{row.title}</Link>
+                  <div className="muted small">
+                    {row.company}
+                    {row.posting_url || row.submission_url ? (
+                      <>
+                        {' · '}
+                        <a
+                          href={row.posting_url || row.submission_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Job posting ↗
+                        </a>
+                      </>
+                    ) : null}
+                  </div>
                 </td>
                 <td>
                   <ApplicationStatus status={row.status} />
@@ -156,8 +173,12 @@ export function ApplicationDetailPage() {
       <div className="card stack">
         <div className="spread">
           <ApplicationStatus status={application.status} />
-          {application.submission_url ? (
-            <a href={application.submission_url} target="_blank" rel="noreferrer">
+          {application.posting_url || application.submission_url ? (
+            <a
+              href={application.posting_url || application.submission_url}
+              target="_blank"
+              rel="noreferrer"
+            >
               Job posting ↗
             </a>
           ) : null}
@@ -233,30 +254,154 @@ export function ApplicationDetailPage() {
         </div>
       ) : null}
 
-      {moves.length ? (
-        <div className="card stack">
-          <h3>Record an update</h3>
-          <p className="muted small">
-            Employer replies do not reach us on their own — the candidate&apos;s mailbox is not
-            connected. Move it here when you hear something.
-          </p>
-          <div className="row wrap">
-            {moves.map((next) => (
-              <button
-                key={next}
-                type="button"
-                className="tiny ghost"
-                disabled={busy}
-                onClick={() =>
-                  act(() => api.transitionApplication(application.id, { to_status: next }))
-                }
-              >
-                {statusLabel(next)}
-              </button>
+      <RecordUpdate application={application} moves={moves} busy={busy} act={act} />
+      <UpdateHistory application={application} />
+    </div>
+  );
+}
+
+/**
+ * Recording what an employer did.
+ *
+ * The buttons alone were the whole feature, and they threw away everything
+ * worth keeping: *when* it happened (a rejection heard on Friday and typed in
+ * on Monday is Friday's) and *what was actually said*. Both go onto the
+ * status-change event, which is what `UpdateHistory` below reads back — so
+ * the trail is the same one the state machine already writes, not a second
+ * record that can disagree with it.
+ *
+ * The status is picked first and the button confirms, rather than one button
+ * per status: a note you typed cannot then be lost by clicking the wrong one.
+ */
+function RecordUpdate({ application, moves, busy, act }) {
+  const [next, setNext] = useState('');
+  const [note, setNote] = useState('');
+  const [happened, setHappened] = useState('');
+
+  if (!moves.length) {
+    return (
+      <div className="card stack">
+        <h3>Record an update</h3>
+        <p className="muted small">
+          This one is closed — {statusLabel(application.status).toLowerCase()}. Nothing left to
+          record.
+        </p>
+      </div>
+    );
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    if (!next) return;
+    // Date-only input, so midday rather than midnight: a bare date parses as
+    // UTC and would show as the day before for anyone west of Greenwich.
+    const occurred = happened ? new Date(`${happened}T12:00:00`).toISOString() : undefined;
+    act(async () => {
+      await api.transitionApplication(application.id, {
+        to_status: next,
+        reason: note.trim(),
+        occurred_at: occurred,
+      });
+      setNext('');
+      setNote('');
+      setHappened('');
+    });
+  }
+
+  return (
+    <form className="card stack" onSubmit={submit} data-testid="record-update">
+      <h3 style={{ marginBottom: 0 }}>Record an update</h3>
+      <p className="muted small" style={{ marginTop: 0 }}>
+        Employer replies do not reach us on their own — the candidate&apos;s mailbox is not
+        connected. Move it here when you hear something.
+      </p>
+      <div className="record-update-fields">
+        <label className="stack" style={{ gap: 4 }}>
+          <span className="muted small">What happened</span>
+          <select value={next} onChange={(event) => setNext(event.target.value)}>
+            <option value="">Choose an outcome…</option>
+            {moves.map((move) => (
+              <option key={move} value={move}>
+                {statusLabel(move)}
+              </option>
             ))}
-          </div>
+          </select>
+        </label>
+        <label className="stack" style={{ gap: 4 }}>
+          <span className="muted small">When (optional)</span>
+          <input
+            type="date"
+            value={happened}
+            max={new Date().toISOString().slice(0, 10)}
+            onChange={(event) => setHappened(event.target.value)}
+          />
+        </label>
+      </div>
+      <label className="stack" style={{ gap: 4 }}>
+        <span className="muted small">
+          What was said, and who said it — this is the only record of it
+        </span>
+        <textarea
+          rows={2}
+          value={note}
+          placeholder="e.g. Recruiter emailed: moving to a first-round screen next week."
+          onChange={(event) => setNote(event.target.value)}
+        />
+      </label>
+      <div>
+        <button type="submit" className="primary" disabled={busy || !next}>
+          Record it
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Every move this application has made, replayed from the event log.
+ *
+ * Two clocks on purpose: when it happened and, if they differ, when we were
+ * told. Collapsing them would quietly rewrite an employer's timeline to match
+ * our data entry.
+ */
+function UpdateHistory({ application }) {
+  const entries = [...(application.history ?? [])].reverse();
+
+  return (
+    <div className="card stack">
+      <h3 style={{ marginBottom: 0 }}>History</h3>
+      {!entries.length ? (
+        <p className="muted small" style={{ marginTop: 0 }}>
+          Nothing recorded yet. Every update you record shows up here, with the note and the
+          date it happened.
+        </p>
+      ) : (
+        <div className="stack" style={{ gap: 0 }}>
+          {entries.map((entry, index) => {
+            const when = entry.occurred_at || entry.at;
+            const loggedLater =
+              entry.occurred_at && formatDate(entry.occurred_at) !== formatDate(entry.at);
+            return (
+              <div className="history-row" key={`${entry.at}-${index}`} data-testid="history-row">
+                <div className="history-when muted small mono">{formatDate(when)}</div>
+                <div className="stack" style={{ gap: 2 }}>
+                  <div>
+                    <ApplicationStatus status={entry.to_status} />
+                    {entry.from_status ? (
+                      <span className="muted small"> from {statusLabel(entry.from_status)}</span>
+                    ) : null}
+                    {entry.actor ? <span className="muted small"> · {entry.actor}</span> : null}
+                  </div>
+                  {entry.note ? <div className="small">{entry.note}</div> : null}
+                  {loggedLater ? (
+                    <div className="muted small">logged {formatDate(entry.at)}</div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

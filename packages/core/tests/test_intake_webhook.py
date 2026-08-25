@@ -37,6 +37,9 @@ from juicebox.repository import sync_candidate_phones
 OUR_NUMBER = "+16283865454"
 CANDIDATE_NUMBER = "+14155550123"
 STRANGER_NUMBER = "+14155559999"
+# What the network sends when caller ID is withheld: the keypad spelling of
+# ANONYMOUS. Every withheld caller arrives as this exact string.
+ANONYMOUS_NUMBER = "+266696687"
 API_KEY = "key_test_signing_secret"
 
 TRANSCRIPT = (
@@ -496,6 +499,36 @@ class TestExtraction:
         post(client, signer, call_payload(from_number=STRANGER_NUMBER))
         assert session.scalars(select(IntakeCall)).one().candidate_id is None
 
+    def test_a_withheld_caller_id_is_not_linked_to_anyone(
+        self, client, session, signer, owned_number, account
+    ):
+        """The disclosure bug, end to end.
+
+        A candidate record already carries the ANONYMOUS placeholder -- however
+        it got there, an import or a call placed before the fix. The next person
+        to withhold their caller ID arrives looking exactly the same, and must
+        still come out unidentified rather than wearing that candidate's name.
+        """
+        person = _candidate(session, account["org_id"], phones=[ANONYMOUS_NUMBER])
+        # The number never made it into the lookup projection in the first place.
+        assert person.phones == [ANONYMOUS_NUMBER]
+        post(client, signer, call_payload(from_number=ANONYMOUS_NUMBER))
+        assert session.scalars(select(IntakeCall)).one().candidate_id is None
+
+    def test_two_withheld_callers_are_not_linked_to_each_other(
+        self, client, session, signer, owned_number, account
+    ):
+        """Two strangers, one placeholder. Neither may become the other."""
+        post(client, signer, call_payload(from_number=ANONYMOUS_NUMBER))
+        post(
+            client,
+            signer,
+            call_payload(call_id="call_second", from_number=ANONYMOUS_NUMBER),
+        )
+        rows = session.scalars(select(IntakeCall)).all()
+        assert len(rows) == 2
+        assert [row.candidate_id for row in rows] == [None, None]
+
     def test_a_number_belonging_to_another_org_does_not_match(
         self, client, session, signer, owned_number, account
     ):
@@ -619,151 +652,6 @@ class TestExtraction:
 
 # --------------------------------------------------------------------------
 # the mid-call identification
-# --------------------------------------------------------------------------
-
-
-class TestIdentifyEndpoint:
-    """The other mid-call tool, and the one that is *about a person*.
-
-    ``/coverage`` returns topics, so it discloses nothing even though anyone
-    with a valid signature can reach it. This one answers "who is this", so the
-    tiering is the whole endpoint -- and it is decided in code, because a prompt
-    asking a model how much it may reveal is a model deciding how much it may
-    reveal.
-    """
-
-    def _function_call(self, email, *, call_id="call_abc123", send=False):
-        args = {"email": email}
-        if send:
-            args["send_matches"] = True
-        return {
-            "name": "identify_caller",
-            "call": {"call_id": call_id, "transcript": TRANSCRIPT, "agent_id": "agent_1"},
-            "args": args,
-        }
-
-    def _known(self, session, account, *, phone=""):
-        candidate = Candidate(
-            org_id=account["org_id"],
-            source="test",
-            source_id="priya",
-            full_name="Priya Raman",
-            first_name="Priya",
-            emails=["priya@example.com"],
-            phones=[phone] if phone else [],
-        )
-        session.add(candidate)
-        session.flush()
-        from juicebox.repository import sync_candidate_emails
-
-        sync_candidate_emails(session, candidate)
-        if phone:
-            sync_candidate_phones(session, candidate)
-        session.add(
-            CandidatePreference(
-                org_id=account["org_id"],
-                candidate_id=candidate.id,
-                timeline="under_1_month",
-                target_base=240000.0,
-                work_authorization="green card",
-                active_processes=[{"company": "Acme", "stage": "onsite"}],
-            )
-        )
-        session.commit()
-        return candidate
-
-    def _a_call(self, session, account, **overrides):
-        fields = dict(
-            org_id=account["org_id"],
-            provider="retell",
-            provider_call_id="call_abc123",
-            entry_point="inbound",
-            from_number=CANDIDATE_NUMBER,
-            to_number=OUR_NUMBER,
-            status="in_progress",
-        )
-        fields.update(overrides)
-        call = IntakeCall(**fields)
-        session.add(call)
-        session.commit()
-        return call
-
-    def test_it_requires_a_signature(self, client):
-        response = client.post("/v1/intake/identify", json=self._function_call("a@b.com"))
-        assert response.status_code == 401
-
-    def test_an_unknown_caller_gets_no_hint_that_a_record_might_exist(
-        self, client, session, signer, account
-    ):
-        self._known(session, account)
-        self._a_call(session, account)
-        body = post(
-            client, signer, self._function_call("stranger@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["known"] is False
-        assert "Priya" not in repr(body)
-
-    def test_a_matching_address_from_a_strange_number_reveals_nothing(
-        self, client, session, signer, account
-    ):
-        self._known(session, account)
-        self._a_call(session, account, from_number=STRANGER_NUMBER)
-        body = post(
-            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["tier"] == "unverified"
-        assert "first_name" not in body
-        assert "Priya" not in repr(body)
-        assert "240000" not in repr(body)
-
-    def test_two_factors_unlock_the_greeting(self, client, session, signer, account):
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        self._a_call(session, account)
-        body = post(
-            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["tier"] == "verified"
-        assert body["first_name"] == "Priya"
-        assert body["on_file"]
-
-    def test_even_a_verified_caller_hears_no_values(self, client, session, signer, account):
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        self._a_call(session, account)
-        blob = repr(
-            post(
-                client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-            ).json()
-        )
-        for secret in ("240000", "green card", "Acme"):
-            assert secret not in blob, f"{secret!r} reached the agent"
-
-    def test_a_request_with_no_call_row_degrades_rather_than_failing(
-        self, client, session, signer, account
-    ):
-        """An error here is heard as the agent going quiet."""
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        response = post(
-            client,
-            signer,
-            self._function_call("priya@example.com", call_id="call_never_seen"),
-            path="/v1/intake/identify",
-        )
-        assert response.status_code == 200
-        assert response.json()["known"] is False
-
-    def test_a_garbage_address_is_answered_not_rejected(
-        self, client, session, signer, account
-    ):
-        self._a_call(session, account)
-        response = post(
-            client, signer, self._function_call("not an address"), path="/v1/intake/identify"
-        )
-        assert response.status_code == 200
-        assert response.json()["known"] is False
-
-
-# --------------------------------------------------------------------------
-# the mid-call gate
 # --------------------------------------------------------------------------
 
 
@@ -964,3 +852,256 @@ def _filled_required() -> dict:
         }
     )
     return record
+
+
+# --------------------------------------------------------------------------
+# who is ringing
+# --------------------------------------------------------------------------
+
+
+def inbound_payload(from_number=CANDIDATE_NUMBER, to_number=OUR_NUMBER):
+    """Retell's `call_inbound`: a different shape, and no call id.
+
+    The call does not exist yet -- that is the point of the event, and why it
+    cannot go through the same call-id path as the lifecycle webhooks.
+    """
+    return {
+        "event": "call_inbound",
+        "call_inbound": {
+            "agent_id": "agent_1",
+            "from_number": from_number,
+            "to_number": to_number,
+        },
+    }
+
+
+def _preference(session, candidate, **overrides):
+    from juicebox.models import CandidatePreference
+
+    row = CandidatePreference(
+        org_id=candidate.org_id,
+        candidate_id=candidate.id,
+        spec={"job_titles": ["staff backend engineer"], "locations": ["austin"]},
+        employment_status="employed_searching",
+        timeline="under_1_month",
+        target_base=250000.0,
+        active_processes=[{"company": "Stripe", "stage": "onsite"}],
+        confidential_items=["do not contact my current employer"],
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    session.add(row)
+    session.commit()
+    return row
+
+
+class TestRingTimeRecognition:
+    """The dial-in line knows who is calling before it speaks.
+
+    Everything here runs on the `call_inbound` webhook, which fires while the
+    phone is ringing. What it returns is interpolated into the agent's prompt,
+    so these assertions are the difference between a returning candidate being
+    greeted and being interrogated.
+    """
+
+    def test_a_known_caller_is_recognised_before_the_agent_speaks(
+        self, client, session, signer, owned_number, account
+    ):
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload())
+        assert response.status_code == 200
+        variables = response.json()["call_inbound"]["dynamic_variables"]
+        assert variables["caller_known"] == "true"
+        assert variables["caller_first_name"] == person.first_name
+
+    def test_an_unknown_number_is_a_first_conversation(
+        self, client, session, signer, owned_number, account
+    ):
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload(from_number=STRANGER_NUMBER))
+        variables = response.json()["call_inbound"]["dynamic_variables"]
+        assert variables["caller_known"] == "false"
+        assert variables["caller_first_name"] == ""
+        assert variables["caller_on_file"] == ""
+
+    def test_a_withheld_caller_id_is_a_first_conversation(
+        self, client, session, signer, owned_number, account
+    ):
+        """No special case needed: the placeholder yields no lookup key, so it
+        matches nobody, so nothing is recalled to whoever is actually calling."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        response = post(client, signer, inbound_payload(from_number=ANONYMOUS_NUMBER))
+        assert response.json()["call_inbound"]["dynamic_variables"]["caller_known"] == "false"
+
+    def test_the_record_is_handed_over_so_it_can_be_read_back(
+        self, client, session, signer, owned_number, account
+    ):
+        """Refusing a candidate their own answers was the bug. The agent can
+        only repeat what it was given, so the content has to be here."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        on_file = variables["caller_on_file"]
+        assert "staff backend engineer" in on_file
+        assert "austin" in on_file
+        assert "250,000" in on_file
+        assert "Stripe" in on_file
+
+    def test_a_known_caller_with_no_record_yet_is_still_greeted(
+        self, client, session, signer, owned_number, account
+    ):
+        """In the CRM but never interviewed: worth a name, with nothing to recall."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_known"] == "true"
+        assert variables["caller_first_name"] == person.first_name
+        assert variables["caller_on_file"] == ""
+
+    def test_a_caller_gets_back_everything_they_themselves_said(
+        self, client, session, signer, owned_number, account
+    ):
+        """Including what they asked us to keep quiet.
+
+        That flag means "do not put this in front of a client". The person on
+        the phone is the one who dictated it, and it reaches them unmarked --
+        an earlier version labelled it as sensitive, which taught the agent to
+        hedge about the one subject the caller most likely rang to discuss.
+        """
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        on_file = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]["caller_on_file"]
+        assert "do not contact my current employer" in on_file
+        for warning in ("keep quiet", "confidential", "sensitive"):
+            assert warning not in on_file.lower(), (
+                f"{warning!r} labels the caller's own words as something to be "
+                "careful about with them"
+            )
+
+    def test_an_unclaimed_number_answers_rather_than_dropping_the_call(
+        self, client, session, signer, account
+    ):
+        """No `owned_number` fixture: nobody has claimed the line.
+
+        The lifecycle webhook 404s here, and should. This one must not -- a
+        refusal at ring time is a dead phone for whoever dialled it.
+        """
+        response = post(client, signer, inbound_payload())
+        assert response.status_code == 200
+        assert response.json()["call_inbound"]["dynamic_variables"]["caller_known"] == "false"
+
+    def test_it_still_requires_a_signature(self, client, owned_number):
+        assert client.post("/v1/intake/webhook", json=inbound_payload()).status_code == 401
+
+    def test_ringing_writes_nothing(self, client, session, signer, owned_number, account):
+        """It is on the critical path of a ringing phone and the call has no id
+        yet, so there is nothing to write and it must not try."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        post(client, signer, inbound_payload())
+        assert session.scalars(select(IntakeCall)).all() == []
+
+    def test_every_variable_is_a_string(
+        self, client, session, signer, owned_number, account
+    ):
+        """Retell rejects a non-string dynamic variable, and a rejected response
+        means the agent starts with no context at all."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables and all(isinstance(v, str) for v in variables.values())
+
+    def test_the_prompt_defaults_cover_every_variable_we_send(
+        self, client, session, signer, owned_number, account
+    ):
+        """The deploy script's fallback set must match this one key for key, or
+        a webhook timeout leaves the agent saying `{{caller_known}}` aloud."""
+        from juicebox.intake.service import CALLER_UNKNOWN
+
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        _preference(session, person)
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert set(variables) == set(CALLER_UNKNOWN)
+
+
+
+
+class TestRecentTextRecall:
+    """"You texted about X" is the other way a returning call opens."""
+
+    def _texted(self, session, candidate, body, *, direction="inbound"):
+        from juicebox.models import IntakeMessage, IntakeThread
+
+        thread = IntakeThread(
+            org_id=candidate.org_id,
+            candidate_id=candidate.id,
+            channel="sms",
+            provider="linq",
+            from_address=CANDIDATE_NUMBER,
+        )
+        session.add(thread)
+        session.flush()
+        session.add(
+            IntakeMessage(
+                org_id=candidate.org_id,
+                thread_id=thread.id,
+                seq=1,
+                direction=direction,
+                body=body,
+            )
+        )
+        session.commit()
+        return thread
+
+    def test_the_last_thing_they_texted_is_offered_as_an_opener(
+        self, client, session, signer, owned_number, account
+    ):
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Got the Stripe onsite booked for Thursday")
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == "Got the Stripe onsite booked for Thursday"
+
+    def test_our_own_outbound_text_is_not_quoted_back_at_them(
+        self, client, session, signer, owned_number, account
+    ):
+        """Reciting our own nudge is a receipt, not recognition."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Just checking in!", direction="outbound")
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == ""
+
+    def test_a_stale_text_is_not_raised(
+        self, client, session, signer, owned_number, account
+    ):
+        """"You mentioned last month" invites a correction, not a conversation.
+
+        Also the regression guard for naive-vs-aware timestamps: SQLite returns
+        one and Postgres the other, and because ring time catches everything and
+        degrades, getting this wrong stops recognising texters silently rather
+        than failing.
+        """
+        from datetime import timedelta
+
+        from juicebox.models import IntakeMessage, utcnow
+
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        self._texted(session, person, "Still looking, no rush")
+        message = session.scalars(select(IntakeMessage)).one()
+        message.created_at = utcnow() - timedelta(days=45)
+        session.commit()
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        assert variables["caller_recent_text"] == ""

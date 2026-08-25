@@ -31,18 +31,13 @@ from sqlalchemy import select
 from juicebox.intake.records import merge_record
 from juicebox.intake.schema import empty_record
 from juicebox.intake.service import (
-    TIER_UNKNOWN,
-    TIER_UNVERIFIED,
-    TIER_VERIFIED,
-    UNVERIFIED_NUMBER_REASON,
     coverage_snapshot,
     empty_coverage,
-    identify_caller,
     prior_preference_record,
     upsert_preference,
 )
 from juicebox.llm.client import LLMClient, set_llm
-from juicebox.models import Candidate, CandidatePreference, IntakeCall, JobMatch, JobPosting
+from juicebox.models import Candidate, CandidatePreference, IntakeCall
 from juicebox.repository import sync_candidate_emails, sync_candidate_phones
 
 CALLER = "+14155550123"
@@ -300,133 +295,3 @@ class TestTheGateIsSeeded:
 # --------------------------------------------------------------------------
 # identification, and what may be said back
 # --------------------------------------------------------------------------
-
-
-class TestIdentifyCaller:
-    def test_an_unknown_address_discloses_nothing(self, session, account):
-        call = a_call(session, account)
-        out = identify_caller(session, call=call, email="nobody@example.com")
-        assert out["tier"] == TIER_UNKNOWN
-        assert out["known"] is False
-        assert "first_name" not in out
-        assert "on_file" not in out
-
-    def test_a_matching_address_from_an_unknown_number_discloses_nothing(
-        self, session, account
-    ):
-        """The rule caller ID cannot satisfy.
-
-        Knowing somebody's email address is not evidence of being them -- it is
-        exactly what a person phoning *about* them would also know. And on a
-        recruiting line, confirming that a named individual is in our CRM tells
-        the caller that person is job-hunting.
-        """
-        candidate = a_candidate(session, account, email="priya@example.com")
-        a_preference(session, account, candidate, timeline="under_1_month")
-        call = a_call(session, account)
-
-        out = identify_caller(session, call=call, email="priya@example.com")
-        assert out["tier"] == TIER_UNVERIFIED
-        assert "first_name" not in out, "a first name is a disclosure"
-        assert "on_file" not in out
-        assert "Priya" not in out["guidance"]
-
-    def test_an_unverified_call_is_still_attributed(self, session, account):
-        """``AGENTS.md``: caller ID authorises accepting an update."""
-        candidate = a_candidate(session, account, email="priya@example.com")
-        call = a_call(session, account)
-
-        identify_caller(session, call=call, email="priya@example.com")
-        assert call.candidate_id == candidate.id
-        assert call.contact_email == "priya@example.com"
-        assert UNVERIFIED_NUMBER_REASON in call.review_reason
-
-    def test_two_factors_unlock_the_first_name_and_the_topics(self, session, account):
-        """Something they have (the phone) and something they know (the email)."""
-        candidate = a_candidate(session, account, email="priya@example.com", phone=CALLER)
-        record = empty_record()
-        record["timeline"] = "under_1_month"
-        record["spec"]["job_titles"] = ["machine learning engineer"]
-        a_preference(
-            session,
-            account,
-            candidate,
-            timeline="under_1_month",
-            spec=record["spec"],
-            target_base=240000.0,
-        )
-        call = a_call(session, account, candidate)
-
-        out = identify_caller(session, call=call, email="priya@example.com")
-        assert out["tier"] == TIER_VERIFIED
-        assert out["first_name"] == "Priya"
-        assert "your timing" in out["on_file"]
-        assert "the kind of role you are going after" in out["on_file"]
-
-    def test_a_verified_caller_still_hears_no_figures(self, session, account):
-        """Topics, never values. Two factors is better than one and still not
-        good enough to read somebody's salary down a phone line."""
-        candidate = a_candidate(session, account, email="priya@example.com", phone=CALLER)
-        a_preference(
-            session,
-            account,
-            candidate,
-            target_base=240000.0,
-            comp_currency="USD",
-            work_authorization="green card",
-            active_processes=[{"company": "Acme", "stage": "onsite"}],
-            confidential_items=["manager does not know"],
-        )
-        call = a_call(session, account, candidate)
-
-        out = identify_caller(session, call=call, email="priya@example.com")
-        blob = repr(out)
-        for secret in ("240000", "240", "green card", "Acme", "manager does not know"):
-            assert secret not in blob, f"{secret!r} reached the agent"
-
-    def test_a_different_persons_number_does_not_verify(self, session, account):
-        a_candidate(session, account, email="priya@example.com", phone=OTHER_NUMBER)
-        call = a_call(session, account)
-        out = identify_caller(session, call=call, email="priya@example.com")
-        assert out["tier"] == TIER_UNVERIFIED
-
-    def test_no_call_row_discloses_nothing(self, session, account):
-        a_candidate(session, account, email="priya@example.com", phone=CALLER)
-        out = identify_caller(session, call=None, email="priya@example.com")
-        assert out["tier"] == TIER_UNKNOWN
-
-    def test_the_roles_offer_never_quotes_a_number(self, session, account):
-        """``AGENTS.md`` forbids the agent quoting a number of roles.
-
-        A candidate hears a number as a promise, and that does not stop being
-        true because the number would be accurate.
-        """
-        candidate = a_candidate(session, account, email="priya@example.com", phone=CALLER)
-        for index in range(3):
-            posting = JobPosting(
-                org_id=account["org_id"],
-                source="manual",
-                source_id=f"posting-acme-{index}",
-                title="Staff Backend",
-                company="Acme",
-                company_normalized="acme",
-                jd_text="Build things.",
-                status="open",
-            )
-            session.add(posting)
-            session.flush()
-            session.add(
-                JobMatch(
-                    org_id=account["org_id"],
-                    job_posting_id=posting.id,
-                    candidate_id=candidate.id,
-                    score=0.8,
-                )
-            )
-            session.flush()
-        call = a_call(session, account, candidate)
-
-        out = identify_caller(session, call=call, email="priya@example.com")
-        assert isinstance(out["roles_to_send"], bool)
-        assert "3" not in out["guidance"]
-        assert "Acme" not in repr(out)

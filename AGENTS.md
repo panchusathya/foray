@@ -363,7 +363,7 @@ imported into it (+1 628 386-5454). Plan and phasing live in
   learned address for a suppressed person is suppressed too, or do-not-contact
   is defeated by the person mentioning a second mailbox.
 
-### One person, two channels (`intake/records.py`, `service.identify_caller`)
+### One person, two channels (`intake/records.py`)
 
 `AGENTS.md` already records that `messaging.records.persist_preference` and
 `intake.service.upsert_preference` upsert the same row and never conflict
@@ -391,39 +391,54 @@ three are now closed:
   yet.
 
 Note the asymmetry between `known_for_call` and `prior_preference_record`, which
-look like the same idea and are not: **identity** must not count as covered
-(the agent may still have to ask for it, because it cannot verify who is on the
-phone), while a **stated preference** genuinely is known and re-asking it wastes
-the call.
+look like the same idea and are not: **identity** must not count as covered,
+because a name we imported is not something the candidate said on this call and
+banking it closes the gate on a question nobody asked -- while a **stated
+preference** genuinely is known, and re-asking it wastes the call.
 
-`identify_caller` is the tool that makes the returning-caller case work at all
--- the inbound agent has always asked for a name and an email and previously
-could do nothing with either, so the caller heard a company that did not
-recognise them. Its rules:
+### The dial-in line knows who is calling (`service.inbound_call_context`)
 
-- **The tier is decided in code, never in the prompt.** A prompt asking a model
-  how much it may reveal is a model deciding how much it may reveal.
-- **`unverified` discloses nothing, not even a first name.** Knowing somebody's
-  address is not evidence of being them -- it is exactly what a person phoning
-  *about* them would also know. And on a recruiting line, confirming that a
-  named individual is in our CRM tells the caller that person is job-hunting.
-  The update is still accepted: caller ID authorises accepting one, never
-  disclosing one.
-- **`verified` needs two factors**: the stated address matches the row *and* the
-  call came from a number already on it. Something they know and something they
-  have, which is the bar this file already set for reading state back.
-- **Even `verified` gets topics, never values.** `_SPEAKABLE_TOPICS` omits comp,
-  work authorisation, live processes and offers on purpose: two factors is
-  better than one and still not good enough to read somebody's salary or
-  interview pipeline down a phone line.
-- **`roles_to_send` is a boolean, not a count.** The shared rules forbid the
-  agent quoting a number of roles because a candidate hears a number as a
-  promise, and that does not stop being true because the number would be
-  accurate.
-- **Texting the roles goes through `messaging.notify`**, so every gate that
-  protects an unprompted text still applies. It is therefore only offerable to
-  a candidate who already has a manager-mode thread: bootstrapping one from a
-  phone call is a TCPA question, not a plumbing one.
+Identity on the inbound line is resolved from caller ID **before the agent
+speaks**, not asked for during the call. Retell fires `call_inbound` while the
+phone is ringing and interpolates our response into the prompt, so
+`/v1/intake/webhook` answers it with `caller_known`, the caller's first name,
+when we last spoke, their last inbound text, their record and what we still owe
+them. The prompt branches on `caller_known` and never asks.
+
+This replaced an `identify_caller` tool that asked every caller for an email to
+look them up and then, even for a caller matched on two factors, returned
+topics rather than values. Both halves were wrong in the same direction, and
+the rules that stand now are:
+
+- **Never ask a caller to establish who they are.** The number answered that
+  before the agent opened its mouth. Asking spends a question and an apology on
+  something already known, and lands hardest on the returning candidate it is
+  supposedly for. `deploy/tests/check_agent_prompts.py` fails the build if the
+  asking creeps back into the prompt.
+- **A recognised caller is entitled to their whole record, read back plainly.**
+  Figures, companies, dates. `confidential_items` included: that flag means "do
+  not put this in front of a *client*", and the person on the phone is the one
+  who dictated it. Hedging with somebody about their own disclosure is the
+  failure, not the safeguard -- and it is worst precisely on the subject they
+  most likely rang about.
+- **What is genuinely not disclosable is our side, not theirs.** Client
+  feedback, whether anyone is interested, where a submission stands. That is a
+  gap in what the record holds, not something being withheld, and the prompt
+  says it that way.
+- **An unrecognised number gets a first intake, with no implied history.** That
+  covers a genuinely new caller, a number we do not hold, and a withheld caller
+  ID -- `lookup_key` refuses the network's placeholders, so the withheld case
+  needs no special path and cannot match the previous anonymous caller.
+- **Ring time never fails the call.** An unclaimed number, an unknown caller
+  and a broken lookup all return the unknown-caller variables. A 404 to a
+  ringing phone is a dead line; the worst case here is a few questions we
+  already had answers to. `default_dynamic_variables` covers the same ground on
+  Retell's side, so a webhook timeout degrades to a first intake rather than an
+  agent reading `{{caller_known}}` out loud.
+- **The residual risk is a spoofed ANI, and it is accepted.** The record is
+  what the candidate said about themselves, not an account anyone can spend.
+  `resolve_candidate_id` says so in its docstring rather than carrying a rule
+  the code above it no longer follows.
 
 ### The webhook and the mid-call gate (phase 2)
 

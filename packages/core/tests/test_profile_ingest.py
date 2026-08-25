@@ -456,6 +456,44 @@ class TestApifyProvider:
         assert parsed["experiences"][1]["is_current"] is False
         assert parsed["educations"][0]["school"] == "MIT"
 
+    def test_the_request_matches_the_actor_contract(self, monkeypatch):
+        """`queries` and `profileScraperMode`, not `profileUrls`.
+
+        The actor's input shape is its own; getting it wrong produces a run
+        that succeeds and returns nothing, which this code would then read as
+        "profile not visible" and negative-cache against the candidate.
+        """
+        import juicebox.config as config
+        import juicebox.enrich.linkedin_profile as mod
+        from juicebox.enrich.linkedin_profile import ApifyProvider
+
+        monkeypatch.setenv("APIFY_API_TOKEN", "tok")
+        monkeypatch.setenv("APIFY_LINKEDIN_ACTOR", "LpVuK3Zozwuipa5bp")
+        monkeypatch.setenv("APIFY_PROFILE_MODE", "Profile details no email ($4 per 1k)")
+        config.reset_settings_cache()
+
+        seen = {}
+
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return [{"fullName": "Ada"}]
+
+        def fake_post(url, **kwargs):
+            seen["url"] = url
+            seen["json"] = kwargs.get("json")
+            return Response()
+
+        monkeypatch.setattr(mod.httpx, "post", fake_post)
+        ApifyProvider().fetch("https://www.linkedin.com/in/ada")
+
+        assert seen["url"].endswith("/v2/acts/LpVuK3Zozwuipa5bp/run-sync-get-dataset-items")
+        assert seen["json"]["queries"] == ["https://www.linkedin.com/in/ada"]
+        assert seen["json"]["profileScraperMode"] == "Profile details no email ($4 per 1k)"
+        assert "profileUrls" not in seen["json"]
+        config.reset_settings_cache()
+
     def test_an_empty_actor_fails_loudly(self, monkeypatch):
         """Compose hands the container an empty string, not the code default.
 

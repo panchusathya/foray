@@ -150,7 +150,14 @@ class ApifyProvider:
             response = httpx.post(
                 url,
                 params={"token": settings.apify_api_token},
-                json={"profileUrls": [linkedin_url]},
+                # This actor's input contract: `queries` takes profile URLs
+                # (it accepts several; we ask for one so a failure is about
+                # one person), and the mode selects what gets scraped and
+                # therefore what it costs.
+                json={
+                    "queries": [linkedin_url],
+                    "profileScraperMode": settings.apify_profile_mode,
+                },
                 timeout=120.0,
             )
         except httpx.HTTPError as exc:

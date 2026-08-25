@@ -421,10 +421,19 @@ class Settings:
         default_factory=lambda: _env("PROFILE_PROVIDER", "apify").lower()
     )
     apify_api_token: str = field(default_factory=lambda: _env("APIFY_API_TOKEN", ""))
-    # Actor ids use ~ between owner and name in the API path.
+    # Either a bare actor id ("LpVuK3Zozwuipa5bp") or owner~name; the API path
+    # accepts both, and a "/" in an owner/name form is translated.
     apify_linkedin_actor: str = field(
+        default_factory=lambda: _env("APIFY_LINKEDIN_ACTOR", "LpVuK3Zozwuipa5bp")
+    )
+    # This actor bills by mode, and the mode is a human-readable string with
+    # the price in it. Kept configurable because switching to a cheaper or
+    # richer mode should not need a deploy -- but note the default is the one
+    # that omits emails, which we do not need: we already have the address,
+    # and paying for contact data we hold is money for nothing.
+    apify_profile_mode: str = field(
         default_factory=lambda: _env(
-            "APIFY_LINKEDIN_ACTOR", "dev_fusion~Linkedin-Profile-Scraper"
+            "APIFY_PROFILE_MODE", "Profile details no email ($4 per 1k)"
         )
     )
     apify_base_url: str = field(

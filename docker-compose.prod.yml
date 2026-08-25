@@ -155,7 +155,11 @@ x-app-env: &app_env
   # The default has to live here as well as in config.py: compose always
   # sets the variable, so `${VAR:-}` hands the container an empty string
   # and _env() returns that instead of the code default.
-  APIFY_LINKEDIN_ACTOR: ${APIFY_LINKEDIN_ACTOR:-dev_fusion~Linkedin-Profile-Scraper}
+  APIFY_LINKEDIN_ACTOR: ${APIFY_LINKEDIN_ACTOR:-LpVuK3Zozwuipa5bp}
+  # Billed per mode; the price is literally part of the string the actor
+  # expects. Same rule as the actor id -- the default has to be here, not
+  # only in config.py, or compose hands the container an empty string.
+  APIFY_PROFILE_MODE: ${APIFY_PROFILE_MODE:-Profile details no email ($$4 per 1k)}
   SCRAPIN_API_KEY: ${SCRAPIN_API_KEY:-}
   PROFILE_PROVIDER: ${PROFILE_PROVIDER:-apify}
   # The logged-in LinkedIn session the profile scraper drives. Empty is a safe

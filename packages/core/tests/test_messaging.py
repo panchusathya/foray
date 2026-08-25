@@ -1599,3 +1599,56 @@ class TestLinqWebhook:
         )
         assert blocked.status_code == 429
         assert blocked.json()["detail"] == "Too many new conversations from this sender"
+
+
+class TestSeqRace:
+    """A webhook landing mid-send must not 500.
+
+    ``seq`` is ``max(seq) + 1``, so a concurrent writer can take the number
+    between the read and the insert. Prod surfaced this as the Linq webhook
+    erroring under its own retries -- four concurrent deliveries against a
+    four-card send loop -- and the candidate's reply arriving three minutes
+    late while the vendor backed off.
+    """
+
+    def test_a_stolen_seq_is_reallocated_not_raised(self, session, thread, monkeypatch):
+        from juicebox.messaging import threads as th
+
+        record_inbound(session, thread=thread, body="first", provider_native_id="m1")
+        session.flush()
+
+        real = th._next_seq
+        seen: list[int] = []
+
+        def stale(db, target):
+            value = real(db, target)
+            seen.append(value)
+            # First caller reads a number another writer has already used.
+            return value - 1 if len(seen) == 1 else value
+
+        monkeypatch.setattr(th, "_next_seq", stale)
+        row, created = record_inbound(
+            session, thread=thread, body="second", provider_native_id="m2"
+        )
+        session.flush()
+
+        assert created is True
+        assert len(seen) >= 2, "the collision should have forced a re-allocation"
+        assert row.seq not in {
+            other.seq
+            for other in session.query(IntakeMessage)
+            .filter(IntakeMessage.thread_id == thread.id, IntakeMessage.id != row.id)
+            .all()
+        }
+
+    def test_a_genuine_redelivery_is_still_a_no_op(self, session, thread):
+        first, created = record_inbound(
+            session, thread=thread, body="hello", provider_native_id="dup"
+        )
+        session.flush()
+        again, created_again = record_inbound(
+            session, thread=thread, body="hello", provider_native_id="dup"
+        )
+        assert created is True
+        assert created_again is False
+        assert again.id == first.id

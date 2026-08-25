@@ -36,7 +36,28 @@ from ..search.parser import ParsedQuery
 # comparison reads ParsedQuery.max_compensation, which the JD parser now
 # actually fills -- under v1 it read keys ParsedQuery cannot emit, so the
 # comp veto never fired.
-JOB_MATCH_ENGINE_VERSION = "pref-v2"
+JOB_MATCH_ENGINE_VERSION = "pref-v3"
+
+# What each dimension is worth. A flat mean was the bug: a bullseye on title
+# and a total title miss both came out 0.500 for the same candidate, because
+# seniority and location could pay back everything title lost. Title is the
+# thing the candidate actually asked for, so it outweighs the rest combined;
+# the soft demographics of a company are tiebreakers, not gates.
+_WEIGHTS = {
+    "pref_title": 3.0,
+    "pref_location": 1.5,
+    "pref_seniority": 1.0,
+    "pref_remote": 1.0,
+    "pref_comp": 1.0,
+    "pref_skills": 1.0,
+    "pref_industry": 0.5,
+    "pref_stage": 0.5,
+    "pref_size": 0.5,
+}
+
+# Adjacent rungs are worth showing; two apart is a stretch; beyond that it is
+# a different job.
+_SENIORITY_DECAY = {0: 1.0, 1: 0.6, 2: 0.25}
 
 
 def preference_term(
@@ -69,42 +90,44 @@ def preference_term(
             )
         ]
 
-    parts: list[float] = []
-    title = _title_fit(wanted.job_titles, have.job_titles or _posting_titles(posting))
-    if title is not None:
-        parts.append(title)
-        criteria.append(_criterion("pref_title", "Preferred titles", title, ""))
-    seniority = _overlap(wanted.seniority, have.seniority or _as_list(getattr(posting, "seniority", "")))
-    if seniority is not None:
-        parts.append(seniority)
-        criteria.append(_criterion("pref_seniority", "Preferred seniority", seniority, ""))
-    location = _location_fit(wanted, have, posting)
-    if location is not None:
-        parts.append(location)
-        criteria.append(_criterion("pref_location", "Preferred location", location, ""))
-    remote = _remote_fit(wanted, have, posting)
-    if remote is not None:
-        parts.append(remote)
-        criteria.append(_criterion("pref_remote", "Remote preference", remote, ""))
-    for name, label, left, right in (
-        ("pref_industry", "Preferred industry", wanted.industries, have.industries),
-        ("pref_stage", "Preferred stage", wanted.company_stages, have.company_stages),
-        ("pref_size", "Preferred size", wanted.company_sizes, have.company_sizes),
-        ("pref_skills", "Must-have skills", wanted.must_have_skills, have.must_have_skills),
-    ):
-        score = _overlap(left, right)
-        if score is not None:
-            parts.append(score)
-            criteria.append(_criterion(name, label, score, ""))
+    parts: list[tuple[float, float]] = []
+
+    def add(name: str, label: str, score: float | None, evidence: str = "") -> None:
+        if score is None:
+            return
+        weight = _WEIGHTS[name]
+        parts.append((weight, score))
+        criteria.append(_criterion(name, label, score, evidence, weight=weight))
+
+    add(
+        "pref_title",
+        "Preferred titles",
+        _title_fit(wanted.job_titles, have.job_titles or _posting_titles(posting)),
+    )
+    add(
+        "pref_seniority",
+        "Preferred seniority",
+        _seniority_fit(
+            wanted.seniority, have.seniority or _as_list(getattr(posting, "seniority", ""))
+        ),
+    )
+    add("pref_location", "Preferred location", _location_fit(wanted, have, posting))
+    add("pref_remote", "Remote preference", _remote_fit(wanted, have, posting))
+    add("pref_industry", "Preferred industry", _overlap(_real_industries(wanted), have.industries))
+    add("pref_stage", "Preferred stage", _overlap(wanted.company_stages, have.company_stages))
+    add("pref_size", "Preferred size", _overlap(wanted.company_sizes, have.company_sizes))
+    add(
+        "pref_skills",
+        "Must-have skills",
+        _overlap(wanted.must_have_skills, have.must_have_skills),
+    )
     if floor and ceiling is not None and ceiling >= float(floor):
-        parts.append(1.0)
-        criteria.append(
-            _criterion("pref_comp", "Compensation", 1.0, f"Posting tops out at {ceiling:.0f}")
-        )
+        add("pref_comp", "Compensation", 1.0, f"Posting tops out at {ceiling:.0f}")
 
     if not parts:
         return None, []
-    return max(0.0, min(1.0, sum(parts) / len(parts))), criteria
+    total = sum(weight for weight, _ in parts)
+    return max(0.0, min(1.0, sum(w * s for w, s in parts) / total)), criteria
 
 
 def _has_signal(pref: CandidatePreference) -> bool:
@@ -192,6 +215,42 @@ def _title_fit(wanted: list[str], have: list[str]) -> float | None:
     return best
 
 
+def _seniority_fit(wanted: list[str], have: list[str]) -> float | None:
+    """Distance on the ladder, not set membership.
+
+    ``_overlap`` scored a stated "junior" against an Associate role tagged
+    ``mid`` as a hard zero -- which is how a correctly-levelled role came out
+    a miss and dragged a perfect title match below the floor with it.
+    """
+    if not wanted:
+        return None
+    if not have:
+        return 0.0
+    best = 0.0
+    for target in wanted:
+        norm_target = tx.normalize_seniority(target)
+        for actual in have:
+            distance = tx.seniority_distance(tx.normalize_seniority(actual), norm_target)
+            if distance is None:
+                continue
+            best = max(best, _SENIORITY_DECAY.get(abs(distance), 0.0))
+    return best
+
+
+def _real_industries(wanted: ParsedQuery) -> list[str]:
+    """Industries, minus anything that is the job function restated.
+
+    Intake extraction routinely copies the target function into ``industries``
+    -- "strategic finance" arrives as both a job title and an industry. No
+    posting lists a function as its industry, so the duplicate is a guaranteed
+    miss on every role in the board. Counting it once, as a title, is the
+    honest reading of what the candidate said.
+    """
+    titles = {tx.slugify_text(item) for item in wanted.job_titles if item}
+    titles.discard("")
+    return [item for item in wanted.industries if tx.slugify_text(item) not in titles]
+
+
 def _overlap(wanted: list[str], have: list[str], *, normalize=tx.slugify_text) -> float | None:
     left = {normalize(item) for item in wanted if item}
     right = {normalize(item) for item in have if item}
@@ -254,7 +313,15 @@ def _as_list(value: str) -> list[str]:
     return [value] if value else []
 
 
-def _criterion(name: str, label: str, score: float, evidence: str, *, veto: bool = False) -> dict:
+def _criterion(
+    name: str,
+    label: str,
+    score: float,
+    evidence: str,
+    *,
+    veto: bool = False,
+    weight: float = 1.0,
+) -> dict:
     status = "miss" if score < 0.4 else ("partial" if score < 0.8 else "strong")
     if veto:
         status = "miss"
@@ -262,7 +329,7 @@ def _criterion(name: str, label: str, score: float, evidence: str, *, veto: bool
         "name": name,
         "label": label,
         "kind": "preference",
-        "weight": 1.0,
+        "weight": weight,
         "status": status,
         "score": round(score, 4),
         "evidence": evidence,

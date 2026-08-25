@@ -14,9 +14,11 @@ from juicebox.jobmatch.engine import (
     score_pair,
 )
 from juicebox.jobmatch.parse import parse_posting
+from juicebox.jobmatch.preference import preference_term
 from juicebox.jobmatch.queue import rematch_queue
 from juicebox.models import (
     Candidate,
+    CandidatePreference,
     Enrollment,
     JobMatch,
     JobMatchWatermark,
@@ -700,3 +702,58 @@ class TestPreferenceTerm:
         session.commit()
         assert result["queued"] >= 1
         assert JOB_MATCH_ENGINE_VERSION
+
+
+class TestTitleOutweighsTheRest:
+    """The prod bug: a title bullseye and a title miss both scored 0.500.
+
+    A thread asked for strategic finance in the Bay Area, and every real
+    strat-fin role came out level with "Junior Software Investor" -- a flat
+    mean let seniority pay back everything title lost, and the
+    profile-similarity terms then broke the tie toward the career the
+    candidate was trying to leave.
+    """
+
+    WANTED = {
+        "job_titles": ["strategic finance"],
+        "seniority": ["junior"],
+        "locations": ["San Francisco Bay Area"],
+        # Extraction copies the function in here too. It is not an industry.
+        "industries": ["strategic finance"],
+    }
+
+    def _score(self, **have):
+        pref = CandidatePreference(spec=dict(self.WANTED))
+        score, criteria = preference_term(pref, ParsedQuery.from_dict(have))
+        return score, {c["name"]: c["score"] for c in criteria}
+
+    def test_the_role_they_asked_for_beats_the_one_they_are_leaving(self):
+        wanted_role, _ = self._score(
+            job_titles=["strategic finance", "finance", "fp"],
+            seniority=["mid"],
+            locations=["new york", "san francisco"],
+            industries=["financial services", "technology"],
+        )
+        old_career, _ = self._score(
+            job_titles=["software investor", "venture capitalist", "vc"],
+            seniority=["mid", "junior"],
+            locations=["san francisco"],
+            industries=["venture capital", "software"],
+        )
+        assert wanted_role > old_career
+
+    def test_an_adjacent_rung_is_not_a_hard_miss(self):
+        _, criteria = self._score(
+            job_titles=["strategic finance"], seniority=["mid"], locations=["san francisco"]
+        )
+        assert 0.0 < criteria["pref_seniority"] < 1.0
+
+    def test_a_function_stated_as_an_industry_is_not_scored_twice(self):
+        """"strategic finance" is the title, so it must not also be a miss."""
+        _, criteria = self._score(
+            job_titles=["strategic finance"],
+            seniority=["mid"],
+            locations=["san francisco"],
+            industries=["financial services"],
+        )
+        assert "pref_industry" not in criteria

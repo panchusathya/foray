@@ -398,6 +398,21 @@ class Settings:
     max_upload_bytes: int = field(
         default_factory=lambda: _env_int("JUICEBOX_MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
     )
+    # Candidate-facing message budgets (CANDIDATE_AGENT_PLAN §4.3). These were
+    # constants until a live test wanted a different cadence than a real
+    # candidate should get: a budget you cannot change without a deploy is one
+    # that ends up commented out instead, and a commented-out budget protects
+    # nobody. Defaults are the plan's numbers, so an unset env behaves exactly
+    # as before.
+    proposals_per_week: int = field(
+        default_factory=lambda: _env_int("PROPOSALS_PER_WEEK", 10)
+    )
+    max_proposals_per_message: int = field(
+        default_factory=lambda: _env_int("MAX_PROPOSALS_PER_MESSAGE", 3)
+    )
+    proposal_messages_per_day: int = field(
+        default_factory=lambda: _env_int("PROPOSAL_MESSAGES_PER_DAY", 1)
+    )
     # The proposal bar's score floor (CANDIDATE_AGENT_PLAN §5): necessary,
     # never sufficient -- vetoes and the explainability gate sit on top.
     proposal_score_floor: float = field(

@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -59,7 +59,6 @@ from .schema import (
     SCHEMA_VERSION,
     coverage,
     deferred_required,
-    is_filled,
     read_path,
 )
 
@@ -965,20 +964,23 @@ def _recent_text_phrase(db: Session, *, org_id: str, candidate_id: str) -> str:
 def _on_file_summary(record: dict[str, Any] | None) -> str:
     """Everything they told us, in their own terms, ready to be read back.
 
-    Takes a record rather than the row so both paths that recognise a caller --
-    ring time by caller ID, and ``identify_caller`` by address plus number --
-    hand the agent the identical text. A caller who is recognised should hear
-    the same thing regardless of which route got there.
+    Takes a record rather than the row because the agent reads this aloud, and
+    a model handed ``{"target_base": 210000}`` will say "two one zero zero zero
+    zero" often enough to matter. Labelled lines, one fact each.
 
-    Composed as labelled lines rather than JSON because the agent reads this
-    aloud, and a model given ``{"target_base": 210000}`` will say "two one zero
-    zero zero zero" often enough to matter.
+    **Everything the candidate said is in here, ``confidential_items``
+    included, with no marking that sets it apart.** They said it, on their own
+    line, about themselves; a person who rings back from the number we hold is
+    entitled to hear their own words. The earlier version handed these over
+    flagged as sensitive, which taught the agent to be cagey about the one
+    subject the caller most likely rang to discuss -- their current employer
+    not knowing, the offer they have not mentioned. Being evasive with somebody
+    about their own disclosure is the failure, not the safeguard.
 
-    ``confidential_items`` is included, and the prompt governs it. This is the
-    candidate's own line and their own words -- refusing to repeat back what
-    they themselves asked us to hold quiet is the bug being fixed here, not a
-    protection. What the field still governs is the *client*-facing view, and
-    nothing in this path writes one.
+    ``confidential_items`` still means exactly what it always meant: do not put
+    this in front of a *client*. That is a rule about a different audience, and
+    it is enforced where a client-facing view is built. Nothing in this path
+    builds one -- this text goes to the person who dictated it.
     """
     if not record:
         return ""
@@ -1018,7 +1020,11 @@ def _on_file_summary(record: dict[str, Any] | None) -> str:
         ("in process with", listed(record.get("active_processes"))),
         ("offers in hand", listed(record.get("offers_in_hand"))),
         ("highlights they gave", listed(record.get("highlights"))),
-        ("asked us to keep quiet", listed(record.get("confidential_items"))),
+        # Same shape as every other line, deliberately. A label like "asked us
+        # to keep quiet" reads to the model as a warning and makes it hedge
+        # about the caller's own disclosure; these are simply more things they
+        # told us, and to this listener that is all they are.
+        ("also mentioned", listed(record.get("confidential_items"))),
         ("declined to answer", listed(record.get("declined"))),
     ]
     text = "\n".join(f"{label}: {value}" for label, value in lines if value)
@@ -1190,233 +1196,6 @@ def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None
         "already_covered": covered_count,
         "progress_line": "" if complete else progress_line(outstanding),
         "guidance": _wrap_up_guidance() if complete else _NEEDED_GUIDANCE,
-    }
-
-
-# --------------------------------------------------------------------------
-# mid-call identification
-# --------------------------------------------------------------------------
-
-# Disclosure tiers, most restrictive first. The name is what the agent gets told
-# it may do, so the tier is the answer rather than a thing the model works out.
-TIER_UNKNOWN = "unknown"
-TIER_UNVERIFIED = "unverified"
-TIER_VERIFIED = "verified"
-
-_IDENTIFY_UNKNOWN = (
-    "Nobody matches that address. Say a recruiter will follow up, and if they "
-    "are new, run the full intake -- ask how much time they have and pass it "
-    "as minutes_available."
-)
-
-# The rule AGENTS.md records: caller ID authorises accepting an update, never
-# disclosing one. ANI is spoofable, so an address that matches a record proves
-# only that the caller knows the address -- which is exactly what somebody
-# phoning about a person they know would also know. Nothing goes back, not even
-# a first name: "am I speaking to Priya?" confirms a person is in our CRM, and
-# on a recruiting line that is itself a disclosure -- it tells a caller that a
-# named individual is job-hunting.
-_IDENTIFY_UNVERIFIED = (
-    "Do not read anything back to them -- not their name, not their record, "
-    "not whether we have one. You cannot confirm who is on the phone. Take "
-    "whatever they want to tell you, say a recruiter will confirm the details "
-    "with them directly, and carry on."
-)
-
-_IDENTIFY_VERIFIED = (
-    "This is them: the address matches the record and the call came from a "
-    "number already on it. Greet them by first name and ask what has changed. "
-    "on_file is their own record in their own words -- if they ask what they "
-    "told you, or what you have, read it back plainly: the figure, the "
-    "company, the date. Do not volunteer anything under 'asked us to keep "
-    "quiet'; it is theirs to raise. on_file says nothing about client "
-    "feedback or where a submission stands, so for those say a recruiter will "
-    "follow up."
-)
-
-_IDENTIFY_OFFER_MATCHES = (
-    " There are roles on file worth sending them. Offer, in these words: "
-    '"I can text you the ones I have -- want me to?" Never say how many, '
-    "never name a company, and never suggest they are a fit -- if they say "
-    "yes, call this tool again with send_matches true and confirm it is on "
-    "its way."
-)
-
-_IDENTIFY_SENT = (
-    " The roles are on their way by text. Say so, and do not describe them."
-)
-
-# What a verified caller may hear *about*, as opposed to hear. A topic says we
-# hold something so the agent can ask whether it changed; a value would be the
-# thing ANI cannot authorise. Comp, work authorisation, live processes and
-# offers are deliberately absent even at the verified tier: two factors are
-# better than one and still not good enough to read somebody's salary or
-# interview pipeline down a phone line, and the first live call already showed
-# the agent being asked to do exactly that.
-_SPEAKABLE_TOPICS: tuple[tuple[str, str], ...] = (
-    ("spec.job_titles", "the kind of role you are going after"),
-    ("spec.locations", "where you want to work"),
-    ("timeline", "your timing"),
-    ("employment_status", "your current situation"),
-    ("spec.must_have_skills", "the work you want to be doing"),
-)
-
-
-def _speakable(record: dict[str, Any]) -> list[str]:
-    """Topic lines for a caller we could not verify by number.
-
-    Topics, never values: this is the tier where somebody knew an email address
-    and nothing more, so the most it can confirm is which subjects were
-    discussed. It is what the *unverified* path would say if it said anything,
-    kept as the conservative shape for a caller who reached us from a number we
-    do not hold.
-    """
-    return [
-        label for path, label in _SPEAKABLE_TOPICS if is_filled(read_path(record, path))
-    ]
-
-
-def _match_count(db: Session, *, org_id: str, candidate_id: str) -> int:
-    from ..models import JobMatch
-
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(JobMatch)
-            .where(
-                JobMatch.org_id == org_id,
-                JobMatch.candidate_id == candidate_id,
-                JobMatch.status != "dismissed",
-            )
-        )
-        or 0
-    )
-
-
-def identify_caller(
-    db: Session,
-    *,
-    call: IntakeCall | None,
-    email: str,
-    send_matches: bool = False,
-) -> dict[str, Any]:
-    """Look a caller up mid-call, and decide how much may be said back.
-
-    The inbound line's most common caller is somebody we already know, ringing
-    to say something changed. Until now the agent had no way to find them, so
-    it opened every such call by asking for a name and an email and then could
-    do nothing with either -- and the caller heard a company that does not
-    recognise them.
-
-    Disclosure is tiered **in code**, not in the prompt, because a prompt asking
-    a model to decide how much it may reveal is a model deciding how much it may
-    reveal. Three tiers:
-
-    ``unknown``
-        No record. Nothing to disclose, and nothing implied about whether one
-        exists.
-
-    ``unverified``
-        The address matches a record, but the call did not come from a number on
-        it. **Nothing goes back at all** -- not a first name, not the fact that
-        a record exists. Knowing somebody's email address is not evidence of
-        being them, and on a recruiting line confirming that a named person is
-        in our CRM tells the caller that person is job-hunting. The update is
-        still accepted: ``AGENTS.md`` -- caller ID authorises accepting one,
-        never disclosing one.
-
-    ``verified``
-        The address matches *and* the call came from a number already on the
-        row. Two independent factors: something they have and something they
-        know, which is the bar ``AGENTS.md`` sets for reading state back. Even
-        then only *topics* go back, never values -- see ``_SPEAKABLE_TOPICS``.
-
-    ``send_matches`` is the second use of the same tool: the caller said yes to
-    the offer, so queue the text. Verified callers only, and it goes out through
-    ``messaging.notify``, so every gate that protects an unprompted text still
-    applies -- consent, quiet hours, suppression, the nudge budget.
-    """
-    address = (email or "").strip().lower()
-    org_id = call.org_id if call is not None else ""
-    if not (address and org_id):
-        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
-
-    owner = owner_of_email(db, org_id=org_id, email=address)
-    if owner is None:
-        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
-
-    candidate = db.get(Candidate, owner)
-    if candidate is None:
-        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
-
-    # Latch what they said, whatever tier this lands in: the address is how a
-    # recruiter finds them afterwards, and it is the one thing an unverified
-    # call still gets to contribute.
-    if not call.contact_email:
-        call.contact_email = address[:255]
-
-    number_on_file = resolve_candidate_id(
-        db, org_id=org_id, phone=counterparty_number(call)
-    ) == candidate.id
-    if not number_on_file:
-        # The record is theirs to the extent we can tell, so the call is
-        # attributed -- but the number is not written onto the row, and the
-        # review note says why.
-        if not call.candidate_id:
-            call.candidate_id = candidate.id
-            call.review_needed = True
-            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
-            db.flush()
-        return {
-            "tier": TIER_UNVERIFIED,
-            "known": True,
-            "guidance": _IDENTIFY_UNVERIFIED,
-        }
-
-    record = prior_preference_record(db, candidate.id) or {}
-    sent = False
-    can_text = False
-    if _match_count(db, org_id=org_id, candidate_id=candidate.id):
-        from ..messaging.notify import EVENT_MATCHES_READY, manager_thread_for, notify_candidate
-
-        # Only offerable if there is somewhere to send it. A candidate with no
-        # standing text line has not consented to one, and bootstrapping a
-        # thread from a phone call is a TCPA question, not a plumbing one.
-        can_text = manager_thread_for(db, org_id=org_id, candidate_id=candidate.id) is not None
-        if can_text and send_matches:
-            sent = (
-                notify_candidate(
-                    db,
-                    org_id=org_id,
-                    candidate_id=candidate.id,
-                    event=EVENT_MATCHES_READY,
-                    subject_id=call.id,
-                )
-                is not None
-            )
-
-    guidance = _IDENTIFY_VERIFIED
-    if sent:
-        guidance += _IDENTIFY_SENT
-    elif can_text:
-        guidance += _IDENTIFY_OFFER_MATCHES
-
-    return {
-        "tier": TIER_VERIFIED,
-        "known": True,
-        "first_name": candidate.first_name or "",
-        # Values, not topics. Two independent factors have matched -- an address
-        # they knew and a number they called from -- so this is the person whose
-        # answers these are, and declining to repeat them back is the failure,
-        # not the safeguard. Same summary the ring-time path hands over, so a
-        # caller hears the same thing whichever route recognised them.
-        "on_file": _on_file_summary(record),
-        # Deliberately a boolean, not a count. ``AGENTS.md`` forbids the agent
-        # quoting a number of roles, because a candidate hears a number as a
-        # promise -- and that rule does not stop applying just because the
-        # number would be true.
-        "roles_to_send": can_text and not sent,
-        "guidance": guidance,
     }
 
 

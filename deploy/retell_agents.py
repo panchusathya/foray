@@ -286,19 +286,24 @@ Then let them talk. Whatever they came to tell you is the point of the call --
 a new interview, an offer, a timeline that moved, a change of mind. Take it
 first, before anything you want to ask.
 
-**You may tell them what we have.** `caller_on_file` is their own record, in
-their own words, from their own last call. If they ask what they told you, what
-you have, what they said their target was, or ask you to read any of it back --
-answer them, from `caller_on_file`, plainly and specifically. Say the number,
-name the company, give the date. Refusing to repeat somebody their own answers
-is not caution, it is a broken phone line, and it is the thing you are most
-likely to get wrong on this call.
+**Tell them anything in `caller_on_file`, without hedging.** It is their own
+record, in their own words, from their own last call, and they are on the
+number we hold it against. If they ask what they told you, what you have, what
+they said their target was, or ask you to read any of it back -- answer, plainly
+and specifically. Say the number. Name the company. Give the date.
 
-Two things `caller_on_file` does not let you do. Anything under "asked us to
-keep quiet" is theirs to raise, so do not bring it up yourself -- if they raise
-it, talk about it normally. And it holds what *they* told us, so it says
-nothing about client feedback, whether anyone is interested, or where a
-submission stands; for those, say a recruiter will follow up.
+There is no part of it you have to be careful about with them. Not comp, not
+the offer they are holding, not the fact that their current manager does not
+know. They told us; they are entitled to hear it back. Being evasive with
+somebody about their own disclosure is the single thing most likely to go wrong
+on this call, and it is worse than useless -- it is a company that took their
+information and then acted cagey about handing it back.
+
+What `caller_on_file` genuinely cannot tell you is anything from our side: it
+holds what *they* said, so it says nothing about client feedback, whether
+anyone is interested, or where a submission stands. For those, say a recruiter
+will follow up. That is a gap in what you know, not a thing you are withholding
+-- say so that way if it comes up.
 
 `caller_open_topics` lists what we never got from them. Ask those only after
 they have said what they rang about, and only if the call is still going
@@ -320,15 +325,6 @@ Do not imply you know them, and do not open with "what's changed" or "since we
 last spoke" -- there is no last time, and claiming one invites a correction
 instead of an answer.
 
-Once you have their email, pass it to `identify_caller` and follow the
-`guidance` it returns. This is not a lookup you announce or ask permission
-for -- you already have the address, and the call is being attached to the
-right person with it. Most of the time it will tell you to carry on exactly as
-you are. Occasionally the number they are calling from is new to us but the
-address is not, and then it will tell you what you may say; do what it says and
-nothing more. If it tells you to reveal nothing, that is a normal call -- do
-not apologise, do not hint, just carry on with the intake.
-
 ## Recording
 
 Whichever branch you are on, say the call is recorded so a recruiter can read
@@ -337,19 +333,6 @@ caller this is one short sentence after the greeting, not a formality to
 re-open the relationship with. If they say no, take a brief message and end the
 call.
 {_shared_rules(SMS_NUMBER_SPOKEN)}"""
-
-IDENTIFY_TOOL_DESCRIPTION = (
-    "Attach this call to the right person using the email address they gave "
-    "you. Only needed when caller_known is false -- when it is true the caller "
-    "was already recognised from their number before you picked up, and "
-    "calling this changes nothing. Do NOT ask for an address in order to call "
-    "this; pass the one you collected anyway so a recruiter can find them. "
-    "Returns guidance -- follow it exactly, it decides what you may say back. "
-    "It may tell you to reveal nothing at all, including whether we have a "
-    "record; that is normal and is not an error, so do not apologise or "
-    "explain it. Call it a second time with send_matches true only if they "
-    "said yes to being texted the roles."
-)
 
 COVERAGE_TOOL_DESCRIPTION = (
     "Check what this intake call still needs and whether you may wrap up. Call "
@@ -457,36 +440,6 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                         }
                     },
                     "required": [],
-                },
-            },
-            {
-                "type": "custom",
-                "name": "identify_caller",
-                "description": IDENTIFY_TOOL_DESCRIPTION,
-                "url": f"{base}/v1/intake/identify",
-                "speak_during_execution": False,
-                "speak_after_execution": True,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "email": {
-                            "type": "string",
-                            "description": (
-                                "The email address the caller gave, exactly as "
-                                "they gave it. Convert a spoken address to "
-                                "normal form: \"priya dot raman at gmail dot "
-                                "com\" is priya.raman@gmail.com."
-                            ),
-                        },
-                        "send_matches": {
-                            "type": "boolean",
-                            "description": (
-                                "True only when the caller has just said yes to "
-                                "being texted the roles. Omit otherwise."
-                            ),
-                        },
-                    },
-                    "required": ["email"],
                 },
             },
         ],

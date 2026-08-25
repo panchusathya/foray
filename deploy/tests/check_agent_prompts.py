@@ -139,13 +139,47 @@ def check_inbound_can_read_the_record_back() -> None:
         "inbound prompt must be given the caller's record to work from",
     )
     _must(
-        "you may tell them what we have" in INBOUND,
+        "tell them anything in `caller_on_file`, without hedging" in INBOUND,
         "inbound prompt must permit reading the record back to a known caller",
     )
     _must(
-        "refusing to repeat somebody their own answers" in INBOUND,
-        "inbound prompt must name the refusal as the failure, or it will drift back to it",
+        "being evasive with somebody about their own disclosure" in INBOUND,
+        "inbound prompt must name the evasion as the failure, or it will drift back to it",
     )
+
+
+def check_nothing_in_the_record_is_held_back_from_its_owner() -> None:
+    """A recognised caller is entitled to everything they themselves said.
+
+    This is the check that would have caught the previous version, which handed
+    the record over but carved out `confidential_items` as "theirs to raise".
+    That carve-out is about not putting those items in front of a *client*; the
+    person on the phone is the one who dictated them, and hedging with them was
+    the same refusal in a smaller shape.
+    """
+    _must(
+        "there is no part of it you have to be careful about with them" in INBOUND,
+        "inbound prompt must not carve any of the caller's own record out of the read-back",
+    )
+    for carve_out in ("theirs to raise", "asked us to keep quiet", "do not bring it up"):
+        _must(
+            carve_out not in INBOUND,
+            f"inbound prompt still fences off part of the caller's own record ({carve_out!r})",
+        )
+
+
+def check_the_identify_tool_is_gone() -> None:
+    """Caller ID answers this before the agent speaks, so the tool was removed.
+
+    Pinned because a half-removal is worse than either state: a prompt still
+    telling the agent to call `identify_caller` against a tool that no longer
+    exists is an agent pausing mid-sentence for a 404.
+    """
+    for name in ("identify_caller", "/v1/intake/identify"):
+        _must(
+            name not in INBOUND_PROMPT and name not in OUTBOUND_PROMPT,
+            f"prompt still references {name!r}, which no longer exists",
+        )
 
 
 def check_unknown_callers_still_get_a_clean_first_intake() -> None:
@@ -226,6 +260,8 @@ def main() -> int:
         check_inbound_does_not_ask_who_it_is_talking_to,
         check_inbound_branches_on_caller_known,
         check_inbound_can_read_the_record_back,
+        check_nothing_in_the_record_is_held_back_from_its_owner,
+        check_the_identify_tool_is_gone,
         check_unknown_callers_still_get_a_clean_first_intake,
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,

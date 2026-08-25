@@ -655,156 +655,6 @@ class TestExtraction:
 # --------------------------------------------------------------------------
 
 
-class TestIdentifyEndpoint:
-    """The other mid-call tool, and the one that is *about a person*.
-
-    ``/coverage`` returns topics, so it discloses nothing even though anyone
-    with a valid signature can reach it. This one answers "who is this", so the
-    tiering is the whole endpoint -- and it is decided in code, because a prompt
-    asking a model how much it may reveal is a model deciding how much it may
-    reveal.
-    """
-
-    def _function_call(self, email, *, call_id="call_abc123", send=False):
-        args = {"email": email}
-        if send:
-            args["send_matches"] = True
-        return {
-            "name": "identify_caller",
-            "call": {"call_id": call_id, "transcript": TRANSCRIPT, "agent_id": "agent_1"},
-            "args": args,
-        }
-
-    def _known(self, session, account, *, phone=""):
-        candidate = Candidate(
-            org_id=account["org_id"],
-            source="test",
-            source_id="priya",
-            full_name="Priya Raman",
-            first_name="Priya",
-            emails=["priya@example.com"],
-            phones=[phone] if phone else [],
-        )
-        session.add(candidate)
-        session.flush()
-        from juicebox.repository import sync_candidate_emails
-
-        sync_candidate_emails(session, candidate)
-        if phone:
-            sync_candidate_phones(session, candidate)
-        session.add(
-            CandidatePreference(
-                org_id=account["org_id"],
-                candidate_id=candidate.id,
-                timeline="under_1_month",
-                target_base=240000.0,
-                work_authorization="green card",
-                active_processes=[{"company": "Acme", "stage": "onsite"}],
-            )
-        )
-        session.commit()
-        return candidate
-
-    def _a_call(self, session, account, **overrides):
-        fields = dict(
-            org_id=account["org_id"],
-            provider="retell",
-            provider_call_id="call_abc123",
-            entry_point="inbound",
-            from_number=CANDIDATE_NUMBER,
-            to_number=OUR_NUMBER,
-            status="in_progress",
-        )
-        fields.update(overrides)
-        call = IntakeCall(**fields)
-        session.add(call)
-        session.commit()
-        return call
-
-    def test_it_requires_a_signature(self, client):
-        response = client.post("/v1/intake/identify", json=self._function_call("a@b.com"))
-        assert response.status_code == 401
-
-    def test_an_unknown_caller_gets_no_hint_that_a_record_might_exist(
-        self, client, session, signer, account
-    ):
-        self._known(session, account)
-        self._a_call(session, account)
-        body = post(
-            client, signer, self._function_call("stranger@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["known"] is False
-        assert "Priya" not in repr(body)
-
-    def test_a_matching_address_from_a_strange_number_reveals_nothing(
-        self, client, session, signer, account
-    ):
-        self._known(session, account)
-        self._a_call(session, account, from_number=STRANGER_NUMBER)
-        body = post(
-            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["tier"] == "unverified"
-        assert "first_name" not in body
-        assert "Priya" not in repr(body)
-        assert "240000" not in repr(body)
-
-    def test_two_factors_unlock_the_greeting(self, client, session, signer, account):
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        self._a_call(session, account)
-        body = post(
-            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-        ).json()
-        assert body["tier"] == "verified"
-        assert body["first_name"] == "Priya"
-        assert body["on_file"]
-
-    def test_a_verified_caller_hears_their_own_answers(self, client, session, signer, account):
-        """Deliberately the reverse of what this asserted before.
-
-        Two factors have matched, so this is the person whose answers these
-        are, and a line that cannot tell them what they told us is the bug --
-        not the safeguard. The unverified case above is unchanged and is where
-        the caution still lives.
-        """
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        self._a_call(session, account)
-        on_file = post(
-            client, signer, self._function_call("priya@example.com"), path="/v1/intake/identify"
-        ).json()["on_file"]
-        for theirs in ("240,000", "green card", "Acme"):
-            assert theirs in on_file, f"{theirs!r} should be readable back to them"
-
-    def test_a_request_with_no_call_row_degrades_rather_than_failing(
-        self, client, session, signer, account
-    ):
-        """An error here is heard as the agent going quiet."""
-        self._known(session, account, phone=CANDIDATE_NUMBER)
-        response = post(
-            client,
-            signer,
-            self._function_call("priya@example.com", call_id="call_never_seen"),
-            path="/v1/intake/identify",
-        )
-        assert response.status_code == 200
-        assert response.json()["known"] is False
-
-    def test_a_garbage_address_is_answered_not_rejected(
-        self, client, session, signer, account
-    ):
-        self._a_call(session, account)
-        response = post(
-            client, signer, self._function_call("not an address"), path="/v1/intake/identify"
-        )
-        assert response.status_code == 200
-        assert response.json()["known"] is False
-
-
-# --------------------------------------------------------------------------
-# the mid-call gate
-# --------------------------------------------------------------------------
-
-
 class TestCoverageEndpoint:
     def _function_call(self, transcript, call_id="call_abc123", minutes=None):
         args = {}
@@ -1111,15 +961,27 @@ class TestRingTimeRecognition:
         assert variables["caller_first_name"] == person.first_name
         assert variables["caller_on_file"] == ""
 
-    def test_confidential_items_are_handed_over_flagged_as_theirs_to_raise(
+    def test_a_caller_gets_back_everything_they_themselves_said(
         self, client, session, signer, owned_number, account
     ):
+        """Including what they asked us to keep quiet.
+
+        That flag means "do not put this in front of a client". The person on
+        the phone is the one who dictated it, and it reaches them unmarked --
+        an earlier version labelled it as sensitive, which taught the agent to
+        hedge about the one subject the caller most likely rang to discuss.
+        """
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         _preference(session, person)
         on_file = post(client, signer, inbound_payload()).json()["call_inbound"][
             "dynamic_variables"
         ]["caller_on_file"]
-        assert "asked us to keep quiet: do not contact my current employer" in on_file
+        assert "do not contact my current employer" in on_file
+        for warning in ("keep quiet", "confidential", "sensitive"):
+            assert warning not in on_file.lower(), (
+                f"{warning!r} labels the caller's own words as something to be "
+                "careful about with them"
+            )
 
     def test_an_unclaimed_number_answers_rather_than_dropping_the_call(
         self, client, session, signer, account

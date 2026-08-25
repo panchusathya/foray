@@ -48,7 +48,6 @@ from ..intake.service import (
     coverage_snapshot,
     empty_coverage,
     find_call,
-    identify_caller,
     inbound_call_context,
     known_for_call,
     parse_minutes_available,
@@ -291,37 +290,6 @@ def intake_coverage(
         minutes_available=minutes_available,
         call=call,
         prior=prior,
-    )
-
-
-@router.post("/identify")
-def intake_identify(
-    raw: bytes = Depends(raw_body),
-    x_retell_signature: str = Header(default="", alias="X-Retell-Signature"),
-    db: Session = Depends(get_db),
-) -> dict:
-    """The agent's other mid-call tool: who is this, and what may I say?
-
-    Unlike ``/coverage``, which returns topics and therefore discloses nothing,
-    this one is *about a person* -- so the tiering is the whole endpoint. It is
-    reachable by anyone holding a valid signature, and the caller on the other
-    end is unauthenticated, so what comes back is decided by
-    ``service.identify_caller`` in code rather than by the agent's judgement:
-    an address that matches a record but a number that does not gets a reply
-    containing no facts at all, not even a first name.
-
-    Degrades the same way ``/coverage`` does. An error here is heard as the
-    agent going quiet, and "I could not look you up" is a smaller failure than
-    silence -- so an unresolvable request answers as an unknown caller.
-    """
-    provider = _verified(raw, x_retell_signature)
-    event, args = provider.parse_function_call(loads(raw))
-    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
-    return identify_caller(
-        db,
-        call=call,
-        email=str(args.get("email") or ""),
-        send_matches=bool(args.get("send_matches")),
     )
 
 

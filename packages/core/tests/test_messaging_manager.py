@@ -522,3 +522,54 @@ class TestTapbackApplies:
 
         with _pytest.raises(ValueError):
             parse_reaction({"event_type": "reaction.added", "data": {}})
+
+
+class TestDeadPostingsAreNotProposed:
+    def test_a_gone_posting_is_closed_and_skipped(self, session, account, channel, thread):
+        """The live failure: a role was sent whose page was already down.
+
+        Closing it matters as much as skipping it -- `eligible_matches` reads
+        only open postings, so a role dropped here must not return on the next
+        request.
+        """
+        thread = _managed(session, thread)
+        org_id = account["org_id"]
+        dead = _posting(session, org_id, company="Rippling", title="Strat Fin", suffix="d")
+        dead.source_url = "https://jobs.example.com/gone"
+        live = _posting(session, org_id, company="Toast", title="Strat Fin", suffix="l")
+        live.source_url = "https://jobs.example.com/live"
+        for posting in (dead, live):
+            session.add(
+                JobMatch(
+                    org_id=org_id,
+                    job_posting_id=posting.id,
+                    candidate_id=thread.candidate_id,
+                    score=0.9,
+                    criteria=[STRONG],
+                    status="new",
+                )
+            )
+        session.flush()
+
+        # Patched on the module the manager imports from, at call time.
+        gone = {"https://jobs.example.com/gone"}
+        import juicebox.jobmatch.liveness as liveness
+
+        original = liveness.is_gone
+        liveness.is_gone = lambda url, **kw: url in gone
+        try:
+            _say(session, thread, "find me some roles", native_id="dead-1")
+        finally:
+            liveness.is_gone = original
+
+        burst = "\n".join(channel.bodies)
+        assert "Toast" in burst
+        assert "Rippling" not in burst, "a dead role reached the candidate"
+        session.refresh(dead)
+        assert dead.status == "closed", "and it must not come back next time"
+
+    def test_no_url_means_no_network_call(self, session, account, channel, thread):
+        """Hand-entered postings have no source_url; they are not checked."""
+        from juicebox.jobmatch.liveness import is_gone
+
+        assert not is_gone("")

@@ -426,6 +426,31 @@ def _fresh(db, thread, first: str, second: str) -> str:
     return first
 
 
+def _drop_dead_postings(db: Session, pairs: list) -> list:
+    """Check the handful about to be sent, and close the ones that are gone.
+
+    Freshness elsewhere means "recently seen", which is not the same as still
+    existing -- a live thread was sent a Rippling role whose page had already
+    been taken down. This is the last moment before a person clicks it.
+
+    Closing the posting matters as much as skipping it: `eligible_matches`
+    only reads open postings, so a dead role removed here does not come back
+    on the next request.
+    """
+    from ..jobmatch.liveness import is_gone
+
+    alive = []
+    for match, posting in pairs:
+        url = (posting.source_url or "").strip()
+        if url and is_gone(url):
+            posting.status = "closed"
+            db.flush()
+            logger.info("closed dead posting %s before proposing it", posting.id)
+            continue
+        alive.append((match, posting))
+    return alive
+
+
 def _identity_request(thread) -> tuple[str, str]:
     """What we still need before anyone can be matched, and the field to tag.
 
@@ -509,6 +534,23 @@ def present_matches(
             thread=thread,
             message=OutboundMessage(
                 body="I've got roles lined up — I'll send them tomorrow so I'm not flooding you."
+            ),
+            origin=origin,
+        )
+        return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
+
+    pairs = _drop_dead_postings(db, pairs)
+    if not pairs:
+        if quiet:
+            return None
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(
+                body=(
+                    "the roles i had lined up have already been taken down. "
+                    "i'll keep looking and text you when something lands."
+                )
             ),
             origin=origin,
         )

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .jobs import (
+    INTERACTIVE_KINDS,
     KIND_AGENT_TICK,
     KIND_APP_PACKAGE,
     KIND_CRM_DISCOVERY,
@@ -1092,15 +1093,27 @@ def process_job(db: Session, job: Job, *, now=None) -> None:
     mark_succeeded(job, now=now)
 
 
+# A texter is waiting on these, so they get their own small claim ahead of the
+# general batch. Ordering inside one claim was not enough: a batch runs
+# serially, so a turn behind nineteen mailbox syncs waits for all nineteen --
+# measured at ~90 seconds between "Hello" and the greeting on a live thread.
+INTERACTIVE_BATCH = 5
+
+
 def process_batch(db: Session, *, worker: str | None = None, now=None) -> int:
     now = now or utcnow()
     recover_stale_locks(db, now=now)
-    jobs = claim(db, worker_id=worker or worker_id(), now=now)
-    for job in jobs:
-        process_job(db, job, now=now)
-    if jobs:
-        db.flush()
-    return len(jobs)
+    me = worker or worker_id()
+
+    done = 0
+    for kinds, limit in ((INTERACTIVE_KINDS, INTERACTIVE_BATCH), (None, None)):
+        jobs = claim(db, worker_id=me, now=now, kinds=kinds, limit=limit)
+        for job in jobs:
+            process_job(db, job, now=now)
+        if jobs:
+            db.flush()
+        done += len(jobs)
+    return done
 
 
 def drain(db: Session, *, worker: str | None = None, now=None) -> int:

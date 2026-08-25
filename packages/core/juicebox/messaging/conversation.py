@@ -783,6 +783,8 @@ def _run_linkedin_short(
         return _linkedin_after_scrape(db, thread=thread, last=last)
     if asked == BATCH_CONFIRM:
         return _linkedin_after_confirm(db, thread=thread, last=last)
+    if asked == linkedin_flow.BATCH_RETARGET:
+        return _linkedin_after_retarget(db, thread=thread, last=last)
     return _wrap_up(db, thread=thread, state=_coverage_for(thread))
 
 
@@ -882,6 +884,66 @@ def _linkedin_after_confirm(
     at all. With no title even the confirm cannot have worked, so those threads
     still get one question rather than a promise we cannot keep.
     """
+    # The docstring above assumed `_reread` always catches a correction. Live,
+    # "No I want to switch to Strat fin" left job_titles as ["Investor"] and
+    # the thread answered "you're set" -- so we asked, ignored the answer, and
+    # went looking for the job they had just rejected. Asking a question and
+    # discarding the reply is worse than never asking.
+    if linkedin_flow.looks_like_correction(last.body) and linkedin_flow.target_unchanged(
+        thread
+    ):
+        return _linkedin_retarget(db, thread=thread, last=last)
+
+    missing = linkedin_flow.short_missing(thread)
+    if missing:
+        return _linkedin_gap_fill(db, thread=thread, last=last)
+    return _wrap_up(db, thread=thread, state=_coverage_for(thread))
+
+
+def _linkedin_retarget(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage
+) -> TurnResult:
+    """They rejected the inferred target and we could not read the replacement."""
+    body = humanize(thread, says=linkedin_flow.RETARGET_LINE, last_inbound=last.body or "")
+    sent = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, asked_field=linkedin_flow.BATCH_RETARGET),
+    )
+    return TurnResult(
+        ACTION_ASKED,
+        thread,
+        _coverage_for(thread),
+        asked_field=linkedin_flow.BATCH_RETARGET,
+        sent=[s for s in [sent] if s],
+        extractor=thread.extractor,
+    )
+
+
+def _linkedin_after_retarget(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage
+) -> TurnResult:
+    """Bind the answer to the target, then carry on.
+
+    `_reread` has already run and usually catches a direct answer to a direct
+    question. When it does not, the reply is taken as the title verbatim --
+    safe here for the same reason `find_name` is safe only after the name
+    question: we asked exactly this, so the whole message is the answer.
+    """
+    if linkedin_flow.target_unchanged(thread):
+        stated = linkedin_flow.title_from_reply(last.body or "")
+        if stated:
+            thread.record = linkedin_flow.apply_title_to_record(thread.record, stated)
+            logger.info("thread %s retargeted to %r by hand", thread.id, stated)
+        else:
+            # Still nothing usable, but we know the scraped title is wrong --
+            # they rejected it twice now. Clearing it puts spec.job_titles back
+            # in `short_missing`, so the gap-fill asks properly instead of us
+            # searching for a job they have said no to.
+            thread.record = linkedin_flow.clear_target(thread.record)
+            logger.info("thread %s: target rejected, cleared for gap-fill", thread.id)
+        db.flush()
+
     missing = linkedin_flow.short_missing(thread)
     if missing:
         return _linkedin_gap_fill(db, thread=thread, last=last)

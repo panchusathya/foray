@@ -180,18 +180,26 @@ def recover_stale_locks(db: Session, *, now: datetime | None = None) -> int:
     return recovered
 
 
+# Work with somebody waiting at the other end of it. Ordering these first
+# inside a claim is not enough on its own: a batch is processed serially, so a
+# turn queued behind nineteen mailbox syncs waits for all nineteen. The worker
+# claims these separately for that reason.
+INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE)
+
+
 def claim(
     db: Session,
     *,
     worker_id: str,
     limit: int | None = None,
     now: datetime | None = None,
+    kinds: tuple[str, ...] | None = None,
 ) -> list[Job]:
     settings = get_settings()
     now = now or utcnow()
     batch = limit if limit is not None else settings.worker_batch_size
     priority = case(
-        (Job.kind.in_((KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE)), 0),
+        (Job.kind.in_(INTERACTIVE_KINDS), 0),
         else_=1,
     )
     stmt = (
@@ -200,6 +208,8 @@ def claim(
         .order_by(priority, Job.run_at, Job.created_at)
         .limit(max(batch, 1))
     )
+    if kinds is not None:
+        stmt = stmt.where(Job.kind.in_(kinds))
     bind = db.get_bind()
     if bind is not None and bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)

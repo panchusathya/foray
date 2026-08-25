@@ -117,7 +117,10 @@ class TestOnboardingStopsAtTheConfirm:
         run_turn(session, thread=thread)
 
         confirm = channel.bodies[-1]
-        assert "about 1 years in" in confirm, "the confirm reads the tenure back"
+        # "1 year", not "1 years" -- this test pinned the plural bug that
+        # shipped in the live thread ("about 1 years in").
+        assert "about 1 year in" in confirm, "the confirm reads the tenure back"
+        assert "1 years" not in confirm
         assert thread.record["spec"]["seniority"] == ["junior"]
 
         _say(session, thread, "yes", "o3")

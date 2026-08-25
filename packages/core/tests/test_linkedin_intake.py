@@ -485,3 +485,157 @@ class TestTargetConfirmation:
         scraped = merge_record(None, {"spec": {"job_titles": ["ml engineer"]}})
         after = merge_record(scraped, {"spec": {"job_titles": []}})
         assert after["spec"]["job_titles"] == ["ml engineer"]
+
+
+class TestRejectedTarget:
+    """What happens when the candidate says the inferred target is wrong.
+
+    From the live thread: "No I want to switch to Strat fin" left
+    `job_titles: ["Investor"]` untouched and the agent replied "you're set".
+    We asked, ignored the answer, and went looking for the job they had just
+    rejected. Asking a question and discarding the reply is worse than never
+    asking it.
+    """
+
+    def test_a_rejection_is_recognised(self):
+        from juicebox.messaging.linkedin_flow import looks_like_correction
+
+        for text in (
+            "No I want to switch to Strat fin",
+            "no, strategic finance",
+            "actually product roles",
+            "Nope",
+            "not really",
+        ):
+            assert looks_like_correction(text), text
+
+    def test_agreement_is_not_a_rejection(self):
+        from juicebox.messaging.linkedin_flow import looks_like_correction
+
+        for text in ("yep that's right", "sounds right", "yes please", ""):
+            assert not looks_like_correction(text), text
+
+    def test_no_mid_sentence_false_positive(self):
+        """"the comp is not negotiable" agrees with the read-back."""
+        from juicebox.messaging.linkedin_flow import looks_like_correction
+
+        assert not looks_like_correction("the comp is not negotiable")
+
+    def test_the_live_sentence_yields_its_title(self):
+        """Stacked lead-ins: "no" + "i want to" + "switch to" then the title.
+
+        Stripping one leaves seven words, which the length guard discards --
+        which is precisely how this sentence was lost.
+        """
+        from juicebox.messaging.linkedin_flow import title_from_reply
+
+        assert title_from_reply("No I want to switch to Strat fin") == "Strat fin"
+
+    def test_the_title_is_kept_as_they_said_it(self):
+        """No taxonomy mapping. The Exa query is a text search, and normalising
+        "strat fin" into something we recognise is how it got lost."""
+        from juicebox.messaging.linkedin_flow import title_from_reply
+
+        assert title_from_reply("no, strategic finance") == "strategic finance"
+        assert title_from_reply("actually product manager roles") == "product manager"
+
+    def test_a_non_answer_yields_nothing(self):
+        from juicebox.messaging.linkedin_flow import title_from_reply
+
+        assert title_from_reply("no") == ""
+        assert title_from_reply("not sure honestly, depends on the team and the comp") == ""
+
+    def test_target_unchanged_sees_the_scraped_title(self):
+        from juicebox.messaging.linkedin_flow import target_unchanged
+        from juicebox.models import IntakeThread
+
+        thread = IntakeThread(
+            org_id="o",
+            channel="linq",
+            record={
+                "spec": {"job_titles": ["Investor"]},
+                "_linkedin": {"scrape": {"current_title": "Investor"}},
+            },
+        )
+        assert target_unchanged(thread), "still exactly what the scrape guessed"
+
+        thread.record = {
+            "spec": {"job_titles": ["Strat fin"]},
+            "_linkedin": {"scrape": {"current_title": "Investor"}},
+        }
+        assert not target_unchanged(thread), "the correction landed"
+
+    def test_clearing_beats_keeping_a_rejected_title(self):
+        """`merge_record` reads empty as "no news", so this writes directly."""
+        from juicebox.messaging.linkedin_flow import clear_target
+
+        cleared = clear_target({"spec": {"job_titles": ["Investor"], "locations": ["sf"]}})
+        assert cleared["spec"]["job_titles"] == []
+        assert cleared["spec"]["locations"] == ["sf"], "only the target is dropped"
+
+
+class TestConfirmCopy:
+    def test_an_investor_not_a_investor(self):
+        from juicebox.enrich.linkedin_scrape import LinkedInProfile
+        from juicebox.messaging.linkedin_flow import confirm_message
+
+        body = confirm_message(
+            LinkedInProfile(url="x", full_name="S", current_title="Investor",
+                            current_employer="WestBridge", experience_years=1.0)
+        )
+        assert "an Investor" in body
+        assert "a Investor" not in body
+
+    def test_one_year_not_one_years(self):
+        from juicebox.enrich.linkedin_scrape import LinkedInProfile
+        from juicebox.messaging.linkedin_flow import confirm_message
+
+        one = confirm_message(
+            LinkedInProfile(url="x", full_name="S", current_title="Analyst",
+                            current_employer="X", experience_years=1.0)
+        )
+        assert "1 year in" in one and "1 years" not in one
+        many = confirm_message(
+            LinkedInProfile(url="x", full_name="S", current_title="Analyst",
+                            current_employer="X", experience_years=8.0)
+        )
+        assert "8 years in" in many
+
+
+class TestRetargetEndToEnd:
+    """The whole point: a rejection has to change what we search for."""
+
+    def test_rejecting_the_target_asks_again_and_binds_the_answer(
+        self, session, account, fake_channel
+    ):
+        from juicebox.messaging import linkedin_flow
+        from juicebox.messaging.conversation import run_turn
+        from juicebox.messaging.linkedin_flow import BATCH_CONFIRM, BATCH_RETARGET
+        from juicebox.messaging.threads import record_inbound
+
+        thread = _short_thread(session, account, fake_channel)
+        thread.contact_email = "s@example.com"
+        thread.contact_linkedin = "https://www.linkedin.com/in/sathyapanchu"
+        thread.contact_name = "Sathya Panchu"
+        thread.record = {
+            "spec": {"job_titles": ["Investor"], "locations": ["San Francisco"]},
+            "_linkedin": {"scrape": {"current_title": "Investor"}, "phase": "confirm"},
+        }
+        thread.last_field_asked = BATCH_CONFIRM
+        session.flush()
+
+        # They reject it, and the extractor (heuristic here, no key) misses it.
+        record_inbound(session, thread=thread, body="No I want to switch to Strat fin",
+                       provider_native_id="rt-1")
+        result = run_turn(session, thread=thread)
+
+        assert result.asked_field == BATCH_RETARGET, "must not hand over on a rejection"
+        assert "instead" in fake_channel.bodies[-1].lower()
+
+        # And the answer binds, even though nothing recognises "Strat fin".
+        record_inbound(session, thread=thread, body="Strat fin", provider_native_id="rt-2")
+        run_turn(session, thread=thread)
+        session.refresh(thread)
+        titles = (thread.record.get("spec") or {}).get("job_titles") or []
+        assert titles == ["Strat fin"], f"searched for {titles} after they said no"
+        assert not linkedin_flow.target_unchanged(thread)

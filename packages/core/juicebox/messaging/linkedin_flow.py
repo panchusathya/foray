@@ -8,6 +8,7 @@ turn handler branches on ``thread.flow`` and ``last_field_asked``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..enrich.linkedin_scrape import LinkedInProfile, is_ic_title, seniority_from_years
@@ -29,6 +30,10 @@ PHASE_DONE = "done"
 # intake.schema keys, same rule as contact.name.
 BATCH_CONFIRM = "batch.confirm"
 BATCH_GAP_FILL = "batch.gap_fill"
+# The reply to "what should i be looking for instead?". Its own field so the
+# answer can be bound to spec.job_titles directly rather than hoping the
+# extractor recognises it.
+BATCH_RETARGET = "batch.retarget"
 
 FLOW_META_KEY = "_linkedin"
 
@@ -176,6 +181,110 @@ def wants_years_question(thread: IntakeThread) -> bool:
     return True
 
 
+# "No I want to switch to Strat fin" -- a rejection, whatever follows it.
+_CORRECTION = re.compile(
+    r"^\W*(no|nope|nah|not\s|isn'?t|wrong|actually|instead|rather|change|switch)\b",
+    re.IGNORECASE,
+)
+
+RETARGET_LINE = "got it — so what kind of role should i be looking for instead?"
+
+
+def looks_like_correction(body: str) -> bool:
+    """Does this reply reject what we just read back to them?
+
+    Anchored to the start: "no, strategic finance" is a correction, while "the
+    comp is not negotiable" mentions the word and agrees with the read-back.
+    """
+    return bool(_CORRECTION.match((body or "").strip()))
+
+
+def scraped_title(thread: IntakeThread) -> str:
+    return str(scraped_profile(thread).get("current_title") or "").strip()
+
+
+def target_unchanged(thread: IntakeThread) -> bool:
+    """Is the search target still exactly what the scrape guessed?
+
+    The confirm step asks whether the inferred target is right. If somebody
+    says no and this is still true, the extractor did not understand the
+    correction -- and handing over now searches for the job they just
+    rejected. Live example: "No I want to switch to Strat fin" left
+    `job_titles: ["Investor"]` untouched and the thread said "you're set".
+    """
+    guessed = scraped_title(thread)
+    if not guessed:
+        return False
+    titles = ((thread.record or {}).get("spec") or {}).get("job_titles") or []
+    return [str(t).strip().lower() for t in titles] == [guessed.lower()]
+
+
+_LEAD_IN = re.compile(
+    r"^\W*(no|nope|nah|not really|actually|instead|rather|i want to|"
+    r"i'd like to|i am|i'm|looking for|switch to|switching to|"
+    r"change to|move to|more|into|to|do|want)\b[\s,.:;-]*",
+    re.IGNORECASE,
+)
+
+
+def title_from_reply(body: str) -> str:
+    """The reply, read as a job title. Only ever called after we asked for one.
+
+    Deliberately light: it strips the rejection that usually opens the message
+    ("no, I want to switch to strategic finance") and keeps the rest as
+    written. No taxonomy mapping -- "strat fin" is what they call it, the Exa
+    query is a text search, and normalising it to something we recognise is
+    how the extractor lost it in the first place.
+    """
+    text = (body or "").strip()
+    # Repeatedly: real answers stack lead-ins. "No I want to switch to Strat
+    # fin" is three of them before the title, and stripping one leaves a
+    # seven-word phrase the length guard then discards -- which is exactly
+    # how the live thread lost this sentence.
+    for _ in range(6):
+        stripped = _LEAD_IN.sub("", text, count=1)
+        if stripped == text:
+            break
+        text = stripped
+    text = re.sub(r"\b(roles?|jobs?|positions?)\b\s*$", "", text, flags=re.IGNORECASE)
+    text = text.strip(" ,.;:-")
+    # A sentence is an explanation, not a title.
+    if not text or len(text) > 60 or len(text.split()) > 6:
+        return ""
+    return text
+
+
+def clear_target(record: dict[str, Any] | None) -> dict:
+    """Forget the inferred target after it has been rejected.
+
+    `merge_record` treats empty as "no news" and keeps the old value, so this
+    writes the spec directly. Leaving a rejected title in place is the failure
+    this whole path exists to prevent.
+    """
+    updated = dict(record or {})
+    spec = dict(updated.get("spec") or {})
+    spec["job_titles"] = []
+    updated["spec"] = spec
+    return updated
+
+
+def apply_title_to_record(record: dict[str, Any] | None, title: str) -> dict:
+    """Replace the search target outright. A correction does not accumulate."""
+    incoming = empty_record()
+    incoming["spec"]["job_titles"] = [title]
+    return merge_record(record, incoming)
+
+
+def _article(word: str) -> str:
+    """"an investor", not "a investor".
+
+    Vowel-letter test, not a pronunciation dictionary: it is right for the
+    job titles that exist ("an engineer", "an analyst", "an operator") and
+    wrong only for ones nobody holds.
+    """
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
 def confirm_message(profile: LinkedInProfile | dict[str, Any]) -> str:
     data = profile.to_dict() if isinstance(profile, LinkedInProfile) else dict(profile or {})
     bits: list[str] = []
@@ -184,15 +293,16 @@ def confirm_message(profile: LinkedInProfile | dict[str, Any]) -> str:
     location = str(data.get("location") or "").strip()
     years = data.get("experience_years")
     if title and employer:
-        bits.append(f"you're a {title} at {employer}")
+        bits.append(f"you're {_article(title)} {title} at {employer}")
     elif title:
-        bits.append(f"you're a {title}")
+        bits.append(f"you're {_article(title)} {title}")
     elif employer:
         bits.append(f"you're at {employer}")
     if location:
         bits.append(f"based in {location}")
     if isinstance(years, (int, float)) and years:
-        bits.append(f"about {int(years)} years in")
+        whole = int(years)
+        bits.append(f"about {whole} {'year' if whole == 1 else 'years'} in")
     if not bits:
         return (
             "got your linkedin — i'll match you off that. what kind of role are "

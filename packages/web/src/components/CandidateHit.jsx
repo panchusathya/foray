@@ -82,7 +82,11 @@ export function CandidateHit({ hit, selected, onToggle }) {
           <div className="criteria">
             {visible.map((criterion) => (
               <div className="criterion" key={criterion.name}>
-                <span className={`dot ${criterion.status}`} />
+                <span className={`verdict ${criterion.status}`}>
+                  {{ strong: 'Good match', partial: 'Partial', miss: 'No match' }[
+                    criterion.status
+                  ] ?? 'Unknown'}
+                </span>
                 <span className="label">{criterion.label}</span>
                 <span className="evidence">— {criterion.evidence}</span>
               </div>

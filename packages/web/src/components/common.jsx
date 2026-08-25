@@ -2,6 +2,22 @@
 
 import { Link } from 'react-router-dom';
 
+/**
+ * The Foray logo mark — a 2×2 grid of squares, three purple and one gold,
+ * lifted from the goforay.io landing. Decorative; the wordmark beside it
+ * carries the name.
+ */
+export function BrandMark() {
+  return (
+    <span className="brand-glyph" aria-hidden="true">
+      <i />
+      <i />
+      <i />
+      <i />
+    </span>
+  );
+}
+
 export function PageHeader({ title, subtitle, actions }) {
   return (
     <div className="page-header spread">

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { CandidateHit } from '../components/CandidateHit.jsx';
-import { Badge, Empty, ErrorBox, PageHeader } from '../components/common.jsx';
+import { Badge, Empty, ErrorBox } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -107,13 +107,14 @@ export function SearchPage() {
 
   return (
     <div className="stack">
-      <PageHeader
-        title="Search"
-        subtitle="Describe who you're looking for. Every result shows the evidence behind its score."
-      />
-
-      <div className="card">
-        <div className="searchbar">
+      <div className={`search-hero${result ? ' compact' : ''}`}>
+        <h1>
+          Who are you <em className="marker">looking for</em>?
+        </h1>
+        <p className="muted">
+          Describe the hire in plain language. Every result shows the evidence behind its score.
+        </p>
+        <div className="card hero-input">
           <textarea
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -126,7 +127,7 @@ export function SearchPage() {
             {busy ? 'Searching…' : 'Search'}
           </button>
         </div>
-        <div className="facets">
+        <div className="facets hero-examples">
           <span className="small muted">Try:</span>
           {EXAMPLES.map((example) => (
             <button
@@ -147,7 +148,7 @@ export function SearchPage() {
       <ErrorBox error={error} />
 
       {result ? (
-        <>
+        <div className="results-col stack">
           <ParsedQuery parsed={{ ...result.parsed, __parser: result.parser }} />
 
           <div className="card spread">
@@ -195,7 +196,7 @@ export function SearchPage() {
               ))}
             </div>
           )}
-        </>
+        </div>
       ) : null}
     </div>
   );

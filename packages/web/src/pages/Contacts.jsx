@@ -135,7 +135,9 @@ function Cell({ column, row }) {
       );
     case 'status':
       return row.crm_status && row.crm_status !== 'none' ? (
-        <span className="badge">{CRM_STATUS_LABELS[row.crm_status] ?? row.crm_status}</span>
+        <span className={`badge status-${row.crm_status}`}>
+          {CRM_STATUS_LABELS[row.crm_status] ?? row.crm_status}
+        </span>
       ) : (
         <span className="muted">—</span>
       );

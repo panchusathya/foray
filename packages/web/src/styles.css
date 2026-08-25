@@ -1,28 +1,63 @@
 /*
- * Foray design system — dark mint terminal aesthetic, ported from goforay.io.
- * Class architecture is unchanged from the original shell; only tokens and
- * component polish differ. Status colors: strong=mint, partial=amber, miss=coral.
+ * Foray design system — "First light" theme, ported from the goforay.io
+ * landing (its th-dawn palette). Class architecture is unchanged from the
+ * original shell; only tokens and component polish differ. Status colors stay
+ * a traffic light: strong=green, partial=amber, miss=red — a verdict must
+ * never read as brand purple.
  */
 
 :root {
-  --bg: #080d0b;
-  --surface: #0f1614;
-  --surface-2: #121a17;
-  --panel: #050908;
-  --border: rgba(234, 240, 236, 0.09);
-  --border-strong: rgba(234, 240, 236, 0.2);
-  --text: #eaf0ec;
-  --muted: #8da29b;
-  --accent: #46b98c;
-  --accent-light: #7ed9b4;
-  --accent-soft: rgba(70, 185, 140, 0.14);
-  --accent-glow: 0 0 0.45em rgba(126, 217, 180, 0.35);
-  --strong: #46b98c;
-  --partial: #f5a05a;
-  --miss: #f2707a;
-  --radius: 14px;
-  --sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  --bg: #faf8fc;
+  --surface: #ffffff;
+  --surface-2: #f4f1fa;
+  --panel: #f4f1fa;
+  --border: rgba(42, 33, 64, 0.1);
+  --border-strong: rgba(42, 33, 64, 0.16);
+  --text: #2a2140;
+  --muted: #6e6684;
+
+  --accent: #6a50c8;
+  /* On a light background "brighter" emphasis means darker ink. */
+  --accent-light: #5a41b4;
+  --accent-soft: #ebe4f8;
+  /* Decorative lavender (3.2:1 on white) — gradient/fill ends only, never text. */
+  --primary2: #9b7fe0;
+
+  --tint: #ebe4f8;
+  --tint2: #f4f1fa;
+  --tint3: #f9f7fc;
+  --sky1: #b08ad6;
+  --sky2: #d7c2ea;
+  --sky3: #f3ecf8;
+
+  --gold: #e8a33c;
+  --gold-soft: #f7dfa9;
+  --gold-tint: #f8e8c8;
+  --gold-deep: #7a5410;
+
+  /* Verdict traffic light, tuned for a light background (≥4.9:1 on white). */
+  --strong: #2e7d5b;
+  --strong-soft: rgba(46, 125, 91, 0.1);
+  --strong-border: rgba(46, 125, 91, 0.35);
+  --partial: #9c640a;
+  --partial-soft: rgba(156, 100, 10, 0.1);
+  --partial-border: rgba(156, 100, 10, 0.35);
+  --miss: #c4384a;
+  --miss-soft: rgba(196, 56, 74, 0.08);
+  --miss-border: rgba(196, 56, 74, 0.35);
+
+  --ring: 0 0 0 3px rgba(106, 80, 200, 0.16);
+  --shadow-sm: 0 1px 2px rgba(42, 33, 64, 0.06);
+  --shadow-md: 0 6px 18px rgba(42, 33, 64, 0.08);
+  --shadow-lift: 0 10px 24px rgba(42, 33, 64, 0.14);
+  --shadow-pop: 0 24px 60px rgba(42, 33, 64, 0.22);
+
+  --radius: 16px;
+  --radius-lg: 20px;
+
+  --sans: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
+  --display: "Bricolage Grotesque", var(--sans);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
@@ -32,14 +67,24 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15.5px/1.55 var(--sans);
+  font: 400 15.5px/1.6 var(--sans);
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
 }
 
-h1, h2, h3, h4 { letter-spacing: -0.032em; font-weight: 500; }
+h1, h2, h3, h4 { font-family: var(--display); letter-spacing: -0.032em; font-weight: 500; }
 
 a { color: inherit; }
+
+::selection { background: var(--gold-soft); color: var(--text); }
+
+/* The landing's marker-highlight: one word per headline, gold behind it. */
+.marker {
+  font-style: normal;
+  background: var(--gold-soft);
+  border-radius: 6px;
+  padding: 0 0.14em;
+}
 
 button, input, textarea, select {
   font: inherit;
@@ -67,12 +112,19 @@ button, input, textarea, select {
   font-size: 19px;
   padding: 0 10px 18px;
 }
-.brand span,
+/* The landing's logo mark: a 2×2 grid of squares, three purple, one gold. */
 .brand-glyph {
-  color: var(--accent-light);
-  font-family: var(--mono);
-  text-shadow: var(--accent-glow);
+  display: inline-grid;
+  grid-template-columns: repeat(2, 5px);
+  grid-auto-rows: 5px;
+  gap: 2.5px;
+  vertical-align: -1px;
+  margin-right: 4px;
 }
+.brand-glyph i { background: var(--accent); border-radius: 1px; opacity: 0.95; }
+.brand-glyph i:nth-child(2) { opacity: 0.5; }
+.brand-glyph i:nth-child(3) { opacity: 0.4; }
+.brand-glyph i:nth-child(4) { background: var(--gold); opacity: 0.95; }
 
 .nav-link {
   display: block;
@@ -81,8 +133,8 @@ button, input, textarea, select {
   text-decoration: none;
   color: var(--muted);
 }
-.nav-link:hover { background: var(--surface-2); color: var(--text); }
-.nav-link.active { background: var(--accent-soft); color: var(--accent-light); }
+.nav-link:hover { background: rgba(255, 255, 255, 0.7); color: var(--text); }
+.nav-link.active { background: var(--tint); color: var(--accent-light); font-weight: 500; }
 
 .sidebar-section {
   margin-top: 20px;
@@ -95,16 +147,16 @@ button, input, textarea, select {
 .sidebar-heading {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   color: var(--muted);
   padding: 0 10px 6px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .project-switcher {
   width: 100%;
   margin: 0 0 6px;
   padding: 7px 10px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   font-size: 13px;
@@ -135,6 +187,7 @@ button, input, textarea, select {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
 }
 
 .row { display: flex; gap: 12px; align-items: center; }
@@ -154,14 +207,14 @@ input[type='text'], input[type='email'], input[type='password'], input[type='num
 textarea, select {
   width: 100%;
   padding: 10px 12px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 12px;
   outline: none;
 }
 input:focus, textarea:focus, select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(70, 185, 140, 0.25);
+  box-shadow: var(--ring);
 }
 textarea { resize: vertical; min-height: 84px; }
 ::placeholder { color: var(--muted); opacity: 0.7; }
@@ -170,24 +223,32 @@ button {
   padding: 9px 16px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  background: var(--surface-2);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
-button:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+/* Landing rule: hover is lift + shadow, never a color change. */
+button:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-md); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #04110b;
-  font-weight: 600;
+  color: #ffffff;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 13px;
+  letter-spacing: 0.14em;
+  font-size: 11.5px;
+  padding: 11px 20px;
 }
-button.primary:hover:not(:disabled) { background: var(--accent-light); border-color: var(--accent-light); }
-button.ghost { background: transparent; }
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+}
+button.ghost { background: transparent; box-shadow: none; }
 button.tiny { padding: 4px 11px; font-size: 12px; }
 
 .badge {
@@ -197,19 +258,19 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   padding: 2px 9px;
   border-radius: 999px;
   font-size: 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  background: var(--tint2);
+  border: 1px solid var(--border);
   color: var(--muted);
 }
-.badge.strong { color: var(--accent-light); border-color: rgba(70, 185, 140, 0.45); background: var(--accent-soft); }
-.badge.partial { color: var(--partial); border-color: rgba(245, 160, 90, 0.4); }
-.badge.miss { color: var(--miss); border-color: rgba(242, 112, 122, 0.4); }
-.badge.accent { color: var(--accent-light); border-color: rgba(70, 185, 140, 0.45); }
+.badge.strong { color: var(--strong); border-color: var(--strong-border); background: var(--strong-soft); }
+.badge.partial { color: var(--partial); border-color: var(--partial-border); background: var(--partial-soft); }
+.badge.miss { color: var(--miss); border-color: var(--miss-border); background: var(--miss-soft); }
+.badge.accent { color: var(--accent); border-color: rgba(106, 80, 200, 0.3); background: var(--tint); }
 
 .error {
-  border: 1px solid rgba(242, 112, 122, 0.5);
-  background: rgba(242, 112, 122, 0.1);
-  color: #f7b6bc;
+  border: 1px solid var(--miss-border);
+  background: var(--miss-soft);
+  color: #a02538;
   padding: 10px 12px;
   border-radius: 8px;
 }
@@ -220,6 +281,42 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 
 .searchbar { display: flex; gap: 10px; }
 .searchbar textarea { min-height: 62px; }
+
+/* Juicebox-style centered hero: the question is the page until results land. */
+.search-hero { max-width: 780px; width: 100%; margin: 7vh auto 8px; text-align: center; }
+.search-hero.compact { margin-top: 8px; }
+.search-hero h1 { font-size: 34px; margin: 0 0 6px; }
+.search-hero.compact h1 { font-size: 24px; }
+.search-hero > p { margin: 0 0 20px; }
+.hero-input {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  text-align: left;
+  padding: 12px;
+  border-radius: 22px;
+  box-shadow: var(--shadow-md);
+}
+.hero-input:focus-within { border-color: var(--accent); box-shadow: var(--ring), var(--shadow-md); }
+.hero-input textarea { border: none; background: transparent; min-height: 56px; }
+.hero-input textarea:focus { border: none; box-shadow: none; }
+.hero-examples { justify-content: center; }
+.results-col { max-width: 880px; width: 100%; margin: 0 auto; }
+
+/* Labelled verdict chips on search criteria — the traffic light, spelled out. */
+.verdict {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.verdict.strong { color: var(--strong); background: var(--strong-soft); }
+.verdict.partial { color: var(--partial); background: var(--partial-soft); }
+.verdict.miss { color: var(--miss); background: var(--miss-soft); }
+.verdict.unknown { color: var(--muted); background: var(--tint2); }
 
 .facets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 
@@ -233,29 +330,37 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .score-value {
   font-family: var(--mono);
   font-size: 20px;
-  color: var(--accent-light);
-  text-shadow: var(--accent-glow);
+  color: var(--accent);
 }
 
 .criteria { margin-top: 12px; display: grid; gap: 5px; }
-.criterion { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.criterion { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .criterion .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; margin-top: 6px; }
-.criterion .dot.strong { background: var(--strong); box-shadow: var(--accent-glow); }
+.criterion .dot.strong { background: var(--strong); }
 .criterion .dot.partial { background: var(--partial); }
 .criterion .dot.miss { background: var(--miss); }
 .criterion .dot.unknown { background: var(--muted); }
 .criterion .label { flex: 0 0 auto; }
 .criterion .evidence { color: var(--muted); }
 
-.bar { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
-.bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
+.bar { height: 5px; border-radius: 3px; background: var(--tint2); overflow: hidden; margin-top: 6px; }
+.bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--primary2)); }
 
 /* ---------- pipeline ---------- */
 
 .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
-.column { flex: 0 0 250px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
-.column h4 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
-.pipeline-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.column { flex: 0 0 250px; background: var(--tint2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.column h4 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); font-weight: 500; }
+.pipeline-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.pipeline-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .pipeline-card .name { font-weight: 600; font-size: 14px; }
 
 /* ---------- stats ---------- */
@@ -269,13 +374,14 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(5, 9, 8, 0.7);
+  background: rgba(42, 33, 64, 0.35);
   display: grid;
   place-items: center;
   z-index: 40;
   padding: 24px;
 }
 .modal { width: 100%; max-width: 480px; }
+.modal-overlay .card { box-shadow: var(--shadow-pop); border-radius: var(--radius-lg); }
 
 .option {
   text-align: left;
@@ -324,7 +430,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 .email-body-editor:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(70, 185, 140, 0.25);
+  box-shadow: var(--ring);
 }
 .email-body-toolbar {
   display: flex;
@@ -382,11 +488,16 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   place-items: center;
   min-height: 100vh;
   padding: 24px;
-  background:
-    radial-gradient(ellipse 60% 40% at 50% 0%, rgba(70, 185, 140, 0.07), transparent),
-    var(--bg);
+  background: linear-gradient(180deg, var(--sky1) 0%, var(--sky2) 40%, var(--sky3) 78%, var(--bg) 100%);
 }
-.auth-card { width: 100%; max-width: 400px; background: var(--surface); }
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lift);
+  padding: 24px;
+}
 .auth-card h1 { margin: 0 0 6px; font-size: 24px; }
 .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
 
@@ -412,15 +523,16 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface-2);
+  background: var(--tint3);
+  border-bottom: 1px solid var(--border-strong);
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
-  font-weight: 600;
+  letter-spacing: 0.12em;
+  font-weight: 500;
 }
 .dgrid tbody tr:last-child td { border-bottom: none; }
-.dgrid tbody tr:hover { background: var(--surface-2); }
+.dgrid tbody tr:hover { background: var(--tint3); }
 .dgrid td.num, .dgrid th.num { text-align: right; font-family: var(--mono); }
 .dgrid a { text-decoration: none; }
 .dgrid a:hover { text-decoration: underline; }
@@ -460,12 +572,50 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
-.viewtabs a:hover { color: var(--text); background: var(--surface-2); }
-.viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+.viewtabs a:hover { color: var(--text); background: var(--tint3); }
+.viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); font-weight: 600; }
 .dgrid .pick { width: 34px; text-align: center; }
 .dgrid .pick input { margin: 0; cursor: pointer; }
-.dgrid tbody tr.selected { background: var(--accent-soft); }
-.dgrid tbody tr.selected:hover { background: var(--accent-soft); }
+.dgrid tbody tr.selected { background: var(--tint); }
+.dgrid tbody tr.selected:hover { background: var(--tint); }
+
+/* --- sticky identity column ---------------------------------------------
+   Affinity keeps the person in view while you scroll a wide row. The pick
+   column is a constant 34px and the identity column is always the first data
+   column, so the offsets are constants. Sticky cells need opaque backgrounds
+   re-declared per row state or the row looks torn while scrolling. */
+.dgrid th:first-child,
+.dgrid td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+.dgrid th:nth-child(2),
+.dgrid td:nth-child(2) {
+  position: sticky;
+  left: 34px;
+  z-index: 2;
+  background: var(--surface);
+  border-right: 1px solid var(--border-strong);
+}
+/* Header cells sit above both scroll axes where the stickies cross. */
+.dgrid thead th:first-child,
+.dgrid thead th:nth-child(2) { z-index: 3; background: var(--tint3); }
+.dgrid tbody tr:hover td:first-child,
+.dgrid tbody tr:hover td:nth-child(2) { background: var(--tint3); }
+.dgrid tbody tr.selected td:first-child,
+.dgrid tbody tr.selected td:nth-child(2) { background: var(--tint); }
+.dgrid tbody tr.selected:hover td:first-child,
+.dgrid tbody tr.selected:hover td:nth-child(2) { background: var(--tint); }
+
+/* --- CRM status pills, Affinity-style ---------------------------------- */
+.badge.status-prospect { color: var(--accent-light); background: var(--tint); border-color: transparent; }
+.badge.status-active { color: var(--strong); background: var(--strong-soft); border-color: transparent; }
+.badge.status-nurture { color: var(--gold-deep); background: var(--gold-tint); border-color: transparent; }
+.badge.status-placed { color: var(--gold-deep); background: var(--gold-soft); border-color: transparent; }
+.badge.status-do_not_contact { color: var(--miss); background: var(--miss-soft); border-color: transparent; }
+.badge.status-archived { color: var(--muted); background: var(--tint2); border-color: transparent; }
 
 /* --- grid density -------------------------------------------------------
    Borrowed from Affinity: an avatar to aim at, the address under the name,
@@ -475,7 +625,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .dgrid td { padding-top: 5px; padding-bottom: 5px; }
 /* Ruled columns. The last cell has the table's own edge already. */
 .dgrid th:not(:last-child),
-.dgrid td:not(:last-child) { border-right: 1px solid rgba(234, 240, 236, 0.05); }
+.dgrid td:not(:last-child) { border-right: 1px solid rgba(42, 33, 64, 0.06); }
 
 .identity { display: flex; align-items: center; gap: 9px; }
 .avatar {
@@ -486,9 +636,9 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(234, 240, 236, 0.06);
-  border: 1px solid var(--border);
-  color: var(--muted);
+  background: var(--tint);
+  border: 1px solid transparent;
+  color: var(--accent);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -549,29 +699,30 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 .record-tabs button:hover:not(:disabled) {
   transform: none;
+  box-shadow: none;
   border-color: transparent;
   border-bottom-color: var(--border-strong);
   color: var(--text);
-  background: var(--surface-2);
+  background: var(--tint3);
 }
-.record-tabs button.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+.record-tabs button.active { color: var(--accent-light); border-bottom-color: var(--accent); font-weight: 600; }
 /* The count rides inside the tab button, so it is part of the label rather
    than a badge that has to line up with one. */
 .tab-count {
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(234, 240, 236, 0.08);
+  background: var(--tint2);
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.record-tabs button.active .tab-count { background: var(--accent-soft); color: var(--accent-light); }
+.record-tabs button.active .tab-count { background: var(--tint); color: var(--accent); }
 
 .field-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.14em;
   color: var(--muted);
 }
 .inline-field {
@@ -638,4 +789,10 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   overflow-wrap: anywhere;
   margin: 0;
   font-family: inherit;
+}
+
+/* ---------- scrollbars (scrolling panels only) ---------- */
+.dgrid-wrap, .board, .jd-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(42, 33, 64, 0.25) transparent;
 }

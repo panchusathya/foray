@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { ErrorBox } from '../components/common.jsx';
+import { BrandMark, ErrorBox } from '../components/common.jsx';
 import { useAuth } from '../lib/auth.jsx';
 
 export function LoginPage() {
@@ -42,9 +42,11 @@ export function LoginPage() {
       <form className="card auth-card stack" onSubmit={submit}>
         <div>
           <h1>
-            <span className="brand-glyph">▞</span> Foray
+            <BrandMark /> Foray
           </h1>
-          <p className="muted small">Foray into your next hire.</p>
+          <p className="muted small">
+            Foray into your <em className="marker">next hire</em>.
+          </p>
         </div>
 
         <div className="tabs">

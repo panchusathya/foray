@@ -264,7 +264,11 @@ class TestManaging:
         _say(session, thread, "find me roles", native_id="m-a")
         assert "Anthropic" in channel.bodies[-1]
         _say(session, thread, "more roles please", native_id="m-b")
-        assert "nothing new clears the bar" in channel.bodies[-1].lower()
+        # Not shown twice -- and asking again with an empty book sends us
+        # looking rather than answering from it, so the reply is the search
+        # line, not the card.
+        assert "Anthropic" not in channel.bodies[-1]
+        assert "looking now" in channel.bodies[-1].lower()
 
     def test_other_intent_gets_the_canned_deflection(self, session, channel, thread):
         thread = _managed(session, thread)

@@ -20,10 +20,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..jobs import KIND_JOBS_DISCOVER_ONE, KIND_JOBS_PARSE, Job, enqueue
+from ..jobs import KIND_JOBS_DISCOVER_ONE, Job, enqueue
 from ..models import Candidate, CandidatePreference, JobPosting, utcnow
 from .exa import ExaUnavailable, get_exa
 from .scrape import ingest_exa_results
+from .sync import enqueue_parse
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,34 @@ def enqueue_discovery_for_candidate(
     )
 
 
+def enqueue_discovery_on_request(
+    db: Session, *, candidate: Candidate, preference: CandidatePreference, now=None
+) -> Job | None:
+    """Go and look now, because the candidate just asked us to.
+
+    Distinct from ``enqueue_discovery_for_candidate``, which keys on
+    ``preference.updated_at`` so that re-scoring an unchanged spec cannot
+    re-buy the same searches. That key is right for the automatic path and
+    wrong for this one: somebody typing "find me roles" a week later has an
+    unchanged spec, so the automatic key dedupes their request against a run
+    that already happened and nothing is searched.
+
+    Keyed per candidate per day instead. Asking twice in an afternoon costs
+    nothing, and the cap is what keeps a bored candidate from spending the
+    Exa budget one text at a time.
+    """
+    if not queries_for(preference):
+        return None
+    day = (now or utcnow()).strftime("%Y%m%d")
+    return enqueue(
+        db,
+        org_id=candidate.org_id,
+        kind=KIND_JOBS_DISCOVER_ONE,
+        idempotency_key=f"{KIND_JOBS_DISCOVER_ONE}:req:{candidate.id}:{day}",
+        payload={"org_id": candidate.org_id, "candidate_id": candidate.id},
+    )
+
+
 def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
     """Search the open market for this candidate, then rescore them against it."""
     from .engine import enqueue_match_for_candidate
@@ -120,20 +149,20 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
 
     # Everything newly ingested needs parsing before it can be matched, and
     # parsing is where the employer and location are read off the page.
+    #
+    # Via ``enqueue_parse``, not a hand-rolled ``enqueue``: this loop used to
+    # write ``payload={"posting_id": ...}`` while ``jobmatch.parse.handle_parse``
+    # reads ``job_posting_id``, so every job it queued returned
+    # "missing_posting" and did nothing. The count came back non-zero anyway,
+    # which is what made the failure invisible.
     pending = db.scalars(
-        select(JobPosting.id).where(
+        select(JobPosting).where(
             JobPosting.org_id == candidate.org_id,
             JobPosting.status == "pending_parse",
         )
     ).all()
-    for posting_id in pending:
-        enqueue(
-            db,
-            org_id=candidate.org_id,
-            kind=KIND_JOBS_PARSE,
-            idempotency_key=f"{KIND_JOBS_PARSE}:{posting_id}",
-            payload={"org_id": candidate.org_id, "posting_id": posting_id},
-        )
+    for posting in pending:
+        enqueue_parse(db, posting)
 
     # Rescore last: the matches this candidate cares about are against the
     # postings we just added.

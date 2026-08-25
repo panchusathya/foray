@@ -210,6 +210,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     if thread.candidate_id:
         _mark_crm_tracked(db, thread.candidate_id)
         _copy_linkedin(db, thread)
+        _copy_experience(db, thread)
         return thread.candidate_id
 
     email = (thread.contact_email or "").strip().lower()
@@ -245,6 +246,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         thread.candidate_id = existing
         _mark_crm_tracked(db, existing)
         _copy_linkedin(db, thread)
+        _copy_experience(db, thread)
         return existing
 
     scrape = ((thread.record or {}).get("_linkedin") or {}).get("scrape") or {}
@@ -267,6 +269,9 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         payload["location"] = scrape["location"]
     if scrape.get("headline"):
         payload["headline"] = scrape["headline"]
+    years = _stated_years(thread)
+    if years is not None:
+        payload["years_experience"] = years
 
     result = upsert_candidates(
         db,
@@ -278,6 +283,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     thread.candidate_id = result.ids[0]
     _mark_crm_tracked(db, thread.candidate_id)
     _copy_linkedin(db, thread)
+    _copy_experience(db, thread)
     return thread.candidate_id
 
 
@@ -292,6 +298,46 @@ def _copy_linkedin(db: Session, thread: IntakeThread) -> None:
     if not (candidate.linkedin_url or "").strip():
         candidate.linkedin_url = url[:400]
         db.flush()
+
+
+def _stated_years(thread: IntakeThread) -> float | None:
+    """Years of experience this thread learned, from the answer or the profile.
+
+    The answer wins: "roughly how many years of experience do you have?" is a
+    question we asked, and the scrape's own figure is a sum over dated roles
+    that a profile often gets wrong.
+    """
+    meta = (thread.record or {}).get("_linkedin") or {}
+    for value in (meta.get("years"), (meta.get("scrape") or {}).get("experience_years")):
+        try:
+            years = float(value)
+        except (TypeError, ValueError):
+            continue
+        if years > 0:
+            return years
+    return None
+
+
+def _copy_experience(db: Session, thread: IntakeThread) -> None:
+    """Write the years onto the candidate when the row still says zero.
+
+    A thread intake creates a candidate with no ``Experience`` rows, so
+    ``years_experience`` computes to 0.0 and the matcher scores every posting
+    that states a minimum as "0 years of tracked experience" -- a miss on a
+    1.2-weight criterion, for somebody who told us the number in the second
+    message. Only fills a zero: a resume or a CRM import that counted real
+    roles is a better figure than a remembered one.
+    """
+    if not thread.candidate_id:
+        return
+    years = _stated_years(thread)
+    if years is None:
+        return
+    candidate = db.get(Candidate, thread.candidate_id)
+    if candidate is None or float(candidate.years_experience or 0.0) > 0:
+        return
+    candidate.years_experience = years
+    db.flush()
 
 
 class AttributionError(RuntimeError):

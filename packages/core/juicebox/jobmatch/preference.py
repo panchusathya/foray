@@ -205,10 +205,34 @@ def _overlap(wanted: list[str], have: list[str], *, normalize=tx.slugify_text) -
 
 
 def _location_fit(wanted: ParsedQuery, have: ParsedQuery, posting: JobPosting | None) -> float | None:
+    """Best fit between where they want to work and where the role sits.
+
+    ``tx.location_match``, not set equality. Places are written down half a
+    dozen ways and equality scored all but one of them zero: a candidate who
+    said "San Francisco Bay Area" against a posting in "San Francisco, CA"
+    came out a hard miss, while ``search.scoring`` -- reading the same two
+    strings -- called it 0.65. Two comparators disagreeing about the same
+    pair is the bug; the metro-aware one is the right side of the
+    disagreement.
+    """
     have_locs = list(have.locations)
     if posting is not None and posting.location:
         have_locs.append(posting.location)
-    return _overlap(wanted.locations, have_locs, normalize=tx.normalize_location)
+    wanted_locs = [loc for loc in wanted.locations if loc]
+    if not wanted_locs:
+        return None
+    have_locs = [loc for loc in have_locs if loc]
+    if not have_locs:
+        return 0.0
+    # Both orientations. ``location_match`` looks the *target* up in the metro
+    # table and nothing else, so "Menlo Park" scores zero against a stated
+    # "San Francisco" while "San Francisco" scores 0.75 against a stated
+    # "Menlo Park" -- the same two places, and which one wins depends on which
+    # argument we happened to pass first.
+    return max(
+        max(tx.location_match(have_locs, loc) for loc in wanted_locs),
+        max(tx.location_match(wanted_locs, loc) for loc in have_locs),
+    )
 
 
 def _remote_fit(wanted: ParsedQuery, have: ParsedQuery, posting: JobPosting | None) -> float | None:

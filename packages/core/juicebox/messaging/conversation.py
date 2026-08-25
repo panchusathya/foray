@@ -884,3 +884,9 @@ def _absorb_years(thread: IntakeThread, body: str) -> None:
     if years is None:
         return
     thread.record = apply_years_to_record(thread.record, years)
+    # Keep the number, not just the band it maps to. `spec.seniority` is what
+    # the conversation needed; `Candidate.years_experience` is what the matcher
+    # scores against a posting's stated minimum, and a thread intake has no
+    # Experience rows to compute it from -- so without this every text-onboarded
+    # candidate is "0 years of tracked experience" forever.
+    update_flow_meta(thread, years=years)

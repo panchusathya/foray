@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from sqlalchemy import or_, select
@@ -42,6 +42,7 @@ from ..models import MailboxConnection, Message, ReplyDraft, utcnow
 from ..outreach.sequencer import find_message_for_reply, record_reply
 from .matching import build_address_index, record_synced_message, resolve_candidate
 from .providers import FOLDER_INBOX, FOLDER_SENT, MailboxEvent, get_provider
+from .replies import clean_inbound_body
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,12 @@ def _handle_inbound_event(
     address_index: dict[str, str],
 ) -> None:
     summary.seen += 1
+    # Once, here, before anything reads the body. Everything downstream --
+    # the timeline a recruiter reads, the intent classifier, the reply
+    # drafter -- was being handed raw markup with our own outreach quoted
+    # inside it. The classifier was the real casualty: it was deciding
+    # intent partly from our pitch, attributed to the candidate.
+    event = replace(event, body=clean_inbound_body(event.body, is_html=event.body_is_html))
     if (
         event.is_draft
         or event.removed

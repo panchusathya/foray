@@ -252,6 +252,18 @@ class _HtmlSanitizer(HTMLParser):
         return "".join(self.parts)
 
 
+# Tags that end a line. `div` matters most: Gmail, Outlook and Zoho all
+# build replies out of divs, so without it an entire email collapses onto
+# one line -- unreadable in the CRM, and invisible to any rule looking for
+# a quoted thread at the start of a line.
+_BLOCK_TAGS = frozenset(
+    {
+        "p", "br", "div", "tr", "li", "blockquote", "table",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+    }
+)
+
+
 class _TextExtractor(HTMLParser):
     """HTML fragment -> readable plain text for the MIME text part."""
 
@@ -269,7 +281,7 @@ class _TextExtractor(HTMLParser):
         if tag in _SKIP_CONTENT_TAGS:
             self._skip = 1
             return
-        if tag in {"p", "br"}:
+        if tag in _BLOCK_TAGS:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
@@ -278,6 +290,9 @@ class _TextExtractor(HTMLParser):
             if tag in _SKIP_CONTENT_TAGS:
                 self._skip = max(0, self._skip - 1)
             return
+        # Only <p> closes a paragraph. If every block tag broke on both
+        # open and close, each one-line <div> would come out double-
+        # spaced, and an email client emits little else.
         if tag == "p":
             self.parts.append("\n")
 
@@ -291,6 +306,9 @@ class _TextExtractor(HTMLParser):
     def finish(self) -> str:
         self.close()
         text = "".join(self.parts)
+        # &nbsp; survives charref conversion as U+00A0 and renders as a
+        # stray box wherever the font lacks it.
+        text = text.replace(chr(0x00A0), " ")
         text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
@@ -315,6 +333,24 @@ def to_text(body: str) -> str:
         return ""
     if not looks_like_html(body):
         return body.strip()
+    parser = _TextExtractor()
+    parser.feed(body)
+    return parser.finish()
+
+
+def html_to_text(body: str) -> str:
+    """Strip markup unconditionally. For mail we did NOT author.
+
+    ``to_text`` gates on ``looks_like_html``, which only recognises the
+    editor's own allowlist -- deliberately, so a stray "<script>" in an old
+    template stays escaped on the way out. Inbound replies are written by
+    Gmail, Outlook and Zoho and are mostly divs and tables, so that gate
+    says "not html" and hands back the raw markup. Here there is nothing to
+    protect: whatever arrives is somebody else's email, and we want the
+    words out of it.
+    """
+    if not body or not body.strip():
+        return ""
     parser = _TextExtractor()
     parser.feed(body)
     return parser.finish()

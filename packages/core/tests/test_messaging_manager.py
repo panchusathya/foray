@@ -647,3 +647,64 @@ class TestPollSelection:
             == "Strategic Finance Analyst — Rippling"
         )
         assert _poll_option_text({"title": "Analyst", "company": ""}) == "Analyst"
+
+
+class TestChatCourtesies:
+    """Read receipts and typing: the two things that make a wait feel answered.
+
+    Both are best-effort. A failed one costs an indicator; a turn that died
+    because a receipt 500'd would cost the conversation.
+    """
+
+    def _calls(self):
+        seen = []
+        return seen, (lambda method, url, body: seen.append((method, url.rsplit("/v3", 1)[-1])))
+
+    def test_read_uses_the_documented_chat_endpoint(self):
+        from juicebox.messaging.linq import mark_chat_read
+
+        seen, transport = self._calls()
+        mark_chat_read("chat-1", transport=transport)
+        assert seen == [("POST", "/chats/chat-1/read")]
+
+    def test_typing_starts_and_stops(self):
+        from juicebox.messaging.linq import start_typing, stop_typing
+
+        seen, transport = self._calls()
+        start_typing("chat-1", transport=transport)
+        stop_typing("chat-1", transport=transport)
+        assert seen == [("POST", "/chats/chat-1/typing"), ("DELETE", "/chats/chat-1/typing")]
+
+    def test_no_chat_id_sends_nothing(self):
+        from juicebox.messaging.linq import mark_chat_read
+
+        seen, transport = self._calls()
+        mark_chat_read("", transport=transport)
+        assert seen == []
+
+    def test_a_failure_never_escapes(self, session, thread):
+        """maybe_mark_read is called mid-turn; it must not be able to raise."""
+        import juicebox.messaging.linq as linq
+
+        thread.channel = "linq"
+        thread.provider_thread_id = "chat-1"
+        original = linq.mark_chat_read
+        linq.mark_chat_read = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            linq.maybe_mark_read(thread)  # must not raise
+        finally:
+            linq.mark_chat_read = original
+
+    def test_a_non_linq_thread_is_skipped(self, session, thread):
+        import juicebox.messaging.linq as linq
+
+        thread.channel = "web"
+        thread.provider_thread_id = "chat-1"
+        called = []
+        original = linq.mark_chat_read
+        linq.mark_chat_read = lambda *a, **k: called.append(1)
+        try:
+            linq.maybe_mark_read(thread)
+        finally:
+            linq.mark_chat_read = original
+        assert called == []

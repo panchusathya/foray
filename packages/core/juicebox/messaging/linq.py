@@ -466,6 +466,29 @@ def stop_typing(chat_id: str, *, transport: Transport | None = None) -> None:
     _typing_request("DELETE", chat_id, transport=transport)
 
 
+def mark_chat_read(chat_id: str, *, transport: Transport | None = None) -> None:
+    """Send a read receipt for the whole chat.
+
+    Chat-level is all Linq exposes -- there is no per-message read endpoint --
+    which suits us: we read a thread, not individual bubbles.
+
+    Paired with the typing indicator on purpose. Read, then typing, then the
+    reply is the sequence a person produces, and without the first one the
+    candidate watches "Delivered" sit there while we think.
+    """
+    _chat_action("POST", chat_id, "read", transport=transport)
+
+
+def maybe_mark_read(thread: IntakeThread) -> None:
+    """Best-effort read receipt for a Linq thread we are about to answer."""
+    if (thread.channel or "") != "linq" or not thread.provider_thread_id:
+        return
+    try:
+        mark_chat_read(thread.provider_thread_id)
+    except Exception as exc:  # noqa: BLE001 - never fail a turn over a receipt
+        logger.debug("linq read receipt failed: %s", exc)
+
+
 def maybe_start_typing(thread: IntakeThread) -> None:
     """Show 'typing…' on Linq while a turn or scrape is in flight."""
     if (thread.channel or "") != "linq" or not thread.provider_thread_id:
@@ -477,10 +500,24 @@ def maybe_start_typing(thread: IntakeThread) -> None:
 
 
 def _typing_request(method: str, chat_id: str, *, transport: Transport | None = None) -> None:
+    _chat_action(method, chat_id, "typing", transport=transport)
+
+
+def _chat_action(
+    method: str, chat_id: str, action: str, *, transport: Transport | None = None
+) -> None:
+    """POST/DELETE a side-effect on a chat: typing, read. Never raises.
+
+    These are courtesies. A failed one costs an indicator, and a turn that
+    died because a receipt 500'd would cost the conversation.
+    """
     settings = get_settings()
-    if not settings.linq_api_key or not chat_id:
+    # An injected transport IS the client, so it does not need our API key --
+    # requiring one here made these unreachable in tests, which is how a
+    # courtesy call ends up shipped and never exercised.
+    if not chat_id or (transport is None and not settings.linq_api_key):
         return
-    url = f"{LINQ_API_BASE}/chats/{chat_id}/typing"
+    url = f"{LINQ_API_BASE}/chats/{chat_id}/{action}"
     try:
         if transport is not None:
             transport(method, url, {})
@@ -502,4 +539,4 @@ def _typing_request(method: str, chat_id: str, *, transport: Transport | None = 
                 (response.text or "")[:200],
             )
     except httpx.HTTPError as exc:
-        logger.warning("linq typing %s failed: %s", method, exc)
+        logger.warning("linq %s %s failed: %s", action, method, exc)

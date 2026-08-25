@@ -610,7 +610,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     the two channels cannot drift into asking different questions.
     """
     from .messaging.conversation import ACTION_DEFERRED, run_turn
-    from .messaging.linq import maybe_start_typing
+    from .messaging.linq import maybe_mark_read, maybe_start_typing
     from .models import IntakeThread
 
     thread_id = job.payload.get("thread_id") or ""
@@ -619,6 +619,9 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "thread not found", "thread_id": thread_id}
     if thread.org_id != job.org_id:
         return {"skipped": "org_mismatch"}
+    # Read, then typing, then the reply: the order a person produces, and
+    # without the first the candidate watches "Delivered" while we think.
+    maybe_mark_read(thread)
     maybe_start_typing(thread)
 
     # A tapback carries no text, so there is no message for `run_turn` to read

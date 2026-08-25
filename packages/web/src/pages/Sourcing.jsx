@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { Badge, Empty, ErrorBox, PageHeader } from '../components/common.jsx';
+import { Badge, Empty, ErrorBox } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { foray } from '../lib/foray.js';
 import {
@@ -429,13 +429,15 @@ export function SourcingPage() {
 
   return (
     <div className="stack">
-      <PageHeader
-        title="Sourcing"
-        subtitle="Search GitHub-sourced engineers by archetype fit. Ranked by evidence, not a number — nothing here calls an external API at query time."
-      />
-
-      <div className="card">
-        <div className="searchbar">
+      <div className={`search-hero${result || showSkeleton ? ' compact' : ''}`}>
+        <h1>
+          Who should we <em className="marker">source</em>?
+        </h1>
+        <p className="muted">
+          GitHub-sourced engineers by archetype fit. Ranked by evidence, not a number — nothing
+          here calls an external API at query time.
+        </p>
+        <div className="card hero-input">
           <textarea
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -448,7 +450,7 @@ export function SourcingPage() {
             {busy ? 'Searching…' : 'Search'}
           </button>
         </div>
-        <div className="facets">
+        <div className="facets hero-examples">
           <span className="small muted">Try:</span>
           {EXAMPLES.map((example) => (
             <button
@@ -464,7 +466,10 @@ export function SourcingPage() {
             </button>
           ))}
         </div>
-        <label className="small muted" style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        <label
+          className="small muted"
+          style={{ display: 'inline-flex', gap: 6, marginTop: 8, justifyContent: 'center' }}
+        >
           <input
             type="checkbox"
             checked={contactableOnly}
@@ -483,7 +488,7 @@ export function SourcingPage() {
       ) : null}
 
       {result ? (
-        <div className="stack" style={{ opacity: busy ? 0.55 : 1 }} aria-busy={busy}>
+        <div className="results-col stack" style={{ opacity: busy ? 0.55 : 1 }} aria-busy={busy}>
           <div className="card spread">
             <span className="small muted">
               {result.archetype ? result.archetype.label : 'semantic search'} · parser:{' '}

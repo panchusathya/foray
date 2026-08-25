@@ -282,6 +282,42 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .searchbar { display: flex; gap: 10px; }
 .searchbar textarea { min-height: 62px; }
 
+/* Juicebox-style centered hero: the question is the page until results land. */
+.search-hero { max-width: 780px; width: 100%; margin: 7vh auto 8px; text-align: center; }
+.search-hero.compact { margin-top: 8px; }
+.search-hero h1 { font-size: 34px; margin: 0 0 6px; }
+.search-hero.compact h1 { font-size: 24px; }
+.search-hero > p { margin: 0 0 20px; }
+.hero-input {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  text-align: left;
+  padding: 12px;
+  border-radius: 22px;
+  box-shadow: var(--shadow-md);
+}
+.hero-input:focus-within { border-color: var(--accent); box-shadow: var(--ring), var(--shadow-md); }
+.hero-input textarea { border: none; background: transparent; min-height: 56px; }
+.hero-input textarea:focus { border: none; box-shadow: none; }
+.hero-examples { justify-content: center; }
+.results-col { max-width: 880px; width: 100%; margin: 0 auto; }
+
+/* Labelled verdict chips on search criteria — the traffic light, spelled out. */
+.verdict {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.verdict.strong { color: var(--strong); background: var(--strong-soft); }
+.verdict.partial { color: var(--partial); background: var(--partial-soft); }
+.verdict.miss { color: var(--miss); background: var(--miss-soft); }
+.verdict.unknown { color: var(--muted); background: var(--tint2); }
+
 .facets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 
 .hit { display: flex; gap: 16px; }
@@ -298,7 +334,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 
 .criteria { margin-top: 12px; display: grid; gap: 5px; }
-.criterion { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.criterion { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .criterion .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; margin-top: 6px; }
 .criterion .dot.strong { background: var(--strong); }
 .criterion .dot.partial { background: var(--partial); }

@@ -462,3 +462,111 @@ def _llm_dispatch(kwargs):
         }
     del body
     return {}
+
+
+class TestWhatTheyAskedForOutweighsWhatTheyDid:
+    """The blend's centre of gravity, and the guard rail on it.
+
+    A career changer is the case the candidate product exists for. Scored
+    mostly on their record they are ranked on the job they are leaving --
+    `title` is a flat miss for an investor applying to strategic finance, by
+    design, because the criterion reads their current title. Preference now
+    outweighs it.
+
+    The guard rail matters as much as the change: a stated title matching a
+    posting title, with nothing else behind it, must not be a proposal.
+    """
+
+    def _score(self, session, org_id, *, heuristic, vector, preference):
+        """Blend three terms the way `score_pair` does, at configured weights."""
+        from juicebox.config import get_settings
+
+        s = get_settings()
+        weights = [(s.job_match_heuristic_weight, heuristic)]
+        if vector is not None:
+            weights.append((s.job_match_vector_weight, vector))
+        if preference is not None:
+            weights.append((s.job_match_preference_weight, preference))
+        total = sum(w for w, _ in weights)
+        return sum(w * v for w, v in weights) / total
+
+    def test_preference_outweighs_the_record(self):
+        from juicebox.config import get_settings
+
+        s = get_settings()
+        assert s.job_match_preference_weight > s.job_match_heuristic_weight, (
+            "what somebody asked for has to count for more than the job they have"
+        )
+
+    def test_a_career_changer_clears_the_floor_on_a_role_they_asked_for(
+        self, session, account
+    ):
+        """The live thread's own terms: investor -> strategic finance."""
+        from juicebox.config import get_settings
+
+        score = self._score(
+            session, account["org_id"], heuristic=0.314, vector=0.097, preference=0.917
+        )
+        assert score >= get_settings().proposal_score_floor, (
+            f"the thread that started this still scores {score:.3f}"
+        )
+
+    def test_a_stated_title_alone_is_not_a_proposal(self, session, account):
+        """Preference at its maximum, with no corroboration anywhere else.
+
+        Typing a job title must not be enough to put a role in front of
+        somebody. Something in the record or the embedding has to agree.
+        """
+        from juicebox.config import get_settings
+
+        score = self._score(session, account["org_id"], heuristic=0.0, vector=0.0, preference=1.0)
+        assert score < get_settings().proposal_score_floor, (
+            f"preference alone reached {score:.3f} -- it must not carry a match by itself"
+        )
+
+    def test_wanting_it_does_not_rescue_an_unrelated_role(self, session, account):
+        from juicebox.config import get_settings
+
+        score = self._score(session, account["org_id"], heuristic=0.0, vector=0.10, preference=0.50)
+        assert score < get_settings().proposal_score_floor
+
+    def test_a_candidate_with_no_preference_is_scored_exactly_as_before(
+        self, session, account
+    ):
+        """The blast radius. `preference_term` returns None for anyone who
+        never stated one, and `score_pair` drops absent terms out of the
+        blend -- so a recruiter-sourced CRM candidate is untouched by this."""
+        from juicebox.jobmatch.engine import score_pair
+        from juicebox.search.index import candidate_to_doc
+        from juicebox.search.parser import ParsedQuery
+
+        candidate = _candidate(session, account["org_id"], source_id="cand-nopref")
+        posting = JobPosting(
+            org_id=account["org_id"],
+            source="exa",
+            source_id="nopref-posting",
+            title="Strategic Finance Analyst",
+            company="Google",
+            location="San Francisco, CA",
+            status="open",
+        )
+        session.add(posting)
+        session.flush()
+
+        pair = score_pair(
+            candidate_to_doc(candidate),
+            ParsedQuery.from_dict(posting.parsed_spec or {}),
+            cand_embedding=None,
+            cand_embedding_model="",
+            posting_embedding=None,
+            posting_embedding_model="",
+            preference=None,
+            posting=posting,
+        )
+        assert pair.preference_score == 0.0
+        assert not any(c.get("kind") == "preference" for c in pair.criteria), (
+            "no preference, no preference criteria, no re-weighting"
+        )
+        assert pair.score == pair.heuristic_score, (
+            "with no vector and no preference the blend is the heuristic alone"
+        )

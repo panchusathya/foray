@@ -107,16 +107,21 @@ class TestLinkedinShortFlow:
         assert result.asked_field == CONTACT_EMAIL
         assert len(fake_channel.bodies) == 1
         body = fake_channel.bodies[0]
-        # Lowercase voice, with two deliberate hold-outs: URLs, and the
-        # carrier keywords. STOP and HELP match case-insensitively, so
-        # lowercasing them would still work -- but the disclosure exists to
-        # be seen by somebody skimming, and uppercase is the shape people
-        # have been trained to spot (CANDIDATE_AGENT_PLAN §2).
+        # Lowercase voice, with two deliberate hold-outs: URLs, and the carrier
+        # keywords. The keywords are held out of the transform whether or not
+        # any message currently contains one -- see ``lowercase_outbound``.
         prose = body.replace("STOP", "").replace("HELP", "")
         assert prose == prose.lower() or "http" in body
         assert "email" in body
         assert "vivian" in body
-        assert "STOP" in body and "HELP" in body
+        # The two disclosures that survive: who we are, and that this is an AI.
+        # The opt-out recital that used to be the third is gone --
+        # INTAKE_COMPLIANCE.md section 6a has the reasoning and the exposure,
+        # and ``test_intake_consent_copy.py`` is where this is now asserted
+        # across every greeting at once.
+        assert "acme talent" in body
+        assert "ai" in body
+        assert "STOP" not in body and "HELP" not in body
 
     def test_after_email_it_offers_linkedin_or_a_resume(
         self, session, account, fake_channel

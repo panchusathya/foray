@@ -666,6 +666,44 @@ package owns only what is different about text. Plan and phasing live in
   `crm.patch_candidate` has always had `phones` in `EDITABLE_FIELDS`, in
   `UNION_FIELDS`, and syncing the projection; only the UI was missing.
 
+## Consent copy (`messaging/prompts.py`, `messaging/consent.py`)
+
+- **No greeting recites the opt-out any more, and that is a deliberate trade
+  with a documented cost.** "you can stop any time", "Reply STOP any time to
+  opt out, HELP for info", and the sentence after the voice consent question
+  are all gone. `INTAKE_COMPLIANCE.md` §6a carries the argument (an opt-out
+  recital in a *first* message is the strongest available cue that what follows
+  is bulk, which produces the complaint it was meant to prevent) **and the
+  exposure** (it cuts against `CANDIDATE_AGENT_PLAN` §2's three-disclosure
+  rule, and 10DLC campaign review may simply reject a first message without
+  opt-out language, which throttles a shared sender for every tenant on it).
+  `SMS_ENABLEMENT.md` makes re-reviewing it a blocker on enablement rather
+  than a copy tweak afterwards. If review asks for it back, it goes in the
+  **first outbound message only** -- not every greeting, and not the voice
+  wrap-up, which is not an SMS.
+- **Removing a sentence about a mechanism is not removing the mechanism.** STOP
+  still stops, HELP still answers, `handle_stop` still writes the suppression
+  row and the stopped thread, the single acknowledgement a carrier expects
+  still goes out, and `lowercase_outbound` still holds the keywords out of the
+  voice transform whether or not any current message contains one.
+  `test_intake_consent_copy.py::TestKeywordsStillWork` exists so a later edit
+  cannot slide from the copy into the handling.
+- **The consent *question* is not copy.** "Can I text you updates at this
+  number?" is the TCPA opt-in itself and is unchanged, word for word. What was
+  removed is the sentence that followed it -- which landed immediately before
+  the candidate answered, so the last thing they heard was a reason to say no.
+  The prompt now also tells the agent not to supply that sentence itself, and
+  to answer plainly if a caller asks how to stop.
+- **Disclosure versions are the reason this is safe to change at all.**
+  `web-widget-v2`, `inbound-text-v2`, `voice-wrapup-v2`. Rows written under
+  `-v1` keep describing what those people actually saw, which is why
+  `ConsentRecord` stores the text rather than a pointer to it. Bump the version
+  whenever the wording moves; never edit a disclosure string in place without
+  one.
+- **Three tests used to assert the recitals were present.** They now assert the
+  two disclosures that survive -- the org is named, the AI is disclosed -- which
+  is the part that was always load-bearing.
+
 ## CSV candidate import (`packages/web/src/lib/csvImport.js`)
 
 Import a Juicebox CSV export and enroll the rows in an existing sequence. There

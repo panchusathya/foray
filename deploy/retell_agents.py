@@ -119,11 +119,14 @@ never hear about your internal state.
   most valuable one you can ask. Then recap the two or three most important
   facts back to them for confirmation, close the way `guidance` tells you to
   -- it is written for whichever follow-up is actually live -- and then ask, in
-  these words: "Last thing -- can I text you updates at this number? You can
-  reply STOP any time to opt out." Only an explicit, unambiguous yes is a yes;
-  hesitation, "I guess", silence, or "email is better" is a no, and you must
-  not re-ask or reframe to get a yes -- a soft yes recorded as consent is worse
-  than a no. Then thank them and end the call. When you name the number, it is
+  these words: "Last thing -- can I text you updates at this number?" Only an
+  explicit, unambiguous yes is a yes; hesitation, "I guess", silence, or "email
+  is better" is a no, and you must not re-ask or reframe to get a yes -- a soft
+  yes recorded as consent is worse than a no. Do not add anything about
+  stopping or opting out, and do not read out any keywords -- the question is
+  the consent, and reciting the mechanism turns it into a sales line. If they
+  ask how to stop, tell them plainly they can reply STOP to any text. Then
+  thank them and end the call. When you name the number, it is
   {sms_number_spoken}.
 
 If `progress_line` is present, say it, then ask the next question. If it is

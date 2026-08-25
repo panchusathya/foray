@@ -125,18 +125,25 @@ class TestOnboardingDefaults:
         assert thread.flow == FLOW_LINKEDIN_SHORT
         assert thread.mode == MODE_INTAKE
 
-    def test_the_first_message_says_how_to_stop(self, session, thread, channel):
-        """CANDIDATE_AGENT_PLAN §2: one shared number means the candidate
-        cannot tell who is texting, so the opening line carries who we are,
-        that this is an AI, and the way out."""
+    def test_the_first_message_says_who_we_are_and_that_it_is_an_ai(
+        self, session, thread, channel
+    ):
+        """One shared number means the candidate cannot tell who is texting.
+
+        CANDIDATE_AGENT_PLAN §2 asked this line for three things: who we are,
+        that this is an AI, and the way out. It now carries the first two. The
+        opt-out recital was removed deliberately and at a cost -- see
+        INTAKE_COMPLIANCE.md section 6a, which records both the argument and
+        the carrier-review exposure, and SMS_ENABLEMENT.md, which makes it a
+        blocker to re-review before SMS goes live. The keyword *handling* is
+        untouched and pinned by ``test_intake_consent_copy.py``.
+        """
         _say(session, thread, "hey")
         intro = channel.bodies[0]
-        # The channel speaks lowercase; the carrier keywords are held out of
-        # that transform on purpose, so they are asserted as written.
         assert "acme talent" in intro.lower()
         assert "ai" in intro.lower()
-        assert "STOP" in intro
-        assert "HELP" in intro
+        assert "STOP" not in intro
+        assert "HELP" not in intro
 
 
 class TestSharedRails:

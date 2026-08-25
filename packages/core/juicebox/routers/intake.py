@@ -46,7 +46,10 @@ from ..intake.service import (
     coverage_snapshot,
     empty_coverage,
     find_call,
+    identify_caller,
+    known_for_call,
     parse_minutes_available,
+    prior_preference_record,
     record_call_event,
     request_intake_call,
     resolve_org_id,
@@ -55,7 +58,6 @@ from ..intake.service import (
 from ..messaging.identity import AttributionError, attribute_thread
 from ..messaging.threads import messages_of
 from ..models import (
-    Candidate,
     CandidatePreference,
     IntakeCall,
     IntakeFieldAnswer,
@@ -225,21 +227,57 @@ def intake_coverage(
 
     transcript = (event.transcript or "").strip()
     call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
+    # What other channels already captured about this person. Seeds the gate, so
+    # a candidate who answered everything by text last week is asked what has
+    # changed rather than the same eleven questions again.
+    prior = prior_preference_record(db, call.candidate_id if call is not None else None)
     if not transcript:
         if call is not None:
             apply_budget(call, minutes_available)
-        return empty_coverage()
+        return empty_coverage(prior)
 
-    known = ""
-    if call is not None and call.candidate_id:
-        # Pre-call facts must not count as call answers, or the gate closes on
-        # questions nobody asked.
-        candidate = db.get(Candidate, call.candidate_id)
-        if candidate is not None:
-            known = f"name: {candidate.full_name}"
+    # Pre-call *identity* facts must not count as call answers, or the gate
+    # closes on questions nobody asked. Preferences are the opposite case and
+    # go through `prior`.
+    known = known_for_call(db, call)
 
     return coverage_snapshot(
-        transcript, known=known, minutes_available=minutes_available, call=call
+        transcript,
+        known=known,
+        minutes_available=minutes_available,
+        call=call,
+        prior=prior,
+    )
+
+
+@router.post("/identify")
+def intake_identify(
+    raw: bytes = Depends(raw_body),
+    x_retell_signature: str = Header(default="", alias="X-Retell-Signature"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The agent's other mid-call tool: who is this, and what may I say?
+
+    Unlike ``/coverage``, which returns topics and therefore discloses nothing,
+    this one is *about a person* -- so the tiering is the whole endpoint. It is
+    reachable by anyone holding a valid signature, and the caller on the other
+    end is unauthenticated, so what comes back is decided by
+    ``service.identify_caller`` in code rather than by the agent's judgement:
+    an address that matches a record but a number that does not gets a reply
+    containing no facts at all, not even a first name.
+
+    Degrades the same way ``/coverage`` does. An error here is heard as the
+    agent going quiet, and "I could not look you up" is a smaller failure than
+    silence -- so an unresolvable request answers as an unknown caller.
+    """
+    provider = _verified(raw, x_retell_signature)
+    event, args = provider.parse_function_call(loads(raw))
+    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
+    return identify_caller(
+        db,
+        call=call,
+        email=str(args.get("email") or ""),
+        send_matches=bool(args.get("send_matches")),
     )
 
 

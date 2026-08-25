@@ -323,6 +323,68 @@ imported into it (+1 628 386-5454). Plan and phasing live in
   learned address for a suppressed person is suppressed too, or do-not-contact
   is defeated by the person mentioning a second mailbox.
 
+### One person, two channels (`intake/records.py`, `service.identify_caller`)
+
+`AGENTS.md` already records that `messaging.records.persist_preference` and
+`intake.service.upsert_preference` upsert the same row and never conflict
+textually, so they diverge silently. Three divergences had accumulated, and all
+three are now closed:
+
+- **A call used to overwrite what a text had captured.** `upsert_preference`
+  assigned every column from the call's record, so somebody who texted their
+  comp expectation and then rang to mention an offer came out of the call with
+  the comp blanked -- a three-minute conversation about one thing does not
+  re-state the other thing. Both paths now call the monotonic merge, which moved
+  to `intake/records.py` (`messaging.records` re-exports it, so the callers that
+  grew up around that module are unchanged). It lives in `intake` because
+  `messaging` imports `intake` and the other direction is a cycle.
+- **The mid-call gate knew nothing about the stored record.** It is computed
+  from this call's transcript, so a candidate who answered eleven questions by
+  text last week was asked the eleven again and a two-minute update call ran to
+  the fifteen-minute ceiling. `prior_preference_record` seeds it. The seed goes
+  *under* the transcript, so "actually, make that 260" said out loud still wins,
+  and it is deliberately **never written to `call.extracted`** -- that record is
+  evidence about this conversation, and folding in things the caller never said
+  makes a transcript and a record disagree.
+- **Only the text path asked for job discovery.** A caller got scored against
+  today's postings while a texter got a search for postings that did not exist
+  yet.
+
+Note the asymmetry between `known_for_call` and `prior_preference_record`, which
+look like the same idea and are not: **identity** must not count as covered
+(the agent may still have to ask for it, because it cannot verify who is on the
+phone), while a **stated preference** genuinely is known and re-asking it wastes
+the call.
+
+`identify_caller` is the tool that makes the returning-caller case work at all
+-- the inbound agent has always asked for a name and an email and previously
+could do nothing with either, so the caller heard a company that did not
+recognise them. Its rules:
+
+- **The tier is decided in code, never in the prompt.** A prompt asking a model
+  how much it may reveal is a model deciding how much it may reveal.
+- **`unverified` discloses nothing, not even a first name.** Knowing somebody's
+  address is not evidence of being them -- it is exactly what a person phoning
+  *about* them would also know. And on a recruiting line, confirming that a
+  named individual is in our CRM tells the caller that person is job-hunting.
+  The update is still accepted: caller ID authorises accepting one, never
+  disclosing one.
+- **`verified` needs two factors**: the stated address matches the row *and* the
+  call came from a number already on it. Something they know and something they
+  have, which is the bar this file already set for reading state back.
+- **Even `verified` gets topics, never values.** `_SPEAKABLE_TOPICS` omits comp,
+  work authorisation, live processes and offers on purpose: two factors is
+  better than one and still not good enough to read somebody's salary or
+  interview pipeline down a phone line.
+- **`roles_to_send` is a boolean, not a count.** The shared rules forbid the
+  agent quoting a number of roles because a candidate hears a number as a
+  promise, and that does not stop being true because the number would be
+  accurate.
+- **Texting the roles goes through `messaging.notify`**, so every gate that
+  protects an unprompted text still applies. It is therefore only offerable to
+  a candidate who already has a manager-mode thread: bootstrapping one from a
+  phone call is a TCPA question, not a plumbing one.
+
 ### The webhook and the mid-call gate (phase 2)
 
 - **A number must be registered before it can take a call.** `intake_numbers`

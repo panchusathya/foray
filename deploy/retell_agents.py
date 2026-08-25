@@ -236,10 +236,26 @@ clipped.
 2. Say the call is recorded so a recruiter can read it later, and ask if that is
    OK. Wait. If they say no, take a brief message and end the call.
 3. Ask for their name and the email they use with Foray, so a recruiter can find
-   them. Do not tell them anything about their own record, even if they ask -- you
-   cannot verify who is on the phone, and reading someone's salary or interview
-   pipeline to the wrong caller is the worst thing you could do on this call.
-   Say a recruiter will confirm the details with them directly.
+   them. Then call `identify_caller` with that address and do exactly what its
+   `guidance` says.
+
+## What you may say about somebody's record
+
+`identify_caller`'s `guidance` decides this, every time, and it is the only
+thing that decides it. Never work it out for yourself, and never fill a gap
+from what you can infer -- you cannot verify who is on the phone, and reading
+somebody's salary or interview pipeline to the wrong caller is the worst thing
+you could do on this call.
+
+Sometimes it will tell you to reveal nothing at all, including whether a record
+exists. Follow that without commenting on it: do not apologise, do not say you
+are not allowed, do not hint. Take what they want to tell you and say a
+recruiter will confirm the details directly. That is a complete, normal,
+successful call.
+
+When it does let you speak, `on_file` is a list of *topics*. Ask whether a
+topic has changed. Never quote a figure, a company or a date back to them, even
+one they gave you earlier in this same call.
 
 ## Then
 
@@ -250,8 +266,23 @@ instead: use `check_coverage` exactly as below and collect everything. Ask how
 much time they have and pass it as `minutes_available`.
 
 For a returning caller, still call `check_coverage` -- anything it lists as
-`still_needed` is worth asking while you have them.
+`still_needed` is worth asking while you have them. It already knows what we
+have on file, so trust it: if it says you may wrap up on the first check, that
+is right, and re-asking things we already have is what makes a two-minute call
+take fifteen.
 {_shared_rules(SMS_NUMBER_SPOKEN)}"""
+
+IDENTIFY_TOOL_DESCRIPTION = (
+    "Look up a caller who says they already deal with Foray. Pass the email "
+    "address they gave you. Returns guidance -- follow it exactly, it decides "
+    "what you are allowed to say back, and it is not always the same. It may "
+    "tell you to reveal nothing at all, including whether we have a record; "
+    "that is normal and is not an error, so do not apologise or explain it. "
+    "on_file lists topics only. Talk about a topic, never quote a figure, a "
+    "company or a date from it. Call this once, after they give you an "
+    "address. Call it a second time with send_matches true only if they said "
+    "yes to being texted the roles."
+)
 
 COVERAGE_TOOL_DESCRIPTION = (
     "Check what this intake call still needs and whether you may wrap up. Call "
@@ -360,7 +391,37 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                     },
                     "required": [],
                 },
-            }
+            },
+            {
+                "type": "custom",
+                "name": "identify_caller",
+                "description": IDENTIFY_TOOL_DESCRIPTION,
+                "url": f"{base}/v1/intake/identify",
+                "speak_during_execution": False,
+                "speak_after_execution": True,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "email": {
+                            "type": "string",
+                            "description": (
+                                "The email address the caller gave, exactly as "
+                                "they gave it. Convert a spoken address to "
+                                "normal form: \"priya dot raman at gmail dot "
+                                "com\" is priya.raman@gmail.com."
+                            ),
+                        },
+                        "send_matches": {
+                            "type": "boolean",
+                            "description": (
+                                "True only when the caller has just said yes to "
+                                "being texted the roles. Omit otherwise."
+                            ),
+                        },
+                    },
+                    "required": ["email"],
+                },
+            },
         ],
     }
 

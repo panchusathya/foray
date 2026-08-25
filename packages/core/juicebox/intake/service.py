@@ -16,7 +16,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -51,7 +51,15 @@ from .providers import (
     ProviderCallError,
     get_voice_provider,
 )
-from .schema import FIELDS, SCHEMA_VERSION, coverage, deferred_required, read_path
+from .records import EXTENSION_FIELDS, merge_record, record_from_preference
+from .schema import (
+    FIELDS,
+    SCHEMA_VERSION,
+    coverage,
+    deferred_required,
+    is_filled,
+    read_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -531,14 +539,25 @@ def _track(db: Session, candidate: Candidate) -> None:
 def upsert_preference(
     db: Session, *, call: IntakeCall, result: ExtractionResult
 ) -> CandidatePreference:
-    """Write the preference row, one per candidate.
+    """Merge this call's reading into the candidate's preference row.
 
-    Never clears a field that a human has confirmed: if ``confirmed_at`` is set,
-    a later machine reading of another call is recorded on the call and the row
-    is flagged rather than overwritten. A recruiter correcting a record and
-    watching a re-run undo it is how people stop trusting the system.
+    **A merge, not a write.** This assigned every column from the call's record
+    until now, which meant a call erased whatever another channel had captured
+    about the same person: somebody who texted their comp expectation and then
+    rang to mention an offer came out of the call with the comp blanked, because
+    a three-minute conversation about one thing does not re-state the other
+    thing. The text path had a monotonic merge from the start for the same
+    reason a thread needs one -- filled beats empty, newer beats older, and
+    ``declined`` accumulates -- and it is exactly the rule that makes this safe.
+    ``intake.records`` now owns it and both paths call it.
+
+    The confirmed-row rule is unchanged and is deliberately *not* the text
+    channel's rule. A thread is the candidate's own words, which outrank a
+    recruiter's transcription, so it writes and clears the confirmation. A call
+    is a machine reading of audio, so it defers: the record stays on the call
+    and the row is flagged. A recruiter correcting a record and watching a
+    re-run undo it is how people stop trusting the system.
     """
-    record = result.record
     state = result.coverage
     row = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == call.candidate_id)
@@ -546,6 +565,7 @@ def upsert_preference(
     if row is None:
         row = CandidatePreference(org_id=call.org_id, candidate_id=call.candidate_id)
         db.add(row)
+        merged = merge_record(None, result.record)
     elif row.confirmed_at is not None:
         row.review_needed = True
         row.review_reason = _join_reasons(
@@ -553,27 +573,20 @@ def upsert_preference(
         )
         db.flush()
         return row
+    else:
+        merged = merge_record(record_from_preference(row), result.record)
 
     row.source_call_id = call.id
-    row.spec = record.get("spec") or {}
-    row.schema_version = SCHEMA_VERSION
-    row.employment_status = record.get("employment_status") or ""
-    row.reason_for_looking = record.get("reason_for_looking") or ""
-    row.timeline = record.get("timeline") or ""
-    row.urgency_driver = record.get("urgency_driver") or ""
-    row.target_base = record.get("target_base")
-    row.target_total = record.get("target_total")
-    row.comp_currency = record.get("comp_currency") or ""
-    row.comp_flexibility_notes = record.get("comp_flexibility_notes") or ""
-    row.equity_importance = record.get("equity_importance") or ""
-    row.work_authorization = (record.get("work_authorization") or "")[:120]
-    row.willing_to_relocate = record.get("willing_to_relocate")
-    row.active_processes = record.get("active_processes") or []
-    row.offers_in_hand = record.get("offers_in_hand") or []
-    row.highlights = record.get("highlights") or []
-    row.confidential_items = record.get("confidential_items") or []
-    row.ok_to_share_with_clients = record.get("ok_to_share_with_clients")
-    row.declined = record.get("declined") or []
+    # Exactly one provenance link is set. The *content* still merges, so
+    # somebody who texted and later called keeps both halves -- this only
+    # records which conversation last wrote the row.
+    row.source_thread_id = None
+    row.spec = merged["spec"]
+    row.schema_version = merged.get("schema_version") or SCHEMA_VERSION
+    for name in EXTENSION_FIELDS:
+        setattr(row, name, merged[name])
+    row.work_authorization = (merged.get("work_authorization") or "")[:120]
+    row.declined = merged["declined"]
     row.low_confidence = list(result.low_confidence)
     row.fields_missing = list(state.required_missing)
     row.review_needed = result.review_needed
@@ -593,9 +606,16 @@ def _enqueue_preference_match(
     candidate = db.get(Candidate, call.candidate_id)
     if candidate is None:
         return
+    from ..jobmatch.discover_candidate import enqueue_discovery_for_candidate
     from ..jobmatch.engine import enqueue_match_for_candidate
 
     enqueue_match_for_candidate(db, candidate, preference=preference)
+    # And go looking for postings that do not exist yet, exactly as the thread
+    # path does. Scoring against the book we happen to hold is half the job:
+    # AGENTS.md records that these two writers diverge silently because they
+    # never conflict textually, and this was one of the divergences -- a caller
+    # got matched against today's postings and a texter got a search.
+    enqueue_discovery_for_candidate(db, candidate=candidate, preference=preference)
 
 
 def write_field_answers(db: Session, *, call: IntakeCall, result: ExtractionResult) -> None:
@@ -731,12 +751,19 @@ def confirm_preference(
     return preference
 
 
-def _known_for(db: Session, call: IntakeCall) -> str:
+def known_for_call(db: Session, call: IntakeCall | None) -> str:
     """Pre-call facts, so the extractor does not bank them as call answers.
 
     A name we already had is not something the candidate said on this call, and
     counting it as covered would close the gate on a question nobody asked.
+
+    Note the asymmetry with ``prior_preference_record``, which deliberately
+    *does* seed the gate: identity is something the agent may still have to ask
+    for, because it cannot verify who is on the phone, while a stated preference
+    is something we genuinely already know and re-asking wastes the call.
     """
+    if call is None:
+        return ""
     number = counterparty_number(call)
     if not call.candidate_id:
         return known_context(phone=number)
@@ -748,6 +775,32 @@ def _known_for(db: Session, call: IntakeCall) -> str:
         email=candidate.primary_email or "",
         phone=number,
     )
+
+
+# Kept as a private alias: ``extract_call`` has always called it by this name.
+_known_for = known_for_call
+
+
+def prior_preference_record(db: Session, candidate_id: str | None) -> dict[str, Any] | None:
+    """What we already know about this person, in record shape, or None.
+
+    This is what stops a returning candidate being re-interviewed. Somebody who
+    answered eleven questions by text last week and rings to say an offer came
+    in was being asked the eleven again, because the gate is computed from this
+    call's transcript and nothing else -- so a two-minute update call ran to the
+    fifteen-minute ceiling asking things we could already answer.
+
+    Only ever used to *seed the gate*. It is not written to ``call.extracted``:
+    the call record is evidence about this conversation, and folding in things
+    the caller never said would make a transcript and a record disagree. The
+    merge in ``upsert_preference`` is what keeps both halves afterwards.
+    """
+    if not candidate_id:
+        return None
+    row = db.scalar(
+        select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
+    )
+    return record_from_preference(row) if row is not None else None
 
 
 def _join_reasons(existing: str, addition: str) -> str:
@@ -877,6 +930,217 @@ def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None
         "already_covered": covered_count,
         "progress_line": "" if complete else progress_line(outstanding),
         "guidance": _wrap_up_guidance() if complete else _NEEDED_GUIDANCE,
+    }
+
+
+# --------------------------------------------------------------------------
+# mid-call identification
+# --------------------------------------------------------------------------
+
+# Disclosure tiers, most restrictive first. The name is what the agent gets told
+# it may do, so the tier is the answer rather than a thing the model works out.
+TIER_UNKNOWN = "unknown"
+TIER_UNVERIFIED = "unverified"
+TIER_VERIFIED = "verified"
+
+_IDENTIFY_UNKNOWN = (
+    "Nobody matches that address. Say a recruiter will follow up, and if they "
+    "are new, run the full intake -- ask how much time they have and pass it "
+    "as minutes_available."
+)
+
+# The rule AGENTS.md records: caller ID authorises accepting an update, never
+# disclosing one. ANI is spoofable, so an address that matches a record proves
+# only that the caller knows the address -- which is exactly what somebody
+# phoning about a person they know would also know. Nothing goes back, not even
+# a first name: "am I speaking to Priya?" confirms a person is in our CRM, and
+# on a recruiting line that is itself a disclosure -- it tells a caller that a
+# named individual is job-hunting.
+_IDENTIFY_UNVERIFIED = (
+    "Do not read anything back to them -- not their name, not their record, "
+    "not whether we have one. You cannot confirm who is on the phone. Take "
+    "whatever they want to tell you, say a recruiter will confirm the details "
+    "with them directly, and carry on."
+)
+
+_IDENTIFY_VERIFIED = (
+    "This is them: the address matches the record and the call came from a "
+    "number already on it. You may greet them by first name and refer to the "
+    "topics in on_file -- the TOPICS ONLY, never a figure, a company, or a "
+    "date. Ask what has changed since you last spoke."
+)
+
+_IDENTIFY_OFFER_MATCHES = (
+    " There are roles on file worth sending them. Offer, in these words: "
+    '"I can text you the ones I have -- want me to?" Never say how many, '
+    "never name a company, and never suggest they are a fit -- if they say "
+    "yes, call this tool again with send_matches true and confirm it is on "
+    "its way."
+)
+
+_IDENTIFY_SENT = (
+    " The roles are on their way by text. Say so, and do not describe them."
+)
+
+# What a verified caller may hear *about*, as opposed to hear. A topic says we
+# hold something so the agent can ask whether it changed; a value would be the
+# thing ANI cannot authorise. Comp, work authorisation, live processes and
+# offers are deliberately absent even at the verified tier: two factors are
+# better than one and still not good enough to read somebody's salary or
+# interview pipeline down a phone line, and the first live call already showed
+# the agent being asked to do exactly that.
+_SPEAKABLE_TOPICS: tuple[tuple[str, str], ...] = (
+    ("spec.job_titles", "the kind of role you are going after"),
+    ("spec.locations", "where you want to work"),
+    ("timeline", "your timing"),
+    ("employment_status", "your current situation"),
+    ("spec.must_have_skills", "the work you want to be doing"),
+)
+
+
+def _speakable(record: dict[str, Any]) -> list[str]:
+    """Topic lines for a verified caller. Never a value."""
+    return [
+        label for path, label in _SPEAKABLE_TOPICS if is_filled(read_path(record, path))
+    ]
+
+
+def _match_count(db: Session, *, org_id: str, candidate_id: str) -> int:
+    from ..models import JobMatch
+
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(JobMatch)
+            .where(
+                JobMatch.org_id == org_id,
+                JobMatch.candidate_id == candidate_id,
+                JobMatch.status != "dismissed",
+            )
+        )
+        or 0
+    )
+
+
+def identify_caller(
+    db: Session,
+    *,
+    call: IntakeCall | None,
+    email: str,
+    send_matches: bool = False,
+) -> dict[str, Any]:
+    """Look a caller up mid-call, and decide how much may be said back.
+
+    The inbound line's most common caller is somebody we already know, ringing
+    to say something changed. Until now the agent had no way to find them, so
+    it opened every such call by asking for a name and an email and then could
+    do nothing with either -- and the caller heard a company that does not
+    recognise them.
+
+    Disclosure is tiered **in code**, not in the prompt, because a prompt asking
+    a model to decide how much it may reveal is a model deciding how much it may
+    reveal. Three tiers:
+
+    ``unknown``
+        No record. Nothing to disclose, and nothing implied about whether one
+        exists.
+
+    ``unverified``
+        The address matches a record, but the call did not come from a number on
+        it. **Nothing goes back at all** -- not a first name, not the fact that
+        a record exists. Knowing somebody's email address is not evidence of
+        being them, and on a recruiting line confirming that a named person is
+        in our CRM tells the caller that person is job-hunting. The update is
+        still accepted: ``AGENTS.md`` -- caller ID authorises accepting one,
+        never disclosing one.
+
+    ``verified``
+        The address matches *and* the call came from a number already on the
+        row. Two independent factors: something they have and something they
+        know, which is the bar ``AGENTS.md`` sets for reading state back. Even
+        then only *topics* go back, never values -- see ``_SPEAKABLE_TOPICS``.
+
+    ``send_matches`` is the second use of the same tool: the caller said yes to
+    the offer, so queue the text. Verified callers only, and it goes out through
+    ``messaging.notify``, so every gate that protects an unprompted text still
+    applies -- consent, quiet hours, suppression, the nudge budget.
+    """
+    address = (email or "").strip().lower()
+    org_id = call.org_id if call is not None else ""
+    if not (address and org_id):
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    owner = owner_of_email(db, org_id=org_id, email=address)
+    if owner is None:
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    candidate = db.get(Candidate, owner)
+    if candidate is None:
+        return {"tier": TIER_UNKNOWN, "known": False, "guidance": _IDENTIFY_UNKNOWN}
+
+    # Latch what they said, whatever tier this lands in: the address is how a
+    # recruiter finds them afterwards, and it is the one thing an unverified
+    # call still gets to contribute.
+    if not call.contact_email:
+        call.contact_email = address[:255]
+
+    number_on_file = resolve_candidate_id(
+        db, org_id=org_id, phone=counterparty_number(call)
+    ) == candidate.id
+    if not number_on_file:
+        # The record is theirs to the extent we can tell, so the call is
+        # attributed -- but the number is not written onto the row, and the
+        # review note says why.
+        if not call.candidate_id:
+            call.candidate_id = candidate.id
+            call.review_needed = True
+            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
+            db.flush()
+        return {
+            "tier": TIER_UNVERIFIED,
+            "known": True,
+            "guidance": _IDENTIFY_UNVERIFIED,
+        }
+
+    record = prior_preference_record(db, candidate.id) or {}
+    sent = False
+    can_text = False
+    if _match_count(db, org_id=org_id, candidate_id=candidate.id):
+        from ..messaging.notify import EVENT_MATCHES_READY, manager_thread_for, notify_candidate
+
+        # Only offerable if there is somewhere to send it. A candidate with no
+        # standing text line has not consented to one, and bootstrapping a
+        # thread from a phone call is a TCPA question, not a plumbing one.
+        can_text = manager_thread_for(db, org_id=org_id, candidate_id=candidate.id) is not None
+        if can_text and send_matches:
+            sent = (
+                notify_candidate(
+                    db,
+                    org_id=org_id,
+                    candidate_id=candidate.id,
+                    event=EVENT_MATCHES_READY,
+                    subject_id=call.id,
+                )
+                is not None
+            )
+
+    guidance = _IDENTIFY_VERIFIED
+    if sent:
+        guidance += _IDENTIFY_SENT
+    elif can_text:
+        guidance += _IDENTIFY_OFFER_MATCHES
+
+    return {
+        "tier": TIER_VERIFIED,
+        "known": True,
+        "first_name": candidate.first_name or "",
+        "on_file": _speakable(record),
+        # Deliberately a boolean, not a count. ``AGENTS.md`` forbids the agent
+        # quoting a number of roles, because a candidate hears a number as a
+        # promise -- and that rule does not stop applying just because the
+        # number would be true.
+        "roles_to_send": can_text and not sent,
+        "guidance": guidance,
     }
 
 
@@ -1062,30 +1326,50 @@ def coverage_snapshot(
     fast: bool = True,
     minutes_available: int | None = None,
     call: IntakeCall | None = None,
+    prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What the agent still owes us, computed from what has actually been said.
 
     ``wrap_up`` is the whole point: it lets a cooperative call end in two or
     three minutes without the model having to guess how long it has been
     talking, and keeps an evasive one going without a timer forcing it shut.
+
+    ``prior`` is what other channels already captured about this person (see
+    ``prior_preference_record``). It is merged *under* this call's reading, so
+    the transcript always wins where the two disagree -- "actually, make that
+    260" said on the phone overrides 240 from a text thread -- and a returning
+    candidate is only asked about genuine gaps. A caller whose record was
+    already complete can therefore be told to wrap up on the very first check,
+    which is correct: the inbound line's job for a returning candidate is "what
+    has changed", not a re-interview.
     """
     if call is not None:
         apply_budget(call, minutes_available)
         minutes_available = call.minutes_available
     core_only = core_only_for(minutes_available)
     result = extract_intake(transcript, known=known, fast=fast)
-    state = coverage(result.record, core_only=core_only)
+    # Merged for the *gate* only. Never written to call.extracted: that record
+    # is evidence about this conversation.
+    seeded = merge_record(prior, result.record) if prior else result.record
+    state = coverage(seeded, core_only=core_only)
     if call is not None and core_only and state.required_complete:
-        skipped = list(deferred_required(result.record))
+        skipped = list(deferred_required(seeded))
         call.deferred_fields = skipped
         if skipped:
             call.review_needed = True
             call.review_reason = _join_reasons(
-                call.review_reason, "core-mode trim; deferred fields unasked"
+                call.review_reason, "core-mode trim, deferred fields unasked"
             )
-    return _snapshot(state, covered_count=len(state.covered), record=result.record)
+    return _snapshot(state, covered_count=len(state.covered), record=seeded)
 
 
-def empty_coverage() -> dict[str, Any]:
-    """Snapshot for a call with nothing said yet, without a model round trip."""
-    return _snapshot(coverage({}), covered_count=0)
+def empty_coverage(prior: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Snapshot for a call with nothing said yet, without a model round trip.
+
+    Still seeded: the first ``check_coverage`` of a returning candidate's call
+    often arrives before they have said anything substantive, and answering it
+    with the full eleven questions is what sends a two-minute update call down
+    the whole interview again.
+    """
+    state = coverage(prior or {})
+    return _snapshot(state, covered_count=len(state.covered), record=prior)

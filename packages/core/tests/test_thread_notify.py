@@ -195,8 +195,9 @@ class TestEvents:
         job = enqueue_notify(session, thread=thread, event=EVENT_PROFILE_READY, subject_id="s")
         _run(session, job)
 
-        body = channel.bodies[-1]
-        assert "1. ML Engineer — Anthropic" in body
+        # One message per role; the last body is the follow-on prompt.
+        body = "\n".join(channel.bodies)
+        assert "1/1  ML Engineer — Anthropic" in body
         # Card lines only: the portal link is a JWT whose random bytes contain
         # "0.9" about 1.5% of the time (see test_messaging_manager._card_lines).
         card_lines = "\n".join(line for line in body.splitlines() if "/m/" not in line)

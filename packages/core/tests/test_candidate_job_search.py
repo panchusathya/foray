@@ -401,7 +401,9 @@ class TestTheWholeChain:
             ), "the search has to run on what they asked for"
 
             _turn(session, thread, "find me roles", "t5")
-            body = channel.bodies[-1]
+            # Roles go out one bubble each now, so the cards are a burst and
+            # the final message is the "tap the ones you want" prompt.
+            body = "\n".join(channel.bodies)
             assert "Strategic Finance Analyst" in body, f"expected a card, got: {body!r}"
             assert "Google" in body
         finally:

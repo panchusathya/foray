@@ -25,6 +25,16 @@ call ends in two or three minutes: it answers "what do I still need, and may I
 wrap up?" from the transcript so far, so the model never has to judge how long
 it has been talking.
 
+**The inbound agent knows who is calling before it speaks.** Retell fires a
+``call_inbound`` webhook while the phone is ringing and interpolates whatever
+that response returns into the prompt, so ``/v1/intake/webhook`` resolves the
+caller from caller ID and hands back ``caller_known``, their first name, their
+record and what we still owe them. The prompt branches on it and never asks.
+That is why the inbound prompt is full of ``{{caller_*}}`` slots where it used
+to be a flat script, and why ``default_dynamic_variables`` matters: if the
+webhook does not answer in time, those defaults are what stop the agent reading
+the placeholders out loud.
+
 Usage:
 
     python deploy/retell_agents.py plan   --base-url https://example.com
@@ -222,70 +232,107 @@ Do not ask anything substantive before they have answered the recording
 question.
 {_shared_rules("{{sms_number_spoken}}")}"""
 
-# Inbound gets no dynamic variables from us, so bake the defaults into the text.
+# Inbound now gets dynamic variables: the webhook answers Retell's
+# `call_inbound` event with everything below, resolved from caller ID while the
+# phone is still ringing. `{{caller_known}}` is therefore already true or false
+# by the agent's first word -- it never has to ask, and must not.
+#
+# `{RECRUITER_NAME}` and the spoken number stay baked in, because those are ours
+# and do not vary by caller. Four braces render as two: two would be an f-string
+# slot and the agent would read the placeholder aloud.
 INBOUND_PROMPT = f"""You are {RECRUITER_NAME}, an AI recruiting assistant
-on Foray's candidate line. Someone has called in. Usually it is a candidate
-Foray already knows, calling to say something has changed -- a new interview,
-an offer, a timeline that moved. It may also be someone Foray has never spoken
-to.
+on Foray's candidate line. Someone has called in.
 
 Speak like a competent recruiter: warm, direct, unhurried. No filler, but not
 clipped.
 
-## Opening, in this order, before anything else
+## Who is calling
 
-1. Say who you are: {RECRUITER_NAME}, an AI recruiting assistant on
-   Foray's candidate line.
-2. Say the call is recorded so a recruiter can read it later, and ask if that is
-   OK. Wait. If they say no, take a brief message and end the call.
-3. Ask for their name and the email they use with Foray, so a recruiter can find
-   them. Then call `identify_caller` with that address and do exactly what its
-   `guidance` says.
+You already know. The phone number told us before you picked up, and the answer
+is in `caller_known`:
 
-## What you may say about somebody's record
+- `caller_known` is **true** -- this is {{{{caller_first_name}}}}, a candidate
+  Foray has already talked to. Their record is in `caller_on_file`.
+- `caller_known` is **false** -- nobody we have on file. Run the intake from
+  scratch.
 
-`identify_caller`'s `guidance` decides this, every time, and it is the only
-thing that decides it. Never work it out for yourself, and never fill a gap
-from what you can infer -- you cannot verify who is on the phone, and reading
-somebody's salary or interview pipeline to the wrong caller is the worst thing
-you could do on this call.
+Take the matching branch below immediately. Do NOT ask whether they have
+spoken to Foray before, do not ask them to confirm who they are, and do not ask
+for an email so you can look them up. All of that is already done. Asking makes
+a returning candidate re-introduce themselves to a company they have already
+spent twenty minutes with, which is exactly what this line is meant to stop.
 
-Sometimes it will tell you to reveal nothing at all, including whether a record
-exists. Follow that without commenting on it: do not apologise, do not say you
-are not allowed, do not hint. Take what they want to tell you and say a
-recruiter will confirm the details directly. That is a complete, normal,
-successful call.
+## If `caller_known` is true
 
-When it does let you speak, `on_file` is a list of *topics*. Ask whether a
-topic has changed. Never quote a figure, a company or a date back to them, even
-one they gave you earlier in this same call.
+Greet them by first name and carry on as though the last conversation were
+yesterday, because to them it was.
 
-## Then
+`caller_since` says when you last spoke. `caller_recent_text` is the last thing
+they texted us, in their words. Use whichever is there to open, then ask what
+has changed. One opener, never two:
 
-Ask what has changed since they last spoke to Foray. Let them talk.
+- "Hi {{{{caller_first_name}}}} -- good to hear from you. What's changed?"
+- "Hi {{{{caller_first_name}}}} -- we spoke {{{{caller_since}}}}. What's new?"
+- Their text was about something specific: name that thing in your own words
+  and ask where it landed. If they texted "Got the Stripe onsite booked for
+  Thursday", say "Hi {{{{caller_first_name}}}} -- how did the Stripe onsite
+  go?" Do not read their message back to them verbatim; quoting a text aloud
+  sounds like a machine reading a log, and paraphrasing it sounds like someone
+  who remembers.
 
-If they turn out to be new to Foray, say so plainly and run the full intake
-instead: use `check_coverage` exactly as below and collect everything. Ask how
-much time they have and pass it as `minutes_available`.
+If both are empty, greet them by name and ask what's changed.
 
-For a returning caller, still call `check_coverage` -- anything it lists as
-`still_needed` is worth asking while you have them. It already knows what we
-have on file, so trust it: if it says you may wrap up on the first check, that
-is right, and re-asking things we already have is what makes a two-minute call
-take fifteen.
+Then let them talk. Whatever they came to tell you is the point of the call --
+a new interview, an offer, a timeline that moved, a change of mind. Take it
+first, before anything you want to ask.
+
+**Tell them anything in `caller_on_file`, without hedging.** It is their own
+record, in their own words, from their own last call, and they are on the
+number we hold it against. If they ask what they told you, what you have, what
+they said their target was, or ask you to read any of it back -- answer, plainly
+and specifically. Say the number. Name the company. Give the date.
+
+There is no part of it you have to be careful about with them. Not comp, not
+the offer they are holding, not the fact that their current manager does not
+know. They told us; they are entitled to hear it back. Being evasive with
+somebody about their own disclosure is the single thing most likely to go wrong
+on this call, and it is worse than useless -- it is a company that took their
+information and then acted cagey about handing it back.
+
+What `caller_on_file` genuinely cannot tell you is anything from our side: it
+holds what *they* said, so it says nothing about client feedback, whether
+anyone is interested, or where a submission stands. For those, say a recruiter
+will follow up. That is a gap in what you know, not a thing you are withholding
+-- say so that way if it comes up.
+
+`caller_open_topics` lists what we never got from them. Ask those only after
+they have said what they rang about, and only if the call is still going
+comfortably. Then call `check_coverage` -- it already counts what is on file,
+so if it says you may wrap up on the first check, that is right. Re-asking
+things we have is what turns a two-minute call into fifteen.
+
+## If `caller_known` is false
+
+This is a first conversation, so run the full intake.
+
+Say who you are -- {RECRUITER_NAME}, an AI recruiting assistant on Foray's
+candidate line -- and ask what they are after. Get their name and email early
+so a recruiter can find them afterwards. Then ask how much time they have and
+pass it to `check_coverage` as `minutes_available`, and work the gate exactly
+as below until it says you may wrap up.
+
+Do not imply you know them, and do not open with "what's changed" or "since we
+last spoke" -- there is no last time, and claiming one invites a correction
+instead of an answer.
+
+## Recording
+
+Whichever branch you are on, say the call is recorded so a recruiter can read
+it later, and ask if that is OK, before anything substantive. For a returning
+caller this is one short sentence after the greeting, not a formality to
+re-open the relationship with. If they say no, take a brief message and end the
+call.
 {_shared_rules(SMS_NUMBER_SPOKEN)}"""
-
-IDENTIFY_TOOL_DESCRIPTION = (
-    "Look up a caller who says they already deal with Foray. Pass the email "
-    "address they gave you. Returns guidance -- follow it exactly, it decides "
-    "what you are allowed to say back, and it is not always the same. It may "
-    "tell you to reveal nothing at all, including whether we have a record; "
-    "that is normal and is not an error, so do not apologise or explain it. "
-    "on_file lists topics only. Talk about a topic, never quote a figure, a "
-    "company or a date from it. Call this once, after they give you an "
-    "address. Call it a second time with send_matches true only if they said "
-    "yes to being texted the roles."
-)
 
 COVERAGE_TOOL_DESCRIPTION = (
     "Check what this intake call still needs and whether you may wrap up. Call "
@@ -395,36 +442,6 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                     "required": [],
                 },
             },
-            {
-                "type": "custom",
-                "name": "identify_caller",
-                "description": IDENTIFY_TOOL_DESCRIPTION,
-                "url": f"{base}/v1/intake/identify",
-                "speak_during_execution": False,
-                "speak_after_execution": True,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "email": {
-                            "type": "string",
-                            "description": (
-                                "The email address the caller gave, exactly as "
-                                "they gave it. Convert a spoken address to "
-                                "normal form: \"priya dot raman at gmail dot "
-                                "com\" is priya.raman@gmail.com."
-                            ),
-                        },
-                        "send_matches": {
-                            "type": "boolean",
-                            "description": (
-                                "True only when the caller has just said yes to "
-                                "being texted the roles. Omit otherwise."
-                            ),
-                        },
-                    },
-                    "required": ["email"],
-                },
-            },
         ],
     }
 
@@ -446,6 +463,25 @@ def delivery_body() -> dict:
     }
 
 
+# The caller variables the inbound webhook supplies, as they stand if it never
+# answers. Retell leaves an unset variable as the literal text `{{caller_known}}`
+# in the prompt, so without these a webhook timeout is an agent reading braces
+# aloud. With them it is an agent running a normal first intake, which is the
+# right thing to do when we could not find out who is calling.
+#
+# `service.CALLER_UNKNOWN` is the same set on the Python side. Keep them
+# together: a variable added there and not here is one the prompt can see
+# unresolved.
+DEFAULT_DYNAMIC_VARIABLES = {
+    "caller_known": "false",
+    "caller_first_name": "",
+    "caller_since": "",
+    "caller_recent_text": "",
+    "caller_on_file": "",
+    "caller_open_topics": "",
+}
+
+
 def agent_body(*, llm_id: str, name: str, base_url: str) -> dict:
     return {
         "agent_name": name,
@@ -454,6 +490,7 @@ def agent_body(*, llm_id: str, name: str, base_url: str) -> dict:
         "webhook_url": f"{base_url.rstrip('/')}/v1/intake/webhook",
         "post_call_analysis_data": POST_CALL_ANALYSIS,
         "max_call_duration_ms": MAX_CALL_MS,
+        "default_dynamic_variables": DEFAULT_DYNAMIC_VARIABLES,
         **delivery_body(),
     }
 
@@ -532,6 +569,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 "webhook_url": f"{args.base_url.rstrip('/')}/v1/intake/webhook",
                 "post_call_analysis_data": POST_CALL_ANALYSIS,
                 "max_call_duration_ms": MAX_CALL_MS,
+                # Same reason as voice_id above: left out of the PATCH, an
+                # existing agent keeps whatever it was created with, and the
+                # fallback the prompt depends on silently never arrives.
+                "default_dynamic_variables": DEFAULT_DYNAMIC_VARIABLES,
                 **delivery_body(),
             },
         )

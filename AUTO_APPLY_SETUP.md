@@ -148,8 +148,14 @@ on a Chromium install.
 In Docker, build the worker image with the arg that already exists:
 
 ```bash
-docker compose build --build-arg INSTALL_PLAYWRIGHT=true worker
+docker compose -f docker-compose.prod.yml build --build-arg INSTALL_PLAYWRIGHT=true worker
 ```
+
+Two things about that build. It costs **+1.7GB** on the worker image (526MB ->
+2.22GB, measured on prod), not the few hundred MB you might budget for. And the
+arg is not in the compose file, so a later plain `up -d --build` rebuilds the
+worker *without* Chromium and the browser tier silently goes away again --
+re-pass the arg after any deploy, or add it to the worker's `build.args`.
 
 ```bash
 APPLY_BROWSER_HEADLESS=true   # false only to watch one run by hand

@@ -298,6 +298,10 @@ class CandidateSummary(BaseModel):
     skills: list[str]
     linkedin_url: str
     emails: list[str]
+    # Empty from the search path: hits are built from the in-memory index doc,
+    # which carries addresses but not numbers. That is honest rather than a gap
+    # -- no search surface shows a phone -- and it is why this has a default.
+    phones: list[str] = Field(default_factory=list)
     crm_status: str = "none"
     crm_tracked: bool = False
     tags: list[str] = Field(default_factory=list)
@@ -1033,6 +1037,11 @@ class IntakeCallSummary(BaseModel):
     entry_point: str
     from_number: str
     to_number: str
+    # What the caller said they were called and where to reach them. On the
+    # review queue this is the difference between "unknown caller" and a row a
+    # recruiter can attribute in one click.
+    contact_name: str = ""
+    contact_email: str = ""
     status: str
     duration_seconds: int
     required_complete: bool

@@ -451,6 +451,73 @@ class TestIdentity:
         session.refresh(session.get(Candidate, existing))
         assert session.get(Candidate, existing).crm_tracked is True
 
+    def test_the_texting_number_reaches_the_candidate(
+        self, session, account, fake_channel
+    ):
+        """The half of thread intake that used to be missing.
+
+        Linking resolved the conversation to a row and stopped, so an existing
+        contact who texted in got their preferences and nothing else -- and the
+        dial-in line did not recognise them when they rang from the phone they
+        had just been texting from.
+        """
+        from juicebox.messaging.identity import link_candidate
+        from juicebox.models import CandidatePhone
+
+        existing = upsert_candidates(
+            session,
+            org_id=account["org_id"],
+            payloads=[
+                {
+                    "source": "test",
+                    "source_id": "ada",
+                    "full_name": "Ada Lovelace",
+                    "emails": ["ada@example.com"],
+                }
+            ],
+        ).ids[0]
+        texter = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            contact_name="Ada Lovelace",
+            contact_email="ada@example.com",
+            from_address="+14155550123",
+        )
+
+        assert link_candidate(session, thread=texter) == existing
+        keys = set(
+            session.scalars(
+                select(CandidatePhone.phone).where(CandidatePhone.candidate_id == existing)
+            )
+        )
+        assert "+14155550123" in keys
+
+    def test_an_imessage_apple_id_is_not_added_as_an_address(
+        self, session, account, fake_channel
+    ):
+        """``from_address`` is offered as a phone and only as a phone.
+
+        An Apple ID is usually a real mailbox, and "usually" is not a basis for
+        adding an address that outreach will then mail.
+        """
+        from juicebox.messaging.identity import link_candidate
+
+        texter = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+            contact_name="Ada Lovelace",
+            contact_email="ada@example.com",
+            from_address="ada@icloud.com",
+        )
+        candidate_id = link_candidate(session, thread=texter)
+        candidate = session.get(Candidate, candidate_id)
+        assert "ada@icloud.com" not in (candidate.emails or [])
+        assert "ada@example.com" in (candidate.emails or [])
+
 
 # --------------------------------------------------------------------------
 # opt-out and do-not-contact

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import ClassVar
 
 from sqlalchemy import select
 
@@ -714,7 +715,8 @@ class TestTitleOutweighsTheRest:
     candidate was trying to leave.
     """
 
-    WANTED = {
+    # ClassVar: shared, read-only, and copied at every use site by ``_score``.
+    WANTED: ClassVar[dict[str, list[str]]] = {
         "job_titles": ["strategic finance"],
         "seniority": ["junior"],
         "locations": ["San Francisco Bay Area"],

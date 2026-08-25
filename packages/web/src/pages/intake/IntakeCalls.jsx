@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { formatComp, formatTimeline, intakeApi } from '../../lib/intake.js';
+import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -73,18 +74,28 @@ function CallDetail({ callId }) {
 
 function CallCard({ row }) {
   const [open, setOpen] = useState(false);
+  // Same precedence the thread cards use: what they called themselves beats
+  // the number they called from. A phone number is the last resort, not the
+  // headline -- a queue of numbers tells a recruiter nothing about who to ring.
+  const number = formatPhone(row.from_number);
+  const who = row.contact_name || row.contact_email || number || 'unknown caller';
   return (
     <div className="card stack" data-testid="intake-call-row">
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
         <span className="thread-head">
           <span className="thread-subject">
-            {open ? '▾' : '▸'} {row.from_number || 'unknown caller'}
+            {open ? '▾' : '▸'} {who}
           </span>
           <span className="thread-meta muted small">
             {when(row.started_at || row.created_at)}
           </span>
         </span>
       </button>
+      {row.contact_name || row.contact_email ? (
+        <div className="small muted" data-testid="intake-call-contact">
+          {[number, row.contact_email].filter(Boolean).join(' · ')}
+        </div>
+      ) : null}
       <div className="row spread">
         <div className="row" style={{ gap: 8 }}>
           <Badge tone={row.review_needed ? 'partial' : ''}>{row.status}</Badge>

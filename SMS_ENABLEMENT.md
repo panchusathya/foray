@@ -54,5 +54,14 @@ Re-enable the SMS branch checklist in [`MESSAGING_INTAKE_PLAN.md`](MESSAGING_INT
 - `SmsChannel` + `POST /v1/intake/sms/webhook` (Twilio signature)
 - TFV approved on a **dedicated** SMS-capable number (likely local, not the toll-free voice line)
 - `SMS_ENABLED=true` and carrier HELP/STOP compliance
+- **Re-review the opt-out copy before going live, not after.** The greetings no
+  longer recite STOP/HELP — see [`INTAKE_COMPLIANCE.md`](INTAKE_COMPLIANCE.md)
+  §6a for why, and for the exposure it creates. The keyword *handling* is
+  unchanged and tested; what is missing is the language in the message body,
+  which is exactly what 10DLC campaign review and the audits after it look
+  for. If review asks for it, restore it in the **first outbound message only**
+  — not in every greeting, and not in the voice wrap-up, which is not an SMS.
+  Getting this wrong throttles a shared sender for every tenant on it, so treat
+  it as a blocker on enablement rather than a copy tweak afterwards.
 
 Until then, follow [`LINQ_SETUP.md`](LINQ_SETUP.md) for the working text intake path.

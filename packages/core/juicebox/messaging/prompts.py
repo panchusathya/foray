@@ -166,13 +166,26 @@ def recruiter_name() -> str:
     return (get_settings().intake_recruiter_name or "Vivian").strip() or "Vivian"
 
 
+# The greeting carries exactly two disclosures: who we are, and that this is an
+# AI. It used to carry a third -- "you can stop any time" -- and that clause is
+# gone from every greeting in this package. See INTAKE_COMPLIANCE.md section 6a
+# for the reasoning and for the exposure it creates; the short version is that
+# an opt-out recital in a *greeting* reads as a marketing blast to the person
+# receiving it, which is the read that produces the complaint the recital was
+# there to prevent.
+#
+# **Keyword handling is untouched and must stay that way.** STOP still stops,
+# HELP still answers, the acknowledgement still goes out, and
+# ``lowercase_outbound`` still holds the keywords out of the voice transform.
+# Removing a sentence about the mechanism is not removing the mechanism, and
+# ``TestKeywordsStillWork`` exists to keep those two things separate.
 def greeting_for(*, org: str, recruiter: str | None = None) -> str:
     name = (recruiter or recruiter_name()).strip() or "vivian"
     org_name = (org or "our team").strip() or "our team"
     return (
         f"hey, i'm {name} from {org_name}. i'm an ai, and i'm here to take a "
         f"few details so we can match you to the right roles. it takes a "
-        f"couple of minutes and you can stop any time."
+        f"couple of minutes."
     )
 
 
@@ -181,7 +194,7 @@ def greeting_for(*, org: str, recruiter: str | None = None) -> str:
 GREETING = (
     "hey, i'm {recruiter} from {org}. i'm an ai, and i'm here to take a "
     "few details so we can match you to the right roles. it takes a "
-    "couple of minutes and you can stop any time."
+    "couple of minutes."
 )
 
 # The question actually sent, per intake field.
@@ -273,13 +286,14 @@ HELP_REPLY = (
 # the recruiting-manager modes (CANDIDATE_AGENT_PLAN + the candidate agent)
 # ---------------------------------------------------------------------------
 
-# The first message of a candidate-agent thread. Compliance requirements all
-# in one breath, because a shared number means the candidate cannot recognise
-# the sender: who we are (the org), what this is (an AI), and how to stop.
+# The first message of a candidate-agent thread. A shared number means the
+# candidate cannot recognise the sender, so this still names the org and
+# discloses the AI in the first breath. The STOP/HELP recital it used to carry
+# is gone -- see the note above ``greeting_for`` and INTAKE_COMPLIANCE.md
+# section 6a. The keywords themselves still work on this thread like any other.
 MANAGER_GREETING = (
     "Hi — I'm the AI recruiting assistant for {org}. I can find roles that fit "
-    "you, prepare applications for your review, and keep you posted — all here. "
-    "Reply STOP any time to opt out, HELP for info."
+    "you, prepare applications for your review, and keep you posted — all here."
 )
 
 ASK_EMAIL_MANAGER = "First — what's the best email to reach you on?"

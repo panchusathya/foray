@@ -357,20 +357,27 @@ def scrape_failed_message() -> str:
 def intro_message(*, recruiter: str, org: str) -> str:
     """The first thing a stranger ever reads from us.
 
-    CANDIDATE_AGENT_PLAN §2 requires this message to carry three things,
-    because one number serves every tenant and the candidate cannot tell who
-    is texting from the number alone: who we are, that this is an AI, and how
-    to stop. The opt-out line is not decoration — a shared sender's
-    complaint rate is what carriers score, and "how do I make this stop" is
-    the question that turns into a complaint when it has no answer.
+    One number serves every tenant and the candidate cannot tell who is texting
+    from the number alone, so this still names the org and discloses the AI
+    before it asks for anything -- the two disclosures CANDIDATE_AGENT_PLAN §2
+    is actually about.
+
+    The STOP/HELP recital that used to sit here is gone. The argument for it was
+    that a shared sender's complaint rate is what carriers score and "how do I
+    make this stop" turns into a complaint when it has no answer. That is true
+    of a *marketing blast*; on a first message that reads like one it is
+    self-fulfilling, because an opt-out line is the single strongest cue that
+    what follows is bulk. The keywords still work -- ``looks_like_stop`` and
+    ``handle_stop`` are untouched -- and INTAKE_COMPLIANCE.md section 6a records
+    both the reasoning and the exposure, because this trade is a judgement call
+    and not a free win.
     """
     name = (recruiter or "vivian").strip() or "vivian"
     org_name = (org or "our team").strip() or "our team"
     return (
         f"hey, i'm {name} from {org_name}. i'm an ai helping the team match you "
         f"to roles — we'll ask a short series of questions so we don't waste "
-        f"your time on ones that aren't a fit. reply STOP any time to opt out, "
-        f"HELP for info.\n\n"
+        f"your time on ones that aren't a fit.\n\n"
         f"first, what's the best email to reach you on?"
     )
 

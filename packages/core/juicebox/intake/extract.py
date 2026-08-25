@@ -42,6 +42,7 @@ from ..llm.prompts import (
     intake_extract_prompt,
 )
 from ..search.parser import ParsedQuery
+from .contact import find_email, find_name, scan_transcript
 from .schema import (
     EMPLOYMENT_STATUSES,
     EQUITY_IMPORTANCE,
@@ -72,6 +73,14 @@ class ExtractionResult:
     review_needed: bool = False
     review_reason: str = ""
     coverage: Coverage = field(default_factory=lambda: coverage(empty_record()))
+    # Who said all this. Beside the record rather than inside it, for the reason
+    # ``intake.contact`` gives: the record is normalised through ``ParsedQuery``
+    # and a name has no counterpart on the job side. They never reach
+    # ``coverage()`` either -- a caller who will not give a name has still
+    # completed an intake, and gating the wrap-up on identity would keep a
+    # finished call alive over a field the matcher does not read.
+    contact_name: str = ""
+    contact_email: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +90,8 @@ class ExtractionResult:
             "review_needed": self.review_needed,
             "review_reason": self.review_reason,
             "coverage": self.coverage.to_dict(),
+            "contact_name": self.contact_name,
+            "contact_email": self.contact_email,
         }
 
 
@@ -194,6 +205,7 @@ def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> Extracti
     review, reason = _review_verdict(
         extractor=EXTRACTOR_LLM, low_confidence=low, state=state, record=record
     )
+    name, email = _contact(result.data, transcript)
     return ExtractionResult(
         record=record,
         extractor=EXTRACTOR_LLM,
@@ -201,7 +213,41 @@ def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> Extracti
         review_needed=review,
         review_reason=reason,
         coverage=state,
+        contact_name=name,
+        contact_email=email,
     )
+
+
+def _contact(payload: dict[str, Any], transcript: str) -> tuple[str, str]:
+    """The caller's own name and address: the model's reading, then the scan.
+
+    The model is asked because it can see whose turn is whose, which is exactly
+    what a regex over a transcript cannot. It is not *trusted* though -- both
+    values go through the same predicates the text channel uses, so "unknown",
+    a sentence, or an invented address is dropped rather than written onto a
+    person. This is the same posture as ``ok_to_share_verbatim``: a model's
+    assertion is evidence, not an answer.
+
+    The scan is the fallback rather than the primary because a spoken address
+    is where transcription is least reliable, and the model has the whole turn
+    to work from. Where both produce something the model wins; where the model
+    is silent or unusable the scan still catches the common case.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+
+    stated_email = _text(payload.get("contact_email")).lower()
+    email = find_email(stated_email)
+
+    stated_name = _no_placeholder(_text(payload.get("contact_name")))
+    # Through ``find_name`` rather than stored as-is: on a live call the model
+    # answered this with "the caller did not give a name", which is a sentence,
+    # not a name, and would have gone straight onto a CRM row.
+    name = find_name(stated_name)
+
+    if name and email:
+        return name[:240], email[:255]
+    scanned_name, scanned_email = scan_transcript(transcript)
+    return (name or scanned_name)[:240], (email or scanned_email)[:255]
 
 
 def normalize_record(payload: dict[str, Any]) -> dict[str, Any]:
@@ -453,6 +499,14 @@ def _heuristic_extract(transcript: str) -> ExtractionResult:
         state=state,
         record=record,
     )
+    # No model, so the only reading available is the anchored transcript scan.
+    # It is allowed to fill these two even though the heuristic path is barred
+    # from ``must_have_skills``, ``highlights`` and consent, and the difference
+    # is the failure mode: a wrong must-have silently filters out real roles and
+    # nobody ever sees what was dropped, whereas a wrong name or address is
+    # visible on the record the first time a recruiter looks at it, and the scan
+    # only reads the answer to a question we asked.
+    contact_name, contact_email = scan_transcript(transcript)
     return ExtractionResult(
         record=record,
         extractor=EXTRACTOR_HEURISTIC,
@@ -460,6 +514,8 @@ def _heuristic_extract(transcript: str) -> ExtractionResult:
         review_needed=review,
         review_reason=reason,
         coverage=state,
+        contact_name=contact_name,
+        contact_email=contact_email,
     )
 
 

@@ -1,0 +1,26 @@
+# Gitleaks configuration.
+#
+# `useDefault = true` keeps every stock rule; this file only ever narrows one
+# of them, and narrowing is written per rule rather than as a global path or
+# file exclusion. A blanket `[allowlist] paths` entry would stop scanning those
+# files for anything -- including a real key added to them later -- which is
+# how a suppression written for one false positive turns into a hole.
+
+[extend]
+useDefault = true
+
+[[rules]]
+# The stock high-entropy rule. Everything about it stays on except the one
+# assignment below.
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = """
+APIFY_LINKEDIN_ACTOR holds an Apify actor slug -- "owner/actor-name", the
+public identifier of a scraper on the Apify marketplace, which appears in
+their URLs and their docs. It reads as high-entropy next to the word ACTOR,
+so the generic rule claims it. The credential for that service is
+APIFY_API_TOKEN, which is not allowlisted here and must never be.
+"""
+regexTarget = "line"
+regexes = ['''APIFY_LINKEDIN_ACTOR''']

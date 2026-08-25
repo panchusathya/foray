@@ -89,7 +89,7 @@ x-app-env: &app_env
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
   OUTREACH_FROM_EMAIL: ${OUTREACH_FROM_EMAIL:?set OUTREACH_FROM_EMAIL in .env}
-  OUTREACH_FROM_NAME: ${OUTREACH_FROM_NAME:-}
+  OUTREACH_FROM_NAME: ${OUTREACH_FROM_NAME:-Talent Team}
   # Auto-drafting replies into the user's Drafts folder. Off: the drafts were
   # not good enough to justify writing into a mailbox we do not own and
   # emailing the owner about it. Set true only when that changes.
@@ -111,6 +111,13 @@ x-app-env: &app_env
   # Put the key in /opt/juicebox/.env then recreate api + worker so they
   # pick it up — editing the file in an editor is not enough.
   EXA_API_KEY: ${EXA_API_KEY:-}
+  # Voice intake. This was set in .env and missing here, so the api never saw
+  # it and `verify()` refused every Retell webhook by design -- intake_calls
+  # sat empty and the only symptom was a log line. Retell signs webhooks with
+  # the API key itself, so this is the signing secret as well as the client
+  # credential.
+  RETELL_API_KEY: ${RETELL_API_KEY:-}
+  RETELL_WEBHOOK_TOLERANCE_SECONDS: ${RETELL_WEBHOOK_TOLERANCE_SECONDS:-300}
   LINQ_API_KEY: ${LINQ_API_KEY:-}
   LINQ_WEBHOOK_SECRET: ${LINQ_WEBHOOK_SECRET:-}
   LINQ_FROM_NUMBER: ${LINQ_FROM_NUMBER:-}

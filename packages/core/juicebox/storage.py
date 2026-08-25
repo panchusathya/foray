@@ -50,10 +50,21 @@ def document_abspath(relpath: str) -> Path:
 def save_bytes(relpath: str, data: bytes) -> tuple[int, str]:
     """Write atomically. Returns ``(size_bytes, sha256)`` for the row."""
     target = document_abspath(relpath)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    except PermissionError as exc:
+        # This surfaces verbatim on the application page as "Package build
+        # failed", where a bare errno tells a recruiter nothing. In production
+        # it has exactly one cause: a named volume the daemon created as root
+        # under a container that runs as uid 10001.
+        raise PermissionError(
+            f"cannot write to the document store at {storage_root()} — "
+            "the directory is not writable by the app user "
+            "(see deploy/README.md, 'filedata needs a one-time chown')"
+        ) from exc
     return len(data), hashlib.sha256(data).hexdigest()
 
 

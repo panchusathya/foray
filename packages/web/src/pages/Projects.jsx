@@ -1,130 +1,18 @@
+/**
+ * A project's pipeline board.
+ *
+ * The roster that used to live here (create / list / delete) moved to Home:
+ * a project is context you work inside, not a section you visit, so picking
+ * one belongs in the sidebar and managing them belongs next to everything
+ * else on the dashboard.
+ */
+
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { PIPELINE_STAGES, api } from '../lib/api.js';
-import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
-
-export function ProjectsPage() {
-  const projects = useAsync(() => api.listProjects(), []);
-  // The sidebar "Current project" section and the Home quick-actions read the
-  // shared CurrentProject context, so a new project has to refresh that too —
-  // otherwise they keep showing "Create your first project" until a full reload.
-  const { reload: reloadCurrentProject, setProject } = useCurrentProject();
-  const [form, setForm] = useState({ name: '', role_title: '', location: '', description: '', company: '' });
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  async function create(event) {
-    event.preventDefault();
-    if (!form.name.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await api.createProject(form);
-      setForm({ name: '', role_title: '', location: '', description: '', company: '' });
-      projects.reload();
-      await reloadCurrentProject();
-      if (created?.id) setProject(created.id);
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(project) {
-    if (
-      !window.confirm(
-        `Delete “${project.name}”? Pipeline cards and sourcing agents for this role go with it. Sequences stay, but lose the role title.`,
-      )
-    ) {
-      return;
-    }
-    setError(null);
-    try {
-      await api.deleteProject(project.id);
-      projects.reload();
-      await reloadCurrentProject();
-    } catch (caught) {
-      setError(caught);
-    }
-  }
-
-  return (
-    <div className="stack">
-      <PageHeader title="Projects" subtitle="One project per role you're filling." />
-      <ErrorBox error={error} />
-
-      <form className="card stack" onSubmit={create}>
-        <strong className="small">New project</strong>
-        <div className="grid two">
-          <input
-            type="text"
-            placeholder="Project name"
-            value={form.name}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-          />
-          <input
-            type="text"
-            placeholder="Role title (used in outreach)"
-            value={form.role_title}
-            onChange={(event) => setForm({ ...form, role_title: event.target.value })}
-          />
-          <input
-            type="text"
-            placeholder="Location"
-            value={form.location}
-            onChange={(event) => setForm({ ...form, location: event.target.value })}
-          />
-          <input
-            type="text"
-            placeholder="Client / company"
-            value={form.company}
-            onChange={(event) => setForm({ ...form, company: event.target.value })}
-          />
-          <input
-            type="text"
-            placeholder="Short description"
-            value={form.description}
-            onChange={(event) => setForm({ ...form, description: event.target.value })}
-          />
-        </div>
-        <div>
-          <button type="submit" className="primary" disabled={busy}>
-            Create project
-          </button>
-        </div>
-      </form>
-
-      {projects.loading ? <Loading /> : null}
-      {!projects.loading && !projects.data?.length ? (
-        <Empty>No projects yet.</Empty>
-      ) : (
-        <div className="grid two">
-          {(projects.data ?? []).map((project) => (
-            <div key={project.id} className="card stack" style={{ gap: 8 }}>
-              <div className="spread">
-                <Link to={`/projects/${project.id}`} style={{ fontWeight: 600, textDecoration: 'none' }}>
-                  {project.name}
-                </Link>
-                <div className="row">
-                  <Badge>{project.status}</Badge>
-                  <button type="button" className="tiny ghost" onClick={() => remove(project)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-              <div className="small muted">{project.role_title || 'No role title'}</div>
-              {project.location ? <div className="small muted">{project.location}</div> : null}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // "contacted" and "replied" are driven by outreach (a send / a reply), not by
 // hand — the backend refuses a bare manual move into them. A recruiter who
@@ -171,7 +59,7 @@ export function ProjectDetailPage() {
       <PageHeader
         title="Pipeline"
         subtitle="Every card keeps the match evidence that put the person here."
-        actions={<Link className="badge" to="/">Back to search</Link>}
+        actions={<Link className="badge" to="/">Back to home</Link>}
       />
       <div className="card small muted">
         Sourced → Contacted → Replied advance automatically as outreach sends and replies land.

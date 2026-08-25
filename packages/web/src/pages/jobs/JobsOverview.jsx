@@ -104,6 +104,26 @@ export function JobsOverview() {
                   </td>
                   <td>
                     <Link to={`/jobs/${posting.id}`}>{posting.title}</Link>
+                    {/* The scraped JD is the thing people actually want to
+                        read before pitching, and it was three clicks away
+                        behind the detail page. Mandates we typed in ourselves
+                        have no URL, so the link is conditional rather than a
+                        dead "JD" on every row. */}
+                    {posting.source_url ? (
+                      <>
+                        {' '}
+                        <a
+                          className="jd-link"
+                          href={posting.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={posting.source_url}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          JD ↗
+                        </a>
+                      </>
+                    ) : null}
                   </td>
                   <td>{posting.location || '—'}</td>
                   <td>

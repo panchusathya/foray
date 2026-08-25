@@ -32,7 +32,17 @@ COPY packages/core /app/packages/core
 COPY eval /app/eval
 RUN pip install --no-deps -e /app/packages/core
 
-RUN useradd --create-home --uid 10001 juicebox && chown -R juicebox /app
+# `data/files` is created here, before the volume is mounted over it, because
+# Docker seeds a *new* named volume from the image directory — ownership
+# included. Without this line the mount point is created by the daemon as
+# root:root, the app runs as uid 10001, and every package build dies on
+# "[Errno 13] Permission denied: /app/data/files/org_...".
+#
+# An existing volume is not re-seeded, so a stack that already ran needs the
+# ownership fixed once by hand — see deploy/README.md.
+RUN useradd --create-home --uid 10001 juicebox \
+ && mkdir -p /app/data/files \
+ && chown -R juicebox /app
 USER juicebox
 
 EXPOSE 8000

@@ -456,6 +456,24 @@ class TestApifyProvider:
         assert parsed["experiences"][1]["is_current"] is False
         assert parsed["educations"][0]["school"] == "MIT"
 
+    def test_an_empty_actor_fails_loudly(self, monkeypatch):
+        """Compose hands the container an empty string, not the code default.
+
+        `${APIFY_LINKEDIN_ACTOR:-}` always sets the variable, so `_env` returns
+        "" rather than falling back. Left unguarded the request goes to
+        /v2/acts//run-sync-..., whose 404 is indistinguishable from a wrong
+        actor id -- the single hardest way to debug a one-line config mistake.
+        """
+        import juicebox.config as config
+        from juicebox.enrich.linkedin_profile import ApifyProvider, ProfileProviderUnavailable
+
+        monkeypatch.setenv("APIFY_API_TOKEN", "tok")
+        monkeypatch.setenv("APIFY_LINKEDIN_ACTOR", "")
+        config.reset_settings_cache()
+        with pytest.raises(ProfileProviderUnavailable, match="ACTOR"):
+            ApifyProvider().fetch("https://www.linkedin.com/in/x")
+        config.reset_settings_cache()
+
     def test_an_empty_run_is_a_miss_and_a_bad_actor_is_not(self, monkeypatch):
         """The distinction decides whether somebody gets negative-cached.
 

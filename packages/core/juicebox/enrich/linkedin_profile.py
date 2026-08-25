@@ -136,7 +136,12 @@ class ApifyProvider:
         settings = get_settings()
         if not self.is_configured():
             raise ProfileProviderUnavailable("no APIFY_API_TOKEN configured")
-        actor = settings.apify_linkedin_actor.replace("/", "~")
+        actor = settings.apify_linkedin_actor.replace("/", "~").strip()
+        if not actor:
+            # Without this the URL is /v2/acts//run-sync-... which returns a
+            # 404 that reads exactly like a wrong actor id -- so the one
+            # config mistake that produces it is the hardest to diagnose.
+            raise ProfileProviderUnavailable("APIFY_LINKEDIN_ACTOR is empty")
         url = (
             f"{settings.apify_base_url.rstrip('/')}/v2/acts/{actor}"
             f"/run-sync-get-dataset-items"

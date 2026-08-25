@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..jobs import KIND_JOBS_DISCOVER_ONE, Job, enqueue
+from ..jobs import KIND_JOBS_DISCOVER_ONE, OPEN_STATUSES, Job, enqueue
 from ..models import Candidate, CandidatePreference, JobPosting, utcnow
 from .exa import ExaUnavailable, get_exa
 from .scrape import ingest_exa_results
@@ -97,6 +97,21 @@ def enqueue_discovery_on_request(
     """
     if not queries_for(preference):
         return None
+
+    # A search already waiting to run is the search they just asked for. The
+    # automatic enqueue keys on `preference.updated_at` and this one keys on
+    # the day, so the same turn can produce both -- and both would buy the same
+    # queries twice. Reuse whichever is already pending.
+    pending = db.scalar(
+        select(Job).where(
+            Job.org_id == candidate.org_id,
+            Job.kind == KIND_JOBS_DISCOVER_ONE,
+            Job.status.in_(OPEN_STATUSES),
+        )
+    )
+    if pending is not None and (pending.payload or {}).get("candidate_id") == candidate.id:
+        return pending
+
     day = (now or utcnow()).strftime("%Y%m%d")
     return enqueue(
         db,

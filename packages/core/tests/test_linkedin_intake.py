@@ -118,14 +118,29 @@ class TestLinkedinShortFlow:
         assert "vivian" in body
         assert "STOP" in body and "HELP" in body
 
-    def test_after_email_it_asks_for_linkedin(self, session, account, fake_channel):
+    def test_after_email_it_offers_linkedin_or_a_resume(
+        self, session, account, fake_channel
+    ):
+        """Both routes, in one message, with the upload link live.
+
+        The resume is the better of the two -- dated roles, skills, a summary,
+        against a profile scrape's headline -- and the matcher scores the
+        candidate's own record, so onboarding from a header misses every skill
+        criterion there is. The upload page existed all along; this is the
+        message that finally points at it.
+        """
         thread = _short_thread(session, account, fake_channel)
         run_turn(session, thread=thread)
         result = _say(session, thread, "ada@lovelace.dev")
 
         assert result.action == ACTION_ASKED
         assert result.asked_field == CONTACT_LINKEDIN
-        assert "linkedin" in fake_channel.bodies[-1]
+        body = fake_channel.bodies[-1]
+        assert "linkedin" in body.lower()
+        assert "resume" in body.lower()
+        assert f"/v1/intake/uploads/{thread.id}?token=" in body, (
+            "the upload link has to survive the lowercase voice intact"
+        )
 
     def test_a_url_enqueues_a_scrape_and_holds(
         self, session, account, fake_channel
@@ -155,33 +170,55 @@ class TestLinkedinShortFlow:
         assert thread.contact_name == "Ada Lovelace"
         assert thread.record["spec"]["job_titles"] == ["Software Engineer"]
 
-    def test_ic_gap_fill_asks_years_not_level(self, session, account, fake_channel):
+    def test_it_does_not_ask_for_what_the_profile_just_told_us(
+        self, session, account, fake_channel
+    ):
+        """The scrape said eight years. Asking how many is not listening.
+
+        This is the whole reason the years question existed: seniority was
+        left blank for every IC, so the gap-fill asked. The profile's own
+        number answers it, one message after we read that number back.
+        """
+        thread = _short_thread(session, account, fake_channel)
+        run_turn(session, thread=thread)
+        _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
+        _finish_scrape(session, thread)
+        assert thread.record["spec"]["seniority"] == ["staff"], "8 years is staff"
+
+        result = _say(session, thread, "yes that's right")
+
+        assert result.asked_field != BATCH_GAP_FILL
+        assert "years of experience" not in fake_channel.bodies[-1]
+
+    def test_confirming_hands_over_without_a_closing_survey(
+        self, session, account, fake_channel
+    ):
+        """No comp, no timing, no work auth. Those are application questions.
+
+        Two of the three are in ``docgen.answers.STANDARD_QUESTIONS`` and get
+        asked again at package time, with a role in hand to explain why.
+        Asking here spent the best messages in the conversation on a form.
+        """
         thread = _short_thread(session, account, fake_channel)
         run_turn(session, thread=thread)
         _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
         _finish_scrape(session, thread)
         result = _say(session, thread, "yes that's right")
 
-        assert result.asked_field == BATCH_GAP_FILL
-        body = fake_channel.bodies[-1]
-        assert "years of experience" in body
-        assert "what level" not in body
-        assert body.count("- ") <= 3
-        assert valid_question(body, batched=True)
+        assert result.action == "completed_profile"
+        assert thread.mode == "managing"
+        body = fake_channel.bodies[-1].lower()
+        for asked in ("comp", "how soon", "sponsorship", "work auth"):
+            assert asked not in body, f"onboarding still asks about {asked}: {body!r}"
 
-    def test_gap_fill_answer_maps_years_and_wraps_up(
+    def test_the_confirm_answer_wraps_up_and_links_the_candidate(
         self, session, account, fake_channel
     ):
         thread = _short_thread(session, account, fake_channel)
         run_turn(session, thread=thread)
         _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
         _finish_scrape(session, thread)
-        _say(session, thread, "yes that's right")
-        result = _say(
-            session,
-            thread,
-            "8 years. targeting 240k. i can start in two weeks. us citizen. yes you can share.",
-        )
+        result = _say(session, thread, "yes that's right")
 
         # Onboarding is over, the relationship is not: the thread hands over
         # to the recruiting manager instead of completing. A complete thread

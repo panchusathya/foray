@@ -262,18 +262,24 @@ REQUIRED_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_R
 CORE_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.core)
 ENRICHMENT_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_ENRICHMENT)
 
-# Messaging LinkedIn-first flow. Voice is unchanged. A scrape fills title /
-# location / (management) seniority; the thread then asks at most a handful of
-# leftover required keys rather than the full eleven-field survey.
+# Messaging LinkedIn-first flow. Voice is unchanged.
+#
+# What a profile or a resume can settle, and nothing else. Onboarding by text
+# asks for a way to read someone -- a LinkedIn URL or a resume -- confirms what
+# it read, and stops. It used to close with a batch of three: years, comp,
+# timing. Every one of those is an *application* question: comp and notice
+# period are two of the four in `docgen.answers.STANDARD_QUESTIONS`, asked
+# again at package time because that is when an employer asks them. Asking
+# up front spent the most expensive messages in the conversation -- the ones
+# right after a stranger agreed to talk to us -- on a form, to fill fields
+# that matching barely reads and that go stale before anyone uses them.
+#
+# `applications.followups` asks them when a real application needs them, with
+# the role in hand to explain why.
 LINKEDIN_SHORT_KEYS: tuple[str, ...] = (
     "spec.job_titles",
     "spec.seniority",
     "spec.locations",
-    "spec.remote_ok",
-    "compensation",
-    "timeline",
-    "work_authorization",
-    "ok_to_share_with_clients",
 )
 
 # The ParsedQuery fields intake is allowed to populate. The rest of

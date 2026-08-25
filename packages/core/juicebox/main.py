@@ -130,13 +130,21 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["meta"])
     def health() -> dict:
         llm = get_llm()
+        embedder = get_embedder()
+        # A configured provider that is quietly answering from the hashing
+        # fallback looks identical to a healthy one from the outside, and the
+        # only symptom downstream is candidates being told nothing clears the
+        # bar. Say it here instead.
+        degraded = getattr(embedder, "degraded_reason", "")
         return {
             "status": "ok",
             "version": __version__,
             "llm": llm.available,
             "llm_reason": llm.unavailable_reason,
             "llm_usage": llm.usage(),
-            "embeddings": get_embedder().name,
+            "embeddings": embedder.name,
+            "embeddings_degraded": bool(degraded),
+            "embeddings_reason": degraded,
         }
 
     return app

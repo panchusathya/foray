@@ -108,6 +108,13 @@ class VoyageEmbedder:
         self.dim = dim
         self.name = f"voyage-{model}"
         self._fallback = HashingEmbedder(dim)
+        # Falling back is right for one search; being quiet about it is not.
+        # A wrong key degrades every match to hash noise -- the vector term is
+        # 0.30 of the blend and hash cosines mean nothing -- and the only
+        # symptom is candidates being told nothing clears the bar. Recorded
+        # here so /health can say so out loud.
+        self.degraded_reason = ""
+        self.degraded_calls = 0
 
     def embed(self, texts: list[str], *, input_type: str = "document") -> np.ndarray:
         if not texts:
@@ -129,9 +136,12 @@ class VoyageEmbedder:
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             self.dim = matrix.shape[1]
+            self.degraded_reason = ""
             return matrix / norms
         except Exception as exc:  # noqa: BLE001 - never fail a search on embeddings
             logger.warning("voyage embedding failed, falling back to hashing: %s", exc)
+            self.degraded_reason = str(exc)[:200]
+            self.degraded_calls += 1
             return self._fallback.embed(texts)
 
 

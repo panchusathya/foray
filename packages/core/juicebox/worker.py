@@ -694,6 +694,7 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
                 "filled_fields": result.filled_fields,
             }
             enqueue_match_for_candidate(db, candidate, now=now)
+            promoted["thread"] = _resume_settles_thread(db, doc=doc, candidate=candidate)
 
     return {
         "document_id": doc.id,
@@ -702,6 +703,63 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
         "text_chars": len(doc.text_extracted or ""),
         **promoted,
     }
+
+
+def _resume_settles_thread(db: Session, *, doc, candidate) -> dict[str, Any]:
+    """A parsed resume answers the profile question, so the thread moves on.
+
+    The upload page and its parse have always existed; nothing connected them
+    back to the conversation that asked. Somebody who took the resume option
+    uploaded a file, got a "got it" web page, and then sat in a thread still
+    waiting for a LinkedIn URL.
+
+    Written into the same ``_linkedin.scrape`` slot the scrape uses, because
+    the confirm step reads that slot and the two routes answer the same
+    questions. The record fields go through ``apply_profile_to_record``, the
+    same merge -- so a title the candidate already corrected still wins.
+    """
+    from .messaging.linkedin_flow import (
+        apply_profile_to_record,
+        profile_from_resume,
+        update_flow_meta,
+    )
+    from .models import IntakeThread
+
+    thread = db.get(IntakeThread, doc.thread_id) if doc.thread_id else None
+    if thread is None or thread.org_id != doc.org_id or thread.status == "stopped":
+        return {"skipped": "no thread"}
+
+    # The upload is the candidate's turn, and the thread has to see it as one.
+    # Their last message was our own question, and `run_turn` refuses to send
+    # two outbound in a row -- so without this the conversation holds forever
+    # waiting for a reply that already arrived, as a file, on a web page.
+    # Deterministic native id: a redelivered parse must not re-record it.
+    from .messaging.threads import record_inbound
+
+    record_inbound(
+        db,
+        thread=thread,
+        body=f"[sent a resume: {doc.filename or 'resume.pdf'}]",
+        provider_native_id=f"resume:{doc.id}",
+    )
+
+    profile = profile_from_resume(candidate, doc.structured or {})
+    thread.record = apply_profile_to_record(thread.record, profile)
+    if not (thread.contact_name or "").strip() and profile.full_name:
+        thread.contact_name = profile.full_name[:240]
+    if profile.url and not thread.contact_linkedin:
+        thread.contact_linkedin = profile.url[:400]
+    update_flow_meta(thread, scrape=profile.to_dict(), error="", source="resume")
+    db.flush()
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_INTAKE_TURN,
+        idempotency_key=f"{KIND_INTAKE_TURN}:{thread.id}:after-resume:{doc.id}",
+        payload={"thread_id": thread.id},
+    )
+    return {"thread_id": thread.id, "advanced": True}
 
 
 def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
@@ -838,6 +896,14 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
         event=EVENT_PACKAGE_READY,
         subject_id=application.id,
     )
+    # Whatever the form asks that we still cannot answer, asked now -- with the
+    # role in hand. Onboarding no longer collects comp, notice period or work
+    # auth in the abstract; this is where they are worth a message. After the
+    # package notification on purpose: the candidate sees the role first, then
+    # the two questions it raised.
+    from .applications.followups import ask_for_missing
+
+    result["followup"] = ask_for_missing(db, application)
     return result
 
 

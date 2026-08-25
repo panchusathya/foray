@@ -94,7 +94,13 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         asked_field=thread.last_field_asked or "",
     )
     _reread(db, thread=thread)
-    _capture(db, thread=thread)
+    # force=True, unlike intake. Past the handover there is already a candidate
+    # and a preference row, and the only question is whether this row stays
+    # current -- "actually, make that 260" has to reach matching whatever the
+    # coverage gate thinks. Unforced, `_capture` returns early on an open gate,
+    # and the gate for a text-onboarded candidate is open by design now that
+    # onboarding stops after the profile confirm.
+    _capture(db, thread=thread, force=True)
     if not thread.candidate_id:
         identity.link_candidate(db, thread=thread)
     state = coverage(thread.record or {})

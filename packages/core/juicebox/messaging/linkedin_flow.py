@@ -34,33 +34,20 @@ FLOW_META_KEY = "_linkedin"
 
 MAX_GAP_FILL = 3
 
-# Highest-value leftover questions after a scrape. Comp, timeline, and work
-# auth are what a client actually blocks on; consent is last because a model
-# must never invent it and a human can confirm later.
+# The only questions onboarding still asks, and only when the profile failed
+# to answer them. Comp, timeline and work auth used to head this list; they
+# are application questions and `applications.followups` asks them at the
+# moment an application needs them, with the role in hand to say why.
 GAP_FILL_ORDER: tuple[str, ...] = (
-    "compensation",
-    "timeline",
-    "work_authorization",
-    "ok_to_share_with_clients",
-    "spec.remote_ok",
-    "spec.seniority",
-    "spec.locations",
     "spec.job_titles",
+    "spec.locations",
+    "spec.seniority",
 )
 
 GAP_FILL_LINES: dict[str, str] = {
-    "compensation": "what are you targeting on comp (base is fine)?",
-    "timeline": "how soon would you want to move?",
-    "work_authorization": (
-        "do you have work auth where you're looking, or would you need sponsorship?"
-    ),
-    "ok_to_share_with_clients": (
-        "ok for us to put your profile in front of companies we're hiring for?"
-    ),
-    "spec.remote_ok": "fully remote, hybrid, or in-office?",
-    "spec.seniority": "what level are you aiming for?",
-    "spec.locations": "where are you based, and which locations would you work in?",
     "spec.job_titles": "what kind of role are you looking for next?",
+    "spec.locations": "where are you based, and which locations would you work in?",
+    "spec.seniority": "what level are you aiming for?",
 }
 
 YEARS_LINE = "roughly how many years of experience do you have?"
@@ -98,22 +85,67 @@ def scraped_profile(thread: IntakeThread) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def apply_profile_to_record(record: dict[str, Any] | None, profile: LinkedInProfile) -> dict:
-    """Fill intake fields the scrape is allowed to guess.
+def profile_from_resume(candidate, structured: dict[str, Any] | None) -> LinkedInProfile:
+    """A resume, read into the same shape the confirm step already speaks.
 
-    Seniority is filled only for management titles. ICs are asked years of
-    experience instead — a title of "software engineer" does not say whether
-    they are junior or staff, and inventing a level is the expensive miss.
+    So one confirm message covers both routes. The scrape and the resume answer
+    the same three questions -- what do you do, where, how long -- and the
+    conversation should not care which one it got; only the copy underneath
+    ("got it, you're a X at Y") ever sees this, and it reads the same either
+    way.
+
+    Years come from ``Candidate.years_experience``, which the promotion has
+    already computed from dated roles by the time this is called. That is a
+    better number than anything on a profile: it is a union of real employment
+    spans rather than a headline.
+    """
+    structured = structured or {}
+    contact = structured.get("contact") or {}
+    roles = [job for job in (structured.get("experience") or []) if isinstance(job, dict)]
+    current = roles[0] if roles else {}
+    years = float(getattr(candidate, "years_experience", 0.0) or 0.0)
+    title = str(current.get("title") or getattr(candidate, "current_title", "") or "").strip()
+    return LinkedInProfile(
+        url=str(contact.get("linkedin") or getattr(candidate, "linkedin_url", "") or ""),
+        full_name=str(contact.get("name") or getattr(candidate, "full_name", "") or ""),
+        headline=str(structured.get("summary") or "")[:300],
+        current_title=title,
+        current_employer=str(
+            current.get("company") or getattr(candidate, "current_company", "") or ""
+        ).strip(),
+        location=str(contact.get("location") or getattr(candidate, "location_city", "") or ""),
+        experience_years=years or None,
+        is_ic=is_ic_title(title),
+    )
+
+
+def apply_profile_to_record(record: dict[str, Any] | None, profile: LinkedInProfile) -> dict:
+    """Fill intake fields the profile is allowed to settle.
+
+    Seniority comes from the year count when the profile carries one, and only
+    then from a management title. Asking "roughly how many years of experience
+    do you have?" one message after saying "you're an investor at Westbridge,
+    about 1 years in" is the agent proving it does not read its own notes --
+    and it was asking because seniority was left blank for every IC, the exact
+    case where the profile's own number is the answer.
+
+    A management title still fills the gap when the profile states no tenure:
+    a director is a director whatever the dates say.
     """
     incoming = empty_record()
     if profile.current_title:
         incoming["spec"]["job_titles"] = [profile.current_title]
     if profile.location:
         incoming["spec"]["locations"] = [profile.location]
-    if profile.current_title and not is_ic_title(profile.current_title):
-        level = normalize_seniority(profile.current_title)
-        if level in {"director", "vp", "cxo"}:
-            incoming["spec"]["seniority"] = [level]
+    level = ""
+    if isinstance(profile.experience_years, (int, float)) and profile.experience_years > 0:
+        level = seniority_from_years(float(profile.experience_years))
+    elif profile.current_title and not is_ic_title(profile.current_title):
+        management = normalize_seniority(profile.current_title)
+        if management in {"director", "vp", "cxo"}:
+            level = management
+    if level:
+        incoming["spec"]["seniority"] = [level]
     return merge_record(record, incoming)
 
 

@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..enrich.linkedin_scrape import parse_years_experience
@@ -89,6 +90,7 @@ from .threads import (
     transcript_of,
     with_send_key,
 )
+from .uploads import mint_upload_link
 
 logger = logging.getLogger(__name__)
 
@@ -733,12 +735,19 @@ def _run_linkedin_short(
 
     assert last is not None
 
-    if not thread.contact_linkedin:
+    # A URL or a resume; either one is a way to read somebody. The resume is
+    # the better of the two and has been all along -- it carries dated roles,
+    # skills and a summary, where a profile scrape carries a headline. The
+    # matcher scores the candidate's own record against what an employer wants,
+    # so a candidate onboarded from a header misses every skill and keyword
+    # criterion there is. The upload page and its parse already existed; the
+    # onboarding flow simply never offered them.
+    if not thread.contact_linkedin and not _profile_document(db, thread):
         sent = _deliver(
             db,
             thread=thread,
             message=OutboundMessage(
-                body=identity.ASKS[CONTACT_LINKEDIN],
+                body=prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread)),
                 asked_field=CONTACT_LINKEDIN,
             ),
         )
@@ -750,9 +759,17 @@ def _run_linkedin_short(
             sent=[s for s in [sent] if s],
         )
 
-    if thread.contact_linkedin and not _scrape_settled(thread):
-        _enqueue_linkedin_scrape(db, thread)
-        return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+    # A resume that has landed but not finished parsing is the same "wait for
+    # it" state a scrape is, and a resume that HAS parsed settles the profile
+    # step outright -- there is nothing left to scrape for.
+    if not _scrape_settled(thread):
+        document = _profile_document(db, thread)
+        if document is not None:
+            if document.status != "ready":
+                return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+        elif thread.contact_linkedin:
+            _enqueue_linkedin_scrape(db, thread)
+            return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     _reread(db, thread=thread)
     _absorb_years(thread, last.body)
@@ -772,6 +789,25 @@ def _run_linkedin_short(
 def _scrape_settled(thread: IntakeThread) -> bool:
     meta = flow_meta(thread)
     return bool(meta.get("scrape") or meta.get("error"))
+
+
+def _profile_document(db: Session, thread: IntakeThread):
+    """The resume this thread uploaded, whatever state it is in.
+
+    Keyed on the thread rather than the candidate: a resume the candidate
+    uploaded for a previous application is not an answer to the question this
+    conversation just asked.
+    """
+    from ..models import CandidateDocument
+
+    return db.scalar(
+        select(CandidateDocument)
+        .where(
+            CandidateDocument.thread_id == thread.id,
+            CandidateDocument.kind == "resume_uploaded",
+        )
+        .order_by(CandidateDocument.created_at.desc())
+    )
 
 
 def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
@@ -833,13 +869,23 @@ def _linkedin_after_scrape(
 def _linkedin_after_confirm(
     db: Session, *, thread: IntakeThread, last: IntakeMessage
 ) -> TurnResult:
+    """Confirmed the profile -> straight into managing. No closing survey.
+
+    The confirm answer is the last question onboarding asks. Whatever the
+    candidate said here has already gone through ``_reread``, so a correction
+    ("no, strategic finance") is in the record before we hand over, and the
+    gap-fill that used to run next asked for comp and timing -- application
+    questions, asked again at package time, and asked here of somebody who has
+    not yet been shown a single role.
+
+    ``short_missing`` still decides one thing: whether we know enough to search
+    at all. With no title even the confirm cannot have worked, so those threads
+    still get one question rather than a promise we cannot keep.
+    """
     missing = linkedin_flow.short_missing(thread)
-    # No name gate: the name comes from the profile, and holding onboarding
-    # open for one would mean asking for it, which is the survey question we
-    # just removed.
-    if not missing:
-        return _wrap_up(db, thread=thread, state=_coverage_for(thread))
-    return _linkedin_gap_fill(db, thread=thread, last=last)
+    if missing:
+        return _linkedin_gap_fill(db, thread=thread, last=last)
+    return _wrap_up(db, thread=thread, state=_coverage_for(thread))
 
 
 def _linkedin_gap_fill(

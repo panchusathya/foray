@@ -1,28 +1,63 @@
 /*
- * Foray design system — dark mint terminal aesthetic, ported from goforay.io.
- * Class architecture is unchanged from the original shell; only tokens and
- * component polish differ. Status colors: strong=mint, partial=amber, miss=coral.
+ * Foray design system — "First light" theme, ported from the goforay.io
+ * landing (its th-dawn palette). Class architecture is unchanged from the
+ * original shell; only tokens and component polish differ. Status colors stay
+ * a traffic light: strong=green, partial=amber, miss=red — a verdict must
+ * never read as brand purple.
  */
 
 :root {
-  --bg: #080d0b;
-  --surface: #0f1614;
-  --surface-2: #121a17;
-  --panel: #050908;
-  --border: rgba(234, 240, 236, 0.09);
-  --border-strong: rgba(234, 240, 236, 0.2);
-  --text: #eaf0ec;
-  --muted: #8da29b;
-  --accent: #46b98c;
-  --accent-light: #7ed9b4;
-  --accent-soft: rgba(70, 185, 140, 0.14);
-  --accent-glow: 0 0 0.45em rgba(126, 217, 180, 0.35);
-  --strong: #46b98c;
-  --partial: #f5a05a;
-  --miss: #f2707a;
-  --radius: 14px;
-  --sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  --bg: #faf8fc;
+  --surface: #ffffff;
+  --surface-2: #f4f1fa;
+  --panel: #f4f1fa;
+  --border: rgba(42, 33, 64, 0.1);
+  --border-strong: rgba(42, 33, 64, 0.16);
+  --text: #2a2140;
+  --muted: #6e6684;
+
+  --accent: #6a50c8;
+  /* On a light background "brighter" emphasis means darker ink. */
+  --accent-light: #5a41b4;
+  --accent-soft: #ebe4f8;
+  /* Decorative lavender (3.2:1 on white) — gradient/fill ends only, never text. */
+  --primary2: #9b7fe0;
+
+  --tint: #ebe4f8;
+  --tint2: #f4f1fa;
+  --tint3: #f9f7fc;
+  --sky1: #b08ad6;
+  --sky2: #d7c2ea;
+  --sky3: #f3ecf8;
+
+  --gold: #e8a33c;
+  --gold-soft: #f7dfa9;
+  --gold-tint: #f8e8c8;
+  --gold-deep: #7a5410;
+
+  /* Verdict traffic light, tuned for a light background (≥4.9:1 on white). */
+  --strong: #2e7d5b;
+  --strong-soft: rgba(46, 125, 91, 0.1);
+  --strong-border: rgba(46, 125, 91, 0.35);
+  --partial: #9c640a;
+  --partial-soft: rgba(156, 100, 10, 0.1);
+  --partial-border: rgba(156, 100, 10, 0.35);
+  --miss: #c4384a;
+  --miss-soft: rgba(196, 56, 74, 0.08);
+  --miss-border: rgba(196, 56, 74, 0.35);
+
+  --ring: 0 0 0 3px rgba(106, 80, 200, 0.16);
+  --shadow-sm: 0 1px 2px rgba(42, 33, 64, 0.06);
+  --shadow-md: 0 6px 18px rgba(42, 33, 64, 0.08);
+  --shadow-lift: 0 10px 24px rgba(42, 33, 64, 0.14);
+  --shadow-pop: 0 24px 60px rgba(42, 33, 64, 0.22);
+
+  --radius: 16px;
+  --radius-lg: 20px;
+
+  --sans: "Schibsted Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
+  --display: "Bricolage Grotesque", var(--sans);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
@@ -71,7 +106,6 @@ button, input, textarea, select {
 .brand-glyph {
   color: var(--accent-light);
   font-family: var(--mono);
-  text-shadow: var(--accent-glow);
 }
 
 .nav-link {
@@ -161,7 +195,7 @@ textarea, select {
 }
 input:focus, textarea:focus, select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(70, 185, 140, 0.25);
+  box-shadow: var(--ring);
 }
 textarea { resize: vertical; min-height: 84px; }
 ::placeholder { color: var(--muted); opacity: 0.7; }
@@ -180,7 +214,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #04110b;
+  color: #ffffff;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -201,15 +235,15 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   border: 1px solid var(--border-strong);
   color: var(--muted);
 }
-.badge.strong { color: var(--accent-light); border-color: rgba(70, 185, 140, 0.45); background: var(--accent-soft); }
-.badge.partial { color: var(--partial); border-color: rgba(245, 160, 90, 0.4); }
-.badge.miss { color: var(--miss); border-color: rgba(242, 112, 122, 0.4); }
-.badge.accent { color: var(--accent-light); border-color: rgba(70, 185, 140, 0.45); }
+.badge.strong { color: var(--strong); border-color: var(--strong-border); background: var(--strong-soft); }
+.badge.partial { color: var(--partial); border-color: var(--partial-border); background: var(--partial-soft); }
+.badge.miss { color: var(--miss); border-color: var(--miss-border); background: var(--miss-soft); }
+.badge.accent { color: var(--accent); border-color: rgba(106, 80, 200, 0.3); background: var(--tint); }
 
 .error {
-  border: 1px solid rgba(242, 112, 122, 0.5);
-  background: rgba(242, 112, 122, 0.1);
-  color: #f7b6bc;
+  border: 1px solid var(--miss-border);
+  background: var(--miss-soft);
+  color: #a02538;
   padding: 10px 12px;
   border-radius: 8px;
 }
@@ -233,22 +267,21 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .score-value {
   font-family: var(--mono);
   font-size: 20px;
-  color: var(--accent-light);
-  text-shadow: var(--accent-glow);
+  color: var(--accent);
 }
 
 .criteria { margin-top: 12px; display: grid; gap: 5px; }
 .criterion { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
 .criterion .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; margin-top: 6px; }
-.criterion .dot.strong { background: var(--strong); box-shadow: var(--accent-glow); }
+.criterion .dot.strong { background: var(--strong); }
 .criterion .dot.partial { background: var(--partial); }
 .criterion .dot.miss { background: var(--miss); }
 .criterion .dot.unknown { background: var(--muted); }
 .criterion .label { flex: 0 0 auto; }
 .criterion .evidence { color: var(--muted); }
 
-.bar { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
-.bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
+.bar { height: 5px; border-radius: 3px; background: var(--tint2); overflow: hidden; margin-top: 6px; }
+.bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--primary2)); }
 
 /* ---------- pipeline ---------- */
 
@@ -269,7 +302,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(5, 9, 8, 0.7);
+  background: rgba(42, 33, 64, 0.35);
   display: grid;
   place-items: center;
   z-index: 40;
@@ -324,7 +357,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 .email-body-editor:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(70, 185, 140, 0.25);
+  box-shadow: var(--ring);
 }
 .email-body-toolbar {
   display: flex;
@@ -382,9 +415,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   place-items: center;
   min-height: 100vh;
   padding: 24px;
-  background:
-    radial-gradient(ellipse 60% 40% at 50% 0%, rgba(70, 185, 140, 0.07), transparent),
-    var(--bg);
+  background: linear-gradient(180deg, var(--sky1) 0%, var(--sky2) 40%, var(--sky3) 78%, var(--bg) 100%);
 }
 .auth-card { width: 100%; max-width: 400px; background: var(--surface); }
 .auth-card h1 { margin: 0 0 6px; font-size: 24px; }
@@ -475,7 +506,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .dgrid td { padding-top: 5px; padding-bottom: 5px; }
 /* Ruled columns. The last cell has the table's own edge already. */
 .dgrid th:not(:last-child),
-.dgrid td:not(:last-child) { border-right: 1px solid rgba(234, 240, 236, 0.05); }
+.dgrid td:not(:last-child) { border-right: 1px solid rgba(42, 33, 64, 0.06); }
 
 .identity { display: flex; align-items: center; gap: 9px; }
 .avatar {
@@ -486,9 +517,9 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(234, 240, 236, 0.06);
-  border: 1px solid var(--border);
-  color: var(--muted);
+  background: var(--tint);
+  border: 1px solid transparent;
+  color: var(--accent);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -561,12 +592,12 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(234, 240, 236, 0.08);
+  background: var(--tint2);
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.record-tabs button.active .tab-count { background: var(--accent-soft); color: var(--accent-light); }
+.record-tabs button.active .tab-count { background: var(--tint); color: var(--accent); }
 
 .field-label {
   font-size: 11px;

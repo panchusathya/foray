@@ -535,8 +535,38 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def sync_inbound_webhook(*, base_url: str, inbound_agent_id: str) -> list[str]:
+    """Point every number the inbound agent answers at the ringing webhook.
+
+    Retell delivers ``call_inbound`` to the **number's** ``inbound_webhook_url``,
+    not to the agent's ``webhook_url``, so this cannot ride along in
+    ``agent_body`` with the rest. That split is the whole reason it belongs in a
+    script: left unset the line still answers perfectly and the caller variables
+    simply never arrive, so every caller is treated as new with no error
+    anywhere to notice. Production ran that way until 2026-08-25.
+
+    Driven off the attached agent rather than a ``--number`` flag, so ``apply``
+    stays a one-argument command and repairs whichever numbers are actually
+    live -- including any added later.
+    """
+    url = f"{base_url.rstrip('/')}/v1/intake/webhook"
+    touched: list[str] = []
+    for number in request("GET", "/list-phone-numbers") or []:
+        attached = {a.get("agent_id") for a in number.get("inbound_agents") or []}
+        if inbound_agent_id not in attached or number.get("inbound_webhook_url") == url:
+            continue
+        request(
+            "PATCH",
+            f"/update-phone-number/{urllib.parse.quote(number['phone_number'])}",
+            {"inbound_webhook_url": url},
+        )
+        touched.append(number["phone_number"])
+    return touched
+
+
 def cmd_apply(args: argparse.Namespace) -> int:
     have = existing_agents()
+    agent_ids: dict[str, str] = {}
     for spec in SPECS:
         name = spec["name"]
         body = llm_body(
@@ -550,6 +580,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 "/create-agent",
                 agent_body(llm_id=llm["llm_id"], name=name, base_url=args.base_url),
             )
+            agent_ids[name] = agent["agent_id"]
             print(f"created {name}: agent={agent['agent_id']} llm={llm['llm_id']}")
             continue
 
@@ -576,7 +607,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 **delivery_body(),
             },
         )
+        agent_ids[name] = current["agent_id"]
         print(f"updated {name}: agent={current['agent_id']} llm={llm_id}")
+
+    inbound_id = agent_ids.get(INBOUND_NAME)
+    if inbound_id:
+        for number in sync_inbound_webhook(base_url=args.base_url, inbound_agent_id=inbound_id):
+            print(f"ring hook set on {number}")
 
     print("\nAgents exist but answer nobody until attached:")
     print("  python deploy/retell_agents.py attach --number +16283865454")

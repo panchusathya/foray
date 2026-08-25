@@ -1,6 +1,6 @@
 import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 
-import { Loading, PageHeader } from './components/common.jsx';
+import { BrandMark, Loading, PageHeader } from './components/common.jsx';
 import { useAuth } from './lib/auth.jsx';
 import { CurrentProjectProvider, useCurrentProject } from './lib/project.jsx';
 import { AgentsPage } from './pages/Agents.jsx';
@@ -100,7 +100,7 @@ function Shell({ children }) {
     <div className="shell">
       <nav className="sidebar">
         <div className="brand">
-          <span className="brand-glyph">▞</span> Foray
+          <BrandMark /> Foray
         </div>
         {NAV.map((item) => (
           <NavLink

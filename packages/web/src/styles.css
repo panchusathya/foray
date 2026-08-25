@@ -112,11 +112,19 @@ button, input, textarea, select {
   font-size: 19px;
   padding: 0 10px 18px;
 }
-.brand span,
+/* The landing's logo mark: a 2×2 grid of squares, three purple, one gold. */
 .brand-glyph {
-  color: var(--accent-light);
-  font-family: var(--mono);
+  display: inline-grid;
+  grid-template-columns: repeat(2, 5px);
+  grid-auto-rows: 5px;
+  gap: 2.5px;
+  vertical-align: -1px;
+  margin-right: 4px;
 }
+.brand-glyph i { background: var(--accent); border-radius: 1px; opacity: 0.95; }
+.brand-glyph i:nth-child(2) { opacity: 0.5; }
+.brand-glyph i:nth-child(3) { opacity: 0.4; }
+.brand-glyph i:nth-child(4) { background: var(--gold); opacity: 0.95; }
 
 .nav-link {
   display: block;
@@ -125,8 +133,8 @@ button, input, textarea, select {
   text-decoration: none;
   color: var(--muted);
 }
-.nav-link:hover { background: var(--surface-2); color: var(--text); }
-.nav-link.active { background: var(--accent-soft); color: var(--accent-light); }
+.nav-link:hover { background: rgba(255, 255, 255, 0.7); color: var(--text); }
+.nav-link.active { background: var(--tint); color: var(--accent-light); font-weight: 500; }
 
 .sidebar-section {
   margin-top: 20px;
@@ -148,7 +156,7 @@ button, input, textarea, select {
   width: 100%;
   margin: 0 0 6px;
   padding: 7px 10px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   font-size: 13px;
@@ -446,7 +454,14 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   padding: 24px;
   background: linear-gradient(180deg, var(--sky1) 0%, var(--sky2) 40%, var(--sky3) 78%, var(--bg) 100%);
 }
-.auth-card { width: 100%; max-width: 400px; background: var(--surface); }
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lift);
+  padding: 24px;
+}
 .auth-card h1 { margin: 0 0 6px; font-size: 24px; }
 .tabs { display: flex; gap: 6px; margin-bottom: 16px; }
 

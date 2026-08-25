@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import timedelta
 
@@ -79,6 +80,15 @@ def _fit(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[:limit].rstrip()
 
 
+def _plain(text: str) -> str:
+    """Scraped page titles carry HTML entities: "Asset &amp; Wealth".
+
+    Decoded at the boundary rather than at each renderer, because the
+    title reaches a text card, a poll option and a resume, and every one
+    of those would otherwise need to remember."""
+    return html.unescape(text or "").strip()
+
+
 def ingest_exa_results(
     db: Session, org_id: str, results: list[dict], *, now=None
 ) -> dict:
@@ -87,7 +97,7 @@ def ingest_exa_results(
     updated = 0
     for raw in results:
         url = (raw.get("url") or "").strip()
-        title = _fit(raw.get("title") or "", TITLE_MAX)
+        title = _fit(_plain(raw.get("title") or ""), TITLE_MAX)
         text = (raw.get("text") or raw.get("summary") or "").strip()
         if not title and not text:
             continue

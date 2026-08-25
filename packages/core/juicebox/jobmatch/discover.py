@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -123,7 +124,7 @@ def _exa_rows(raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for raw in raw_list:
         url = str(raw.get("url") or "").strip()
-        title = str(raw.get("title") or "").strip()
+        title = html.unescape(str(raw.get("title") or "")).strip()
         text = str(raw.get("text") or raw.get("summary") or "").strip()
         if not title and not text:
             continue

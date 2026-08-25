@@ -417,3 +417,48 @@ class TestCandidateDiscovery:
 
         many = queries_for(self._pref(job_titles=[f"role {i}" for i in range(10)]))
         assert len(many) == MAX_QUERIES
+
+
+class TestScrapedTitlesAreReadable:
+    """Page titles arrive HTML-escaped: "Asset &amp; Wealth Management".
+
+    Decoded at ingest rather than in each renderer -- the title reaches a text
+    card, a poll option and a generated resume, and every one of those would
+    otherwise have to remember to do it.
+    """
+
+    def test_entities_are_decoded_in_discovery_rows(self):
+        from juicebox.jobmatch.discover import _exa_rows
+
+        rows = _exa_rows(
+            [
+                {
+                    "url": "https://jobs.example.com/1",
+                    "title": "Asset &amp; Wealth Management &mdash; Analyst",
+                    "text": "A real posting body.",
+                }
+            ]
+        )
+        assert rows[0]["title"] == "Asset & Wealth Management — Analyst"
+        assert "&amp;" not in rows[0]["title"]
+
+    def test_entities_are_decoded_on_ingest(self, session, account):
+        from juicebox.jobmatch.scrape import ingest_exa_results
+        from juicebox.models import JobPosting
+
+        ingest_exa_results(
+            session,
+            account["org_id"],
+            [
+                {
+                    "url": "https://jobs.example.com/2",
+                    "title": "R&amp;D Strategic Finance",
+                    "text": "Body.",
+                }
+            ],
+        )
+        session.flush()
+        posting = session.query(JobPosting).filter(
+            JobPosting.source_url == "https://jobs.example.com/2"
+        ).one()
+        assert posting.title == "R&D Strategic Finance"

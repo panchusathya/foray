@@ -456,6 +456,81 @@ class TestApifyProvider:
         assert parsed["experiences"][1]["is_current"] is False
         assert parsed["educations"][0]["school"] == "MIT"
 
+    def test_a_real_actor_payload_maps_completely(self):
+        """Shapes taken from a live run of LpVuK3Zozwuipa5bp (Bill Gates).
+
+        Every assertion here is a field that came back wrong the first time:
+        the title lives in `position`, the bio in `about`, and `location` is a
+        nested object that str() turned into a dict written to somebody's city.
+        A resume built from that would have had employers and no job titles.
+        """
+        from juicebox.enrich.linkedin_profile import _apify_person, map_profile
+
+        item = {
+            "firstName": "Bill",
+            "lastName": "Gates",
+            "fullName": None,
+            "headline": "Chair, Gates Foundation and Founder, Breakthrough Energy",
+            "about": "Chair of the Gates Foundation.",
+            "summary": None,
+            "location": {
+                "linkedinText": "Seattle, Washington, United States",
+                "parsed": {"city": "Seattle", "state": "Washington"},
+            },
+            "experience": [
+                {
+                    "position": "Co-chair",
+                    "companyName": "Gates Foundation",
+                    "startDate": {"year": 2000, "text": "2000"},
+                    "endDate": {"text": "Present"},
+                },
+                {
+                    "position": "Co-founder",
+                    "companyName": "Microsoft",
+                    "startDate": {"year": 1975, "text": "1975"},
+                    "endDate": {"year": 2020, "text": "2020"},
+                },
+            ],
+            "education": [
+                {
+                    "schoolName": "Harvard University",
+                    "degree": None,
+                    "startDate": {"year": 1973},
+                    "endDate": {"year": 1975},
+                }
+            ],
+            "skills": [],
+        }
+        parsed = map_profile(
+            {"person": _apify_person(item)},
+            linkedin_url="https://www.linkedin.com/in/williamhgates",
+        )
+
+        assert parsed["full_name"] == "Bill Gates", "built from firstName + lastName"
+        assert parsed["location_city"] == "Seattle, Washington, United States"
+        assert not parsed["location_city"].startswith("{"), "never a stringified dict"
+        assert parsed["summary"].startswith("Chair of the Gates Foundation")
+
+        roles = parsed["experiences"]
+        assert [r["title"] for r in roles] == ["Co-chair", "Co-founder"]
+        assert [r["company"] for r in roles] == ["Gates Foundation", "Microsoft"]
+        assert roles[0]["is_current"] is True, "endDate with no year means present"
+        assert roles[1]["is_current"] is False, "a dated end is not current"
+        assert roles[1]["end_date"] == "2020"
+        assert parsed["educations"][0]["school"] == "Harvard University"
+
+    def test_skills_survive_either_shape(self):
+        """Gates has none, so the shape was unconfirmed against the live run.
+
+        A list of dicts stringified into the skills list would put "{'name':
+        'python'}" into the search haystack, which is what recruiters search.
+        """
+        from juicebox.enrich.linkedin_profile import _apify_person
+
+        assert _apify_person({"skills": ["python", "go"]})["skills"] == ["python", "go"]
+        assert _apify_person({"skills": [{"name": "python"}]})["skills"] == ["python"]
+        assert _apify_person({"skills": None})["skills"] == []
+
     def test_the_request_matches_the_actor_contract(self, monkeypatch):
         """`queries` and `profileScraperMode`, not `profileUrls`.
 

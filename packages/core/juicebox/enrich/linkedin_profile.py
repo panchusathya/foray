@@ -188,26 +188,101 @@ class ApifyProvider:
 def _apify_person(item: dict[str, Any]) -> dict[str, Any]:
     """One actor's field names → the envelope ``map_profile`` reads.
 
-    Only the keys that differ are translated; everything else is passed
-    through, so a richer actor payload is not thrown away and ``map_profile``
-    can pick up the spellings it already understands.
+    Verified against a live run of ``LpVuK3Zozwuipa5bp``. The differences that
+    matter, each of which produced a wrong record before it was translated:
+
+    * the role is ``position``, not ``title`` -- every experience arrived with
+      a blank job title, which is most of what a resume is;
+    * ``location`` is a nested object, so ``str()`` on it wrote the whole dict
+      into the candidate's city field;
+    * the bio is ``about``, not ``summary``.
+
+    Everything else passes through untouched, so a richer payload is not
+    thrown away and ``map_profile`` keeps the spellings it already knows.
     """
     person = dict(item)
-    if "fullName" not in person:
+
+    if not person.get("fullName"):
         full = str(item.get("full_name") or item.get("name") or "").strip()
+        if not full:
+            full = " ".join(
+                str(item.get(k) or "").strip() for k in ("firstName", "lastName")
+            ).strip()
         if full:
             person["fullName"] = full
-    if "positions" not in person and "positionHistory" not in person:
-        for key in ("experiences", "experience", "positions_data"):
-            if isinstance(item.get(key), list):
-                person["positions"] = item[key]
-                break
+
+    roles = None
+    for key in ("experience", "experiences", "positions", "positions_data"):
+        if isinstance(item.get(key), list) and item[key]:
+            roles = item[key]
+            break
+    if roles is not None:
+        person["positions"] = [_apify_role(r) for r in roles if isinstance(r, dict)]
+
     if "schools" not in person and "educationHistory" not in person:
-        for key in ("educations", "education", "education_data"):
+        for key in ("education", "educations", "education_data"):
             if isinstance(item.get(key), list):
                 person["schools"] = item[key]
                 break
+
+    person["location"] = _apify_location(item.get("location"))
+
+    if not person.get("summary"):
+        person["summary"] = str(item.get("about") or "")
+
+    person["skills"] = _apify_skills(item.get("skills") or item.get("topSkills"))
     return person
+
+
+def _apify_role(role: dict[str, Any]) -> dict[str, Any]:
+    """``position`` is the job title. Without this every role is untitled."""
+    out = dict(role)
+    if not out.get("title"):
+        out["title"] = str(role.get("position") or "").strip()
+    return out
+
+
+def _apify_location(value: Any) -> str:
+    """The most human of the location spellings, as a plain string.
+
+    ``linkedinText`` is what the profile itself displays ("Seattle,
+    Washington, United States"), so it is the one a person would recognise.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    parsed = value.get("parsed") if isinstance(value.get("parsed"), dict) else {}
+    for candidate in (
+        value.get("linkedinText"),
+        parsed.get("text"),
+        ", ".join(
+            x for x in (parsed.get("city"), parsed.get("state"), parsed.get("country")) if x
+        ),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _apify_skills(value: Any) -> list[str]:
+    """Skills as names. Gates has none, so the shape is unconfirmed -- accept
+    both a list of strings and a list of ``{name: ...}`` rather than let a
+    stringified dict reach the search haystack."""
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for entry in value:
+        if isinstance(entry, str):
+            text = entry.strip()
+        elif isinstance(entry, dict):
+            text = str(entry.get("name") or entry.get("skill") or "").strip()
+        else:
+            text = ""
+        if text:
+            names.append(text)
+    return names
 
 
 class FakeProfileProvider:

@@ -65,10 +65,36 @@ class TestDecoding:
         result = client.json(system="s", prompt="p", schema={})
         assert result.data == {"job_titles": ["engineer"]}
 
-    def test_non_json_body_raises(self):
-        client, _ = build(["not json at all"])
+    def test_non_json_body_raises_after_the_schemaless_retry(self):
+        """Unreadable twice is a real failure; both attempts are scripted."""
+        client, transport = build(["not json at all", "still not json"])
         with pytest.raises(LLMUnavailable, match="non-JSON"):
             client.json(system="s", prompt="p", schema={})
+        assert len(transport.calls) == 2, "one retry, not a loop"
+
+    def test_an_unreadable_schema_call_retries_without_the_schema(self):
+        """The fix for glm-5.2 silently degrading every structured call.
+
+        Schema-constrained output is a request, not a guarantee. Measured in
+        production, roughly half of schema calls came back unreadable while the
+        same prompt with no schema returned clean fenced JSON every time -- so
+        every caller was falling back to heuristics for no reason.
+        """
+        client, transport = build(["not json at all", '{"ok": true}'])
+        result = client.json(system="s", prompt="p", schema={"type": "object"})
+        assert result.data == {"ok": True}
+        assert len(transport.calls) == 2
+        first, second = transport.calls
+        assert "format" in first["output_config"], "the schema is tried first"
+        assert "format" not in second["output_config"], "and dropped on the retry"
+
+    def test_a_transport_failure_is_not_retried_without_the_schema(self):
+        """Only unreadable output. A 429 says nothing about the schema."""
+        from juicebox.llm.client import _is_unparseable
+
+        assert _is_unparseable(LLMUnavailable("model returned non-JSON output: x"))
+        assert not _is_unparseable(LLMUnavailable("model call failed: 429"))
+        assert not _is_unparseable(LLMUnavailable("empty model response"))
 
     def test_empty_response_raises(self):
         client, _ = build([""])

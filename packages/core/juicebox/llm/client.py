@@ -312,6 +312,15 @@ class FakeTransport:
 # --------------------------------------------------------------------------
 
 
+def _is_unparseable(exc: BaseException) -> bool:
+    """A response that arrived but could not be read, vs a transport failure.
+
+    Only the first is worth retrying without the schema; a 429 or a timeout
+    means the schema was never the problem.
+    """
+    return "non-JSON output" in str(exc)
+
+
 def is_retryable(exc: BaseException) -> bool:
     """Rate limits, transient server errors and connection problems only."""
     if isinstance(exc, LLMUnavailable):
@@ -578,16 +587,37 @@ class LLMClient:
         timeout: float | None = None,
         max_retries: int | None = None,
     ) -> LLMResult:
-        kwargs = self._build_kwargs(
+        build = dict(
             model=model or self.model,
             system=system,
             prompt=prompt,
-            schema=schema,
             effort=effort,
             max_tokens=max_tokens,
             timeout=timeout,
         )
-        return self._decode(self._call(kwargs, max_retries=max_retries))
+        try:
+            return self._decode(
+                self._call(self._build_kwargs(schema=schema, **build), max_retries=max_retries)
+            )
+        except LLMUnavailable as exc:
+            if not _is_unparseable(exc):
+                raise
+            # Schema-constrained output is a request, not a guarantee -- the
+            # module docstring already notes that not every OpenRouter provider
+            # honours `response_format` strictly. Measured on glm-5.2: roughly
+            # half of schema calls came back unreadable, while the identical
+            # prompt with no schema returned clean fenced JSON five times out of
+            # five. The schema was costing us the answer rather than securing it,
+            # and every caller silently degraded to heuristics.
+            #
+            # The prompt already states the shape and `loose_json` handles
+            # fences, so dropping the schema gives up provider-side validation
+            # and keeps the data. Once only: a model that cannot produce the
+            # shape twice will not on a third attempt.
+            logger.warning("structured call unreadable, retrying without schema: %s", exc)
+            return self._decode(
+                self._call(self._build_kwargs(schema=None, **build), max_retries=max_retries)
+            )
 
     async def ajson(
         self,

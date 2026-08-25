@@ -263,14 +263,35 @@ class Settings:
     )
 
     # --- job matching ----------------------------------------------------
+    #
+    # What somebody asked for outweighs the job they already have. The
+    # heuristic term scores a candidate's *record* against what an employer
+    # wants -- their last title, their tracked skills, their years -- and at
+    # 0.70 against preference's 0.40 it meant a career changer was ranked
+    # mostly on the thing they are trying to leave. An investor moving into
+    # strategic finance scored a flat miss on `title` for exactly the reason
+    # they texted us.
+    #
+    # The preference term is `None` for anyone who never stated a preference,
+    # and `score_pair` drops absent terms out of the blend entirely -- so this
+    # re-weighting moves nobody except the candidates who told us what they
+    # want. That is the intended blast radius. Recruiter-facing lists sort on
+    # the same `JobMatch.score`, so for those candidates a recruiter now sees
+    # "said they want this, and can plausibly do it" ranked above "could do it,
+    # never asked". For a candidate-facing product that is the right order.
+    #
+    # Preference does not carry a match alone: a perfect 0.70/1.30 = 0.538 sits
+    # just under the 0.55 floor, so a stated title matching a posting title
+    # with nothing else behind it is not a proposal. Some corroboration from
+    # the record or the embedding is still required.
     job_match_heuristic_weight: float = field(
-        default_factory=lambda: _env_float("JOB_MATCH_HEURISTIC_WEIGHT", 0.70)
+        default_factory=lambda: _env_float("JOB_MATCH_HEURISTIC_WEIGHT", 0.35)
     )
     job_match_vector_weight: float = field(
-        default_factory=lambda: _env_float("JOB_MATCH_VECTOR_WEIGHT", 0.30)
+        default_factory=lambda: _env_float("JOB_MATCH_VECTOR_WEIGHT", 0.25)
     )
     job_match_preference_weight: float = field(
-        default_factory=lambda: _env_float("JOB_MATCH_PREFERENCE_WEIGHT", 0.40)
+        default_factory=lambda: _env_float("JOB_MATCH_PREFERENCE_WEIGHT", 0.70)
     )
     job_match_min_score: float = field(
         default_factory=lambda: _env_float("JOB_MATCH_MIN_SCORE", 0.55)

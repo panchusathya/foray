@@ -22,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .db import session_scope
 from .migrate import ensure_schema
@@ -316,6 +316,119 @@ def cmd_intake_number(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reset_thread(args: argparse.Namespace) -> int:
+    """Wipe one person's conversation so onboarding can be tested from zero.
+
+    Testing the intake flow means being a stranger again, and a thread that
+    already knows your name resumes instead of greeting you. This removes the
+    conversation and, unless told otherwise, the candidate row it created --
+    which cascades to their preference, matches, proposals, applications and
+    documents.
+
+    **Dry run by default.** It prints what it would delete and stops; --apply
+    writes. Deleting somebody's record is not a thing to do on a typo in a
+    phone number.
+
+    A do-not-contact suppression is left alone unless --clear-suppression is
+    passed. If you texted STOP during the test that row is why the next
+    message is refused, and removing it is a decision worth typing out --
+    everywhere else in this codebase an opt-out is permanent.
+    """
+    from .intake.phones import lookup_key
+    from .models import (
+        Application,
+        Candidate,
+        CandidateDocument,
+        CandidatePreference,
+        ConsentRecord,
+        IntakeMessage,
+        IntakeThread,
+        JobMatch,
+        JobProposal,
+        Suppression,
+    )
+
+    phone = lookup_key(args.phone) or args.phone.strip()
+    if not phone:
+        print("give a phone number, e.g. --phone +16462010859")
+        return 2
+
+    with session_scope() as db:
+        threads = list(
+            db.scalars(select(IntakeThread).where(IntakeThread.from_address == phone)).all()
+        )
+        suppression = db.scalar(select(Suppression).where(Suppression.phone == phone))
+        if not threads and not (suppression is not None and args.clear_suppression):
+            print(f"no intake thread for {phone}")
+            if suppression is not None:
+                # Worth saying out loud: with a suppression standing, a fresh
+                # thread here is still refused at the first send, and "nothing
+                # to reset" would read as "you are good to go".
+                print(
+                    f"  a do-not-contact row ({suppression.reason}) is still in place; "
+                    "the next message would be refused"
+                )
+                print("  pass --clear-suppression to remove it")
+            return 0
+
+        candidate_ids = {t.candidate_id for t in threads if t.candidate_id}
+        thread_ids = [t.id for t in threads]
+
+        def _count(model, column, values):
+            if not values:
+                return 0
+            return int(
+                db.scalar(select(func.count()).select_from(model).where(column.in_(values))) or 0
+            )
+
+        print(f"{phone}")
+        print(f"  threads          {len(threads)}")
+        print(f"  messages         {_count(IntakeMessage, IntakeMessage.thread_id, thread_ids)}")
+        print(f"  consent records  {_count(ConsentRecord, ConsentRecord.thread_id, thread_ids)}")
+        if candidate_ids:
+            print(f"  candidates       {len(candidate_ids)}")
+            for model, column, label in (
+                (CandidatePreference, CandidatePreference.candidate_id, "preferences"),
+                (JobMatch, JobMatch.candidate_id, "job matches"),
+                (JobProposal, JobProposal.candidate_id, "proposals"),
+                (Application, Application.candidate_id, "applications"),
+                (CandidateDocument, CandidateDocument.candidate_id, "documents"),
+            ):
+                print(f"  {label:<16} {_count(model, column, candidate_ids)}")
+
+        if suppression is not None:
+            state = "will clear" if args.clear_suppression else "LEFT IN PLACE"
+            print(f"  suppression      1 ({suppression.reason}) -- {state}")
+            if not args.clear_suppression:
+                print("    the next message to this number will be refused;")
+                print("    pass --clear-suppression to remove it")
+
+        if not args.apply:
+            print("\ndry run. re-run with --apply to delete")
+            return 0
+
+        # Threads first: a consent record points at both, and dropping the
+        # candidate out from under it would SET NULL the half we still want to
+        # find rows by.
+        for thread in threads:
+            db.delete(thread)
+        db.flush()
+
+        if not args.keep_candidate:
+            for candidate_id in candidate_ids:
+                candidate = db.get(Candidate, candidate_id)
+                if candidate is not None:
+                    db.delete(candidate)
+
+        if suppression is not None and args.clear_suppression:
+            db.delete(suppression)
+
+        db.flush()
+        kept = " (candidate kept)" if args.keep_candidate else ""
+        print(f"\ndeleted{kept}. text the number again and onboarding starts from the intro.")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -419,6 +532,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply", action="store_true", help="write the change (default is a dry run)"
     )
     purge.set_defaults(func=cmd_purge_placeholder_emails)
+
+    reset = sub.add_parser(
+        "reset-thread", help="wipe one person's conversation so onboarding restarts"
+    )
+    reset.add_argument("--phone", required=True, help="E.164 number, e.g. +16462010859")
+    reset.add_argument(
+        "--apply", action="store_true", help="actually delete (default is a dry run)"
+    )
+    reset.add_argument(
+        "--keep-candidate",
+        action="store_true",
+        help="drop the conversation but leave the CRM record and its history",
+    )
+    reset.add_argument(
+        "--clear-suppression",
+        action="store_true",
+        help="also remove a do-not-contact row, if the test ended in STOP",
+    )
+    reset.set_defaults(func=cmd_reset_thread)
 
     serve = sub.add_parser("serve", help="run the API server")
     serve.add_argument("--host", default="0.0.0.0")

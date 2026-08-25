@@ -358,6 +358,14 @@ NOTIFY_PACKAGE_READY = (
     "cover letter, and answers: {link}"
 )
 
+# Two different facts, and the copy must never blur them: one says we sent it,
+# the other says you send it. CANDIDATE_AGENT_PLAN §8 -- the message must not
+# imply we submitted somewhere we did not.
+NOTIFY_APPLICATION_SENT = (
+    "Your application for {title} at {company} is in — I submitted it and "
+    "I'll tell you the moment they reply. What I sent: {link}"
+)
+
 NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 
 # Presenting cards relaxes the 320-char single-question budget: a numbered

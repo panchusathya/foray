@@ -521,6 +521,35 @@ class Settings:
     portal_from_email: str = field(default_factory=lambda: _env("PORTAL_FROM_EMAIL", ""))
     portal_from_name: str = field(default_factory=lambda: _env("PORTAL_FROM_NAME", "Foray"))
 
+    # --- auto-apply (CANDIDATE_AGENT_PLAN Phase F) --------------------------
+    # console | memory | live. The gate on the whole feature, and it defaults to
+    # the one that cannot reach an employer: console exercises the status machine
+    # and the attempt row without sending, memory is the test double, and `live`
+    # is the only value that lets a vendor adapter run. A deployment that has not
+    # chosen explicitly does not apply in anybody's name.
+    apply_submitter: str = field(default_factory=lambda: _env("APPLY_SUBMITTER", "console").lower())
+    # The mailbox that owns every candidate alias, sub-addressed per candidate
+    # (anna+<token>@goforay.io). Empty means no alias is issued and the
+    # candidate's own address goes on the application -- which is honest, but
+    # every ATS that gates on email verification then stalls.
+    apply_alias_address: str = field(default_factory=lambda: _env("APPLY_ALIAS_ADDRESS", ""))
+    # Forward employer mail that arrives at an alias on to the candidate's real
+    # inbox. Off means we hold it and the portal is the only place they see it.
+    apply_alias_relay: bool = field(default_factory=lambda: _env_bool("APPLY_ALIAS_RELAY", True))
+    # Attempts per application before it stops and waits for a person. A form
+    # that has rejected us three times is not going to accept the fourth.
+    apply_max_attempts: int = field(default_factory=lambda: _env_int("APPLY_MAX_ATTEMPTS", 3))
+    # A visible browser is for debugging one run by hand, never for the worker.
+    apply_browser_headless: bool = field(
+        default_factory=lambda: _env_bool("APPLY_BROWSER_HEADLESS", True)
+    )
+    # Vendor API credentials. Greenhouse and SmartRecruiters need a per-board
+    # key; Lever and Ashby post to the public form endpoint and need none.
+    greenhouse_api_key: str = field(default_factory=lambda: _env("GREENHOUSE_API_KEY", ""))
+    smartrecruiters_api_key: str = field(
+        default_factory=lambda: _env("SMARTRECRUITERS_API_KEY", "")
+    )
+
     # Logged-in LinkedIn session for the intake scraper. JSON cookie array
     # (Playwright storage_state) or a raw ``li_at=...`` string. Never commit.
     linkedin_session_cookie: str = field(

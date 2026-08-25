@@ -263,6 +263,7 @@ export const APPLICATION_STATUSES = [
   'draft',
   'prepared',
   'awaiting_consent',
+  'submitting',
   'submitted',
   'acknowledged',
   'interviewing',
@@ -275,6 +276,7 @@ export const APPLICATION_STATUS_LABELS = {
   draft: 'Draft',
   prepared: 'Package ready',
   awaiting_consent: 'Awaiting candidate',
+  submitting: 'Applying now',
   submitted: 'Submitted',
   acknowledged: 'Acknowledged',
   interviewing: 'Interviewing',
@@ -289,8 +291,9 @@ export const APPLICATION_STATUS_LABELS = {
 // button that cannot work.
 export const APPLICATION_TRANSITIONS = {
   draft: ['prepared', 'withdrawn'],
-  prepared: ['awaiting_consent', 'submitted', 'draft', 'withdrawn'],
-  awaiting_consent: ['submitted', 'prepared', 'withdrawn'],
+  prepared: ['awaiting_consent', 'submitting', 'submitted', 'draft', 'withdrawn'],
+  awaiting_consent: ['submitting', 'submitted', 'prepared', 'withdrawn'],
+  submitting: ['submitted', 'prepared', 'withdrawn'],
   submitted: ['acknowledged', 'interviewing', 'rejected', 'withdrawn'],
   acknowledged: ['interviewing', 'rejected', 'withdrawn'],
   interviewing: ['offer', 'rejected', 'withdrawn'],
@@ -304,7 +307,7 @@ export const APPLICATION_TRANSITIONS = {
 // partial = waiting on somebody, miss = closed.
 export function applicationStatusTone(status) {
   if (['submitted', 'acknowledged', 'interviewing', 'offer'].includes(status)) return 'strong';
-  if (['prepared', 'awaiting_consent'].includes(status)) return 'partial';
+  if (['prepared', 'awaiting_consent', 'submitting'].includes(status)) return 'partial';
   if (['rejected', 'withdrawn'].includes(status)) return 'miss';
   return '';
 }

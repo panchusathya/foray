@@ -20,8 +20,15 @@ from ..applications.service import (
     request_package,
 )
 from ..applications.state import TransitionError, transition
+from ..applications.submission import NotSubmittable, attempts_used, request_submission
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
-from ..models import APPLICATION_STATUSES, Application, Candidate, JobPosting
+from ..models import (
+    APPLICATION_STATUSES,
+    Application,
+    ApplicationSubmission,
+    Candidate,
+    JobPosting,
+)
 from ..schemas import (
     ApplicationCreate,
     ApplicationDetailOut,
@@ -225,3 +232,71 @@ def build_package(
     except ApplicationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/{application_id}/submit", status_code=202)
+def submit(
+    application_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_write),
+) -> dict:
+    """Queue an automated attempt.
+
+    A 409 here is the machine refusing for a reason worth reading: no recorded
+    consent, the submission budget, the retry cap, or -- the common one -- no
+    adapter for this employer's ATS, which means the application stays the
+    assisted hand-off it already is.
+    """
+    application = _load(db, application_id, principal.org_id)
+    try:
+        job = request_submission(db, application, requested_by="recruiter")
+    except NotSubmittable as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ApplicationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "attempts_used": attempts_used(db, application),
+    }
+
+
+@router.get("/{application_id}/submissions")
+def list_submissions(
+    application_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+) -> dict:
+    """Every attempt on this application, newest first.
+
+    The recruiter-side answer to "what exactly did we send, and what happened":
+    the vendor, the method, the verdict, the error, and the artifact paths a
+    browser run left behind.
+    """
+    application = _load(db, application_id, principal.org_id)
+    rows = db.scalars(
+        select(ApplicationSubmission)
+        .where(ApplicationSubmission.application_id == application.id)
+        .order_by(ApplicationSubmission.attempt.desc())
+    ).all()
+    return {
+        "submissions": [
+            {
+                "id": row.id,
+                "attempt": row.attempt,
+                "vendor": row.vendor,
+                "method": row.method,
+                "status": row.status,
+                "external_id": row.external_id,
+                "confirmation_ref": row.confirmation_ref,
+                "error": row.error,
+                "artifacts": list(row.artifacts or []),
+                # The stored credential inside `verification` never leaves the
+                # server; only the run log does.
+                "run": (row.verification or {}).get("run", {}),
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+            }
+            for row in rows
+        ]
+    }

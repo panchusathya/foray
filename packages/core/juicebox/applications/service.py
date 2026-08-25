@@ -102,7 +102,10 @@ def create_application(
         proposal_id=proposal_id,
         project_id=posting.project_id,
         source=source,
-        submission_url=posting.source_url or "",
+        # The resolved form, not the listing we found it on. `apply_url` is
+        # whatever ats/detect.py landed on and falls back to source_url, so a
+        # posting nobody has resolved yet behaves exactly as before.
+        submission_url=posting.apply_url or posting.source_url or "",
         consenting_message_id=consenting_message_id,
         consent_verbatim=(consent_verbatim or "")[:400],
         created_by=created_by,

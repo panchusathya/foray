@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 EVENT_PROFILE_READY = "profile.ready"
 EVENT_MATCHES_READY = "matches.ready"
 EVENT_PACKAGE_READY = "package.ready"
+EVENT_APPLICATION_SENT = "application.sent"
 EVENT_STATUS_CHANGED = "status.changed"
 
 
@@ -113,7 +114,7 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             return {"event": event, "sent": 1 if row is not None else 0}
         return {"event": event, "skipped": "nothing clears the bar"}
 
-    if event == EVENT_PACKAGE_READY:
+    if event in (EVENT_PACKAGE_READY, EVENT_APPLICATION_SENT):
         application = db.get(Application, job.payload.get("subject_id") or "")
         if application is None or application.candidate_id != thread.candidate_id:
             return {"skipped": "application not found for this thread"}
@@ -125,7 +126,12 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             path=f"/applications/{application.id}",
             channel=thread.channel,
         )
-        body = prompts.NOTIFY_PACKAGE_READY.format(
+        template = (
+            prompts.NOTIFY_APPLICATION_SENT
+            if event == EVENT_APPLICATION_SENT
+            else prompts.NOTIFY_PACKAGE_READY
+        )
+        body = template.format(
             title=posting.title if posting else "the role",
             company=posting.company if posting else "the company",
             link=link,

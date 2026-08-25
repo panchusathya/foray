@@ -190,6 +190,26 @@ x-app-env: &app_env
   LINKEDIN_SESSION_COOKIE: ${LINKEDIN_SESSION_COOKIE:-}
   LINKEDIN_SESSION_PATH: ${LINKEDIN_SESSION_PATH:-}
 
+  # --- auto-apply -------------------------------------------------------
+  # console | memory | live. The gate on whether anything is ever submitted
+  # to a real employer, and the default cannot reach one. Turning this to
+  # `live` is the deliberate act; everything else here is inert without it.
+  APPLY_SUBMITTER: ${APPLY_SUBMITTER:-console}
+  # The mailbox that owns every candidate alias, sub-addressed per candidate.
+  # It must also be connected as a mailbox connection -- verification links
+  # and one-time codes arrive inbound, and nothing reads them otherwise.
+  # Empty means the candidate's own address goes on the application, and
+  # every portal that gates on email verification stalls.
+  APPLY_ALIAS_ADDRESS: ${APPLY_ALIAS_ADDRESS:-}
+  APPLY_ALIAS_RELAY: ${APPLY_ALIAS_RELAY:-true}
+  APPLY_MAX_ATTEMPTS: ${APPLY_MAX_ATTEMPTS:-3}
+  APPLY_BROWSER_HEADLESS: ${APPLY_BROWSER_HEADLESS:-true}
+  # Per-board API keys. Lever and Ashby post to their public form endpoints
+  # and need none; Greenhouse and SmartRecruiters refuse without one rather
+  # than posting blind.
+  GREENHOUSE_API_KEY: ${GREENHOUSE_API_KEY:-}
+  SMARTRECRUITERS_API_KEY: ${SMARTRECRUITERS_API_KEY:-}
+
 services:
   db:
     image: pgvector/pgvector:pg16

@@ -65,6 +65,23 @@ class SyncSummary:
     sent_ingested: int = 0
     inbound_ingested: int = 0
     unmatched_discarded: int = 0
+    # Employer mail that went to an application alias rather than the
+    # recruiter-reply path.
+    alias_routed: int = 0
+
+
+def alias_inbox_enabled() -> bool:
+    from ..applications import alias
+
+    return alias.enabled()
+
+
+def handle_alias_mail(db: Session, **kwargs) -> dict:
+    """Thin seam so the sync loop does not import the applications package at
+    module load, and so a test can stub the whole branch in one place."""
+    from ..applications.inbox import handle
+
+    return handle(db, **kwargs)
 
 
 def _already_recorded(db: Session, *, org_id: str, native_id: str) -> bool:
@@ -227,14 +244,15 @@ def sync_mailbox(
 
     connection.last_synced_at = now
     db.flush()
-    if summary.seen or summary.matched or summary.unmatched_discarded:
+    if summary.seen or summary.matched or summary.unmatched_discarded or summary.alias_routed:
         # A silent discard once cost two real candidate replies during deploy
         # churn and was undiagnosable afterwards — the consuming container's
         # logs were gone and the job row just said "succeeded". Every non-empty
         # pass now leaves a durable trace of what it did with each count.
         logger.info(
             "mailbox sync %s (%s): seen=%d matched=%d skipped=%d intents=%s "
-            "sent_ingested=%d inbound_ingested=%d unmatched_discarded=%d",
+            "sent_ingested=%d inbound_ingested=%d unmatched_discarded=%d "
+            "alias_routed=%d",
             connection.address,
             connection.provider,
             summary.seen,
@@ -244,6 +262,7 @@ def sync_mailbox(
             summary.sent_ingested,
             summary.inbound_ingested,
             summary.unmatched_discarded,
+            summary.alias_routed,
         )
     return summary
 
@@ -275,6 +294,32 @@ def _handle_inbound_event(
     if _already_recorded(db, org_id=connection.org_id, native_id=event.native_id):
         summary.skipped += 1
         return
+
+    # Mail addressed to a candidate's application alias is an employer's ATS
+    # talking to us, not a candidate replying to a recruiter. Everything below
+    # -- reply matching, intent classification, reply drafting, enrollment stops
+    # -- is built for the latter and would read an automated acknowledgement as
+    # a human changing their mind. So it is routed here and this function is
+    # done. (applications/inbox.py)
+    if event.to_addresses and alias_inbox_enabled():
+        routed = handle_alias_mail(
+            db,
+            org_id=connection.org_id,
+            to_addresses=event.to_addresses,
+            from_address=event.from_address,
+            subject=event.subject,
+            body=event.body,
+        )
+        if routed.get("routed"):
+            summary.alias_routed += 1
+            logger.info(
+                "alias mail for candidate %s: %s (%s)",
+                routed.get("candidate_id"),
+                routed.get("kind"),
+                routed.get("action", "-"),
+            )
+            return
+
     outbound = _match_outbound(db, org_id=connection.org_id, event=event)
     if outbound is None:
         # Not a reply to anything we sent. With thread sync on, mail from a

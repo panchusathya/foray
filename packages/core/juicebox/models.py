@@ -971,6 +971,7 @@ class JobPosting(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("org_id", "source_id", name="uq_job_posting_source_id"),
         Index("ix_job_posting_org_status", "org_id", "status"),
+        Index("ix_job_postings_ats_vendor", "org_id", "ats_vendor"),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jpost"))
@@ -1004,6 +1005,18 @@ class JobPosting(Base, TimestampMixin):
     parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     embedding: Mapped[list | None] = mapped_column(EmbeddingVector, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String(80), default="")
+
+    # Which ATS is behind this posting and where its form is, resolved once by
+    # applications/ats/detect.py and cached. Columns rather than `raw` because
+    # the job card, the submitter and the recruiter surface all read it, and
+    # `source_url` is frequently an aggregator listing rather than the form.
+    ats_vendor: Mapped[str] = mapped_column(String(32), default="")
+    ats_tenant: Mapped[str] = mapped_column(String(120), default="")
+    ats_external_job_id: Mapped[str] = mapped_column(String(120), default="")
+    apply_url: Mapped[str] = mapped_column(Text, default="")
+    ats_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     fee_bearing: Mapped[bool] = mapped_column(Boolean, default=False)
     fee_terms: Mapped[str] = mapped_column(String(240), default="")
@@ -1675,14 +1688,20 @@ class ConsentRecord(Base, TimestampMixin):
 #   draft            created; package not yet built
 #   prepared         tailored resume / cover letter / answers exist
 #   awaiting_consent the package was shown; the per-application yes is pending
-#   submitted        a human sent it (candidate one-tap, recruiter, or agent
-#                    on a tier that allows it) -- REQUIRES a recorded consent
+#   submitting       an agent attempt is in flight (Tier 1-3); on failure it
+#                    falls back to awaiting_consent with a status_reason
+#   submitted        it was sent (candidate one-tap, recruiter, or agent on a
+#                    tier that allows it) -- REQUIRES a recorded consent
 #   acknowledged     the employer confirmed receipt
 #   interviewing / offer / rejected / withdrawn
 APPLICATION_STATUSES = (
     "draft",
     "prepared",
     "awaiting_consent",
+    # An attempt is in flight. Only the agent path passes through here: it is
+    # what stops an automated submission reaching `submitted` via the
+    # prepared -> submitted shortcut, which exists for a human's "apply to 2".
+    "submitting",
     "submitted",
     "acknowledged",
     "interviewing",
@@ -1841,6 +1860,9 @@ class Application(Base, TimestampMixin):
     package_error: Mapped[str] = mapped_column(String(400), default="")
 
     prepared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitting_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1908,6 +1930,146 @@ class CandidateDocument(Base, TimestampMixin):
 
     error: Mapped[str] = mapped_column(String(400), default="")
     created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+#: One submission attempt's own lifecycle, independent of the application's.
+#: `needs_verification` parks a browser run waiting on mail to the alias;
+#: `needs_human` is a terminus, not a retry -- a required field we could not
+#: answer from the record is not something to guess at on someone's behalf.
+SUBMISSION_STATUSES = (
+    "queued",
+    "running",
+    "needs_verification",
+    "needs_human",
+    "succeeded",
+    "failed",
+)
+SUBMISSION_METHODS = ("email", "ats_api", "browser", "console", "memory")
+
+
+class ApplicationSubmission(Base, TimestampMixin):
+    """One attempt to actually send one application.
+
+    Separate from ``Application`` because an attempt is not a state of the
+    pursuit: a Workday run can park on an email verification, fail on a changed
+    form, and succeed on the retry, and all three are facts worth keeping. The
+    application's own status moves ``awaiting_consent -> submitting ->
+    submitted`` over the top of them.
+
+    ``artifacts`` holds the storage-relative paths of whatever the adapter
+    recorded -- for a browser run, the final screenshot and the field map it
+    filled. A submission nobody can reconstruct is one we cannot answer for
+    (CANDIDATE_AGENT_PLAN §8).
+    """
+
+    __tablename__ = "application_submissions"
+    __table_args__ = (
+        UniqueConstraint("application_id", "attempt", name="uq_application_submission_attempt"),
+        Index("ix_application_submissions_org_status", "org_id", "status"),
+        Index("ix_application_submissions_application", "application_id"),
+        # At most one succeeded attempt per application, enforced where two
+        # racing workers cannot talk themselves out of it. The uniqueness on
+        # (candidate, posting) stops a second application; this stops a second
+        # submission of the one application.
+        Index(
+            "uq_application_submission_succeeded",
+            "application_id",
+            unique=True,
+            sqlite_where=text("status = 'succeeded'"),
+            postgresql_where=text("status = 'succeeded'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("asub"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), index=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    vendor: Mapped[str] = mapped_column(String(32), default="")
+    # email | ats_api | browser | console | memory
+    method: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    # The vendor's own id for the application, when it hands one back, and
+    # whatever a human would quote at the employer to find it.
+    external_id: Mapped[str] = mapped_column(String(200), default="")
+    confirmation_ref: Mapped[str] = mapped_column(String(400), default="")
+    error: Mapped[str] = mapped_column(String(600), default="")
+    # Storage-relative paths: screenshots, the field map, a saved response.
+    artifacts: Mapped[list] = mapped_column(JSON, default=list)
+    # Verification state for a parked browser run: what we are waiting for and
+    # what arrived at the alias.
+    verification: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CandidateAlias(Base, TimestampMixin):
+    """The address an employer sees, and which candidate it belongs to.
+
+    Sub-addressed off one mailbox we own (``anna+<token>@goforay.io``): the
+    token is derived by ``security.alias_token`` so an address can be verified
+    without a lookup, and this row exists for the reverse direction and for
+    revocation. Issuing an alias makes us the addressee of record on every
+    application it is used for -- the deliberate trade in
+    ``applications/alias.py``, not an accident.
+    """
+
+    __tablename__ = "candidate_aliases"
+    __table_args__ = (
+        UniqueConstraint("address", name="uq_candidate_alias_address"),
+        Index("ix_candidate_aliases_candidate", "org_id", "candidate_id"),
+        # Inbound mail arrives carrying a token, not an id: this is the lookup
+        # on the hot path of every message the alias mailbox receives.
+        Index("ix_candidate_aliases_local_part", "local_part"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("alias"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    # The full address, and the token we generated its local part from.
+    address: Mapped[str] = mapped_column(String(255))
+    local_part: Mapped[str] = mapped_column(String(120), default="")
+    # active | revoked
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AtsAccount(Base, TimestampMixin):
+    """A candidate's login on one employer's ATS portal.
+
+    Workday and Oracle make you register before you can apply, so without this
+    every application to the same tenant creates another account and the
+    verification mail arrives again. Username is the candidate's alias; the
+    password is generated by us and encrypted at rest in ``token_blob`` by
+    ``integrations/crypto.py`` -- the same treatment mailbox OAuth tokens get,
+    for the same reason.
+    """
+
+    __tablename__ = "ats_accounts"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "vendor", "tenant", name="uq_ats_account_tenant"),
+        Index("ix_ats_accounts_org_vendor", "org_id", "vendor"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(40), primary_key=True, default=lambda: new_id("atsacct")
+    )
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    vendor: Mapped[str] = mapped_column(String(32))
+    tenant: Mapped[str] = mapped_column(String(120), default="")
+    username: Mapped[str] = mapped_column(String(255), default="")
+    token_blob: Mapped[str] = mapped_column(Text, default="")
+    # pending_verification | active | locked
+    status: Mapped[str] = mapped_column(String(32), default="pending_verification")
+    error: Mapped[str] = mapped_column(String(400), default="")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CandidateAuthGrant(Base, TimestampMixin):

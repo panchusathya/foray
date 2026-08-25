@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 
 from .config import get_settings
@@ -35,6 +36,30 @@ def document_relpath(*, org_id: str, candidate_id: str, document_id: str, suffix
     reviewer to miss it; ids are ours and shell-safe by construction.
     """
     return f"{org_id}/{candidate_id}/{document_id}{suffix}"
+
+
+#: Only these characters survive into an artifact label. The label names a
+#: step in a browser run ("before-submit"), so it is ours, but a path segment
+#: built from anything but ids gets checked rather than trusted.
+_LABEL_SAFE = re.compile(r"[^a-z0-9._-]+")
+
+
+def artifact_relpath(*, org_id: str, application_id: str, label: str, suffix: str = ".png") -> str:
+    """``{org}/applications/{app}/{label}.png`` for submission evidence.
+
+    Kept under the application rather than the candidate because that is how it
+    is read back: the question an artifact answers is always "what did we send
+    to this employer", never "what files does this person have".
+    """
+    cleaned = _LABEL_SAFE.sub("-", (label or "step").strip().lower()).strip("-") or "step"
+    base = f"{org_id}/applications/{application_id}/{cleaned}"
+    relpath = f"{base}{suffix}"
+    # A retried attempt captures the same step again; keep both.
+    counter = 2
+    while (storage_root() / relpath).exists():
+        relpath = f"{base}-{counter}{suffix}"
+        counter += 1
+    return relpath
 
 
 def document_abspath(relpath: str) -> Path:

@@ -349,7 +349,45 @@ def approve_package(
     application.approved_at = utcnow()
     if application.status == "prepared":
         transition(db, application, to_status="awaiting_consent", actor="candidate")
-    return _application_out(db, application)
+
+    # Approval is the per-application yes, so this is the moment an automated
+    # attempt becomes possible. Most postings will not have an adapter and the
+    # answer is the hand-off we already do -- which is why `auto_submit` reports
+    # a reason instead of raising.
+    from ..applications.submission import auto_submit
+
+    job, reason = auto_submit(db, application)
+    out = _application_out(db, application)
+    out["submission"] = {"queued": job is not None, "reason": reason}
+    return out
+
+
+@router.post("/applications/{application_id}/submit", status_code=202)
+def submit_for_me(
+    application_id: str,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """The explicit "you apply for me" tap.
+
+    Distinct from ``confirm-submitted``, which is the candidate telling us they
+    applied themselves. This one asks us to do it, and needs the same recorded
+    approval every other path needs -- tapping this button *is* that approval
+    when there is not one yet.
+    """
+    from ..applications.submission import NotSubmittable, request_submission
+
+    application = _application(db, principal, application_id)
+    if application.approved_at is None:
+        application.approved_at = utcnow()
+        db.flush()
+    try:
+        job = request_submission(db, application, requested_by="candidate")
+    except NotSubmittable as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ApplicationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"job_id": job.id, "status": job.status}
 
 
 @router.post("/applications/{application_id}/confirm-submitted")

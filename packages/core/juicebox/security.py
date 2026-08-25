@@ -164,3 +164,34 @@ def signed_intake_token(purpose: str, subject: str) -> str:
 
 def verify_intake_token(purpose: str, subject: str, token: str) -> bool:
     return hmac.compare_digest(signed_intake_token(purpose, subject), token or "")
+
+
+#: How much of the HMAC goes into an email local part. Long enough that an
+#: address cannot be enumerated, short enough that the whole thing still fits
+#: the 64-character local-part limit and reads as a machine address rather than
+#: a wall of base64.
+ALIAS_TOKEN_CHARS = 18
+
+
+def alias_token(candidate_id: str) -> str:
+    """The sub-address token for one candidate's application alias.
+
+    Derived rather than stored so ``anna+<token>@goforay.io`` can be *verified*
+    from the address alone -- inbound mail arrives before any lookup, and an
+    unsigned local part would let anyone address a candidate's application
+    inbox by guessing an id. Purpose-scoped like ``signed_intake_token``, so an
+    alias token is not interchangeable with a widget or thread token.
+
+    Lowercased because mail local parts survive case changes in transit, and a
+    token that fails to match after a relay lowercased it is unroutable.
+    """
+    secret = get_settings().secret_key
+    signed = _b64e(_sign(f"alias:{candidate_id}".encode(), secret))
+    # base64url still contains "-" and "_", both legal in a local part, but keep
+    # it alphanumeric so no provider's parser has an opinion.
+    cleaned = "".join(ch for ch in signed if ch.isalnum()).lower()
+    return cleaned[:ALIAS_TOKEN_CHARS]
+
+
+def verify_alias_token(candidate_id: str, token: str) -> bool:
+    return hmac.compare_digest(alias_token(candidate_id), (token or "").strip().lower())

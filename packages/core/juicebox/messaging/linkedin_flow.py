@@ -163,14 +163,46 @@ def confirm_message(profile: LinkedInProfile | dict[str, Any]) -> str:
         bits.append(f"about {int(years)} years in")
     if not bits:
         return (
-            "got your linkedin — i'll match you off that. anything i should know "
-            "that's not on the profile?"
+            "got your linkedin — i'll match you off that. what kind of role are "
+            "you looking for next?"
         )
+
     joined = ", ".join(bits)
+
+    # State the search, not just the facts. `apply_profile_to_record` turns
+    # the current title into `spec.job_titles`, which is what the job search
+    # is actually run on -- so the assumption underneath is that everybody
+    # wants more of the job they already have. Plenty of people are texting a
+    # recruiter precisely because they do not. Reading the target back is the
+    # last cheap moment to correct it: after this we spend search credits on
+    # it, build a package around it, and put it in front of an employer.
+    target = _target_phrase(title, location)
+    if target:
+        return (
+            f"got it — {joined}. sounds like you're after {target} — "
+            f"is that what i should be looking for, or something different?"
+        )
     return (
         f"got it — {joined}. that's what we'll match you on, right? "
         f"if anything's off just say so."
     )
+
+
+def _target_phrase(title: str, location: str) -> str:
+    """"senior ml engineer roles in san francisco", or '' when we cannot say.
+
+    Never guessed from an employer alone: "roles at Modal" is a different
+    claim from "roles like the one you have at Modal", and the second is the
+    one we mean.
+    """
+    role = title.strip().lower()
+    if not role:
+        return ""
+    phrase = f"{role} roles"
+    where = location.strip().lower()
+    if where:
+        phrase = f"{phrase} in {where}"
+    return phrase
 
 
 def scrape_failed_message() -> str:

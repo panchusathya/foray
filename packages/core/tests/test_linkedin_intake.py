@@ -378,3 +378,73 @@ class TestLinqReceipts:
         session.refresh(outbound)
         assert outbound.status == "failed"
         assert "undeliverable" in outbound.error
+
+
+class TestTargetConfirmation:
+    """Read back what we will search for, not just who they are.
+
+    `apply_profile_to_record` turns the current title into `spec.job_titles`,
+    which is what the job search runs on -- so the standing assumption is that
+    everybody wants more of the job they already have. People text a recruiter
+    precisely when that is false. This is the last cheap moment to fix it:
+    after it we spend search credits, build a package, and approach an
+    employer on that basis.
+    """
+
+    def _profile(self, **over):
+        from juicebox.enrich.linkedin_scrape import LinkedInProfile
+
+        base = {
+            "url": "https://www.linkedin.com/in/ada",
+            "full_name": "Ada Okonkwo",
+            "current_title": "Machine Learning Engineer",
+            "current_employer": "Modal",
+            "location": "San Francisco",
+            "experience_years": 8.0,
+        }
+        base.update(over)
+        return LinkedInProfile(**base)
+
+    def test_it_states_the_search_and_invites_a_correction(self):
+        from juicebox.messaging.linkedin_flow import confirm_message
+
+        body = confirm_message(self._profile()).lower()
+        assert "machine learning engineer roles in san francisco" in body
+        assert "something different" in body, "a read-back with no way out is an assertion"
+
+    def test_no_title_means_no_claim_about_what_they_want(self):
+        """With no title there is nothing to infer, so ask instead of guess."""
+        from juicebox.messaging.linkedin_flow import confirm_message
+
+        body = confirm_message(self._profile(current_title="")).lower()
+        assert "roles in" not in body
+        assert "?" in body
+
+    def test_an_employer_alone_is_not_a_target(self):
+        """"roles at Modal" is a different claim from "roles like yours"."""
+        from juicebox.messaging.linkedin_flow import _target_phrase
+
+        assert _target_phrase("", "San Francisco") == ""
+        assert _target_phrase("Data Scientist", "") == "data scientist roles"
+
+    def test_a_correction_replaces_the_target_rather_than_adding_to_it(self):
+        """The revision has to win outright.
+
+        If a corrected title merged alongside the scraped one we would search
+        for the job they just told us they did not want, and propose it.
+        """
+        from juicebox.messaging.records import merge_record
+
+        scraped = merge_record(
+            None, {"spec": {"job_titles": ["machine learning engineer"]}}
+        )
+        corrected = merge_record(scraped, {"spec": {"job_titles": ["product manager"]}})
+        assert corrected["spec"]["job_titles"] == ["product manager"]
+
+    def test_saying_nothing_new_keeps_the_scraped_target(self):
+        """"yep that's right" must not wipe what the profile gave us."""
+        from juicebox.messaging.records import merge_record
+
+        scraped = merge_record(None, {"spec": {"job_titles": ["ml engineer"]}})
+        after = merge_record(scraped, {"spec": {"job_titles": []}})
+        assert after["spec"]["job_titles"] == ["ml engineer"]

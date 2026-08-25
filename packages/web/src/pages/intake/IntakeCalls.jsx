@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { formatComp, formatTimeline, intakeApi } from '../../lib/intake.js';
+import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -76,7 +77,8 @@ function CallCard({ row }) {
   // Same precedence the thread cards use: what they called themselves beats
   // the number they called from. A phone number is the last resort, not the
   // headline -- a queue of numbers tells a recruiter nothing about who to ring.
-  const who = row.contact_name || row.contact_email || row.from_number || 'unknown caller';
+  const number = formatPhone(row.from_number);
+  const who = row.contact_name || row.contact_email || number || 'unknown caller';
   return (
     <div className="card stack" data-testid="intake-call-row">
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
@@ -91,7 +93,7 @@ function CallCard({ row }) {
       </button>
       {row.contact_name || row.contact_email ? (
         <div className="small muted" data-testid="intake-call-contact">
-          {[row.from_number, row.contact_email].filter(Boolean).join(' · ')}
+          {[number, row.contact_email].filter(Boolean).join(' · ')}
         </div>
       ) : null}
       <div className="row spread">

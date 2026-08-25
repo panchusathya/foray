@@ -298,6 +298,10 @@ class CandidateSummary(BaseModel):
     skills: list[str]
     linkedin_url: str
     emails: list[str]
+    # Empty from the search path: hits are built from the in-memory index doc,
+    # which carries addresses but not numbers. That is honest rather than a gap
+    # -- no search surface shows a phone -- and it is why this has a default.
+    phones: list[str] = Field(default_factory=list)
     crm_status: str = "none"
     crm_tracked: bool = False
     tags: list[str] = Field(default_factory=list)

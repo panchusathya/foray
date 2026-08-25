@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { api } from '../../lib/api.js';
 import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../../lib/intake.js';
+import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -131,7 +132,7 @@ function ThreadReviewBody({ threadId }) {
 
 function ThreadRow({ row, onDone }) {
   const [open, setOpen] = useState(true);
-  const who = row.contact_name || row.contact_email || row.from_address;
+  const who = row.contact_name || row.contact_email || formatPhone(row.from_address);
   return (
     <div className="card stack" data-testid="intake-review-thread">
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
@@ -172,7 +173,8 @@ function CallRow({ row, onDone }) {
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
         <span className="thread-head">
           <span className="thread-subject">
-            {open ? '▾' : '▸'} Call · {row.contact_name || row.contact_email || row.from_number || 'unknown'}
+            {open ? '▾' : '▸'} Call ·{' '}
+            {row.contact_name || row.contact_email || formatPhone(row.from_number) || 'unknown'}
           </span>
           <span className="thread-meta muted small">
             {when(row.started_at || row.created_at)}

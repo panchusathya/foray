@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { intakeApi, messageReceipt } from '../../lib/intake.js';
+import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
 
 function when(value) {
@@ -47,7 +48,7 @@ function ThreadMessages({ threadId }) {
 
 function ThreadCard({ row }) {
   const [open, setOpen] = useState(false);
-  const who = row.contact_name || row.contact_email || row.from_address || 'unknown';
+  const who = row.contact_name || row.contact_email || formatPhone(row.from_address) || 'unknown';
   return (
     <div className="card stack" data-testid="intake-thread-row">
       <button type="button" className="option" onClick={() => setOpen((value) => !value)}>

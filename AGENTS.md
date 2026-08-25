@@ -582,6 +582,28 @@ package owns only what is different about text. Plan and phasing live in
   refactor, which a review queue should not force.
 
 
+## Phone numbers in the UI (`packages/web/src/lib/phone.js`)
+
+- **One formatter, because E.164 reads badly and guessing reads wrong.** The API
+  stores what `intake.phones.lookup_key` produced, which is correct and
+  unambiguous and makes `+14155550123` a string a person has to decode before
+  they can dial it. Only North American numbers get the grouped form: a country
+  code is one to three digits and the national grouping differs by country, so a
+  general "insert spaces every three" reformats a real London number into one
+  that looks wrong to anybody who knows it. For everything else the stored
+  E.164 *is* the presentation -- unfamiliar, but never misleading.
+- **`telHref` always dials the raw digits.** The pretty form is for reading.
+- **`CandidateSummary.phones` is empty on the search path** and that is honest,
+  not a gap: search hits are built from the in-memory `CandidateDoc`, which
+  carries addresses and not numbers, and no search surface shows a phone. It is
+  why the field has a default.
+- **`PhoneEditor`'s warning is about lookups, not deliverability.** A number
+  stored without a country code is real data a recruiter can still ring; what it
+  cannot do is match an inbound call, because `lookup_key` refuses to guess a
+  country. Saying so beats rejecting it. Nothing else about the editor is new --
+  `crm.patch_candidate` has always had `phones` in `EDITABLE_FIELDS`, in
+  `UNION_FIELDS`, and syncing the projection; only the UI was missing.
+
 ## CSV candidate import (`packages/web/src/lib/csvImport.js`)
 
 Import a Juicebox CSV export and enroll the rows in an existing sequence. There

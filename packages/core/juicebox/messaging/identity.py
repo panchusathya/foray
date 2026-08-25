@@ -33,7 +33,12 @@ from ..enrich.linkedin_url import canonical_linkedin_url
 from ..enrich.linkedin_url import find_linkedin as extract_linkedin
 from ..intake.contact import find_email, find_name, first_segment
 from ..models import Candidate, IntakeThread
-from ..repository import owner_of_email, owner_of_linkedin, upsert_candidates
+from ..repository import (
+    merge_contact_details,
+    owner_of_email,
+    owner_of_linkedin,
+    upsert_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +167,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     """
     if thread.candidate_id:
         _mark_crm_tracked(db, thread.candidate_id)
+        _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
         return thread.candidate_id
@@ -198,6 +204,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     if existing:
         thread.candidate_id = existing
         _mark_crm_tracked(db, existing)
+        _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
         return existing
@@ -235,9 +242,57 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         return None
     thread.candidate_id = result.ids[0]
     _mark_crm_tracked(db, thread.candidate_id)
+    _copy_contact(db, thread)
     _copy_linkedin(db, thread)
     _copy_experience(db, thread)
     return thread.candidate_id
+
+
+def _copy_contact(db: Session, thread: IntakeThread) -> None:
+    """Push the name, the address and the texting number onto the candidate.
+
+    This is the half of thread intake that was missing. ``link_candidate``
+    resolved a conversation to a row and stopped there, so an existing contact
+    who texted in got their preferences and nothing else -- their address never
+    joined ``candidate_emails``, their number never reached
+    ``candidate_phones``, and the dial-in line did not recognise them when they
+    rang from the phone they had just been texting from.
+
+    The number is merged here, where ``intake.service.link_caller`` refuses to.
+    That is not inconsistent: a thread reaches this function only after the
+    coverage gate closed, which takes a back-and-forth we drove -- we sent to
+    that number and it answered, repeatedly. A single inbound call proves only
+    what the caller's device claims.
+
+    ``from_address`` is only ever offered as a phone. An iMessage sender can be
+    an Apple ID email address, and ``lookup_key`` returns nothing for one, so it
+    is simply not merged: an Apple ID is usually a real mailbox, but "usually"
+    is not a basis for adding an address that outreach will then mail.
+    """
+    if not thread.candidate_id:
+        return
+    candidate = db.get(Candidate, thread.candidate_id)
+    if candidate is None:
+        return
+    merged = merge_contact_details(
+        db,
+        candidate,
+        name=thread.contact_name,
+        email=thread.contact_email,
+        phone=thread.from_address,
+    )
+    if merged.conflicts:
+        thread.review_needed = True
+        thread.review_reason = _join_reasons(
+            thread.review_reason,
+            f"already owned by somebody else: {', '.join(merged.conflicts)}",
+        )
+        db.flush()
+
+
+def _join_reasons(existing: str, addition: str) -> str:
+    parts = [p for p in [(existing or "").strip(), addition] if p]
+    return "; ".join(parts)[:400]
 
 
 def _copy_linkedin(db: Session, thread: IntakeThread) -> None:
@@ -320,6 +375,9 @@ def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) ->
 
     thread.candidate_id = candidate.id
     _mark_crm_tracked(db, candidate.id)
+    _copy_contact(db, thread)
+    _copy_linkedin(db, thread)
+    _copy_experience(db, thread)
 
     # Whatever the conversation captured now has a person to hang off. Guarded
     # on there being something: attributing an empty thread must not write an

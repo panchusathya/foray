@@ -33,6 +33,9 @@ export const CONTACT_COLUMNS = {
   status: { label: 'Status', width: 120, sort: null },
   tags: { label: 'Tags', width: 160, sort: null },
   emails: { label: 'Email', width: 210, sort: null },
+  // Intake gave us numbers for people the CRM only had addresses for, and a
+  // number nobody can see is a number nobody rings.
+  phones: { label: 'Phone', width: 150, sort: null },
   created_at: { label: 'Added', width: 110, sort: 'created' },
   intake_timeline: { label: 'Timeline', width: 130, sort: null },
   intake_target_comp: { label: 'Target comp', width: 120, sort: null, numeric: true },
@@ -44,6 +47,7 @@ const DEFAULT_COLUMNS = [
   'full_name',
   'current_title',
   'current_company',
+  'phones',
   'last_emailed_at',
   'last_reply_at',
   'touches',
@@ -143,6 +147,9 @@ export const CONTACT_VIEWS = [
     columns: [
       'full_name',
       'current_title',
+      // The intake views are where a phone matters most: these are people who
+      // rang or texted, and the number is how a recruiter follows up.
+      'phones',
       'intake_timeline',
       'intake_target_comp',
       'intake_match_count',

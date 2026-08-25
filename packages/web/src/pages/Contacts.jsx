@@ -34,6 +34,7 @@ import {
   resolveParams,
   viewById,
 } from '../lib/contactViews.js';
+import { allPhones, primaryPhone, telHref } from '../lib/phone.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import {
   countOnPage,
@@ -164,6 +165,16 @@ function Cell({ column, row }) {
       ) : (
         <span className="muted">—</span>
       );
+    case 'phones': {
+      const phone = primaryPhone(row);
+      return phone ? (
+        <a className="mono" href={telHref(row.phones[0])} title={allPhones(row)}>
+          {phone}
+        </a>
+      ) : (
+        <span className="muted">—</span>
+      );
+    }
     case 'created_at':
       return <DateCell value={row.created_at} />;
     case 'intake_timeline':

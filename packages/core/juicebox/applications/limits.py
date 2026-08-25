@@ -24,10 +24,15 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..models import Application, JobPosting, JobProposal, utcnow
 
 APPLICATIONS_PER_COMPANY_PER_30D = 2
 SUBMISSIONS_PER_WEEK = 5
+# Defaults only. The live values come from settings so a deployment can run a
+# different cadence (our own end-to-end testing needs one) without editing the
+# rule. Read through the ``_per_week`` / ``_per_message`` / ``_per_day``
+# helpers below, never these names directly.
 PROPOSALS_PER_WEEK = 10
 MAX_PROPOSALS_PER_MESSAGE = 3
 PROPOSAL_MESSAGES_PER_DAY = 1
@@ -38,6 +43,18 @@ REASON_SUBMISSION_BUDGET = "submission-budget"
 REASON_PROPOSAL_BUDGET = "proposal-budget"
 REASON_PROPOSAL_MESSAGE_BUDGET = "proposal-message-budget"
 REASON_IGNORED_BREAKER = "ignored-proposal-breaker"
+
+
+def _proposals_per_week() -> int:
+    return get_settings().proposals_per_week
+
+
+def _max_proposals_per_message() -> int:
+    return get_settings().max_proposals_per_message
+
+
+def _proposal_messages_per_day() -> int:
+    return get_settings().proposal_messages_per_day
 
 
 @dataclass(frozen=True)
@@ -144,11 +161,12 @@ def may_propose(
     but the weekly budget and the ignored breaker still do — a feed that
     manufactures forty proposals a day spends the same reputation a text does.
     """
-    if count > MAX_PROPOSALS_PER_MESSAGE and in_new_message:
+    per_message = _max_proposals_per_message()
+    if count > per_message and in_new_message:
         return LimitDecision(
             False,
             REASON_PROPOSAL_BUDGET,
-            f"{count} proposals in one message; the cap is {MAX_PROPOSALS_PER_MESSAGE}",
+            f"{count} proposals in one message; the cap is {per_message}",
         )
     now = now or utcnow()
 
@@ -165,7 +183,7 @@ def may_propose(
         )
         or 0
     )
-    if proposed + count > PROPOSALS_PER_WEEK:
+    if proposed + count > _proposals_per_week():
         return LimitDecision(
             False, REASON_PROPOSAL_BUDGET, f"{proposed} proposals in the last 7 days"
         )
@@ -185,7 +203,7 @@ def may_propose(
             )
             or 0
         )
-        if messages_today >= PROPOSAL_MESSAGES_PER_DAY:
+        if messages_today >= _proposal_messages_per_day():
             return LimitDecision(
                 False,
                 REASON_PROPOSAL_MESSAGE_BUDGET,

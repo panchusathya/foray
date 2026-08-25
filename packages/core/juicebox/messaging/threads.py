@@ -16,6 +16,7 @@ here, so the two invariants that matter have one place to live:
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -177,6 +178,45 @@ def _next_seq(db: Session, thread: IntakeThread) -> int:
     return int(highest or 0) + 1
 
 
+# How many times to re-allocate ``seq`` before giving up. Collisions come in
+# ones and twos -- a webhook landing while a card loop is sending -- so a
+# small bound is plenty and keeps a genuine constraint bug loud.
+_SEQ_RETRIES = 5
+
+
+def _insert_with_seq(db: Session, thread: IntakeThread, build) -> IntakeMessage:
+    """Insert a thread message, re-allocating ``seq`` when a writer takes it.
+
+    ``seq`` is ``max(seq) + 1`` over the thread, which two concurrent writers
+    read as the same number; ``uq_intake_message_seq`` then fails the loser.
+    In prod that surfaced as the Linq webhook 500-ing under its own retries --
+    four concurrent deliveries against a card loop sending four outbound rows
+    -- and the candidate's reply arrived three minutes late because the vendor
+    kept backing off. Re-reading the high-water mark and trying again keeps the
+    unique constraint as the arbiter instead of reaching for a lock.
+
+    ``build`` takes the allocated seq and returns an unsaved row, so each
+    attempt gets a fresh object rather than re-adding a rolled-back one.
+    """
+    for attempt in range(_SEQ_RETRIES):
+        row = build(_next_seq(db, thread))
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            with suppress(Exception):
+                db.expunge(row)
+            if attempt == _SEQ_RETRIES - 1:
+                raise
+            logger.info(
+                "seq collision on thread %s, re-allocating (attempt %d)", thread.id, attempt + 1
+            )
+            continue
+        return row
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def record_inbound(
     db: Session,
     *,
@@ -202,20 +242,20 @@ def record_inbound(
         if existing is not None:
             return existing, False
 
-    message = IntakeMessage(
-        org_id=thread.org_id,
-        thread_id=thread.id,
-        seq=_next_seq(db, thread),
-        direction=INBOUND,
-        body=body or "",
-        provider_native_id=provider_native_id,
-        status="received",
-        raw=raw or {},
-    )
+    def build(seq: int) -> IntakeMessage:
+        return IntakeMessage(
+            org_id=thread.org_id,
+            thread_id=thread.id,
+            seq=seq,
+            direction=INBOUND,
+            body=body or "",
+            provider_native_id=provider_native_id,
+            status="received",
+            raw=raw or {},
+        )
+
     try:
-        with db.begin_nested():
-            db.add(message)
-            db.flush()
+        message = _insert_with_seq(db, thread, build)
     except IntegrityError:
         # Two deliveries of the same webhook raced. The winner's row is the
         # answer; returning it as not-created keeps the turn from running twice.
@@ -256,20 +296,23 @@ def record_outbound(
     charges for is exactly what was sent.
     """
     sent = result.status == "sent"
-    row = IntakeMessage(
-        org_id=thread.org_id,
-        thread_id=thread.id,
-        seq=_next_seq(db, thread),
-        direction=OUTBOUND,
-        body=message.body,
-        provider_native_id=result.provider_native_id,
-        asked_field=message.asked_field,
-        status=result.status,
-        error=result.error,
-        origin=origin,
-        sent_at=utcnow() if sent else None,
+    row = _insert_with_seq(
+        db,
+        thread,
+        lambda seq: IntakeMessage(
+            org_id=thread.org_id,
+            thread_id=thread.id,
+            seq=seq,
+            direction=OUTBOUND,
+            body=message.body,
+            provider_native_id=result.provider_native_id,
+            asked_field=message.asked_field,
+            status=result.status,
+            error=result.error,
+            origin=origin,
+            sent_at=utcnow() if sent else None,
+        ),
     )
-    db.add(row)
 
     if sent:
         thread.outbound_count = (thread.outbound_count or 0) + 1

@@ -226,6 +226,115 @@ def send_message(
     return message_id
 
 
+POLL_EVENTS = frozenset({"poll.sent", "poll.vote.added", "poll.vote.removed"})
+
+# iMessage renders a poll natively, so picking a job is a tap rather than a
+# sentence somebody has to phrase and we have to parse.
+MAX_POLL_OPTIONS = 10
+MAX_OPTION_CHARS = 100
+
+
+def create_poll(
+    *,
+    chat_id: str,
+    options: list[str],
+    idempotency_key: str,
+    transport: Transport | None = None,
+) -> str:
+    """Send a poll. Returns Linq's message id for the poll.
+
+    The API takes no question -- the prompt is a separate text message, which
+    is why the caller sends one first. Two options minimum; a poll with one
+    job in it is a worse "apply?" button than just asking.
+    """
+    # Request shape first, configuration second: a call with one option is
+    # wrong however the deployment is configured, and reporting a missing key
+    # for it sends whoever is debugging to the wrong place.
+    if not chat_id:
+        raise LinqSendError("chat_id is required")
+    trimmed = [o.strip()[:MAX_OPTION_CHARS] for o in options if o and o.strip()]
+    if len(trimmed) < 2:
+        raise LinqSendError("a poll needs at least two options")
+    settings = get_settings()
+    if not settings.linq_api_key:
+        raise LinqSendError("LINQ_API_KEY is not configured")
+
+    url = f"{LINQ_API_BASE}/chats/{chat_id}/polls"
+    payload = {
+        "poll": {
+            "options": [{"text": text} for text in trimmed[:MAX_POLL_OPTIONS]],
+            "idempotency_key": idempotency_key,
+        }
+    }
+    try:
+        if transport is not None:
+            response = transport("POST", url, payload)
+        else:
+            http = httpx.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.linq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30.0,
+            )
+            http.raise_for_status()
+            response = http.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Linq poll send failed: %s", exc)
+        raise LinqSendError(str(exc)) from exc
+    except ValueError as exc:
+        raise LinqSendError(f"malformed poll response: {exc}") from exc
+
+    message_id = ""
+    if isinstance(response, dict):
+        message_id = str(
+            response.get("id") or (response.get("message") or {}).get("id") or ""
+        ).strip()
+    if not message_id:
+        raise LinqSendError("Linq returned no poll message id")
+    return message_id
+
+
+def parse_poll_options(payload: dict) -> tuple[str, list[tuple[str, str]]]:
+    """``poll.sent`` -> (chat_id, [(option_id, text)]).
+
+    This is the only place option ids are ever revealed: a vote event carries
+    an option_id and no text, so without recording this mapping a tap cannot
+    be resolved to a job.
+    """
+    data = payload.get("data") or payload
+    chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or data.get("chat_id") or "")
+    poll = data.get("poll") if isinstance(data.get("poll"), dict) else data
+    options = []
+    for option in poll.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        option_id = str(option.get("option_id") or option.get("id") or "")
+        text = str(option.get("text") or "")
+        if option_id:
+            options.append((option_id, text))
+    return chat_id, options
+
+
+def parse_poll_vote(payload: dict) -> tuple[str, str, bool]:
+    """``poll.vote.added`` -> (chat_id, option_id, is_me).
+
+    ``sender_handle.is_me`` is how a vote of ours is told from theirs -- these
+    events carry no ``is_from_me``, unlike reactions.
+    """
+    data = payload.get("data") or payload
+    handle = data.get("sender_handle") if isinstance(data.get("sender_handle"), dict) else {}
+    chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
+    return (
+        str(chat.get("id") or data.get("chat_id") or ""),
+        str(data.get("option_id") or ""),
+        bool(handle.get("is_me")),
+    )
+
+
 def resolve_linq_org_id(db: Session, *, to_address: str) -> str | None:
     """Which org owns the Linq line that was texted. Never reads the payload."""
     number = lookup_key(to_address)

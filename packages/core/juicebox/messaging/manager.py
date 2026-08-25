@@ -591,8 +591,8 @@ def present_matches(
         thread=thread,
         message=OutboundMessage(
             body=(
-                "thumbs up any of those and i'll start the application, or reply "
-                f"with its number for detail. all of them: {link}"
+                "tap the ones you want me to apply to — or reply with a number "
+                f"for detail. all of them: {link}"
             )
         ),
         origin=origin,
@@ -633,4 +633,52 @@ def present_matches(
     thread.last_presented = frame
     thread.presented_at = now
     db.flush()
+    _offer_poll(db, thread=thread, frame=frame)
     return TurnResult(ACTION_PRESENTED, thread, state, sent=[r for r in rows if r])
+
+
+def _offer_poll(db: Session, *, thread: IntakeThread, frame: list[dict]) -> None:
+    """A native poll, so choosing a job is a tap rather than a sentence.
+
+    Best-effort on purpose. The cards and the "reply with a number" path have
+    already gone out, so a poll that fails to send costs a nicer affordance
+    and nothing else -- it must never take down a turn that has already
+    delivered the roles.
+
+    Option ids are not known yet. They arrive on `poll.sent`, which is where
+    each one is matched back to a proposal by its text; that is why the option
+    text is stored on the frame now.
+    """
+    from .channels import LINQ
+    from .linq import LinqSendError, create_poll
+
+    if thread.channel != LINQ or not thread.provider_thread_id or len(frame) < 2:
+        return
+    for entry in frame:
+        entry["option_text"] = _poll_option_text(entry)
+    thread.last_presented = list(frame)
+    db.flush()
+
+    try:
+        poll_message_id = create_poll(
+            chat_id=thread.provider_thread_id,
+            options=[entry["option_text"] for entry in frame],
+            idempotency_key=f"poll:{thread.id}:{frame[0]['proposal_id']}",
+        )
+    except LinqSendError as exc:
+        logger.warning("poll not sent for thread %s: %s", thread.id, exc)
+        return
+    # No column for the poll id, and none needed: vote events carry chat.id,
+    # which already identifies the thread, and the option ids land on the
+    # frame when poll.sent arrives.
+    logger.info("poll %s offered %d roles on thread %s", poll_message_id, len(frame), thread.id)
+
+
+def _poll_option_text(entry: dict) -> str:
+    """What the option says. Matched back by exact text when poll.sent lands."""
+    title = (entry.get("title") or "Role").strip()
+    company = (entry.get("company") or "").strip()
+    label = f"{title} — {company}" if company else title
+    from .linq import MAX_OPTION_CHARS
+
+    return label[:MAX_OPTION_CHARS]

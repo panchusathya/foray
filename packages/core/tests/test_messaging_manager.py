@@ -215,7 +215,7 @@ class TestManaging:
         # body is the "thumbs up any of those" tail.
         burst = "\n".join(channel.bodies)
         assert "1/2  ML Engineer — Anthropic" in burst
-        assert "thumbs up" in channel.bodies[-1].lower()
+        assert "tap the ones" in channel.bodies[-1].lower()
         assert "Current title matches" in burst
         assert "/m/" in channel.bodies[-1]
         # Never a score. Card lines only: the link is a JWT whose random bytes
@@ -573,3 +573,77 @@ class TestDeadPostingsAreNotProposed:
         from juicebox.jobmatch.liveness import is_gone
 
         assert not is_gone("")
+
+
+class TestPollSelection:
+    """Tapping a poll option applies to that job.
+
+    The awkward part of Linq's contract: `poll.sent` is the only event that
+    reveals option ids, and `poll.vote.added` carries an option id with no
+    text. A vote is therefore unresolvable unless the mapping was recorded
+    when the poll went out, and the only thing linking them is the option
+    text -- which is why the frame stores what each option said.
+    """
+
+    def test_poll_sent_reveals_the_option_ids(self):
+        from juicebox.messaging.linq import parse_poll_options
+
+        chat_id, options = parse_poll_options(
+            {
+                "event_type": "poll.sent",
+                "data": {
+                    "chat": {"id": "chat-1"},
+                    "poll": {
+                        "options": [
+                            {"option_id": "o1", "text": "Strat Fin — Rippling"},
+                            {"option_id": "o2", "text": "Analyst — Toast"},
+                        ]
+                    },
+                },
+            }
+        )
+        assert chat_id == "chat-1"
+        assert options == [("o1", "Strat Fin — Rippling"), ("o2", "Analyst — Toast")]
+
+    def test_a_vote_carries_no_text_only_an_id(self):
+        from juicebox.messaging.linq import parse_poll_vote
+
+        chat_id, option_id, is_me = parse_poll_vote(
+            {
+                "event_type": "poll.vote.added",
+                "data": {
+                    "chat": {"id": "chat-1"},
+                    "option_id": "o2",
+                    "sender_handle": {"is_me": False},
+                },
+            }
+        )
+        assert (chat_id, option_id, is_me) == ("chat-1", "o2", False)
+
+    def test_our_own_vote_is_not_a_selection(self):
+        """Polls use sender_handle.is_me -- reactions use is_from_me."""
+        from juicebox.messaging.linq import parse_poll_vote
+
+        _, _, is_me = parse_poll_vote(
+            {"data": {"option_id": "o1", "sender_handle": {"is_me": True}}}
+        )
+        assert is_me
+
+    def test_a_poll_needs_two_options(self):
+        """One job is not a poll, it is a worse yes/no button."""
+        import pytest as _pytest
+
+        from juicebox.messaging.linq import LinqSendError, create_poll
+
+        with _pytest.raises(LinqSendError, match="two options"):
+            create_poll(chat_id="c", options=["only one"], idempotency_key="k")
+
+    def test_option_text_matches_the_card(self, session, account, channel, thread):
+        """The label has to be reproducible: it is the join key on poll.sent."""
+        from juicebox.messaging.manager import _poll_option_text
+
+        assert (
+            _poll_option_text({"title": "Strategic Finance Analyst", "company": "Rippling"})
+            == "Strategic Finance Analyst — Rippling"
+        )
+        assert _poll_option_text({"title": "Analyst", "company": ""}) == "Analyst"

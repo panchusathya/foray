@@ -47,6 +47,7 @@ from ..messaging import consent, prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
 from ..messaging.linq import (
+    POLL_EVENTS,
     REACTION_EVENTS,
     STATUS_EVENTS,
     parse_inbound,
@@ -531,6 +532,8 @@ def linq_webhook(
         return _handle_linq_status(db, payload, event_type=event_type)
     if event_type in REACTION_EVENTS:
         return _handle_linq_reaction(db, payload)
+    if event_type in POLL_EVENTS:
+        return _handle_linq_poll(db, payload, event_type=event_type)
     if event_type != "message.received":
         # Logged, not silent. An unrecognised event answered 200 with no trace,
         # so "Linq is delivering webhooks" and "we are dropping every one of
@@ -613,6 +616,68 @@ def linq_webhook(
         payload={"thread_id": thread.id},
     )
     return {"status": "accepted", "message_id": message.id, "thread_id": thread.id}
+
+
+def _handle_linq_poll(db, payload: dict, *, event_type: str) -> dict:
+    """Poll lifecycle: learn the option ids, then act on a tap.
+
+    Two events matter and they have to be handled together. `poll.sent` is the
+    only place Linq reveals option ids, and `poll.vote.added` carries an
+    option id with no text -- so a vote is unresolvable unless the mapping was
+    recorded when the poll went out. The link between them is the option text,
+    which is why the frame stores what each option said.
+    """
+    from ..messaging.linq import parse_poll_options, parse_poll_vote
+
+    if event_type == "poll.sent":
+        chat_id, options = parse_poll_options(payload)
+        thread = find_by_provider_id(db, provider="linq", provider_thread_id=chat_id)
+        if thread is None or not options:
+            return {"status": "ignored", "reason": "unknown_chat_or_no_options"}
+        frame = [dict(entry) for entry in (thread.last_presented or [])]
+        by_text = {text.strip(): option_id for option_id, text in options}
+        matched = 0
+        for entry in frame:
+            option_id = by_text.get((entry.get("option_text") or "").strip())
+            if option_id:
+                entry["option_id"] = option_id
+                matched += 1
+        # Reassigned, not mutated: SQLAlchemy does not see in-place JSON edits.
+        thread.last_presented = frame
+        db.flush()
+        logger.info("poll options mapped for thread %s: %d/%d", thread.id, matched, len(frame))
+        return {"status": "accepted", "mapped": matched}
+
+    if event_type != "poll.vote.added":
+        # A removed vote is not an instruction to withdraw an application --
+        # by then it has been submitted, and un-tapping cannot unsend it.
+        logger.info("Linq %s noted, not acted on", event_type)
+        return {"status": "accepted", "acted": False}
+
+    chat_id, option_id, is_me = parse_poll_vote(payload)
+    if is_me or not option_id:
+        return {"status": "accepted", "acted": False, "reason": "own_vote_or_no_option"}
+    thread = find_by_provider_id(db, provider="linq", provider_thread_id=chat_id)
+    if thread is None:
+        return {"status": "ignored", "reason": "unknown_chat"}
+
+    entry = next(
+        (e for e in (thread.last_presented or []) if e.get("option_id") == option_id), None
+    )
+    if entry is None:
+        logger.info("poll vote for an option we cannot resolve: %r", option_id)
+        return {"status": "accepted", "acted": False, "reason": "unknown_option"}
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_INTAKE_TURN,
+        # One application per option, however many times the tap is delivered.
+        idempotency_key=f"{KIND_INTAKE_TURN}:poll:{option_id}",
+        payload={"thread_id": thread.id, "apply_proposal_id": entry.get("proposal_id")},
+    )
+    logger.info("poll vote queued an apply for proposal %s", entry.get("proposal_id"))
+    return {"status": "accepted", "acted": True, "proposal_id": entry.get("proposal_id")}
 
 
 def _handle_linq_reaction(db, payload: dict) -> dict:

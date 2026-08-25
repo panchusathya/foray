@@ -104,6 +104,17 @@ def parse_posting(db: Session, posting: JobPosting) -> dict:
     if spec.remote_ok is True:
         posting.open_to_remote = True
 
+    # Where an application actually goes, from the URL alone -- this runs on
+    # every posting we ingest, so a fetch per posting is a fetch per posting. It
+    # is also what stops a candidate being handed a LinkedIn listing as their
+    # "application link", which was true before any automation existed.
+    from ..applications.ats.detect import resolve_target
+
+    try:
+        resolve_target(db, posting, allow_network=False)
+    except Exception as exc:  # noqa: BLE001 - a posting parses fine without it
+        logger.info("could not resolve an apply target for %s: %s", posting.id, exc)
+
     bearing, terms, evidence = fee_signals(posting.jd_text or "")
     posting.fee_bearing = bearing
     posting.fee_terms = terms

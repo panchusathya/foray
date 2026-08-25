@@ -129,7 +129,24 @@ class SmtpSender:
         return message
 
     def send(self, email: OutboundEmail) -> SendResult:
+        return self._deliver(self._build(email))
+
+    def send_with_attachments(self, email: OutboundEmail, attachments) -> SendResult:
+        """Same send, with files. Only the application submitter needs this:
+        outreach never attaches anything, and a resume that silently did not
+        travel is the worst possible outcome for an application."""
         message = self._build(email)
+        for item in attachments:
+            maintype, _, subtype = (item.content_type or "application/octet-stream").partition("/")
+            message.add_attachment(
+                item.content,
+                maintype=maintype or "application",
+                subtype=subtype or "octet-stream",
+                filename=item.filename,
+            )
+        return self._deliver(message)
+
+    def _deliver(self, message: MimeMessage) -> SendResult:
         try:
             with smtplib.SMTP(self.host, self.port, timeout=30) as server:
                 if self.starttls:

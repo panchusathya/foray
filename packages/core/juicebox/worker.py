@@ -21,6 +21,8 @@ from .jobs import (
     INTERACTIVE_KINDS,
     KIND_AGENT_TICK,
     KIND_APP_PACKAGE,
+    KIND_APP_SUBMIT,
+    KIND_APP_SUBMIT_VERIFY,
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
@@ -306,11 +308,18 @@ def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
 
     org_id = job.payload.get("org_id") or job.org_id
     runs = run_due_agents(db, org_id=org_id, now=now)
+    # Attempts waiting on mail that never came. Cheap, and the only thing
+    # that turns a permanently "in flight" application into an honest one.
+    from .applications.submission import expire_parked
+
+    parked_expired = expire_parked(db, org_id=org_id, now=now)
+
     _schedule_next_tick(db, org_id=org_id, kind=KIND_AGENT_TICK, now=now)
     return {
         "agents": len(runs),
         "added": sum(run.added for run in runs),
         "enrolled": sum(run.enrolled for run in runs),
+        "parked_expired": parked_expired,
     }
 
 
@@ -902,13 +911,27 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
     if application.status not in {"draft", "prepared"}:
         return {"skipped": f"status {application.status} does not take a package"}
     result = build_package(db, application)
-    notify_candidate(
-        db,
-        org_id=job.org_id,
-        candidate_id=application.candidate_id,
-        event=EVENT_PACKAGE_READY,
-        subject_id=application.id,
-    )
+
+    # The package exists and the yes is already on the row (the thread's "apply
+    # to 2" records it at creation), so this is where an automated attempt
+    # becomes possible. Most postings have no adapter and the answer is the
+    # hand-off we already do -- which is why `auto_submit` reports rather than
+    # raises.
+    from .applications.submission import auto_submit
+
+    submit_job, reason = auto_submit(db, application)
+    result["submission"] = reason
+    # One message, not two. A queued attempt announces itself when it lands
+    # ("I submitted it"); telling somebody their package is ready to review
+    # first and then that it is already gone reads as two different products.
+    if submit_job is None:
+        notify_candidate(
+            db,
+            org_id=job.org_id,
+            candidate_id=application.candidate_id,
+            event=EVENT_PACKAGE_READY,
+            subject_id=application.id,
+        )
     # Whatever the form asks that we still cannot answer, asked now -- with the
     # role in hand. Onboarding no longer collects comp, notice period or work
     # auth in the abstract; this is where they are worth a message. After the
@@ -1051,6 +1074,48 @@ def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
     }
 
 
+def _handle_app_submit(db: Session, job: Job, now) -> dict[str, Any]:
+    """One submission attempt.
+
+    Failures re-raise so the queue's backoff retries the *job*; the attempt row
+    is already written either way, which is what keeps a retried job from
+    looking like a submission that never happened.
+    """
+    from .applications.submission import submit_application
+    from .models import Application
+
+    application_id = job.payload.get("application_id") or ""
+    application = db.get(Application, application_id)
+    if application is None:
+        return {"skipped": "application not found", "application_id": application_id}
+    if application.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    # `submitting` is a legitimate state to arrive in: the previous run set it
+    # and then the worker died, and `recover_stale_locks` requeued this job.
+    # Skipping it there is what used to strand the application in `submitting`
+    # with no path out but a hand transition. `submit_application` is idempotent
+    # on an already-succeeded attempt, so re-entering is safe.
+    if application.status not in {"prepared", "awaiting_consent", "submitting"}:
+        return {"skipped": f"status {application.status} is not ready to submit"}
+    return submit_application(db, application)
+
+
+def _handle_app_submit_verify(db: Session, job: Job, now) -> dict[str, Any]:
+    """Resume a browser run that parked on an email verification or a code."""
+    from .applications.submission import resume_verification
+    from .models import ApplicationSubmission
+
+    submission_id = job.payload.get("submission_id") or ""
+    submission = db.get(ApplicationSubmission, submission_id)
+    if submission is None:
+        return {"skipped": "submission not found", "submission_id": submission_id}
+    if submission.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    if submission.status != "needs_verification":
+        return {"skipped": f"submission is {submission.status}, not parked"}
+    return resume_verification(db, submission)
+
+
 HANDLERS = {
     KIND_CRM_DISCOVERY: _handle_crm_discovery,
     KIND_CRM_DISCOVERY_ONE: _handle_crm_discovery_one,
@@ -1072,6 +1137,8 @@ HANDLERS = {
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
+    KIND_APP_SUBMIT: _handle_app_submit,
+    KIND_APP_SUBMIT_VERIFY: _handle_app_submit_verify,
     KIND_PROFILE_INGEST: _handle_profile_ingest,
     KIND_THREAD_NOTIFY: _handle_thread_notify,
     KIND_LINKEDIN_SCRAPE: _handle_linkedin_scrape,

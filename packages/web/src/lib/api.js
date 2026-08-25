@@ -251,6 +251,10 @@ export const api = {
   transitionApplication: (id, payload) =>
     request(`/v1/applications/${id}/transition`, { method: 'POST', body: payload }),
   buildApplicationPackage: (id) => request(`/v1/applications/${id}/package`, { method: 'POST' }),
+  // Queue an automated attempt. 202 with a job id; a 409 carries the
+  // reason (no consent, budget, retry cap, or no adapter for this ATS).
+  submitApplication: (id) => request(`/v1/applications/${id}/submit`, { method: 'POST' }),
+  applicationSubmissions: (id) => request(`/v1/applications/${id}/submissions`),
 
   // A single-use, expiring deep link into the candidate portal. Same minting
   // function the messaging agent uses, so a link handed over by a recruiter
@@ -266,6 +270,7 @@ export const APPLICATION_STATUSES = [
   'draft',
   'prepared',
   'awaiting_consent',
+  'submitting',
   'submitted',
   'acknowledged',
   'interviewing',
@@ -278,6 +283,7 @@ export const APPLICATION_STATUS_LABELS = {
   draft: 'Draft',
   prepared: 'Package ready',
   awaiting_consent: 'Awaiting candidate',
+  submitting: 'Applying now',
   submitted: 'Submitted',
   acknowledged: 'Acknowledged',
   interviewing: 'Interviewing',
@@ -292,8 +298,9 @@ export const APPLICATION_STATUS_LABELS = {
 // button that cannot work.
 export const APPLICATION_TRANSITIONS = {
   draft: ['prepared', 'withdrawn'],
-  prepared: ['awaiting_consent', 'submitted', 'draft', 'withdrawn'],
-  awaiting_consent: ['submitted', 'prepared', 'withdrawn'],
+  prepared: ['awaiting_consent', 'submitting', 'submitted', 'draft', 'withdrawn'],
+  awaiting_consent: ['submitting', 'submitted', 'prepared', 'withdrawn'],
+  submitting: ['submitted', 'prepared', 'withdrawn'],
   submitted: ['acknowledged', 'interviewing', 'rejected', 'withdrawn'],
   acknowledged: ['interviewing', 'rejected', 'withdrawn'],
   interviewing: ['offer', 'rejected', 'withdrawn'],
@@ -307,7 +314,7 @@ export const APPLICATION_TRANSITIONS = {
 // partial = waiting on somebody, miss = closed.
 export function applicationStatusTone(status) {
   if (['submitted', 'acknowledged', 'interviewing', 'offer'].includes(status)) return 'strong';
-  if (['prepared', 'awaiting_consent'].includes(status)) return 'partial';
+  if (['prepared', 'awaiting_consent', 'submitting'].includes(status)) return 'partial';
   if (['rejected', 'withdrawn'].includes(status)) return 'miss';
   return '';
 }

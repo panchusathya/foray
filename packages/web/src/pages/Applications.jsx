@@ -122,6 +122,10 @@ export function ApplicationDetailPage() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const detail = useAsync(() => api.getApplication(applicationId), [applicationId]);
+  const attempts = useAsync(
+    () => api.applicationSubmissions(applicationId),
+    [applicationId],
+  );
   const application = detail.data;
 
   const act = useCallback(
@@ -131,13 +135,14 @@ export function ApplicationDetailPage() {
       try {
         await fn();
         await detail.reload();
+        await attempts.reload();
       } catch (err) {
         setError(err);
       } finally {
         setBusy(false);
       }
     },
-    [detail],
+    [detail, attempts],
   );
 
   if (detail.loading) return <Loading />;
@@ -200,6 +205,28 @@ export function ApplicationDetailPage() {
           <div className="error">Package build failed: {application.package_error}</div>
         ) : null}
       </div>
+
+      {['prepared', 'awaiting_consent'].includes(application.status) && consented ? (
+        <div className="card stack">
+          <h3>Send it</h3>
+          <p className="muted small">
+            Queues one attempt. Most postings have no adapter for their ATS and stay a
+            hand-off — the refusal says which.
+          </p>
+          <div>
+            <button
+              type="button"
+              className="tiny"
+              disabled={busy}
+              onClick={() => act(() => api.submitApplication(application.id))}
+            >
+              Submit now
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <SubmissionAttempts attempts={attempts} />
 
       <div className="card stack">
         <h3>Package</h3>
@@ -405,3 +432,82 @@ function UpdateHistory({ application }) {
     </div>
   );
 }
+
+/**
+ * Every attempt to actually send this one, newest first.
+ *
+ * This is the debugging surface for the submission tiers, and without it the
+ * browser tier is a black box: a run that stopped because a vendor renamed a
+ * field looks identical to one that never started. So it shows the verdict,
+ * the vendor's own error, the fields the run filled, and the screenshots it
+ * took on the way — which is also the record we would need if anyone ever
+ * asked what we sent in their name.
+ */
+function SubmissionAttempts({ attempts }) {
+  const rows = attempts.data?.submissions ?? [];
+  if (attempts.loading || rows.length === 0) return null;
+
+  return (
+    <div className="card stack">
+      <h3>Submission attempts</h3>
+      {rows.map((row) => {
+        const filled = row.run?.filled ?? {};
+        const missing = row.run?.missing ?? [];
+        return (
+          <div key={row.id} className="stack" style={{ gap: 4 }}>
+            <div className="spread">
+              <span>
+                <Badge tone={SUBMISSION_TONES[row.status] ?? ''}>{row.status}</Badge>
+                <span className="muted small">
+                  {' '}
+                  · attempt {row.attempt} · {row.vendor || 'unknown ATS'} · {row.method}
+                </span>
+              </span>
+              {row.finished_at ? (
+                <span className="muted small">{formatDate(row.finished_at)}</span>
+              ) : null}
+            </div>
+            {row.error ? <div className="error small">{row.error}</div> : null}
+            {row.confirmation_ref ? (
+              <div className="muted small">{row.confirmation_ref}</div>
+            ) : null}
+            {Object.keys(filled).length > 0 ? (
+              <details>
+                <summary className="muted small">
+                  {Object.keys(filled).length} field
+                  {Object.keys(filled).length === 1 ? '' : 's'} filled
+                </summary>
+                <div className="stack small" style={{ gap: 2, marginTop: 4 }}>
+                  {Object.entries(filled).map(([key, value]) => (
+                    <div key={key}>
+                      <span className="muted">{key}:</span> {value}
+                    </div>
+                  ))}
+                  {missing.length > 0 ? (
+                    <div className="error">could not fill: {missing.join(', ')}</div>
+                  ) : null}
+                </div>
+              </details>
+            ) : null}
+            {(row.artifacts ?? []).length > 0 ? (
+              <div className="muted small">
+                {row.artifacts.length} screenshot{row.artifacts.length === 1 ? '' : 's'} kept
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Reuses the tones the rest of the app speaks in rather than inventing a second
+// colour vocabulary: sent is strong, waiting is partial, refused is a miss.
+const SUBMISSION_TONES = {
+  succeeded: 'strong',
+  running: 'partial',
+  queued: 'partial',
+  needs_verification: 'partial',
+  needs_human: 'miss',
+  failed: 'miss',
+};

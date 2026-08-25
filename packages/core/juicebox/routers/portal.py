@@ -297,7 +297,30 @@ def _application(db: Session, principal: CandidatePrincipal, application_id: str
 def _application_out(db: Session, application: Application) -> dict:
     posting = db.get(JobPosting, application.job_posting_id)
     documents = list(current_documents(db, application).values())
-    return PortalApplicationOut.from_application(application, posting, documents).model_dump()
+    return PortalApplicationOut.from_application(
+        application, posting, documents, can_auto_submit=_can_auto_submit(db, application, posting)
+    ).model_dump()
+
+
+def _can_auto_submit(db: Session, application: Application, posting: JobPosting | None) -> bool:
+    """Could we send this one ourselves, right now?
+
+    Same two questions ``request_submission`` asks, so the button appears
+    exactly when pressing it would work: is there an adapter for this employer's
+    ATS, and is this candidate past the first-application review.
+    """
+    if posting is None or application.status not in {"prepared", "awaiting_consent"}:
+        return False
+    from ..applications.ats import detect
+    from ..applications.submission import first_submission_gate, submitter_for
+
+    if first_submission_gate(db, application):
+        return False
+    target = detect.target_of(posting)
+    if not target:
+        return False
+    submitter, _ = submitter_for(db, application, posting, target)
+    return submitter is not None
 
 
 @router.get("/applications")
@@ -349,7 +372,45 @@ def approve_package(
     application.approved_at = utcnow()
     if application.status == "prepared":
         transition(db, application, to_status="awaiting_consent", actor="candidate")
-    return _application_out(db, application)
+
+    # Approval is the per-application yes, so this is the moment an automated
+    # attempt becomes possible. Most postings will not have an adapter and the
+    # answer is the hand-off we already do -- which is why `auto_submit` reports
+    # a reason instead of raising.
+    from ..applications.submission import auto_submit
+
+    job, reason = auto_submit(db, application)
+    out = _application_out(db, application)
+    out["submission"] = {"queued": job is not None, "reason": reason}
+    return out
+
+
+@router.post("/applications/{application_id}/submit", status_code=202)
+def submit_for_me(
+    application_id: str,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """The explicit "you apply for me" tap.
+
+    Distinct from ``confirm-submitted``, which is the candidate telling us they
+    applied themselves. This one asks us to do it, and needs the same recorded
+    approval every other path needs -- tapping this button *is* that approval
+    when there is not one yet.
+    """
+    from ..applications.submission import NotSubmittable, request_submission
+
+    application = _application(db, principal, application_id)
+    if application.approved_at is None:
+        application.approved_at = utcnow()
+        db.flush()
+    try:
+        job = request_submission(db, application, requested_by="candidate")
+    except NotSubmittable as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ApplicationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return {"job_id": job.id, "status": job.status}
 
 
 @router.post("/applications/{application_id}/confirm-submitted")

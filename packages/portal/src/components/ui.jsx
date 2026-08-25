@@ -47,6 +47,7 @@ const STATUS_LABELS = {
   draft: 'Preparing',
   prepared: 'Ready to review',
   awaiting_consent: 'Awaiting your OK',
+  submitting: 'Applying now',
   submitted: 'Sent',
   acknowledged: 'Received',
   interviewing: 'Interviewing',

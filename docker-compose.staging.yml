@@ -37,6 +37,11 @@ x-staging-app-env: &staging_app_env
   # must never send. Do not interpolate SMTP_* or OUTREACH_* from prod .env.
   EMAIL_PROVIDER: console
   OUTREACH_FROM_EMAIL: staging@localhost
+  # Hard-wired for the same reason, one step further out: a restored prod dump
+  # has real candidates with real consent rows on real postings, and `live`
+  # would submit applications to real employers in their names. Not
+  # interpolated -- there is no value of APPLY_SUBMITTER staging may inherit.
+  APPLY_SUBMITTER: console
   JUICEBOX_FILE_STORAGE_DIR: /app/data/files
   JUICEBOX_LLM_ENABLED: ${JUICEBOX_LLM_ENABLED:-false}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

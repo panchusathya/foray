@@ -309,13 +309,47 @@ most embarrassing thing in this plan. Tier it, and ship from the bottom.
 | **0 — Assisted** | We prepare everything: tailored summary, the answer set, the link. The candidate presses submit | **Build first.** Most of the value, almost none of the liability |
 | **1 — Apply by email** | Postings with an application address. Reuses `outreach` and `MailProvider` wholesale | Build second. Small |
 | **2 — Known ATS APIs** | Greenhouse, Lever, Ashby have documented job-board and application endpoints | Real automation, bounded and testable |
-| **3 — Browser automation of arbitrary sites** | — | **Out of scope.** Brittle, frequently against site terms, and a malformed submission under someone's name cannot be withdrawn |
+| **3 — Per-ATS browser adapters** | Workday, Oracle, iCIMS, Taleo: a deterministic script per vendor form template | **Built (Phase F).** See the reversal note below |
 
 Worth saying plainly, because it is the example in the brief: **Tesla's careers
 portal is custom, not one of the Tier-2 ATSs.** For that request the honest
 product is Tier 0 — we find the roles, score them, explain the fit, prepare the
 application, and hand it over. We do not auto-submit to Tesla, and the messaging
 copy must not imply we did.
+
+### The Tier-3 reversal, and what it is not
+
+This table originally ruled Tier 3 out entirely: *brittle, frequently against
+site terms, and a malformed submission under someone's name cannot be
+withdrawn.* Two of those three still stand. What changed is the reading of the
+first one, and the change is narrow enough to be worth stating precisely.
+
+**What is out of scope is a general-purpose browser agent** — one model
+navigating arbitrary career sites, deciding for itself what a field means and
+what to type in it. That is what "brittle" was about, and it is still refused.
+
+**What is in scope is a script per ATS.** Workday's form is Workday's form
+across every tenant that runs it, down to the `data-automation-id` attributes.
+That makes an adapter a field map and a step order — reviewable, testable
+against a fixture, and diff-able when it breaks. The same properties the Tier-2
+adapters have, reached by a worse road.
+
+Three things make the difference load-bearing rather than rhetorical:
+
+- **A required field we cannot find ends the run.** `needs_human` is a terminus,
+  not a retry. There is no "click the most likely button" path, and an unmapped
+  question is never answered by a model improvising from the JD.
+- **Every run leaves evidence.** The final screenshot and the exact field map
+  that was filled, on the attempt row. A submission nobody can reconstruct is
+  one we cannot answer for — which is the honest form of "cannot be withdrawn".
+- **Growing the field map is a code change with a reviewer.** Not a prompt, and
+  not a config row somebody edits at 2am.
+
+The identity question came with it. Every one of these portals makes you
+register, and registration gates on an email you can read — so Tier 3 and the
+owned-alias decision are the same decision, and neither works alone. See
+`applications/alias.py` for what that costs us, written down rather than
+discovered later.
 
 ### What we assert on somebody's behalf
 
@@ -398,8 +432,13 @@ irreversible parts exist.
   per-application yes, `KIND_JOBS_DISCOVER_ONE`.
 - **E — Tier 0 and Tier 1 submission**, the answer set with provenance, the
   application card.
-- **F — Tier 2 ATS integrations**, one adapter at a time behind a protocol, the
-  same way `MailProvider` and `VoiceProvider` are shaped.
+- **F — Submission, for real.** Target resolution (`applications/ats`), the
+  `Submitter` seam and its adapters (`applications/submit`), the owned alias and
+  its inbox (`applications/alias.py`, `applications/inbox.py`), the `submitting`
+  status and the `application_submissions` attempt log. One adapter at a time
+  behind a protocol, the same way `MailProvider` and `VoiceProvider` are shaped.
+  Ships inert: `APPLY_SUBMITTER` defaults to `console`. Setup in
+  `AUTO_APPLY_SETUP.md`.
 
 Phase A is independent of everything else and should start now. Phases B and C
 are independent of each other.
@@ -408,7 +447,11 @@ are independent of each other.
 
 ## §12 Open decisions
 
-**Blocking, and not an engineering call:**
+**Blocking, and not an engineering call.** Items 1–3 were scoped as "before
+Phase D ships". Phase F sharpens all three, and item 3 in particular: with an
+owned alias the address on every application is `@goforay.io`, so
+non-disclosure is not a position available to us any more. Counsel before
+`APPLY_SUBMITTER=live`, not before the code lands:
 
 1. **Pointing the scoring engine at candidates.** `INTAKE_COMPLIANCE.md` §5
    deliberately kept intake evaluation-free and flagged `jobmatch` as
@@ -431,7 +474,10 @@ are independent of each other.
 5. Whether resume-derived facts may enter the search haystack (§7).
 6. Alaska/Hawaii in the unknown-timezone window (§3).
 7. The score floor, and whether it is per-org or global.
-8. Which of Greenhouse / Lever / Ashby is the first Tier-2 adapter — pick by
-   what our actual postings resolve to, not by API quality.
+8. ~~Which of Greenhouse / Lever / Ashby is the first Tier-2 adapter~~ — all
+   three shipped in Phase F. The ordering question is now which Tier-3 vendor
+   follows Workday, and the answer is the same method: run
+   `applications/ats/detect.py` over the live posting book and count. Oracle is
+   the current guess only because it is what Goldman runs.
 9. Retention for resumes, alongside the transcript and recording policies that
    `INTAKE_COMPLIANCE.md` §7 already lists as open.

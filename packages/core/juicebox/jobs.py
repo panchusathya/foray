@@ -95,6 +95,15 @@ KIND_THREAD_NOTIFY = "thread.notify"
 # applications.service is what collapses double-clicks.
 KIND_APP_PACKAGE = "application.package"
 
+# One attempt to actually send one application. Never on ensure_ticks: an
+# automated submission starts from a recorded per-application yes, never from a
+# timer. The idempotency key carries the attempt number, so a retry after a
+# failure is a new job and a redelivered one is not.
+KIND_APP_SUBMIT = "application.submit"
+# The second leg of a parked browser run: the form needed an email verification
+# or a one-time code, the alias mailbox received it, and the run resumes.
+KIND_APP_SUBMIT_VERIFY = "application.submit.verify"
+
 OPEN_STATUSES = ("queued", "running")
 
 

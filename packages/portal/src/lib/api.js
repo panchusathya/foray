@@ -93,6 +93,9 @@ export const api = {
   application: (id) => request(`/applications/${id}`),
   approve: (id) => request(`/applications/${id}/approve`, { method: 'POST' }),
   confirmSubmitted: (id) => request(`/applications/${id}/confirm-submitted`, { method: 'POST' }),
+  // Ask us to apply on their behalf. Only offered when can_auto_submit
+  // says pressing it would work; 202 with a queued job, not a result.
+  submitForMe: (id) => request(`/applications/${id}/submit`, { method: 'POST' }),
   withdraw: (id) => request(`/applications/${id}/withdraw`, { method: 'POST' }),
   networking: (id) => request(`/applications/${id}/networking`),
   draftIntro: (id, contactCandidateId) =>

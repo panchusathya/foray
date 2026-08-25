@@ -38,6 +38,11 @@ dependencies = [
 postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2.5"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.5", "python-dotenv>=1.0"]
 linkedin = ["playwright>=1.40"]
+# The Tier-3 browser adapters (applications/submit/browser). Same dependency as
+# `linkedin` and kept separate anyway: the API adapters must not acquire a
+# Chromium install, and a deployment that only wants Lever/Ashby/Greenhouse
+# should not have one.
+apply = ["playwright>=1.40"]
 
 [project.scripts]
 juicebox = "juicebox.cli:main"

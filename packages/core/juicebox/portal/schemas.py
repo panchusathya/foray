@@ -168,6 +168,11 @@ class PortalApplicationOut(BaseModel):
     # The candidate's own answers, with provenance -- they wrote none of it,
     # so they get to see all of it before anything is sent.
     form_answers: list[dict[str, Any]] = Field(default_factory=list)
+    # Whether we can actually send this one ourselves. False for most postings
+    # (no adapter for that ATS) and for a candidate's first application, which
+    # a person reviews. The portal hides the button rather than offering one
+    # that answers 409 -- a button that cannot work is worse than no button.
+    can_auto_submit: bool = False
 
     @classmethod
     def from_application(
@@ -175,6 +180,7 @@ class PortalApplicationOut(BaseModel):
         application: Application,
         posting: JobPosting | None,
         documents: list[CandidateDocument] | None = None,
+        can_auto_submit: bool = False,
     ) -> PortalApplicationOut:
         return cls(
             id=application.id,
@@ -190,4 +196,5 @@ class PortalApplicationOut(BaseModel):
             updated_at=application.updated_at,
             documents=[PortalDocumentOut.model_validate(doc) for doc in documents or []],
             form_answers=list(application.form_answers or []),
+            can_auto_submit=can_auto_submit,
         )

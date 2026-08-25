@@ -34,8 +34,12 @@ TRANSITIONS: dict[str, set[str]] = {
     "draft": {"prepared", "withdrawn"},
     # prepared -> draft is a rebuild request; prepared -> submitted is the
     # thread case where the yes arrived before the package ("apply to 2").
-    "prepared": {"awaiting_consent", "submitted", "draft", "withdrawn"},
-    "awaiting_consent": {"submitted", "prepared", "withdrawn"},
+    "prepared": {"awaiting_consent", "submitting", "submitted", "draft", "withdrawn"},
+    "awaiting_consent": {"submitting", "submitted", "prepared", "withdrawn"},
+    # An agent attempt is in flight. It ends at `submitted`, or back at
+    # `prepared` with a status_reason -- the package still exists and the
+    # recorded consent is untouched, so `prepared -> submitting` is the retry.
+    "submitting": {"submitted", "prepared", "withdrawn"},
     "submitted": {"acknowledged", "interviewing", "rejected", "withdrawn"},
     "acknowledged": {"interviewing", "rejected", "withdrawn"},
     "interviewing": {"offer", "rejected", "withdrawn"},
@@ -91,7 +95,10 @@ def transition(
             f"cannot move an application from {application.status!r} to {to_status!r}"
         )
 
-    if to_status == "submitted":
+    # Both gates apply on the way IN to an attempt as well as on the way out of
+    # one. Discovering at the end of a browser run that we were never allowed
+    # to record it means the employer already has the application.
+    if to_status in {"submitting", "submitted"}:
         if not has_consent(application):
             raise TransitionError(
                 "no recorded consent: an application needs a per-application yes "
@@ -108,6 +115,8 @@ def transition(
 
     if to_status == "prepared":
         application.prepared_at = now
+    elif to_status == "submitting":
+        application.submitting_at = now
     elif to_status == "submitted":
         application.submitted_at = now
         application.submitted_by = actor

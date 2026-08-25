@@ -211,13 +211,19 @@ class TestManaging:
 
         result = _say(session, thread, "find me some roles", native_id="m-present")
         assert result.action == "presented"
-        body = channel.bodies[-1]
-        assert "1. ML Engineer — Anthropic" in body
-        assert "Current title matches" in body
-        assert "/m/" in body
+        # One message per role now, so the cards are a burst and the last
+        # body is the "thumbs up any of those" tail.
+        burst = "\n".join(channel.bodies)
+        assert "1/2  ML Engineer — Anthropic" in burst
+        assert "thumbs up" in channel.bodies[-1].lower()
+        assert "Current title matches" in burst
+        assert "/m/" in channel.bodies[-1]
         # Never a score. Card lines only: the link is a JWT whose random bytes
         # contain "0.9" about 1.5% of the time.
-        assert "0.9" not in _card_lines(body)
+        # The raw score must never reach the candidate. The card messages
+        # are checked directly now -- the portal link, whose random JWT
+        # can contain "0.9" by chance, lives in its own tail message.
+        assert "0.9" not in "".join(channel.bodies[:-1])
 
         frame = thread.last_presented or []
         assert [entry["company"] for entry in frame] == ["Anthropic", "Figma"]
@@ -234,7 +240,7 @@ class TestManaging:
         assert session.scalar(select(Job).where(Job.kind == KIND_APP_PACKAGE)) is not None
 
         _say(session, thread, "what's my status", native_id="m-status")
-        assert "Figma" in channel.bodies[-1]
+        assert "Figma" in "\n".join(channel.bodies)
 
     def test_ambiguous_apply_gets_a_clarifier_not_a_guess(self, session, channel, thread):
         thread = _managed(session, thread)
@@ -262,12 +268,12 @@ class TestManaging:
         )
         session.flush()
         _say(session, thread, "find me roles", native_id="m-a")
-        assert "Anthropic" in channel.bodies[-1]
+        assert "Anthropic" in "\n".join(channel.bodies)
         _say(session, thread, "more roles please", native_id="m-b")
         # Not shown twice -- and asking again with an empty book sends us
         # looking rather than answering from it, so the reply is the search
         # line, not the card.
-        assert "Anthropic" not in channel.bodies[-1]
+        assert "Anthropic" not in "\n".join(channel.bodies[-2:])
         assert "looking now" in channel.bodies[-1].lower()
 
     def test_other_intent_gets_the_canned_deflection(self, session, channel, thread):
@@ -459,3 +465,60 @@ class TestConversationalVoice:
         self._llm(monkeypatch, "should not be used")
         canned = "- comp?"
         assert humanize(thread, says=canned, last_inbound="") == canned
+
+
+class TestTapbackApplies:
+    """A thumbs-up on a job card is a yes to that job.
+
+    Each role goes out in its own message and the proposal remembers which
+    message carried it, so a reaction resolves to exactly one posting. That is
+    the cheapest possible "apply to this": no typing, no ordinal to mistype.
+    """
+
+    def _payload(self, chat_id, message_id, reaction="like", **over):
+        base = {
+            "event_type": "reaction.added",
+            "data": {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reaction_type": reaction,
+                "is_from_me": False,
+            },
+        }
+        base["data"].update(over)
+        return base
+
+    def test_a_like_from_the_candidate_is_positive(self):
+        from juicebox.messaging.linq import parse_reaction
+
+        e = parse_reaction(self._payload("c1", "m1", "like"))
+        assert e.is_positive
+        assert parse_reaction(self._payload("c1", "m1", "love")).is_positive
+
+    def test_our_own_reaction_is_not_a_yes(self):
+        """is_from_me: we reacted, not them."""
+        from juicebox.messaging.linq import parse_reaction
+
+        assert not parse_reaction(self._payload("c1", "m1", "like", is_from_me=True)).is_positive
+
+    def test_an_ambiguous_tapback_is_not_a_yes(self):
+        """A laugh is not consent, and an application cannot be unsent."""
+        from juicebox.messaging.linq import parse_reaction
+
+        for kind in ("laugh", "emphasize", "question", "dislike"):
+            assert not parse_reaction(self._payload("c1", "m1", kind)).is_positive, kind
+
+    def test_removing_a_reaction_is_not_a_yes(self):
+        from juicebox.messaging.linq import parse_reaction
+
+        payload = self._payload("c1", "m1", "like")
+        payload["event_type"] = "reaction.removed"
+        assert not parse_reaction(payload).is_positive
+
+    def test_a_payload_without_ids_is_refused(self):
+        import pytest as _pytest
+
+        from juicebox.messaging.linq import parse_reaction
+
+        with _pytest.raises(ValueError):
+            parse_reaction({"event_type": "reaction.added", "data": {}})

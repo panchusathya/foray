@@ -620,6 +620,15 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     if thread.org_id != job.org_id:
         return {"skipped": "org_mismatch"}
     maybe_start_typing(thread)
+
+    # A tapback carries no text, so there is no message for `run_turn` to read
+    # and no ordinal to resolve. The proposal is named on the job instead.
+    proposal_id = job.payload.get("apply_proposal_id") or ""
+    if proposal_id:
+        from .messaging.manager import apply_to_proposal
+
+        return apply_to_proposal(db, thread=thread, proposal_id=proposal_id)
+
     result = run_turn(db, thread=thread)
     if result.action == ACTION_DEFERRED and result.resume_at is not None:
         # Quiet hours. The turn re-runs when the recipient's send window

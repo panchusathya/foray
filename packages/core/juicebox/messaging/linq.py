@@ -245,6 +245,51 @@ STATUS_EVENTS = frozenset(
     {"message.sent", "message.delivered", "message.read", "message.failed"}
 )
 
+# Tapbacks. Linq sends reaction.added / reaction.removed with a reaction_type
+# of love | like | dislike | laugh | emphasize | question | custom | sticker.
+REACTION_EVENTS = frozenset({"reaction.added", "reaction.removed"})
+# The two a person means as "yes, this one". Deliberately not `emphasize` or
+# `laugh`: acting on an ambiguous tapback would submit an application nobody
+# asked for, and the cost of missing one is that they type "apply to 2".
+POSITIVE_REACTIONS = frozenset({"like", "love"})
+
+
+@dataclass(frozen=True)
+class ReactionEvent:
+    event_type: str
+    chat_id: str
+    message_id: str
+    reaction_type: str
+    is_from_me: bool
+
+    @property
+    def is_positive(self) -> bool:
+        return (
+            self.event_type == "reaction.added"
+            and not self.is_from_me
+            and self.reaction_type in POSITIVE_REACTIONS
+        )
+
+
+def parse_reaction(payload: dict) -> ReactionEvent:
+    """A tapback envelope, flattened. Raises ValueError when unusable."""
+    event_type = str(payload.get("event_type") or "")
+    if event_type not in REACTION_EVENTS:
+        raise ValueError(f"not a reaction event: {event_type!r}")
+    data = payload.get("data") or payload
+    nested = data.get("reaction") if isinstance(data.get("reaction"), dict) else data
+    chat_id = str(nested.get("chat_id") or data.get("chat_id") or "")
+    message_id = str(nested.get("message_id") or data.get("message_id") or "")
+    if not chat_id or not message_id:
+        raise ValueError("reaction event has no chat_id/message_id")
+    return ReactionEvent(
+        event_type=event_type,
+        chat_id=chat_id,
+        message_id=message_id,
+        reaction_type=str(nested.get("reaction_type") or "").lower(),
+        is_from_me=bool(nested.get("is_from_me")),
+    )
+
 
 @dataclass(frozen=True)
 class StatusEvent:

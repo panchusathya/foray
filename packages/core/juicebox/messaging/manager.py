@@ -45,7 +45,7 @@ from ..models import (
     utcnow,
 )
 from ..portal.links import mint_portal_link
-from ..presentation.jobcard import jobcard, render_text
+from ..presentation.jobcard import jobcard, render_card
 from . import identity, intents, prompts
 from .channels import OutboundMessage
 
@@ -145,6 +145,67 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     if intent.kind == intents.INTENT_PROFILE_ANSWER:
         return _say(_fresh(db, thread, prompts.MANAGER_NOTED, prompts.MANAGER_NOTED_AGAIN))
     return _say(_fresh(db, thread, prompts.MANAGER_FALLBACK, prompts.MANAGER_FALLBACK_AGAIN))
+
+
+def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) -> dict:
+    """Apply to one named proposal. The entry point a tapback uses.
+
+    ``_apply`` resolves an ordinal out of what was last presented, because a
+    typed "apply to 2" is all we have to go on there. A reaction names its
+    message directly, so the proposal is already known and re-deriving it from
+    a position would only introduce a way to get it wrong -- the frame can
+    have moved on by the time somebody scrolls back and taps an older card.
+    """
+    presented = list(thread.last_presented or [])
+    index = next(
+        (i for i, e in enumerate(presented, start=1) if e.get("proposal_id") == proposal_id),
+        0,
+    )
+    if index == 0:
+        # Reacted to a card from an older batch. The proposal is still the
+        # truth; rebuild a one-entry frame so `_apply` has something to read.
+        proposal = db.get(JobProposal, proposal_id)
+        if proposal is None:
+            return {"skipped": "proposal not found", "proposal_id": proposal_id}
+        posting = db.get(JobPosting, proposal.job_posting_id)
+        thread.last_presented = [
+            {
+                "proposal_id": proposal.id,
+                "posting_id": proposal.job_posting_id,
+                "company": posting.company if posting else "",
+                "title": posting.title if posting else "",
+            }
+        ]
+        db.flush()
+        index = 1
+
+    last = _last_inbound(db, thread)
+    result = _apply(
+        db,
+        thread=thread,
+        last=last,
+        state=coverage(thread.record or {}),
+        selection=index,
+    )
+    return {
+        "thread_id": thread.id,
+        "action": result.action,
+        "proposal_id": proposal_id,
+        "sent": len(result.sent),
+    }
+
+
+def _last_inbound(db: Session, thread: IntakeThread) -> IntakeMessage:
+    """`_apply` reads `last.id` for the consent trail.
+
+    A tapback IS the consent, and it is not an IntakeMessage -- so the message
+    it reacted to stands in. That is the right row to point at: it is the card
+    the person actually said yes to.
+    """
+    from .threads import messages_of
+
+    rows = messages_of(db, thread)
+    return rows[-1] if rows else None
 
 
 def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, selection: int):
@@ -457,19 +518,44 @@ def present_matches(
     link = mint_portal_link(
         db, org_id=thread.org_id, candidate_id=candidate_id, channel=thread.channel
     )
-    body = render_text(
-        [{k: v for k, v in card.items() if k != "recruiter_only"} for card in cards],
-        footer=f"Full cards: {link}",
-    )[: prompts.MAX_CARD_MESSAGE_CHARS]
 
-    # verbatim: the card quotes employers and role titles out of a posting.
-    # Those are somebody else's proper nouns, not our lowercase voice.
-    row = _deliver(
+    # One message per role, not one message listing every role. Three roles in
+    # a single bubble is a wall of text somebody scrolls past; sent separately
+    # each one gets its own bubble, which is how a phone renders a list of
+    # things and what a person can react to individually. A thumbs-up on a
+    # bubble is only meaningful if the bubble is one job.
+    rows = []
+    for index, card in enumerate(cards, start=1):
+        # verbatim: the card quotes employers and role titles out of a posting.
+        # Those are somebody else's proper nouns, not our lowercase voice.
+        rows.append(
+            _deliver(
+                db,
+                thread=thread,
+                message=OutboundMessage(
+                    body=render_card(
+                        {k: v for k, v in card.items() if k != "recruiter_only"},
+                        index=index,
+                        total=len(cards),
+                    ),
+                    verbatim=True,
+                ),
+                origin=origin,
+            )
+        )
+    row = rows[0] if rows else None
+    tail = _deliver(
         db,
         thread=thread,
-        message=OutboundMessage(body=body, verbatim=True),
+        message=OutboundMessage(
+            body=(
+                "thumbs up any of those and i'll start the application, or reply "
+                f"with its number for detail. all of them: {link}"
+            )
+        ),
         origin=origin,
     )
+    rows.append(tail)
 
     frame = []
     now = utcnow()
@@ -481,7 +567,14 @@ def present_matches(
             job_match_id=match.id,
             channel=thread.channel,
             thread_id=thread.id,
-            message_id=row.id if row is not None else None,
+            # The message that carried THIS card. A reaction arrives with a
+            # message_id, so a thumbs-up can only be resolved to a job if each
+            # proposal remembers its own bubble.
+            message_id=(
+                rows[len(frame)].id
+                if len(frame) < len(rows) and rows[len(frame)] is not None
+                else None
+            ),
             status="proposed",
             reasons=card["reasons"],
         )
@@ -498,4 +591,4 @@ def present_matches(
     thread.last_presented = frame
     thread.presented_at = now
     db.flush()
-    return TurnResult(ACTION_PRESENTED, thread, state, sent=[r for r in [row] if r])
+    return TurnResult(ACTION_PRESENTED, thread, state, sent=[r for r in rows if r])

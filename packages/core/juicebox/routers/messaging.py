@@ -47,8 +47,10 @@ from ..messaging import consent, prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
 from ..messaging.linq import (
+    REACTION_EVENTS,
     STATUS_EVENTS,
     parse_inbound,
+    parse_reaction,
     parse_status_event,
     resolve_linq_org_id,
     verify_webhook,
@@ -70,7 +72,7 @@ from ..messaging.threads import (
     open_thread,
     record_inbound,
 )
-from ..models import IntakeThread, Org, utcnow
+from ..models import IntakeMessage, IntakeThread, Org, utcnow
 from ..security import signed_intake_token, verify_intake_token
 
 logger = logging.getLogger(__name__)
@@ -527,6 +529,8 @@ def linq_webhook(
     event_type = str(payload.get("event_type") or "")
     if event_type in STATUS_EVENTS:
         return _handle_linq_status(db, payload, event_type=event_type)
+    if event_type in REACTION_EVENTS:
+        return _handle_linq_reaction(db, payload)
     if event_type != "message.received":
         # Logged, not silent. An unrecognised event answered 200 with no trace,
         # so "Linq is delivering webhooks" and "we are dropping every one of
@@ -609,6 +613,72 @@ def linq_webhook(
         payload={"thread_id": thread.id},
     )
     return {"status": "accepted", "message_id": message.id, "thread_id": thread.id}
+
+
+def _handle_linq_reaction(db, payload: dict) -> dict:
+    """A thumbs-up on a job card is a yes to that job.
+
+    The card it lands on is the whole point: each role goes out in its own
+    message, and the proposal row remembers which message carried it, so a
+    reaction resolves to exactly one posting. Reacting to a bubble is the
+    cheapest possible "apply to this" -- no typing, no ordinal to get wrong.
+
+    Anything that is not an unambiguous yes from the candidate is recorded and
+    ignored. Submitting an application off a `laugh` would be acting on a
+    guess about somebody's intent, and an application cannot be unsent.
+    """
+    from ..models import JobProposal
+
+    try:
+        event = parse_reaction(payload)
+    except ValueError as exc:
+        logger.info("Linq reaction ignored: %s", exc)
+        return {"status": "ignored", "reason": str(exc)}
+
+    if not event.is_positive:
+        logger.info(
+            "Linq reaction %r (%s, from_me=%s) noted, not acted on",
+            event.reaction_type,
+            event.event_type,
+            event.is_from_me,
+        )
+        return {"status": "accepted", "acted": False, "reaction": event.reaction_type}
+
+    thread = find_by_provider_id(db, provider="linq", provider_thread_id=event.chat_id)
+    if thread is None:
+        logger.info("Linq reaction on an unknown chat %r", event.chat_id)
+        return {"status": "ignored", "reason": "unknown_chat"}
+
+    outbound = db.scalar(
+        select(IntakeMessage).where(
+            IntakeMessage.thread_id == thread.id,
+            IntakeMessage.provider_native_id == event.message_id,
+        )
+    )
+    if outbound is None:
+        logger.info("Linq reaction on a message we did not send: %r", event.message_id)
+        return {"status": "ignored", "reason": "unknown_message"}
+
+    proposal = db.scalar(
+        select(JobProposal).where(
+            JobProposal.thread_id == thread.id,
+            JobProposal.message_id == outbound.id,
+        )
+    )
+    if proposal is None:
+        logger.info("Linq reaction on a message carrying no job card")
+        return {"status": "accepted", "acted": False, "reason": "not_a_job_card"}
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_INTAKE_TURN,
+        # Keyed on the reaction, so a tapback delivered twice applies once.
+        idempotency_key=f"{KIND_INTAKE_TURN}:reaction:{event.message_id}",
+        payload={"thread_id": thread.id, "apply_proposal_id": proposal.id},
+    )
+    logger.info("Linq thumbs-up on proposal %s queued as an apply", proposal.id)
+    return {"status": "accepted", "acted": True, "proposal_id": proposal.id}
 
 
 def _handle_linq_status(db, payload: dict, *, event_type: str) -> dict:

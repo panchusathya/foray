@@ -79,6 +79,28 @@ def jobcard(
     }
 
 
+def render_card(card: dict[str, Any], *, index: int, total: int) -> str:
+    """One role, one message -- the shape a phone actually renders.
+
+    A numbered list of three roles in a single bubble is a wall of text you
+    scroll past. Sent one at a time each role gets its own bubble, which is
+    how every job app on a phone presents them and what the candidate can
+    react to individually.
+
+    The position ("2/3") stays because the reply grammar is ordinal: "apply to
+    2" has to refer to something the person can see.
+    """
+    head = f"{index}/{total}  {card['title']} — {card['company']}"
+    lines = [head[:MAX_CARD_LINE_CHARS]]
+    if card.get("location"):
+        lines.append(card["location"][:MAX_CARD_LINE_CHARS])
+    for reason in (card.get("reasons") or [])[:2]:
+        lines.append(f"· {reason}"[:MAX_CARD_LINE_CHARS])
+    if card.get("url"):
+        lines.append(card["url"])
+    return "\n".join(lines)
+
+
 def render_text(cards: list[dict[str, Any]], *, footer: str = "") -> str:
     """The thread renderer: numbered lines, one reason each, a footer link.
 

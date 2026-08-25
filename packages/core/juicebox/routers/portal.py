@@ -297,7 +297,30 @@ def _application(db: Session, principal: CandidatePrincipal, application_id: str
 def _application_out(db: Session, application: Application) -> dict:
     posting = db.get(JobPosting, application.job_posting_id)
     documents = list(current_documents(db, application).values())
-    return PortalApplicationOut.from_application(application, posting, documents).model_dump()
+    return PortalApplicationOut.from_application(
+        application, posting, documents, can_auto_submit=_can_auto_submit(db, application, posting)
+    ).model_dump()
+
+
+def _can_auto_submit(db: Session, application: Application, posting: JobPosting | None) -> bool:
+    """Could we send this one ourselves, right now?
+
+    Same two questions ``request_submission`` asks, so the button appears
+    exactly when pressing it would work: is there an adapter for this employer's
+    ATS, and is this candidate past the first-application review.
+    """
+    if posting is None or application.status not in {"prepared", "awaiting_consent"}:
+        return False
+    from ..applications.ats import detect
+    from ..applications.submission import first_submission_gate, submitter_for
+
+    if first_submission_gate(db, application):
+        return False
+    target = detect.target_of(posting)
+    if not target:
+        return False
+    submitter, _ = submitter_for(db, application, posting, target)
+    return submitter is not None
 
 
 @router.get("/applications")

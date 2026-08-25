@@ -251,6 +251,10 @@ export const api = {
   transitionApplication: (id, payload) =>
     request(`/v1/applications/${id}/transition`, { method: 'POST', body: payload }),
   buildApplicationPackage: (id) => request(`/v1/applications/${id}/package`, { method: 'POST' }),
+  // Queue an automated attempt. 202 with a job id; a 409 carries the
+  // reason (no consent, budget, retry cap, or no adapter for this ATS).
+  submitApplication: (id) => request(`/v1/applications/${id}/submit`, { method: 'POST' }),
+  applicationSubmissions: (id) => request(`/v1/applications/${id}/submissions`),
 
   // A single-use, expiring deep link into the candidate portal. Same minting
   // function the messaging agent uses, so a link handed over by a recruiter

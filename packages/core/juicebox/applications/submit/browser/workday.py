@@ -34,6 +34,7 @@ from ....models import AtsAccount
 from ..base import METHOD_BROWSER, SubmissionContext, SubmissionResult
 from . import driver
 from .driver import BrowserUnavailable, FieldSpec, RunLog
+from .forms import WORKDAY_ACCOUNT
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,26 @@ class WorkdaySubmitter:
                         log=log,
                     )
                     driver.click(page, _SIGN_IN, log=log, what="sign in")
+
+                    # Some tenants verify by emailing a code rather than a link.
+                    # `applications/inbox.py` parked it on the attempt; this is
+                    # the only place it is any use. Not required: a tenant that
+                    # verified by link shows no code field at all.
+                    otp = str(verification.get("otp") or "")
+                    if otp:
+                        driver.fill(
+                            page,
+                            [
+                                FieldSpec(
+                                    key="otp",
+                                    selectors=WORKDAY_ACCOUNT.selectors_for("otp"),
+                                    value=otp,
+                                )
+                            ],
+                            log=log,
+                        )
+                        driver.click(page, _SIGN_IN, log=log, what="submit code")
+
                     missing = driver.fill(page, _application_fields(ctx, str(resume_path)), log=log)
                     before = driver.snapshot(
                         page,

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -148,6 +149,85 @@ def cmd_run_outreach(args: argparse.Namespace) -> int:
         f"completed={summary.completed} skipped={summary.skipped}"
     )
     return 0
+
+
+def cmd_ats_credential(args: argparse.Namespace) -> int:
+    """Store, list or remove an employer's job-board API key.
+
+    No settings screen yet, and these are rare: a key arrives when a client
+    whose roles we are filling sets one up, not per deployment.
+    """
+    from sqlalchemy import select
+
+    from .applications.credentials import set_board_key
+    from .models import AtsBoardCredential
+
+    with session_scope() as db:
+        org_id = _resolve_org(db, args.org)
+        if args.list:
+            rows = db.scalars(
+                select(AtsBoardCredential)
+                .where(AtsBoardCredential.org_id == org_id)
+                .order_by(AtsBoardCredential.vendor, AtsBoardCredential.tenant)
+            ).all()
+            if not rows:
+                print("no board keys stored; every posting goes through the hosted form")
+            for row in rows:
+                used = row.last_used_at.isoformat() if row.last_used_at else "never"
+                print(f"{row.vendor:16} {row.tenant:24} {row.status:8} last used {used}")
+            return 0
+        if not (args.vendor and args.tenant):
+            print("--vendor and --tenant are required", file=sys.stderr)
+            return 2
+        if args.remove:
+            row = db.scalar(
+                select(AtsBoardCredential).where(
+                    AtsBoardCredential.org_id == org_id,
+                    AtsBoardCredential.vendor == args.vendor,
+                    AtsBoardCredential.tenant == args.tenant,
+                )
+            )
+            if row is None:
+                print("no such credential")
+                return 1
+            db.delete(row)
+            print(f"removed the {args.vendor} key for {args.tenant}")
+            return 0
+        key = args.key or os.environ.get("ATS_BOARD_KEY", "")
+        if not key:
+            # Never as an argv value if it can be helped: argv is visible in
+            # `ps` and lands in shell history.
+            print("pass --key, or put it in ATS_BOARD_KEY", file=sys.stderr)
+            return 2
+        set_board_key(
+            db,
+            org_id=org_id,
+            vendor=args.vendor,
+            tenant=args.tenant,
+            key=key,
+            label=args.label,
+        )
+        print(f"stored a {args.vendor} key for {args.tenant}; that board now uses the API")
+    return 0
+
+
+def cmd_ats_probe(args: argparse.Namespace) -> int:
+    """Check a live posting's form against the field map we would fill.
+
+    Navigates and counts. Never fills, never submits -- running it costs the
+    employer one page view. This is the maintenance tool for the browser tier:
+    when a vendor reshapes their form, this is what says which selector died.
+    """
+    from .applications.submit.browser.probe import probe
+
+    failed = 0
+    for url in args.urls:
+        report = probe(url, org_id=args.org or "probe")
+        print(report.render())
+        print()
+        if not report.usable:
+            failed += 1
+    return 1 if failed else 0
 
 
 def cmd_run_agents(args: argparse.Namespace) -> int:
@@ -488,6 +568,25 @@ def build_parser() -> argparse.ArgumentParser:
     agents = sub.add_parser("run-agents", help="run every due sourcing agent")
     agents.add_argument("--org", default=None)
     agents.set_defaults(func=cmd_run_agents)
+
+    ats_credential = sub.add_parser(
+        "ats-credential", help="store an employer's job-board API key"
+    )
+    ats_credential.add_argument("--org", default="")
+    ats_credential.add_argument("--vendor", default="", help="greenhouse | lever | ashby")
+    ats_credential.add_argument("--tenant", default="", help="board token / site / org")
+    ats_credential.add_argument("--key", default="", help="or set ATS_BOARD_KEY")
+    ats_credential.add_argument("--label", default="")
+    ats_credential.add_argument("--remove", action="store_true")
+    ats_credential.add_argument("--list", action="store_true")
+    ats_credential.set_defaults(func=cmd_ats_credential)
+
+    ats_probe = sub.add_parser(
+        "ats-probe", help="check a live posting's form against our field map (read-only)"
+    )
+    ats_probe.add_argument("urls", nargs="+")
+    ats_probe.add_argument("--org", default="")
+    ats_probe.set_defaults(func=cmd_ats_probe)
 
     intake_number = sub.add_parser(
         "intake-number", help="register a voice intake phone number against an org"

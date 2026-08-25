@@ -15,6 +15,7 @@ something submitted that was not.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -32,7 +33,7 @@ from ..models import (
     record_event,
     utcnow,
 )
-from . import alias, limits
+from . import alias, credentials, limits
 from .ats import detect
 from .service import ApplicationError, current_documents
 from .state import TransitionError, has_consent, transition
@@ -85,7 +86,8 @@ def request_submission(
         if refresh_target and posting.ats_resolved_at is None
         else detect.target_of(posting)
     )
-    if get_submitter(target) is None:
+    submitter, _ = submitter_for(db, application, posting, target)
+    if submitter is None:
         raise NotSubmittable(
             f"nothing automated can apply to {posting.company or 'this employer'} "
             f"({target.vendor or 'unrecognised ATS'}); this one is a hand-off"
@@ -155,6 +157,19 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
         return None, str(exc)
 
 
+def submitter_for(db: Session, application: Application, posting: JobPosting, target):
+    """The adapter for this pursuit, with the employer's key if we hold one.
+
+    Both callers need the same two lookups in the same order, and a second copy
+    of "which key, which adapter" is how the API path and the form path drift
+    apart.
+    """
+    key = credentials.board_key(
+        db, org_id=application.org_id, vendor=target.vendor, tenant=target.tenant
+    )
+    return get_submitter(target, board_key=key), key
+
+
 def attempts_used(db: Session, application: Application) -> int:
     rows = db.scalars(
         select(ApplicationSubmission).where(ApplicationSubmission.application_id == application.id)
@@ -185,9 +200,13 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         raise ApplicationError("application lost its candidate or posting")
 
     target = detect.target_of(posting) or detect.resolve_target(db, posting)
-    submitter = get_submitter(target)
+    submitter, board_key = submitter_for(db, application, posting, target)
     if submitter is None:
         raise NotSubmittable(f"no submitter for {target.vendor or 'unrecognised ATS'}")
+    if board_key:
+        credentials.mark_used(
+            db, org_id=application.org_id, vendor=target.vendor, tenant=target.tenant
+        )
 
     attempt = ApplicationSubmission(
         org_id=application.org_id,
@@ -202,8 +221,11 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     db.flush()
 
     # Into `submitting` before the adapter runs, so a crashed worker leaves a
-    # visible in-flight application rather than one that looks untouched.
-    transition(db, application, to_status="submitting", actor="agent")
+    # visible in-flight application rather than one that looks untouched. Not
+    # when we are already there: that is this job being retried after the worker
+    # died holding it, and the gates were satisfied on the way in the first time.
+    if application.status != "submitting":
+        transition(db, application, to_status="submitting", actor="agent")
 
     ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
     try:
@@ -212,6 +234,7 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         _finish(db, application, attempt, SubmissionResult(ok=False, error=str(exc)[:600]))
         raise
 
+    _remember_account(db, application, target, result)
     _finish(db, application, attempt, result)
     return {
         "application_id": application.id,
@@ -220,6 +243,34 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         "method": attempt.method,
         "status": attempt.status,
     }
+
+
+def _remember_account(db: Session, application: Application, target, result) -> None:
+    """Keep the portal login a browser run just created.
+
+    Workday and Oracle make you register before you can apply, so without this
+    the second role at the same employer registers again -- another account,
+    another verification mail, and two candidate records at one company. The
+    adapter reports the credential on its result; storing it is the service's
+    job, because an adapter must not reach the database.
+    """
+    payload = result.verification or {}
+    if not payload.get("username") or not payload.get("password"):
+        return
+    from .submit.browser.workday import remember_account
+
+    try:
+        remember_account(
+            db,
+            org_id=application.org_id,
+            candidate_id=application.candidate_id,
+            vendor=target.vendor,
+            tenant=target.tenant,
+            username=str(payload["username"]),
+            password=str(payload["password"]),
+        )
+    except Exception as exc:  # noqa: BLE001 - never lose an attempt over this
+        logger.warning("could not store the portal account for %s: %s", application.id, exc)
 
 
 def _finish(
@@ -369,6 +420,46 @@ def resume_verification(db: Session, attempt: ApplicationSubmission) -> dict[str
         raise
     _finish(db, application, attempt, result)
     return {"submission_id": attempt.id, "status": attempt.status}
+
+
+def expire_parked(db: Session, *, org_id: str, now: datetime | None = None) -> int:
+    """Age out attempts waiting on mail that never came.
+
+    A verification email that does not arrive -- filtered, bounced, a tenant
+    that verifies some other way -- leaves an application in ``submitting``
+    forever, which reads to everyone as "still working on it". After the window
+    it becomes what it actually is: something needing a person.
+    """
+    now = now or utcnow()
+    cutoff = now - timedelta(hours=max(get_settings().apply_verification_hours, 1))
+    stale = db.scalars(
+        select(ApplicationSubmission).where(
+            ApplicationSubmission.org_id == org_id,
+            ApplicationSubmission.status == "needs_verification",
+            ApplicationSubmission.started_at < cutoff,
+        )
+    ).all()
+    for attempt in stale:
+        application = db.get(Application, attempt.application_id)
+        if application is None:
+            continue
+        _finish(
+            db,
+            application,
+            attempt,
+            SubmissionResult(
+                ok=False,
+                method=attempt.method,
+                needs_human=True,
+                error=(
+                    "no verification mail arrived within "
+                    f"{get_settings().apply_verification_hours}h"
+                ),
+            ),
+        )
+    if stale:
+        logger.info("aged out %d parked submission(s) for %s", len(stale), org_id)
+    return len(stale)
 
 
 def build_context(

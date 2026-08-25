@@ -167,6 +167,21 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
     return missing
 
 
+def first_match(page, selectors: tuple[str, ...]) -> str:
+    """The first selector that resolves to something present, or empty.
+
+    Public because both the adapters and ``ats-probe`` ask the same question --
+    "is this form actually here?" -- and they must ask it the same way.
+    """
+    for selector in selectors:
+        try:
+            if page.locator(selector).first.count():
+                return selector
+        except Exception:  # noqa: BLE001 - a selector the engine dislikes is a miss
+            continue
+    return ""
+
+
 def _first(page, selectors: tuple[str, ...]):
     for selector in selectors:
         try:

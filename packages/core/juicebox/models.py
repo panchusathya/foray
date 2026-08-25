@@ -2018,6 +2018,44 @@ class ApplicationSubmission(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AtsBoardCredential(Base, TimestampMixin):
+    """An employer's own API key for their job board.
+
+    Greenhouse, Lever, Ashby and SmartRecruiters all publish an apply API, and
+    all of them authenticate with a key the **employer** generates inside their
+    own account. There is no key that spans boards -- one company's key does not
+    post to another's -- so a single global setting was never the right shape
+    for this and briefly was.
+
+    Holding a key IS the relationship. When we have one, the API is the better
+    path: structured errors, a real application id back, no browser. When we do
+    not -- the open market, which is most postings -- the candidate's own door
+    is the hosted form, and ``submit/browser/hosted_form.py`` drives it.
+
+    In practice a key arrives with a mandate: a client whose roles we are
+    filling (``JobPosting.project_id`` set) is who you can reasonably ask.
+    """
+
+    __tablename__ = "ats_board_credentials"
+    __table_args__ = (
+        UniqueConstraint("org_id", "vendor", "tenant", name="uq_ats_board_credential"),
+        Index("ix_ats_board_credentials_org_vendor", "org_id", "vendor"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("atsbc"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    vendor: Mapped[str] = mapped_column(String(32))
+    #: The employer's namespace inside the vendor: a Greenhouse board token, a
+    #: Lever site, an Ashby org.
+    tenant: Mapped[str] = mapped_column(String(120))
+    #: What a human calls this, for the settings screen that will exist later.
+    label: Mapped[str] = mapped_column(String(120), default="")
+    token_blob: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
 class CandidateAlias(Base, TimestampMixin):
     """The address an employer sees, and which candidate it belongs to.
 

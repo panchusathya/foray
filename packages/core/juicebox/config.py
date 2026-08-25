@@ -543,12 +543,16 @@ class Settings:
     apply_browser_headless: bool = field(
         default_factory=lambda: _env_bool("APPLY_BROWSER_HEADLESS", True)
     )
-    # Vendor API credentials. Greenhouse and SmartRecruiters need a per-board
-    # key; Lever and Ashby post to the public form endpoint and need none.
-    greenhouse_api_key: str = field(default_factory=lambda: _env("GREENHOUSE_API_KEY", ""))
-    smartrecruiters_api_key: str = field(
-        default_factory=lambda: _env("SMARTRECRUITERS_API_KEY", "")
+    # How long a browser run may sit waiting on a verification email before it
+    # stops being "in flight" and becomes something a person has to look at.
+    apply_verification_hours: int = field(
+        default_factory=lambda: _env_int("APPLY_VERIFICATION_HOURS", 24)
     )
+    # NOTE: there is deliberately no global ATS API key here. Greenhouse, Lever
+    # and Ashby each authenticate with a key the *employer* issues from their
+    # own account, so one key per deployment is the wrong shape -- Anthropic's
+    # key does not post to Stripe's board. Keys live per (org, vendor, tenant)
+    # in `ats_board_credentials`; see applications/credentials.py.
 
     # Logged-in LinkedIn session for the intake scraper. JSON cookie array
     # (Playwright storage_state) or a raw ``li_at=...`` string. Never commit.

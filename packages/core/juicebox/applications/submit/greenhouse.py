@@ -1,4 +1,11 @@
-"""Greenhouse, via the job board's own application endpoint.
+"""Greenhouse, via the Job Board API -- only where the employer gave us a key.
+
+``POST boards-api.greenhouse.io/v1/boards/{token}/jobs/{id}`` authenticates with
+a Job Board API key generated inside **that employer's** Greenhouse account.
+There is no key that spans boards. For any posting where we hold none -- which
+is the whole open market -- the candidate's door is the hosted form and
+``browser/hosted_form.py`` is what drives it. This adapter is only reached when
+``credentials.board_key`` returned something.
 
 Two ids matter and they are not interchangeable: the board token (the employer's
 namespace, ``boards.greenhouse.io/<token>``) and the numeric job id. Both come
@@ -17,7 +24,6 @@ import logging
 
 import httpx
 
-from ...config import get_settings
 from .base import METHOD_ATS_API, SubmissionContext, SubmissionResult
 from .http import parts, post
 
@@ -30,7 +36,8 @@ class GreenhouseSubmitter:
     vendor = "greenhouse"
     method = METHOD_ATS_API
 
-    def __init__(self, *, client: httpx.Client | None = None) -> None:
+    def __init__(self, *, board_key: str = "", client: httpx.Client | None = None) -> None:
+        self.board_key = board_key
         self._client = client
 
     def submit(self, ctx: SubmissionContext) -> SubmissionResult:
@@ -48,13 +55,14 @@ class GreenhouseSubmitter:
                 ok=False, method=self.method, needs_human=True, error="no resume in the package"
             )
 
-        key = get_settings().greenhouse_api_key
-        if not key:
+        if not self.board_key:
+            # The registry should never route here without one; if it did, say
+            # so plainly rather than posting unauthenticated and getting a 401.
             return SubmissionResult(
                 ok=False,
                 method=self.method,
                 needs_human=True,
-                error="GREENHOUSE_API_KEY is not set; the board API will not accept this",
+                error=f"no stored Greenhouse board key for {board!r}",
             )
 
         fields = {
@@ -74,7 +82,7 @@ class GreenhouseSubmitter:
             data={key_: value for key_, value in fields.items() if value},
             files=parts(ctx),
             # Basic auth, key as the username with an empty password.
-            auth=(key, ""),
+            auth=(self.board_key, ""),
             client=self._client,
         )
         if refusal is not None:

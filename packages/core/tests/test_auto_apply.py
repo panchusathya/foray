@@ -664,10 +664,15 @@ class TestAdapters:
 
         url = "https://jobs.lever.co/figma/1a2b3c4d-5e6f-7890-abcd-ef1234567890"
         client, seen = self._recording_client(httpx.Response(200, json={"data": {"id": "app-9"}}))
-        result = LeverSubmitter(client=client).submit(self._ctx("lever", url))
+        result = LeverSubmitter(board_key="lever-key", client=client).submit(
+            self._ctx("lever", url)
+        )
         assert result.ok
         assert result.external_id == "app-9"
         assert "postings/figma/1a2b3c4d" in seen["url"]
+        # The employer's key, and the headers Lever records on the application.
+        assert "key=lever-key" in seen["url"]
+        assert seen["headers"]["user-agent"].startswith("Foray/")
         # The alias is the address the employer gets, and the resume travelled.
         assert b"anna+abc@goforay.io" in seen["body"]
         assert b"%PDF-1.4 resume" in seen["body"]
@@ -679,9 +684,11 @@ class TestAdapters:
 
         url = "https://jobs.ashbyhq.com/openai/9f8e7d6c-5b4a-3210-fedc-ba9876543210"
         client, seen = self._recording_client(
-            httpx.Response(200, json={"results": {"id": "sub-3"}})
+            httpx.Response(200, json={"success": True, "results": {"id": "sub-3"}})
         )
-        result = AshbySubmitter(client=client).submit(self._ctx("ashby", url))
+        result = AshbySubmitter(board_key="ashby-key", client=client).submit(
+            self._ctx("ashby", url)
+        )
         assert result.ok
         assert result.external_id == "sub-3"
         assert b"_systemfield_email" in seen["body"]
@@ -691,7 +698,7 @@ class TestAdapters:
 
         url = "https://jobs.lever.co/figma/1a2b3c4d-5e6f-7890-abcd-ef1234567890"
         client, _ = self._recording_client(httpx.Response(422, text="requires a portfolio url"))
-        result = LeverSubmitter(client=client).submit(self._ctx("lever", url))
+        result = LeverSubmitter(board_key="k", client=client).submit(self._ctx("lever", url))
         assert not result.ok
         assert result.needs_human
         assert result.status == "needs_human"
@@ -704,15 +711,43 @@ class TestAdapters:
         url = "https://jobs.lever.co/figma/1a2b3c4d-5e6f-7890-abcd-ef1234567890"
         client, _ = self._recording_client(httpx.Response(503, text="down"))
         with pytest.raises(SubmitError):
-            LeverSubmitter(client=client).submit(self._ctx("lever", url))
+            LeverSubmitter(board_key="k", client=client).submit(self._ctx("lever", url))
 
-    def test_greenhouse_refuses_without_its_key_rather_than_posting_blind(self):
+    def test_an_api_adapter_reached_without_a_key_says_so(self):
+        """The registry should never route here without one. If it did, say
+        which board we lack a key for rather than posting blind and eating a
+        401 that reads like the form rejected us."""
         from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
 
         url = "https://boards.greenhouse.io/anthropic/jobs/4012345"
         result = GreenhouseSubmitter().submit(self._ctx("greenhouse", url))
         assert result.needs_human
-        assert "GREENHOUSE_API_KEY" in result.error
+        assert "anthropic" in result.error
+
+    def test_ashby_two_hundred_with_success_false_is_not_a_submission(self):
+        """The worst failure this module has available: telling a candidate we
+        applied when the employer never recorded it. Ashby reports validation
+        failures in the body, with a 200."""
+        from juicebox.applications.submit.ashby import AshbySubmitter
+
+        url = "https://jobs.ashbyhq.com/openai/9f8e7d6c-5b4a-3210-fedc-ba9876543210"
+        client, _ = self._recording_client(
+            httpx.Response(
+                200, json={"success": False, "errors": ["Work authorization is required"]}
+            )
+        )
+        result = AshbySubmitter(board_key="k", client=client).submit(self._ctx("ashby", url))
+        assert not result.ok
+        assert result.needs_human
+        assert "Work authorization" in result.error
+
+    def test_an_unreadable_ashby_body_is_a_refusal_not_a_success(self):
+        from juicebox.applications.submit.ashby import AshbySubmitter
+
+        url = "https://jobs.ashbyhq.com/openai/9f8e7d6c-5b4a-3210-fedc-ba9876543210"
+        client, _ = self._recording_client(httpx.Response(200, text="<html>maintenance</html>"))
+        result = AshbySubmitter(board_key="k", client=client).submit(self._ctx("ashby", url))
+        assert not result.ok
 
     def test_the_email_adapter_names_the_role_and_attaches(self):
         from juicebox.applications.submit.email import EmailSubmitter, build_email
@@ -1073,3 +1108,247 @@ class TestParkedCredentialsAreNotReadableAtRest:
         assert entry["run"]["filled"] == {"first_name": "Ada"}
         # The blob is never in the response at all, encrypted or not.
         assert "secret_blob" not in json.dumps(entry)
+
+
+class TestApiVersusForm:
+    """Holding the employer's key is what decides which door we use.
+
+    Greenhouse, Lever and Ashby all authenticate their apply API with a key the
+    employer issues from their own account. With one, the API is better. Without
+    one -- the open market, most postings -- the candidate's door is the hosted
+    form, and that needs no key at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def live(self, monkeypatch):
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("APPLY_SUBMITTER", "live")
+        reset_settings_cache()
+        registry.reset_overrides()
+        yield
+        registry.reset_overrides()
+        reset_settings_cache()
+
+    def test_no_key_means_the_hosted_form(self):
+        from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
+
+        target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
+        chosen = registry.get_submitter(target)
+        assert isinstance(chosen, HostedFormSubmitter)
+        assert chosen.method == "browser"
+
+    def test_a_stored_key_means_the_api(self):
+        from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
+
+        target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
+        chosen = registry.get_submitter(target, board_key="gh-key")
+        assert isinstance(chosen, GreenhouseSubmitter)
+        assert chosen.board_key == "gh-key"
+
+    def test_a_key_for_one_board_does_not_leak_to_another(self, session, account, candidate):
+        """The bug the old global GREENHOUSE_API_KEY had: one deployment key
+        cannot post to a board it was not issued for."""
+        from juicebox.applications.credentials import board_key, set_board_key
+
+        set_board_key(
+            session,
+            org_id=account["org_id"],
+            vendor="greenhouse",
+            tenant="anthropic",
+            key="anthropic-only",
+        )
+        assert (
+            board_key(session, org_id=account["org_id"], vendor="greenhouse", tenant="anthropic")
+            == "anthropic-only"
+        )
+        assert (
+            board_key(session, org_id=account["org_id"], vendor="greenhouse", tenant="stripe") == ""
+        )
+
+    def test_a_key_is_encrypted_at_rest(self, session, account):
+        from juicebox.applications.credentials import set_board_key
+        from juicebox.models import AtsBoardCredential
+
+        set_board_key(
+            session,
+            org_id=account["org_id"],
+            vendor="lever",
+            tenant="figma",
+            key="super-secret-key",
+        )
+        row = session.query(AtsBoardCredential).one()
+        assert "super-secret-key" not in row.token_blob
+
+    def test_the_submission_service_picks_up_the_stored_key(
+        self, session, account, candidate, aliased
+    ):
+        from juicebox.applications.credentials import set_board_key
+        from juicebox.applications.submission import submitter_for
+        from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        target = detect.target_of(posting)
+
+        chosen, key = submitter_for(session, application, posting, target)
+        assert key == ""
+        assert not isinstance(chosen, GreenhouseSubmitter)
+
+        set_board_key(
+            session,
+            org_id=account["org_id"],
+            vendor="greenhouse",
+            tenant=target.tenant,
+            key="board-key",
+        )
+        chosen, key = submitter_for(session, application, posting, target)
+        assert key == "board-key"
+        assert isinstance(chosen, GreenhouseSubmitter)
+
+
+class TestTheGapsThatStrandedApplications:
+    def test_a_crashed_attempt_can_be_picked_back_up(
+        self, session, account, candidate, memory_mode, aliased
+    ):
+        """The worker sets `submitting` before the adapter runs. If it then dies,
+        recover_stale_locks requeues the job -- and the handler used to skip it,
+        leaving the application in `submitting` with no way out."""
+        from juicebox.jobs import enqueue
+        from juicebox.worker import _handle_app_submit
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="agent")
+
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_APP_SUBMIT,
+            idempotency_key="resubmit-1",
+            payload={"application_id": application.id},
+        )
+        result = _handle_app_submit(session, job, utcnow())
+        assert "skipped" not in result
+        assert application.status == "submitted"
+
+    def test_a_parked_attempt_that_never_gets_its_mail_ages_out(
+        self, session, account, candidate, aliased
+    ):
+        from datetime import timedelta
+
+        from juicebox.applications.submission import expire_parked
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="agent")
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="workday",
+                method="browser",
+                status="needs_verification",
+                started_at=utcnow() - timedelta(days=3),
+            )
+        )
+        session.flush()
+
+        assert expire_parked(session, org_id=account["org_id"]) == 1
+        row = session.query(ApplicationSubmission).one()
+        assert row.status == "needs_human"
+        # And the application stops claiming to be in flight.
+        assert application.status == "prepared"
+        assert "verification mail" in application.status_reason
+
+    def test_a_recent_parked_attempt_is_left_alone(self, session, account, candidate, aliased):
+        from juicebox.applications.submission import expire_parked
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="workday",
+                method="browser",
+                status="needs_verification",
+                started_at=utcnow(),
+            )
+        )
+        session.flush()
+        assert expire_parked(session, org_id=account["org_id"]) == 0
+
+    def test_a_portal_account_is_remembered_for_the_next_role(
+        self, session, account, candidate, aliased
+    ):
+        """Without this, the second role at the same employer registers a second
+        account and the verification mail arrives all over again."""
+        from juicebox.integrations.crypto import decrypt_json
+        from juicebox.models import AtsAccount
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        registry.set_submitter(
+            "greenhouse",
+            MemorySubmitter(
+                result=SubmissionResult(
+                    ok=False,
+                    method="browser",
+                    needs_verification=True,
+                    verification={
+                        "stage": "account_created",
+                        "username": "anna+abc@goforay.io",
+                        "password": "generated-pw",
+                    },
+                )
+            ),
+        )
+        try:
+            submit_application(session, application)
+        finally:
+            registry.reset_overrides()
+
+        stored = session.query(AtsAccount).one()
+        assert stored.candidate_id == candidate.id
+        assert stored.username == "anna+abc@goforay.io"
+        # Encrypted, like every other credential this repo holds.
+        assert "generated-pw" not in stored.token_blob
+        assert decrypt_json(stored.token_blob)["password"] == "generated-pw"
+
+
+class TestTheFieldMapsAreCoherent:
+    """The maps are the part most likely to be wrong, and `ats-probe` is what
+    checks them against reality. These only check they are internally sane --
+    that a required field has selectors to try, and that the adapter knows how
+    to fill every field the map declares."""
+
+    def test_every_required_field_has_selectors(self):
+        from juicebox.applications.submit.browser.forms import PROBEABLE
+
+        for vendor, spec in PROBEABLE.items():
+            for key in spec.required:
+                assert spec.selectors_for(key), f"{vendor}.{key} is required with no selectors"
+            assert spec.submit, f"{vendor} has no submit control"
+            assert spec.landmark, f"{vendor} has no landmark to prove we reached a form"
+
+    def test_the_adapter_can_value_every_field_the_map_declares(self):
+        from juicebox.applications.submit.browser.forms import ASHBY, GREENHOUSE, LEVER
+        from juicebox.applications.submit.browser.hosted_form import _values, specs_for
+
+        ctx = TestAdapters._ctx("greenhouse", "https://boards.greenhouse.io/x/jobs/1")
+        values = _values(ctx, "/tmp/resume.pdf")
+        for spec in (GREENHOUSE, LEVER, ASHBY):
+            built = specs_for(spec, values)
+            assert {row.key for row in built} == set(spec.fields)
+            # Every required field resolves to something we actually hold.
+            for row in built:
+                if row.required:
+                    assert row.value, f"{spec.vendor}.{row.key} is required but we have no value"

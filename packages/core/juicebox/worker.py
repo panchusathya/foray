@@ -308,11 +308,18 @@ def _handle_agent_tick(db: Session, job: Job, now) -> dict[str, Any]:
 
     org_id = job.payload.get("org_id") or job.org_id
     runs = run_due_agents(db, org_id=org_id, now=now)
+    # Attempts waiting on mail that never came. Cheap, and the only thing
+    # that turns a permanently "in flight" application into an honest one.
+    from .applications.submission import expire_parked
+
+    parked_expired = expire_parked(db, org_id=org_id, now=now)
+
     _schedule_next_tick(db, org_id=org_id, kind=KIND_AGENT_TICK, now=now)
     return {
         "agents": len(runs),
         "added": sum(run.added for run in runs),
         "enrolled": sum(run.enrolled for run in runs),
+        "parked_expired": parked_expired,
     }
 
 
@@ -1083,7 +1090,12 @@ def _handle_app_submit(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "application not found", "application_id": application_id}
     if application.org_id != job.org_id:
         return {"skipped": "org_mismatch"}
-    if application.status not in {"prepared", "awaiting_consent"}:
+    # `submitting` is a legitimate state to arrive in: the previous run set it
+    # and then the worker died, and `recover_stale_locks` requeued this job.
+    # Skipping it there is what used to strand the application in `submitting`
+    # with no path out but a hand transition. `submit_application` is idempotent
+    # on an already-succeeded attempt, so re-entering is safe.
+    if application.status not in {"prepared", "awaiting_consent", "submitting"}:
         return {"skipped": f"status {application.status} is not ready to submit"}
     return submit_application(db, application)
 

@@ -120,6 +120,22 @@ export function ApplicationDetailPage() {
     }
   };
 
+  // For actions that answer with a queued job rather than the application --
+  // `act` assigns the response straight into state, and a job id rendered as an
+  // application is a blank screen. Re-read instead.
+  const actThenReload = async (fn) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn(applicationId);
+      load();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openDocument = async (documentId) => {
     try {
       const { url } = await api.documentUrl(documentId);
@@ -141,6 +157,11 @@ export function ApplicationDetailPage() {
   const reached = STEPS.indexOf(application.status);
   const needsApproval = application.status === 'prepared';
   const readyToSend = application.status === 'awaiting_consent';
+  const inFlight = application.status === 'submitting';
+  // The server decides: an adapter exists for this employer's ATS, and this is
+  // not the candidate's first application. Offering a button that answers 409
+  // is worse than offering none.
+  const weCanSend = Boolean(application.can_auto_submit);
 
   return (
     <Screen title={application.title || 'Application'} sub={application.company}>
@@ -205,7 +226,37 @@ export function ApplicationDetailPage() {
             Approve this package
           </button>
         )}
-        {readyToSend && (
+        {inFlight && (
+          <p className="muted">
+            Sending this now — I&apos;ll let you know the moment it&apos;s in, or if the
+            employer&apos;s form needs something I don&apos;t have.
+          </p>
+        )}
+        {readyToSend && weCanSend && (
+          <>
+            <p className="muted">
+              Approved. I can send this one for you — or apply yourself with the documents
+              above and mark it sent.
+            </p>
+            <button
+              type="button"
+              className="btn primary wide"
+              disabled={busy}
+              onClick={() => actThenReload(api.submitForMe)}
+            >
+              Apply for me
+            </button>
+            <button
+              type="button"
+              className="btn wide"
+              disabled={busy}
+              onClick={() => act(api.confirmSubmitted)}
+            >
+              I&apos;ve applied myself
+            </button>
+          </>
+        )}
+        {readyToSend && !weCanSend && (
           <>
             <p className="muted">
               Approved. Apply on the employer&apos;s site with the documents above, then mark it

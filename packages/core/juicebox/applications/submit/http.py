@@ -27,6 +27,7 @@ def post(
     *,
     method: str,
     data: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
     files: dict | None = None,
     json_body: dict | None = None,
     headers: dict[str, str] | None = None,
@@ -43,7 +44,13 @@ def post(
     try:
         try:
             response = client.post(
-                url, data=data, files=files, json=json_body, headers=headers, auth=auth
+                url,
+                data=data,
+                params=params,
+                files=files,
+                json=json_body,
+                headers=headers,
+                auth=auth,
             )
         except httpx.HTTPError as exc:
             raise SubmitError(f"could not reach {url}: {exc}") from exc

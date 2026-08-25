@@ -204,11 +204,10 @@ x-app-env: &app_env
   APPLY_ALIAS_RELAY: ${APPLY_ALIAS_RELAY:-true}
   APPLY_MAX_ATTEMPTS: ${APPLY_MAX_ATTEMPTS:-3}
   APPLY_BROWSER_HEADLESS: ${APPLY_BROWSER_HEADLESS:-true}
-  # Per-board API keys. Lever and Ashby post to their public form endpoints
-  # and need none; Greenhouse and SmartRecruiters refuse without one rather
-  # than posting blind.
-  GREENHOUSE_API_KEY: ${GREENHOUSE_API_KEY:-}
-  SMARTRECRUITERS_API_KEY: ${SMARTRECRUITERS_API_KEY:-}
+  APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}
+  # No ATS API key here on purpose: those are issued per employer, not per
+  # deployment, and live encrypted in ats_board_credentials. See
+  # applications/credentials.py and AUTO_APPLY_SETUP.md.
 
 services:
   db:

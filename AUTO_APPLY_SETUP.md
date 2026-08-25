@@ -88,23 +88,37 @@ goes on the application. It is honest, and it means Workday and Oracle stall.
 APPLY_SUBMITTER=live
 ```
 
-Coverage on day one, by vendor:
+**There is no unauthenticated apply API.** Greenhouse, Lever and Ashby all
+publish one, and all three authenticate with a key the *employer* generates in
+their own account — Anthropic's key does not post to Stripe's board. So the
+question is never "do we have an API key", it is "do we have a relationship with
+this employer".
 
-| Vendor | How | Needs |
+| Vendor | Open market (no key) | With the employer's key |
 |---|---|---|
-| Lever | public apply endpoint | nothing |
-| Ashby | public application-form API | nothing |
-| Greenhouse | board API | `GREENHOUSE_API_KEY` (per board, from the employer) |
-| An email address in the JD | SMTP with attachments | `EMAIL_PROVIDER=smtp` + `SMTP_*` |
-| Workday | browser adapter | the alias mailbox, and step 4 below |
-| Oracle / iCIMS / Taleo / Jobvite / BambooHR / Workable | recognised, no adapter | — (Tier 0 hand-off) |
+| Greenhouse | hosted form, in a browser | Job Board API |
+| Lever | hosted form, in a browser | `POST /v0/postings/{site}/{id}?key=` |
+| Ashby | hosted form, in a browser | `applicationForm.submit` |
+| Workday | browser adapter (registers an account — see step 4) | — |
+| An email address in the JD | SMTP with attachments | — |
+| Oracle / iCIMS / Taleo / Jobvite / BambooHR / Workable | recognised, no adapter yet | — |
 
-Recognising a vendor is not the same as being able to submit to it. Anything in
-that last row resolves correctly, shows the candidate the real form URL instead
-of an aggregator listing, and stays the assisted hand-off it already was.
+For the open market — which is most postings — the browser is not a fallback,
+it is the only door a candidate has. Recognising a vendor is still not the same
+as submitting to it: the last row resolves correctly, shows the candidate the
+real form URL instead of an aggregator listing, and stays the hand-off it was.
 
-Greenhouse and SmartRecruiters **refuse rather than posting blind** without a
-key, so an unset key is a clean `needs_human`, not a silent failure.
+Where you *do* hold a key (a client whose roles you are filling), store it per
+employer and that board switches to the API automatically:
+
+```bash
+juicebox ats-credential --org <id> --vendor greenhouse --tenant <board-token> --key <key>
+juicebox ats-credential --org <id> --list
+```
+
+Encrypted at rest, like every other credential here. Pass the key via
+`ATS_BOARD_KEY` rather than `--key` if you would rather it stayed out of shell
+history.
 
 Before flipping this, find out what your own posting book actually resolves to —
 it decides which adapter is worth building next:
@@ -141,6 +155,19 @@ docker compose build --build-arg INSTALL_PLAYWRIGHT=true worker
 APPLY_BROWSER_HEADLESS=true   # false only to watch one run by hand
 APPLY_MAX_ATTEMPTS=3
 ```
+
+**Check the field maps before you trust them.** The browser tier's real failure
+mode is a vendor reshaping their form, and `ats-probe` is what tells you:
+
+```bash
+juicebox ats-probe https://boards.greenhouse.io/<board>/jobs/<id>
+```
+
+It navigates, reports which selector matched each field we would fill, screenshots
+the form, and exits non-zero if a required field or the submit control is missing.
+**It never fills and never submits** — a probe run costs the employer one page
+view. Run it per vendor after any upgrade, and whenever an attempt comes back
+`needs_human` naming fields it could not find.
 
 A Workday run is two legs. Leg one creates the portal account and parks at
 `needs_verification`; the verification mail lands at the alias, the inbox

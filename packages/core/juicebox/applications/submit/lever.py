@@ -1,9 +1,14 @@
-"""Lever, via the public postings apply endpoint.
+"""Lever, via the postings apply endpoint -- with the employer's key.
 
-No credential: Lever's hosted apply endpoint is the same one the form on
-``jobs.lever.co`` posts to, keyed by the site name and the posting's uuid. That
-makes it the cheapest real adapter we have, and the one whose failures are
-loudest -- there is no key to be wrong, so a refusal is always about the form.
+``POST api.lever.co/v0/postings/{site}/{id}?key=APIKEY``. The key is generated
+by a Super Admin of **that employer's** Lever account; the unauthenticated
+``GET`` on the same path lists postings and is a different thing entirely. An
+earlier version of this adapter sent an empty ``key=`` and claimed no
+credential was needed -- it was wrong, and every submission it made would have
+been refused.
+
+Where we hold no key, the hosted form is the candidate's door and
+``browser/hosted_form.py`` drives it.
 """
 
 from __future__ import annotations
@@ -17,14 +22,19 @@ from .http import parts, post
 
 logger = logging.getLogger(__name__)
 
-ENDPOINT = "https://api.lever.co/v0/postings/{site}/{posting_id}?key="
+ENDPOINT = "https://api.lever.co/v0/postings/{site}/{posting_id}"
+
+#: Lever stores the User-Agent on the application record. Identify
+#: ourselves rather than leaking an HTTP library's default.
+APPLICANT_USER_AGENT = "Foray/1.0 (+https://goforay.io; candidate application agent)"
 
 
 class LeverSubmitter:
     vendor = "lever"
     method = METHOD_ATS_API
 
-    def __init__(self, *, client: httpx.Client | None = None) -> None:
+    def __init__(self, *, board_key: str = "", client: httpx.Client | None = None) -> None:
+        self.board_key = board_key
         self._client = client
 
     def submit(self, ctx: SubmissionContext) -> SubmissionResult:
@@ -41,6 +51,13 @@ class LeverSubmitter:
             return SubmissionResult(
                 ok=False, method=self.method, needs_human=True, error="no resume in the package"
             )
+        if not self.board_key:
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error=f"no stored Lever key for site {site!r}",
+            )
 
         fields = {
             "name": ctx.full_name,
@@ -52,8 +69,16 @@ class LeverSubmitter:
         response, refusal = post(
             ENDPOINT.format(site=site, posting_id=posting_id),
             method=self.method,
+            params={"key": self.board_key},
             data={key: value for key, value in fields.items() if value},
             files=parts(ctx),
+            # Lever records these three on every application for anti-fraud.
+            # Sending an httpx default would mark every candidate we represent
+            # as the same suspicious client.
+            headers={
+                "User-Agent": APPLICANT_USER_AGENT,
+                "Referer": ctx.target.apply_url or ctx.posting_url,
+            },
             client=self._client,
         )
         if refusal is not None:

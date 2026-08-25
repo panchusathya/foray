@@ -147,6 +147,16 @@ x-app-env: &app_env
   # agent and the portal feed go quiet while onboarding, documents and the
   # recruiter views keep working. Held above 1.0 until the LL144 /
   # authority-to-apply counsel review clears.
+  # Match scoring. These were readable by config.py and absent here, so the
+  # weighting work shipped in "Weight what they asked for over the job they
+  # have" could not be tuned in production at all -- setting them in .env did
+  # nothing. Career switchers are the case that needs them: an investor moving
+  # into strategic finance scores ~0.05 on profile similarity and ~0.55 on
+  # stated preference, and the blend decides whether they see a single role.
+  JOB_MATCH_MIN_SCORE: ${JOB_MATCH_MIN_SCORE:-0.55}
+  JOB_MATCH_PREFERENCE_WEIGHT: ${JOB_MATCH_PREFERENCE_WEIGHT:-0.70}
+  JOB_MATCH_HEURISTIC_WEIGHT: ${JOB_MATCH_HEURISTIC_WEIGHT:-0.35}
+  JOB_MATCH_VECTOR_WEIGHT: ${JOB_MATCH_VECTOR_WEIGHT:-0.25}
   PROPOSAL_SCORE_FLOOR: ${PROPOSAL_SCORE_FLOOR:-0.55}
   # Orgs exempt from that floor, and the bar they run at instead. Lets our own
   # org test the full loop while the global floor keeps the shared number shut.

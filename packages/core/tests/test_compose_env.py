@@ -28,6 +28,9 @@ _READS = re.compile(r'_env(?:_int|_bool|_float)?\(\s*"([A-Z0-9_]+)"')
 _STRING_DEFAULT = re.compile(r'_env\(\s*"([A-Z0-9_]+)"\s*,\s*"([^"]*)"')
 _PASSES = re.compile(r"\$\{([A-Z0-9_]+)")
 _PASSES_EMPTY = re.compile(r"\$\{([A-Z0-9_]+):-\}")
+_PASSES_NUMERIC = re.compile(r"\$\{([A-Z0-9_]+):-([0-9]+(?:\.[0-9]+)?)\}")
+_FLOAT_DEFAULT = re.compile(r'_env_float\(\s*"([A-Z0-9_]+)"\s*,\s*([0-9.]+)')
+_INT_DEFAULT = re.compile(r'_env_int\(\s*"([A-Z0-9_]+)"\s*,\s*([0-9_]+)')
 
 # Anything shaped like a credential is something a person deliberately pastes
 # into .env, which makes silently dropping it the expensive kind of wrong.
@@ -57,6 +60,24 @@ class TestComposePassesWhatTheCodeReads:
             "config.py reads these credentials but docker-compose.prod.yml never "
             f"passes them, so they are always empty in production: {missing}"
         )
+
+    def test_numeric_defaults_do_not_drift(self):
+        """Compose and config.py must agree on the fallback value.
+
+        Writing a different number in the compose line silently changes
+        behaviour in production while the code still reads as though the
+        original default applies. I did exactly this while adding the
+        JOB_MATCH_* knobs -- 0.60 in compose against 0.35 in config.
+        """
+        floats = dict(_FLOAT_DEFAULT.findall(_config()))
+        ints = dict(_INT_DEFAULT.findall(_config()))
+        defaults = {**ints, **floats}
+        drift = [
+            f"{name}: compose={val} code={defaults[name]}"
+            for name, val in _PASSES_NUMERIC.findall(_compose())
+            if name in defaults and float(defaults[name]) != float(val)
+        ]
+        assert not drift, f"compose overrides config.py's default with another: {drift}"
 
     def test_no_compose_entry_silently_kills_a_code_default(self):
         """``${VAR:-}`` SETS the variable, to an empty string.

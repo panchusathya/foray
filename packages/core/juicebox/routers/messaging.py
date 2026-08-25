@@ -528,6 +528,11 @@ def linq_webhook(
     if event_type in STATUS_EVENTS:
         return _handle_linq_status(db, payload, event_type=event_type)
     if event_type != "message.received":
+        # Logged, not silent. An unrecognised event answered 200 with no trace,
+        # so "Linq is delivering webhooks" and "we are dropping every one of
+        # them" looked identical from the outside -- the same shape of hole
+        # that hid the Retell key being absent.
+        logger.info("Linq event %r ignored (not message.received)", event_type)
         return {"status": "ignored", "event_type": event_type}
 
     try:
@@ -538,6 +543,7 @@ def linq_webhook(
         ) from exc
 
     if inbound.is_group:
+        logger.info("Linq group chat %r ignored", inbound.chat_id)
         return {"status": "ignored", "reason": "group_chat"}
 
     if not inbound.provider_native_id:
@@ -573,6 +579,7 @@ def linq_webhook(
         raw=inbound.raw,
     )
     if not created:
+        logger.info("Linq message %r already recorded", inbound.provider_native_id)
         return {"status": "accepted", "duplicate": True, "message_id": message.id}
 
     if looks_like_stop(inbound.body):

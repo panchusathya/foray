@@ -120,6 +120,51 @@ def extract_intake(
 # --------------------------------------------------------------------------
 
 
+# URLs and email addresses carry digits that are not money. A LinkedIn URL
+# in the transcript must not count as the candidate having named a figure.
+_NOT_MONEY = re.compile(r"https?://\S+|\S+@\S+", re.IGNORECASE)
+_ANY_DIGIT = re.compile(r"\d")
+
+
+def mentions_a_figure(transcript: str) -> bool:
+    """Did anyone actually say a number, once links and addresses are out?"""
+    return bool(_ANY_DIGIT.search(_NOT_MONEY.sub(" ", transcript or "")))
+
+
+def _drop_uncited_comp(record: dict[str, Any], transcript: str) -> None:
+    """Comp has to come from the conversation, not from the model.
+
+    A live thread whose entire inbound content was a greeting, an email
+    address, a LinkedIn URL and "strategic finance analyst roles" came out
+    of extraction with target_base = 1,200,000. Nothing said it. That
+    figure then vetoed every real posting on comp_floor, so the candidate
+    was shown no roles at all and there was nothing on screen to explain
+    why -- an invented number is worse than a missing one precisely because
+    it acts like a real answer.
+
+    The test is deliberately coarse: any digit anywhere, links and email
+    addresses removed first. It cannot check that 150000 came from "150k"
+    rather than "$1.5M", but it does stop a figure appearing out of a
+    conversation that contains no numbers whatsoever. Spelled-out amounts
+    ("two hundred thousand") are dropped too; losing a rare real answer is
+    cheaper than keeping an invented one that silently filters every job.
+    """
+    if mentions_a_figure(transcript):
+        return
+    invented = {
+        key: record.get(key)
+        for key in ("target_base", "target_total")
+        if record.get(key) is not None
+    }
+    if not invented:
+        return
+    logger.warning(
+        "dropping comp the transcript never mentions: %s", invented
+    )
+    record["target_base"] = None
+    record["target_total"] = None
+
+
 def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> ExtractionResult:
     llm = get_llm()
     call = llm.json_fast if fast else llm.json
@@ -134,6 +179,7 @@ def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> Extracti
         raise LLMUnavailable("intake extractor returned no data")
 
     record = normalize_record(result.data)
+    _drop_uncited_comp(record, transcript)
     low = _valid_keys(result.data.get("low_confidence"))
     # The model's own bucket was used because the quote did not map to one, so
     # nothing deterministic vouches for this value. Say so rather than let a

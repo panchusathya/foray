@@ -747,7 +747,15 @@ class TestChatApi:
             ).json()
             thread_id, token = started["thread_id"], started["thread_token"]
 
-            answers = ["Ada Lovelace", "ada@example.com", "senior ML engineer in SF"]
+            # The comp answer is load-bearing: extraction refuses a figure the
+            # transcript never mentions, and COMPLETE_PAYLOAD claims one. A
+            # "finished" conversation that never discussed pay was always an
+            # odd fixture -- now it is also an incomplete record.
+            answers = [
+                "Ada Lovelace",
+                "ada@example.com",
+                "senior ML engineer in SF, targeting 240k base",
+            ]
             last = None
             for index, answer in enumerate(answers):
                 last = client.post(

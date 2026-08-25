@@ -67,14 +67,24 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15.5px/1.55 var(--sans);
+  font: 400 15.5px/1.6 var(--sans);
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
 }
 
-h1, h2, h3, h4 { letter-spacing: -0.032em; font-weight: 500; }
+h1, h2, h3, h4 { font-family: var(--display); letter-spacing: -0.032em; font-weight: 500; }
 
 a { color: inherit; }
+
+::selection { background: var(--gold-soft); color: var(--text); }
+
+/* The landing's marker-highlight: one word per headline, gold behind it. */
+.marker {
+  font-style: normal;
+  background: var(--gold-soft);
+  border-radius: 6px;
+  padding: 0 0.14em;
+}
 
 button, input, textarea, select {
   font: inherit;
@@ -129,10 +139,10 @@ button, input, textarea, select {
 .sidebar-heading {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   color: var(--muted);
   padding: 0 10px 6px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .project-switcher {
   width: 100%;
@@ -169,6 +179,7 @@ button, input, textarea, select {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
 }
 
 .row { display: flex; gap: 12px; align-items: center; }
@@ -188,9 +199,9 @@ input[type='text'], input[type='email'], input[type='password'], input[type='num
 textarea, select {
   width: 100%;
   padding: 10px 12px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 12px;
   outline: none;
 }
 input:focus, textarea:focus, select:focus {
@@ -204,24 +215,32 @@ button {
   padding: 9px 16px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  background: var(--surface-2);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
-button:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+/* Landing rule: hover is lift + shadow, never a color change. */
+button:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-md); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #ffffff;
-  font-weight: 600;
+  font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 13px;
+  letter-spacing: 0.14em;
+  font-size: 11.5px;
+  padding: 11px 20px;
 }
-button.primary:hover:not(:disabled) { background: var(--accent-light); border-color: var(--accent-light); }
-button.ghost { background: transparent; }
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lift);
+}
+button.ghost { background: transparent; box-shadow: none; }
 button.tiny { padding: 4px 11px; font-size: 12px; }
 
 .badge {
@@ -231,8 +250,8 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   padding: 2px 9px;
   border-radius: 999px;
   font-size: 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  background: var(--tint2);
+  border: 1px solid var(--border);
   color: var(--muted);
 }
 .badge.strong { color: var(--strong); border-color: var(--strong-border); background: var(--strong-soft); }
@@ -286,9 +305,18 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 /* ---------- pipeline ---------- */
 
 .board { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; }
-.column { flex: 0 0 250px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
-.column h4 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
-.pipeline-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.column { flex: 0 0 250px; background: var(--tint2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; }
+.column h4 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); font-weight: 500; }
+.pipeline-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.pipeline-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .pipeline-card .name { font-weight: 600; font-size: 14px; }
 
 /* ---------- stats ---------- */
@@ -309,6 +337,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   padding: 24px;
 }
 .modal { width: 100%; max-width: 480px; }
+.modal-overlay .card { box-shadow: var(--shadow-pop); border-radius: var(--radius-lg); }
 
 .option {
   text-align: left;
@@ -491,8 +520,8 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
-.viewtabs a:hover { color: var(--text); background: var(--surface-2); }
-.viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+.viewtabs a:hover { color: var(--text); background: var(--tint3); }
+.viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); font-weight: 600; }
 .dgrid .pick { width: 34px; text-align: center; }
 .dgrid .pick input { margin: 0; cursor: pointer; }
 .dgrid tbody tr.selected { background: var(--accent-soft); }
@@ -580,12 +609,13 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 }
 .record-tabs button:hover:not(:disabled) {
   transform: none;
+  box-shadow: none;
   border-color: transparent;
   border-bottom-color: var(--border-strong);
   color: var(--text);
-  background: var(--surface-2);
+  background: var(--tint3);
 }
-.record-tabs button.active { color: var(--accent-light); border-bottom-color: var(--accent); }
+.record-tabs button.active { color: var(--accent-light); border-bottom-color: var(--accent); font-weight: 600; }
 /* The count rides inside the tab button, so it is part of the label rather
    than a badge that has to line up with one. */
 .tab-count {
@@ -602,7 +632,7 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
 .field-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.14em;
   color: var(--muted);
 }
 .inline-field {
@@ -669,4 +699,10 @@ button.tiny { padding: 4px 11px; font-size: 12px; }
   overflow-wrap: anywhere;
   margin: 0;
   font-family: inherit;
+}
+
+/* ---------- scrollbars (scrolling panels only) ---------- */
+.dgrid-wrap, .board, .jd-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(42, 33, 64, 0.25) transparent;
 }

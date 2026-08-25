@@ -246,6 +246,34 @@ services:
     # worker being healthy, so drop the probe rather than invent a fake one.
     healthcheck:
       disable: true
+
+  # A second worker that runs ONLY what a texter is waiting on.
+  #
+  # Priority inside one process is not enough. The general worker can be ten
+  # minutes into a batch of job parses when a text arrives, and nothing in
+  # that process can preempt work already running -- a live thread answered
+  # "Hey" 284 seconds later, at the exact second the batch drained. A separate
+  # process cannot be blocked by that batch at all.
+  #
+  # Cheap: same image, no HTTP, idle most of the time. It deliberately does
+  # not run `ensure_ticks` -- scheduling the recurring sweeps twice would
+  # double every one of them.
+  worker-intake:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+    restart: unless-stopped
+    logging: *default_logging
+    environment: *app_env
+    volumes:
+      - filedata:/app/data/files
+    depends_on:
+      api:
+        condition: service_healthy
+    command: python -m juicebox.cli work --intake-only
+    healthcheck:
+      disable: true
+
   ingest:
     build:
       context: packages/ingest

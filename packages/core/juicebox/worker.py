@@ -1100,10 +1100,33 @@ def process_job(db: Session, job: Job, *, now=None) -> None:
 INTERACTIVE_BATCH = 5
 
 
-def process_batch(db: Session, *, worker: str | None = None, now=None) -> int:
+def process_batch(
+    db: Session,
+    *,
+    worker: str | None = None,
+    now=None,
+    only: tuple[str, ...] | None = None,
+) -> int:
+    """Run a batch. ``only`` restricts this process to certain kinds.
+
+    Claiming interactive work first is not enough on its own, and the live
+    thread proved it: the worker was already ten minutes into a batch of
+    `jobs.parse` calls when a text arrived, so the reply landed 284 seconds
+    later, at the exact moment the batch drained. Nothing inside one process
+    can preempt work already running -- which is why intake gets a process of
+    its own, and this argument is how it is told so.
+    """
     now = now or utcnow()
     recover_stale_locks(db, now=now)
     me = worker or worker_id()
+
+    if only is not None:
+        jobs = claim(db, worker_id=me, now=now, kinds=only, limit=INTERACTIVE_BATCH)
+        for job in jobs:
+            process_job(db, job, now=now)
+        if jobs:
+            db.flush()
+        return len(jobs)
 
     done = 0
     for kinds, limit in ((INTERACTIVE_KINDS, INTERACTIVE_BATCH), (None, None)):
@@ -1129,16 +1152,22 @@ def drain(db: Session, *, worker: str | None = None, now=None) -> int:
     return total
 
 
-def run_loop(*, poll_seconds: float | None = None) -> None:
+def run_loop(
+    *, poll_seconds: float | None = None, only: tuple[str, ...] | None = None
+) -> None:
     from .db import session_scope
 
     settings = get_settings()
     delay = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
     wid = worker_id()
-    logger.info("worker %s polling every %.1fs", wid, delay)
+    scope = ",".join(only) if only else "all kinds"
+    logger.info("worker %s polling every %.1fs (%s)", wid, delay, scope)
     while True:
         with session_scope() as db:
-            ensure_ticks(db)
-            n = process_batch(db, worker=wid)
+            # Only the general worker schedules the recurring ticks. A second
+            # process doing it too would double every sweep.
+            if only is None:
+                ensure_ticks(db)
+            n = process_batch(db, worker=wid, only=only)
         if n == 0:
             time.sleep(max(delay, 0.2))

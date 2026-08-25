@@ -106,3 +106,57 @@ class TestWorkerDrain:
 
     def test_process_batch_is_a_no_op_when_the_queue_is_empty(self, session, account):
         assert process_batch(session, worker="test") == 0
+
+
+class TestInteractiveIsolation:
+    """A texter must not wait behind bulk work.
+
+    Live measurement: the general worker was ten minutes into a batch of
+    `jobs.parse` calls when a text arrived, and the reply landed 284 seconds
+    later -- at the exact second that batch drained. Ordering interactive work
+    first inside a claim cannot fix that, because nothing in a process can
+    preempt work already running. Hence a separate process, and hence this.
+    """
+
+    def test_claim_can_be_restricted_to_kinds(self, session, account):
+        from juicebox.jobs import (
+            INTERACTIVE_KINDS,
+            KIND_INTAKE_TURN,
+            KIND_JOBS_PARSE,
+            claim,
+            enqueue,
+        )
+
+        org = account["org_id"]
+        enqueue(session, org_id=org, kind=KIND_JOBS_PARSE, idempotency_key="p1", payload={})
+        enqueue(session, org_id=org, kind=KIND_INTAKE_TURN, idempotency_key="t1", payload={})
+        session.flush()
+
+        got = claim(session, worker_id="w1", kinds=INTERACTIVE_KINDS)
+        assert [j.kind for j in got] == [KIND_INTAKE_TURN]
+
+    def test_an_unrestricted_claim_still_takes_everything(self, session, account):
+        from juicebox.jobs import KIND_INTAKE_TURN, KIND_JOBS_PARSE, claim, enqueue
+
+        org = account["org_id"]
+        enqueue(session, org_id=org, kind=KIND_JOBS_PARSE, idempotency_key="p2", payload={})
+        enqueue(session, org_id=org, kind=KIND_INTAKE_TURN, idempotency_key="t2", payload={})
+        session.flush()
+
+        kinds = {j.kind for j in claim(session, worker_id="w2")}
+        assert kinds == {KIND_JOBS_PARSE, KIND_INTAKE_TURN}
+
+    def test_the_intake_worker_leaves_bulk_work_alone(self, session, account):
+        """It must not claim a parse job -- that is the whole point of it."""
+        from juicebox.jobs import INTERACTIVE_KINDS, KIND_JOBS_PARSE, enqueue
+        from juicebox.worker import process_batch
+
+        enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_JOBS_PARSE,
+            idempotency_key="p3",
+            payload={},
+        )
+        session.flush()
+        assert process_batch(session, worker="intake", only=INTERACTIVE_KINDS) == 0

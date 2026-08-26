@@ -14,10 +14,11 @@ Two rules carry the module:
   demonstrably HAS; ``spec.must_have_skills`` is what they *insist the next
   role uses*, and ``jobmatch.preference`` scores it against a posting's
   requirements. Writing haves into wants makes every posting that omits one
-  of their hobbies score worse — the same class of bug AGENTS.md records for
-  the heuristic extractor. Connector skills therefore go onto the
-  ``Candidate.skills`` haystack (blanks only, matching ``enrich.promote``'s
-  posture), never into the spec.
+  of their hobbies score worse — the same class of bug
+  ``packages/core/juicebox/intake/AGENTS.md`` records for the heuristic
+  extractor. Connector skills therefore go onto the ``Candidate.skills``
+  haystack (blanks only, matching ``enrich.promote``'s posture), never into the
+  spec.
 """
 
 from __future__ import annotations

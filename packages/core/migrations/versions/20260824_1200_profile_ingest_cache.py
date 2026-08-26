@@ -1,9 +1,9 @@
 """Negative cache for the paid LinkedIn profile fetch.
 
-The AGENTS.md enrichment rule, applied to the new profile provider: a real
-miss stamps ``profile_ingest_checked_at`` so the same person is never paid
-for twice, and a provider failure leaves it unstamped so a vendor's quota
-wall cannot permanently mark somebody unfetchable. ``profile_ingest_error``
+The enrichment rule in packages/foray/AGENTS.md, applied to the new profile
+provider: a real miss stamps ``profile_ingest_checked_at`` so the same person
+is never paid for twice, and a provider failure leaves it unstamped so a
+vendor's quota wall cannot permanently mark somebody unfetchable. ``profile_ingest_error``
 records why the last attempt yielded nothing.
 
 Revision ID: f2b6d94c81a7

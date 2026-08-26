@@ -690,7 +690,10 @@ class TestEndToEnd:
         assert "priya.raman@gmail.com" in candidate.emails
 
     def test_a_silent_caller_still_produces_no_person(self, session, account, no_llm):
-        """``AGENTS.md``: cold inbound calls must not fill the CRM with strangers."""
+        """Cold inbound calls must not fill the CRM with strangers.
+
+        ``packages/core/juicebox/intake/AGENTS.md`` records why.
+        """
         call = a_call(
             session,
             account,

@@ -60,8 +60,8 @@ DISCLOSURE_INBOUND_TEXT = (
 )
 DISCLOSURE_INBOUND_TEXT_VERSION = "inbound-text-v2"
 
-# The voice wrap-up question, verbatim from INTAKE_COMPLIANCE.md §6 and the
-# deployed agent definition. Consent is for application updates, not marketing.
+# The voice wrap-up question, verbatim from docs/INTAKE_COMPLIANCE.md §6 and
+# the deployed agent definition. Consent is for application updates, not marketing.
 # v2 dropped the opt-out sentence that followed the question. The *question* is
 # the consent and is unchanged -- removing the recital does not weaken what was
 # asked, and keeping the version honest is what lets a dispute about a v1 grant

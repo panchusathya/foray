@@ -120,7 +120,7 @@ def test_the_next_message_gets_the_intro(session, account, channel):
     intro = channel.bodies[-1]
     # A reset really does start over: the full intro, not a mid-conversation
     # message. Asserted on the disclosures it still carries rather than on the
-    # opt-out recital it no longer does (INTAKE_COMPLIANCE.md section 6a).
+    # opt-out recital it no longer does (docs/INTAKE_COMPLIANCE.md section 6a).
     assert "acme talent" in intro.lower()
     assert "ai" in intro.lower()
     assert "email" in intro.lower(), "back to the first question"

@@ -1,8 +1,8 @@
 """The consent copy, and the line between a sentence and a mechanism.
 
 Every greeting and the voice wrap-up used to carry a sentence about stopping.
-They no longer do -- see ``INTAKE_COMPLIANCE.md`` section 6a for the reasoning
-and, more importantly, for the exposure it creates. What these tests are for is
+They no longer do -- see ``docs/INTAKE_COMPLIANCE.md`` section 6a for the
+reasoning and, more importantly, for the exposure it creates. What these tests are for is
 the distinction that change makes easy to lose:
 
 **Removing a sentence about a mechanism is not removing the mechanism.** STOP

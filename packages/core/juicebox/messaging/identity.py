@@ -434,8 +434,9 @@ def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) ->
     The counterpart of ``intake.service.attribute_call``, with one guard a call
     does not need: a thread often knows an email, and an address already owned
     by somebody else means the recruiter is about to staple this conversation to
-    the wrong person. Refusing is the same rule ``AGENTS.md`` records for phone
-    lookups -- a wrong match is a disclosure, not a miss.
+    the wrong person. Refusing is the same rule that
+    ``packages/core/juicebox/intake/AGENTS.md`` records for phone lookups -- a
+    wrong match is a disclosure, not a miss.
     """
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.org_id != thread.org_id:

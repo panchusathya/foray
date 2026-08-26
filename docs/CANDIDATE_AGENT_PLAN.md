@@ -3,8 +3,27 @@
 Third plan in the intake series. `VOICE_INTAKE_PLAN.md` covers the phone,
 `MESSAGING_INTAKE_PLAN.md` covers text; both collect *what a candidate wants*.
 This one spends it: find the roles that fit, propose them, and — with a
-per-application yes — apply. Read `AGENTS.md` first, and `INTAKE_COMPLIANCE.md`
-before touching the fit bar.
+per-application yes — apply. Read the root `AGENTS.md` first, and
+`INTAKE_COMPLIANCE.md` before touching the fit bar.
+
+## Status
+
+**Phases A through F are built, and the feature ships inert**
+(`APPLY_SUBMITTER=console` runs the whole path and logs the application instead
+of sending it). Turning it on is `AUTO_APPLY_SETUP.md`; the rules that hold
+today are in `packages/core/juicebox/applications/AGENTS.md`.
+
+The sections below are the design record, and four of them are still load-
+bearing rather than historical:
+
+- **§2** — the two channel decisions and the mitigations that are not optional,
+  including the rule that keeps "mostly inbound" architectural: first contact
+  never happens by text.
+- **§3 and §4** — quiet hours and the three budgets, cited from
+  `messaging/cadence.py` by section.
+- **§5** — what "meets our bar" means, cited from `applications/bar.py`.
+- **§12.1–.3** — **still open, and not engineering calls.** Counsel before
+  `APPLY_SUBMITTER=live`, not before the code lands.
 
 ## Decisions taken (Tushar, 2026-08-23)
 
@@ -36,18 +55,26 @@ The proactive loop sounds like a new product. Most of its machinery is built.
 | Deferred, idempotent, retried work | `jobs.py` / `worker.py`, and `Job.run_at` |
 | Suppression on email *and* phone | `outreach/suppressions.py` + `messaging/suppression.py` |
 
-**What does not exist at all.** Verified, not assumed:
+**What did not exist at all** when this was written. Verified, not assumed —
+and all four have since been built, which is what Phases C through F were:
 
 - **Resume ingest.** No parser, no upload route, and *no blob storage anywhere
   in the repo* — no S3, no `boto3`, no `UploadFile`. Where a file lives is an
-  open decision, not an implementation detail.
+  open decision, not an implementation detail. *(Resolved: `storage.py`, local
+  filesystem behind the API, one config value from a move because the path is
+  stored on the row. Parsed facts land on `CandidateDocument.structured` and
+  reach the candidate only through `enrich/promote.py`.)*
 - **Any notion of an application.** No model, no submission path, no status.
+  *(Now `applications/`, with its own `AGENTS.md`.)*
 - **Any candidate-facing web surface.** `packages/web/src/App.jsx:128` returns
   `<LoginPage/>` before a single route renders. The public review page that
   `VOICE_INTAKE_PLAN.md` Phase 3 specified was never built. Messaging is
-  currently the *only* candidate-facing surface that exists.
+  currently the *only* candidate-facing surface that exists. *(Now
+  `packages/portal`, a separate container rather than hoisted routes — a
+  cleaner answer than the one §9 proposed.)*
 - **On-demand posting discovery.** `JobScrapeQuery` runs on a cadence. "Find
-  me the hardware roles at Tesla, now" has no path.
+  me the hardware roles at Tesla, now" has no path. *(Now
+  `KIND_JOBS_DISCOVER_ONE`.)*
 
 So the build is: three new primitives (resume, proposal, application), one new
 presentation contract, and a governance layer — on top of a matching engine
@@ -473,8 +500,15 @@ non-disclosure is not a position available to us any more. Counsel before
 
 **Engineering decisions, ours to make:**
 
-4. Blob storage: local filesystem now, or S3 from the start.
-5. Whether resume-derived facts may enter the search haystack (§7).
+4. ~~Blob storage: local filesystem now, or S3 from the start.~~ — **local
+   filesystem**, behind the API. `storage.py` records why, and why the move is
+   a data migration rather than a rewrite.
+5. ~~Whether resume-derived facts may enter the search haystack (§7).~~ —
+   **yes, but only through `enrich/promote.py`**: scalars fill blanks only, a
+   parsed value never replaces a present one, experiences and educations are
+   additive, and summary and skills move only when the candidate has none —
+   because those two feed the haystack and a resume parse quietly changing them
+   changes what recruiters find.
 6. Alaska/Hawaii in the unknown-timezone window (§3).
 7. The score floor, and whether it is per-org or global.
 8. ~~Which of Greenhouse / Lever / Ashby is the first Tier-2 adapter~~ — all

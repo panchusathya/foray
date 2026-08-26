@@ -1,5 +1,17 @@
 # Messaging Intake — Brief for the Parallel Build
 
+> **Archived.** This is the kickoff brief handed to the parallel messaging
+> build in August 2026. That build shipped, merged, and grew a Linq channel and
+> a job-card flow on top; the current design record is
+> [`docs/MESSAGING_INTAKE_PLAN.md`](../MESSAGING_INTAKE_PLAN.md) and the current
+> rules are `packages/core/juicebox/messaging/AGENTS.md`.
+>
+> **Do not follow the instructions here.** §0 asks you to confirm a goal that is
+> settled, §6 describes a merge conflict between two branches that no longer
+> exist, and §7 sets up a worktree you are not in. It is kept for the reasoning
+> in §1 through §5 — in particular why `intake/` is reused verbatim, and why the
+> gate changes job when the channel is text.
+
 You are building a **messaging channel for candidate intake**, on top of the
 voice intake work already committed on this branch's parent. A separate instance
 is concurrently building the voice side (Phase 2 of `VOICE_INTAKE_PLAN.md`) in

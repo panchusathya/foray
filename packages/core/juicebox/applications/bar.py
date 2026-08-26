@@ -16,7 +16,7 @@ per-criterion evidence; the bar is four checks over its output:
    proposing nothing.
 
 The candidate never sees a score. Reasons only; the number stays
-recruiter-side (§5, and the INTAKE_COMPLIANCE.md §5 boundary).
+recruiter-side (§5, and the docs/INTAKE_COMPLIANCE.md §5 boundary).
 """
 
 from __future__ import annotations

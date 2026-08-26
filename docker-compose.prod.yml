@@ -255,7 +255,7 @@ x-app-env: &app_env
   APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}
   # No ATS API key here on purpose: those are issued per employer, not per
   # deployment, and live encrypted in ats_board_credentials. See
-  # applications/credentials.py and AUTO_APPLY_SETUP.md.
+  # applications/credentials.py and docs/AUTO_APPLY_SETUP.md.
 
 services:
   db:

@@ -168,11 +168,11 @@ def recruiter_name() -> str:
 
 # The greeting carries exactly two disclosures: who we are, and that this is an
 # AI. It used to carry a third -- "you can stop any time" -- and that clause is
-# gone from every greeting in this package. See INTAKE_COMPLIANCE.md section 6a
-# for the reasoning and for the exposure it creates; the short version is that
-# an opt-out recital in a *greeting* reads as a marketing blast to the person
-# receiving it, which is the read that produces the complaint the recital was
-# there to prevent.
+# gone from every greeting in this package. See docs/INTAKE_COMPLIANCE.md
+# section 6a for the reasoning and for the exposure it creates; the short
+# version is that an opt-out recital in a *greeting* reads as a marketing blast
+# to the person receiving it, which is the read that produces the complaint the
+# recital was there to prevent.
 #
 # **Keyword handling is untouched and must stay that way.** STOP still stops,
 # HELP still answers, the acknowledgement still goes out, and
@@ -289,7 +289,7 @@ HELP_REPLY = (
 # The first message of a candidate-agent thread. A shared number means the
 # candidate cannot recognise the sender, so this still names the org and
 # discloses the AI in the first breath. The STOP/HELP recital it used to carry
-# is gone -- see the note above ``greeting_for`` and INTAKE_COMPLIANCE.md
+# is gone -- see the note above ``greeting_for`` and docs/INTAKE_COMPLIANCE.md
 # section 6a. The keywords themselves still work on this thread like any other.
 MANAGER_GREETING = (
     "Hi — I'm the AI recruiting assistant for {org}. I can find roles that fit "

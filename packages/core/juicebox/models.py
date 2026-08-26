@@ -147,8 +147,8 @@ class Candidate(Base, TimestampMixin):
     current_company_normalized: Mapped[str] = mapped_column(
         String(240), default="", server_default="", index=True
     )
-    # Negative cache for the paid LinkedIn profile fetch (AGENTS.md house
-    # rule): a real miss is stamped so it is never paid for twice; a provider
+    # Negative cache for the paid LinkedIn profile fetch (the house rule in
+    # packages/foray/AGENTS.md): a real miss is stamped so it is never paid for twice; a provider
     # outage is NOT, so a quota wall cannot mark somebody unfetchable forever.
     profile_ingest_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

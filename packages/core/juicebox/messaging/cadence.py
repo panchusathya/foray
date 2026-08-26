@@ -1,4 +1,5 @@
-"""Quiet hours and outbound budgets — CANDIDATE_AGENT_PLAN.md §3 and §4 in code.
+"""Quiet hours and outbound budgets — §3 and §4 of
+docs/CANDIDATE_AGENT_PLAN.md, in code.
 
 TCPA restricts solicitation to 8am-9pm in the *recipient's* local time, and we
 do not reliably know where the recipient is. The design here follows the plan:

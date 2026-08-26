@@ -11,7 +11,7 @@ The mitigation is structural, not verbal: the queries below are the complete
 list, the DTOs have no field for a subject or a body, and the only bytes ever
 persisted are one attachment the candidate chose to hear back about.
 Publishing past Google's Testing mode requires app verification plus a CASA
-assessment — an ops decision, tracked in INTAKE_COMPLIANCE.md, that
+assessment — an ops decision, tracked in docs/INTAKE_COMPLIANCE.md, that
 ``is_configured()`` keeps out of the code.
 
 Testing-mode caveat: refresh tokens expire after 7 days there. The first

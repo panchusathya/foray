@@ -1,9 +1,10 @@
 """One person, two channels, one record.
 
 Voice and text ask the same questions and write the same
-``candidate_preferences`` row. ``AGENTS.md`` records why that is dangerous: the
-two writers never conflict textually, so they diverge silently and the
-divergence is only visible to somebody who reads both. Three had accumulated.
+``candidate_preferences`` row. ``packages/core/juicebox/intake/AGENTS.md``
+records why that is dangerous: the two writers never conflict textually, so
+they diverge silently and the divergence is only visible to somebody who reads
+both. Three had accumulated.
 
 **A call overwrote what a text had captured.** ``upsert_preference`` assigned
 every column from the call's record, so somebody who texted their comp

@@ -69,11 +69,17 @@ docker compose up --build         # api :8000, web :5173, ingest :8787, postgres
 
 | Path | What it is |
 |---|---|
-| `packages/core` | Python. The engine and the HTTP API — enrichment, search, outreach, agents. |
+| `packages/core` | Python. The engine, the HTTP API, the worker and the CLI — enrichment, search, outreach, agents, intake, applications. |
+| `packages/foray` | Python. A separate sourcing service with its own database and no ORM: GitHub-derived candidate search with precomputed archetype scores. |
+| `packages/web` | React + Vite (plain JS/JSX, no TypeScript). The recruiter app: search, pipelines, sequences, agents, analytics. |
+| `packages/portal` | React + Vite. The candidate-facing app, in its own container. |
 | `packages/ingest` | Node (JS, zero dependencies). File/CSV imports, GitHub sourcing, inbound webhooks. |
-| `packages/web` | React + Vite (plain JS/JSX, no TypeScript). Search, pipelines, sequences, agents, analytics. |
 | `eval/` | Labelled query set + scoring harness for search quality. |
 | `data/seed/` | Generated corpus, exportable to JSONL. |
+| `docs/` | The design record, the compliance rules, and the setup runbooks — [indexed here](docs/README.md). |
+
+Working on the code rather than running it? [`AGENTS.md`](AGENTS.md) is the
+orientation, and each package has its own beside the code it governs.
 
 ---
 

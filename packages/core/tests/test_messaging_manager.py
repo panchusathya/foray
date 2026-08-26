@@ -137,9 +137,9 @@ class TestOnboardingDefaults:
         CANDIDATE_AGENT_PLAN §2 asked this line for three things: who we are,
         that this is an AI, and the way out. It now carries the first two. The
         opt-out recital was removed deliberately and at a cost -- see
-        INTAKE_COMPLIANCE.md section 6a, which records both the argument and
-        the carrier-review exposure, and SMS_ENABLEMENT.md, which makes it a
-        blocker to re-review before SMS goes live. The keyword *handling* is
+        docs/INTAKE_COMPLIANCE.md section 6a, which records both the argument
+        and the carrier-review exposure, and docs/SMS_ENABLEMENT.md, which
+        makes it a blocker to re-review before SMS goes live. The keyword *handling* is
         untouched and pinned by ``test_intake_consent_copy.py``.
         """
         _say(session, thread, "hey")

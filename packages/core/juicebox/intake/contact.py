@@ -10,8 +10,8 @@ ordinary candidate row.
 This module is in ``intake`` rather than ``messaging`` because ``intake`` is the
 lower layer: ``messaging`` imports it, and the reverse would be a cycle. Both
 channels ask the same two questions, and a second definition of "does this look
-like a name" is a second answer to it -- the drift ``AGENTS.md`` records against
-every other copied predicate here.
+like a name" is a second answer to it -- the drift this package's
+``AGENTS.md`` records against every other copied predicate here.
 
 Nothing in here calls a model. An address is unambiguous, and a name arrives as
 the answer to the question that just asked for one; neither needs judgement, and

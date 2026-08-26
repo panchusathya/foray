@@ -1,97 +1,50 @@
 # Voice Intake Agent — Build Plan (rev. 2, after repo recon)
 
-Supersedes the pre-recon draft. Read this before writing code; read `AGENTS.md`
-first for repo-wide conventions.
+The design record for candidate intake by phone. Superseded the pre-recon
+draft. Read the root `AGENTS.md` for repo-wide conventions and
+`packages/core/juicebox/intake/AGENTS.md` for the rules that hold today; read
+this for why they hold.
 
 ## Status
 
-**Next wave (slices 0–3) is the work after Phases 1–3.** Human-feeling
-calls, the recruiter read path, and preference-aware matching. These slices
-are numbered separately on purpose — this file already owns Phases 1–6.
-Phase 5 below is delivered by slice 3. Open decision 2 is closed: the agent
-is **Vivian**, AI disclosure retained, firm name Foray. SMS is not built
-here; that belongs to `feat/messaging-intake`.
+**Phases 1–5 are built and the line has taken real calls.** What is left of this
+document is the reasoning, not a plan: read it for *why* intake is shaped this
+way, and read `packages/core/juicebox/intake/AGENTS.md` for the rules that hold
+today.
 
-**Phase 0 (recon) complete.** Findings below changed five things in the original plan.
+- **Phase 6 is the outstanding one** — the persona eval suite (evasive,
+  rambling, hurried, hostile, non-native speaker, exploding offer), graded per
+  field in the style of `eval/queries.yaml`: rules over attributes, never frozen
+  expected values. `eval/` has `queries.yaml` and `job_match.yaml` and no
+  persona set.
+- **Provider is Retell**, on a Twilio number imported over a SIP trunk. The
+  platform choice went Retell → Synthflow → Retell before a line of provider
+  code was written and nothing had to change, which is what the `VoiceProvider`
+  adapter is for. Keep it that way.
+- **The live number is `+1 (628) 386-5454`**, local, on our own Twilio account.
+  It superseded the toll-free `+1 (888) 260-0142`; the reasoning for both is
+  kept below under "The toll-free detour". Everything that lives in a console
+  rather than in this repo — country restrictions, the fallback number, the
+  trust add-ons, and the 10DLC path — is tracked in
+  `deploy/NUMBER_CHECKLIST.md`, which is the current source of truth for the
+  line.
+- **The agent is Vivian**, an AI recruiting assistant with Foray. AI disclosure
+  stays in the opening.
+- **Compliance guardrails live in `docs/INTAKE_COMPLIANCE.md`** and are enforced
+  in the agent prompts and the schema rather than only documented: salary
+  history is never asked, work authorisation is capped at the two permitted
+  questions, protected categories have no field to land in, and the intake path
+  carries no score, rank or recommendation.
+- **Text intake is not built here.** It runs the same gate and writes the same
+  record — `docs/MESSAGING_INTAKE_PLAN.md`.
 
-**Phase 1 complete.** Provider is **Retell**. Schema, models, migration and
-extraction are in, with 69 tests passing and the full core suite green (808
-passed). Non-obvious rules are recorded in `AGENTS.md` under "Voice intake".
-Shipped:
-
-- `juicebox/intake/schema.py` — the field set, tiered into a required gate and an
-  enrichment tier, plus `coverage()` and `next_questions()`.
-- `juicebox/intake/extract.py` — transcript to preference record, model path with
-  a strict JSON schema and a deliberately incomplete heuristic fallback.
-- `juicebox/intake/phones.py` — E.164 lookup keys that refuse to guess a country.
-- `IntakeCall`, `CandidatePreference`, `CandidatePhone` + migration
-  `c1a7f4e05b93` (backfills the phone projection).
-- `repository.sync_candidate_phones`, wired wherever `Candidate.phones` changes.
-- `tests/test_intake.py`, `tests/intake_fixtures.py`.
-
-**Adaptive call length** (added after recon, at Tushar's request): the field set
-is tiered, and `coverage()` computes a `required_complete` flag from the record.
-A cooperative caller who has answered the gate can be released in two to three
-minutes; a caller who has not keeps going. The decision is data, never the
-model's sense of elapsed time. A *declined* field counts as covered, which is
-what lets a caller who refuses to discuss comp still finish the call.
-
-**Platform: Retell**, with a Twilio number imported into it. Synthflow was
-evaluated and dropped — capable, but it would have owned the agent runtime too.
-No Phase 1 code changed through either switch; see "Provider adapter".
-
-**Phase 1.5 — number provisioned. ✅** First `+1 (888) 260-0142`, toll-free,
-bought through Retell; see "The toll-free detour" for the trade it forced and
-why it was unwound.
-
-**Superseded (2026-08-23): the live number is now the local `+1 (628) 386-5454`**,
-bought on our own Twilio account and brought into Retell over the SIP trunk
-(`twilio_provision.py` trunk/attach + `retell_agents.py import`). The toll-free
-trade is unwound; the 888 stays detached until the 628 has taken a few real
-calls, then gets released. Console steps live in `deploy/NUMBER_CHECKLIST.md`.
-
-Outstanding on the number, none of which block Phase 2 code — now tracked, with
-the Twilio trust add-ons and the whole SMS path, in `deploy/NUMBER_CHECKLIST.md`:
-- Restrict allowed inbound/outbound countries to US (+CA) — abuse and spend control.
-- Set the fallback number to a real recruiter, so concurrency overflow reaches a human.
-- Buy Verified Phone Number and Branded Call; both have lead time.
-- Leave both webhook fields blank until the Phase 2 routes exist.
-
-**Compliance guardrails consolidated** in `INTAKE_COMPLIANCE.md`, and enforced
-in the agent prompts and schema rather than only documented: salary history is
-never asked (expectations only), work authorization is capped at the two
-permitted questions, protected categories have no field to land in, and the
-intake path carries no score, rank, or recommendation. TCPA SMS opt-in is now
-asked at wrap-up and captured per call (`intake_calls.sms_opt_in`, migration
-`e5f0a92c7d18`, latched like `consent_recording`) so lawful opt-ins accumulate
-while texting itself waits on the entity and 10DLC registration.
-
-**Phase 2 complete.** 45 new tests, full suite 853 passed, ruff clean. Shipped:
-
-- `intake/providers.py` — `VoiceProvider` protocol, `RetellProvider` (signature
-  verification + event normalisation), `FakeVoiceProvider`, and `CallEvent` as
-  the shape nothing downstream sees past.
-- `routers/intake.py` — `POST /v1/intake/webhook` (verify → record → queue →
-  return) and `POST /v1/intake/coverage` (the mid-call gate). Unauthenticated,
-  signature-verified, following `routers/track.py`.
-- `intake/service.py` — org and caller resolution, event recording, extraction,
-  preference upsert, coverage snapshots. Shared by the router and the worker so
-  neither owns domain logic.
-- `IntakeNumber` + migration `d2b8c31f9e47` — the number-to-org map that makes
-  org resolution possible without trusting the payload.
-- `KIND_INTAKE_EXTRACT` + worker handler, idempotent on the call row.
-- `juicebox intake-number` CLI to register a number.
-- Retell settings in `config.py`; `RETELL_API_KEY` doubles as the webhook secret.
-
-Exit criteria met: a replayed webhook produces an `IntakeCall` and a
-`CandidatePreference` via the worker; forged, unsigned, stale and re-serialised
-requests are all refused; duplicate deliveries are a no-op.
-
-Next: **Phase 3** — author the two agents (inbound status-line, outbound intake),
-register `check_coverage` as a custom function against them, and build the
-website widget. Blocked on one thing: the two endpoints must be publicly
-reachable before an agent can call them, so `app.goforay.io` needs to be serving
-this branch (or a tunnel for development).
+**Adaptive call length** (added after recon, at Tushar's request) is the idea
+most worth carrying forward: the field set is tiered, and `coverage()` computes
+`required_complete` from the record. A cooperative caller who has answered the
+gate is released in two to three minutes; a caller who has not keeps going. The
+decision is data, never the model's sense of elapsed time. A *declined* field
+counts as covered, which is what lets a caller who refuses to discuss comp still
+finish the call.
 
 ---
 
@@ -134,7 +87,8 @@ this branch (or a tunnel for development).
    (`security.py:signed_tracking_token` / `verify_tracking_token`), org read off
    the *server-side row* and never off the request. Voice minutes are metered
    spend, so an unsigned public endpoint is a billing-DoS, not just a data leak.
-   `AGENTS.md` already warns about this class of mistake in the Foray notes.
+   The root `AGENTS.md` carries this as a repo-wide non-negotiable, and
+   `packages/foray/AGENTS.md` has the case it came from.
 
 5. **The recruiter web app is fully auth-gated and is not the marketing site.**
    `App.jsx:124` returns `<LoginPage/>` before any route renders. A
@@ -349,54 +303,16 @@ second opinion for the `diff_records` cross-check.
 
 ## Phases
 
-**Phase 1 — Schema, models, extraction. No vendor. ✅ DONE**
-`CandidatePreference` / `IntakeCall` / `CandidatePhone` + Alembic migration.
-Extraction: transcript → `ParsedQuery` + extension fields via `llm.json` with a
-strict schema in `prompts.py`, plus a heuristic fallback, following
-`jobmatch/spec.py`'s conservative posture (invented constraints are the expensive
-failure). Run both a live-extraction and a post-hoc pass and diff them.
-*Exit: a committed transcript fixture extracts to a schema-valid, taxonomy-normalised
-preference record, tested with `FakeTransport` and no API key.*
+Phases 1 through 5 are built; the Status block above says what each delivered.
+The exit criteria they were written against are preserved in git, and the rules
+they produced are in `packages/core/juicebox/intake/AGENTS.md`.
 
-**Phase 2 — Webhook, org resolution, queue.** Unauthenticated signed router
-following `track.py`. Org resolved from the dialled number or a signed widget
-token — never from the payload. Webhook returns 200 immediately and enqueues
-`intake.extract` (new `KIND_`), idempotent on provider call id. Wire the chosen
-provider adapter.
-*Exit: a replayed provider webhook produces an `IntakeCall` + preference record via
-the worker; a forged or unsigned request is rejected; a duplicate webhook is a no-op.*
-
-**Phase 3 — Agent + website entry point.** Author the intake agent. Its system
-prompt carries the gate as a goal checklist and it calls a `check_coverage` tool
-mid-call, so `next_questions()` — not the model's sense of elapsed time — decides
-what to ask and when to wrap up. Target two to three minutes when the gate
-closes, longer when it does not; adaptive follow-ups, two per topic max.
-Embeddable widget: in-browser call plus "call me" number entry.
-Pre-call context passed as provider metadata so the agent never re-asks a known
-fact. Public review page (routes hoisted above the auth gate) where the candidate
-corrects what was captured and sets confidentiality.
-*Exit: stranger → completed call → corrected record, on desktop and mobile.*
-
-**Phase 4 — Dial-in status line.** Inbound number; caller lookup via
-`CandidatePhone`; **verification before disclosure** (see amended criterion 3);
-diff-mode update conversation; unknown caller falls through to full intake;
-recruiter alert on material change (offer, deadline, accepted elsewhere). Respect
-the existing `Suppression` / do-not-contact list.
-
-**Phase 5 — Match-engine integration (the payoff). Delivered by next-wave
-slice 3.** `preference_term` is a third weighted term in `score_pair`
-(`None` / scored / veto). Enqueue and the match tick key off
-`preference.updated_at` and `JobMatchWatermark.engine_version`. Intake
-state and the review queue landed with slice 2 (`/intake`, Contacts
-`voice_intake` scope, candidate Intake tab).
-
-**Phase 6 — Hardening.** Persona eval suite (evasive, rambling, hurried, hostile,
-non-native speaker, exploding offer) graded per field, in the style of
-`eval/queries.yaml` — rules over attributes, not frozen expected values. Rate
-limiting and abuse handling on the public number. Recording retention policy.
-Add a Voice Intake section to `AGENTS.md` recording the non-obvious failure modes.
-
-Each phase ends demoable. Do not start Phase 3 before Phase 2's exit criteria pass.
+**Phase 6 — Hardening. Outstanding.** Persona eval suite (evasive, rambling,
+hurried, hostile, non-native speaker, exploding offer) graded per field, in the
+style of `eval/queries.yaml` — rules over attributes, not frozen expected
+values. Rate limiting and abuse handling on the public number. Recording
+retention policy. (The non-obvious failure modes are now recorded, in
+`packages/core/juicebox/intake/AGENTS.md` rather than in the root file.)
 
 ---
 
@@ -429,14 +345,19 @@ gives legal or visa advice.
 
 ## Open decisions
 
-1. ~~Vapi or Retell~~ — **decided: Retell.** The `VoiceProvider` adapter still
-   goes in, so the choice stays reversible and tests get a `fake` provider.
-2. ~~Firm name and branding the agent uses on calls~~ — **decided: Vivian**,
-   an AI recruiting assistant with Foray. Disclosure stays in the opening.
-   Human-handoff destination is still open.
-3. **Outbound caller identity** — the "call me" flow needs a verified/branded number
-   with STIR-SHAKEN attestation and CNAM registration or it gets spam-labelled.
-   Days of lead time; start it during Phase 2, not Phase 4.
-4. **Recording retention**, and whether calls may be used to improve prompts.
-5. **Which functions we recruit for** — sharpens the title taxonomy beyond the
+Decided, and kept because the reasoning still binds: the provider is **Retell**
+behind a `VoiceProvider` adapter, so the choice stays reversible and tests get a
+`fake`; the agent is **Vivian**, an AI recruiting assistant with Foray, with the
+disclosure in the opening. The human-handoff destination is still open.
+
+Still open:
+
+1. **Outbound caller identity** — the "call me" flow needs a verified and
+   branded number with STIR-SHAKEN attestation and CNAM registration or it gets
+   spam-labelled. Days to weeks of lead time. Now tracked as two Twilio console
+   items in `deploy/NUMBER_CHECKLIST.md` rather than here.
+2. **Recording retention**, and whether calls may be used to improve prompts.
+   `docs/INTAKE_COMPLIANCE.md` §7 carries this as its open decision #2, along
+   with the Retell DPA.
+3. **Which functions we recruit for** — sharpens the title taxonomy beyond the
    current tech-role bias in `enrich/taxonomy.py`.

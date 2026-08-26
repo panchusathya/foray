@@ -375,9 +375,9 @@ def intro_message(*, recruiter: str, org: str) -> str:
     of a *marketing blast*; on a first message that reads like one it is
     self-fulfilling, because an opt-out line is the single strongest cue that
     what follows is bulk. The keywords still work -- ``looks_like_stop`` and
-    ``handle_stop`` are untouched -- and INTAKE_COMPLIANCE.md section 6a records
-    both the reasoning and the exposure, because this trade is a judgement call
-    and not a free win.
+    ``handle_stop`` are untouched -- and docs/INTAKE_COMPLIANCE.md section 6a
+    records both the reasoning and the exposure, because this trade is a
+    judgement call and not a free win.
     """
     name = (recruiter or "vivian").strip() or "vivian"
     org_name = (org or "our team").strip() or "our team"

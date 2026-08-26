@@ -116,9 +116,9 @@ class TestLinkedinShortFlow:
         assert "vivian" in body
         # The two disclosures that survive: who we are, and that this is an AI.
         # The opt-out recital that used to be the third is gone --
-        # INTAKE_COMPLIANCE.md section 6a has the reasoning and the exposure,
-        # and ``test_intake_consent_copy.py`` is where this is now asserted
-        # across every greeting at once.
+        # docs/INTAKE_COMPLIANCE.md section 6a has the reasoning and the
+        # exposure, and ``test_intake_consent_copy.py`` is where this is now
+        # asserted across every greeting at once.
         assert "acme talent" in body
         assert "ai" in body
         assert "STOP" not in body and "HELP" not in body

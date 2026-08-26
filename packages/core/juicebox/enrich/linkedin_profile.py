@@ -14,7 +14,7 @@ House rules, all enforced here or by the worker handler:
 * **A real miss stamps the negative cache** (``profile_ingest_checked_at``) so
   it is never paid for twice; **a vendor failure never does** — a quota wall
   must not permanently mark a person unfetchable (the ContactOut lesson,
-  AGENTS.md).
+  ``packages/foray/AGENTS.md``).
 * The vendor's exact wire format lives in ``ScrapinProvider`` alone. Confirm
   during onboarding: auth header name, the profile-response shape below, rate
   limits, and what a private/dead profile returns.

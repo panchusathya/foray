@@ -1,40 +1,33 @@
 # Messaging Intake — Build Plan
 
-Companion to `VOICE_INTAKE_PLAN.md`, not a replacement for it. Read `AGENTS.md`
-first for repo-wide conventions, and its "Messaging intake" section for the
-non-obvious failure modes this build found.
+The design record for running the intake conversation over text. Companion to
+`VOICE_INTAKE_PLAN.md`, not a replacement for it. Read the root `AGENTS.md` for
+repo-wide conventions and `packages/core/juicebox/messaging/AGENTS.md` for the
+rules that hold today; read this for why they hold.
 
 ## Status
 
-**§0 confirmed with Tushar: a text channel that runs the same intake
-conversation as the voice agent** — web chat first, SMS behind an adapter.
-Not a recruiter texting inbox, and not post-call SMS follow-ups.
+**Web chat and Linq iMessage are both live.** The goal §0 settled on — a text
+channel that runs the *same* intake conversation as the voice agent, writing the
+same `CandidatePreference` — is what shipped. Everything that decides *what* to
+ask is `juicebox/intake/` and is reused verbatim; `juicebox/messaging/` owns only
+what is different about text.
 
-**Phase 1 complete.** Web chat is working end to end against the real seeded
-database with no `ANTHROPIC_API_KEY`. 50 new tests, full suite green
-(858 passed, 5 skipped), ruff clean, migration drift test passing.
+Since the first pass, three things this document lists as unbuilt have been
+built: quiet hours (`messaging/cadence.py`, deferring to the window through
+`Job.run_at` rather than a scheduler), HELP alongside STOP
+(`suppression.looks_like_help`), and the nginx rate limit on the public chat
+routes. Proposing roles in a thread arrived later still, along with the
+proactive sends in `messaging/notify.py`; both are documented in the package
+file, not here.
 
-Shipped:
+**Nudging is still not built.** The budget that would govern one is in
+`cadence.py` — `INITIATIVE_NUDGE`, `ORIGIN_NUDGE`, `REASON_NUDGE_BUDGET` — and
+nothing outside that module references them, because nothing ever sends a
+nudge.
 
-- `juicebox/messaging/` — a new package, so the bulk of this cannot conflict
-  with the voice branch.
-  - `channels.py` — `MessageChannel` protocol + registry, `WebChatChannel`,
-    `FakeChannel`. The `MailProvider` pattern applied to messaging.
-  - `threads.py` — thread and message persistence, `seq` ordering, inbound
-    idempotency, transcript rendering.
-  - `conversation.py` — `run_turn`, the cadence rules, extraction routing.
-  - `records.py` — the monotonic merge and the `CandidatePreference` upsert.
-  - `identity.py` — contact name and address, kept off the spec.
-  - `suppression.py` — do-not-contact and STOP.
-  - `prompts.py` — candidate-facing question wording and the compose prompt.
-  - `schemas.py` — request/response models.
-- `IntakeThread`, `IntakeMessage`, `CandidatePreference.source_thread_id`
-  + migration `b7e2c94af013`.
-- `routers/messaging.py` — one authenticated route for the widget token, three
-  unauthenticated chat routes following `track.py`.
-- `security.signed_intake_token` / `verify_intake_token` — purpose-scoped HMAC.
-- `KIND_INTAKE_TURN` + worker handler, the path SMS will use.
-- `tests/test_messaging.py`.
+**Twilio SMS is the outstanding channel**, and it is blocked on the legal entity
+rather than on code — see "Phase 2" below and `deploy/NUMBER_CHECKLIST.md`.
 
 ---
 
@@ -94,10 +87,12 @@ nothing. `contact_name` and `contact_email` are columns on `IntakeThread`, not
 keys in `spec` — `ParsedQuery` has no field for a name, and putting one there
 would be a field `jobmatch.engine` cannot score.
 
-**Two things sit outside their usual homes on purpose.**
+**Two things sit outside their usual homes on purpose, and stay there.**
 `messaging/prompts.py` and `messaging/schemas.py` would normally be
-`llm/prompts.py` and `schemas.py`, both of which the voice branch is appending
-to. Promote after the merge.
+`llm/prompts.py` and `schemas.py`. The original reason was that the voice branch
+was appending to both, with a plan to promote after the merge; that reason is
+gone and the self-contained boundary turned out to be the better one. Settled —
+do not re-litigate the move.
 
 ---
 
@@ -124,10 +119,10 @@ Three defects, all caught by running the thing rather than by the unit tests.
    strangers both sending `"1"` would have the second swallowed. Now scoped to
    the thread.
 
-### Pre-existing, in shared code — for the voice branch, not fixed here
+### Pre-existing, in shared code — since fixed, and worth keeping for the shape
 
-`intake/extract.py:_heuristic_titles` leaks the verb phrase into the title when
-the sentence starts "I'm after a …":
+`intake/extract.py:_heuristic_titles` leaked the verb phrase into the title when
+the sentence started "I'm after a …":
 
 ```
 "I'm after a senior machine learning engineer role."  -> ['m after machine learning engineer']
@@ -135,9 +130,28 @@ the sentence starts "I'm after a …":
 "I want a staff backend engineer role."               -> ['backend engineer']       # correct
 ```
 
-Untouched here because `intake/` is the voice branch's working area. It matters
-more on this channel than on voice, because text with no API key leans on the
-heuristic path by default.
+Untouched at the time because `intake/` was the voice branch's working area.
+That reason expired when the branches merged and the defect did not — it
+survived on `main` for months. It mattered more on this channel than on voice,
+because text with no API key leans on the heuristic path by default, and a
+title no posting carries is the field `search.scoring.assess` penalises
+hardest.
+
+**The reason it survived is the part worth remembering.** The last pattern in
+`_TITLE_CAPTURES` has no left anchor — it takes whatever precedes "role" — so
+*every* one of these sentences hands `normalize_title` the entire clause. The
+third line came out right only because `TITLE_ALIASES` happens to hold "backend
+engineer", so the progressive-suffix lookup rescued it. Nothing about the
+capture was working; the alias table was covering for it one title at a time,
+and the correct-looking neighbour is what made the broken one read as an
+oddity rather than a bug. When a heuristic is right for some inputs and wrong
+for others, check whether a lookup table is doing the work before concluding
+the pattern is nearly right.
+
+Fixed by trimming the captured phrase at the last word that cannot belong to a
+title (`_TITLE_BREAK_WORDS`, `_title_phrase`), before the role-noun check
+rather than after — so a phrase that loses its noun to the trim records
+nothing.
 
 ---
 
@@ -174,8 +188,13 @@ Shipped on the Linq path:
 5. **Rate caps** — `MAX_INBOUND_PER_THREAD` and org thread cap include `linq_inbound`.
 6. **Voice outbound fix** — `IntakeNumber.provider == "retell"` on dial-out query.
 
-Twilio SMS remains deferred until TFV clears (draft on
-`origin/cursor/messaging-intake-sms-5fd9`). The seam is in; this is the checklist:
+Twilio SMS remains deferred. The blocker moved with the number: the line is
+the local `+1 (628) 386-5454`, so the path is **A2P 10DLC** — brand plus
+campaign, under the legal entity — not Toll-Free Verification, and nothing can
+be filed until the entity exists and the EIN has propagated
+(`deploy/NUMBER_CHECKLIST.md`). A draft adapter is on
+`origin/cursor/messaging-intake-sms-5fd9`. The seam is in; this is the
+checklist:
 
 1. **An `SmsChannel` implementing `MessageChannel`**, plus a webhook parser
    returning `(provider_native_id, from_address, to_address, body)`. It must
@@ -188,20 +207,26 @@ Twilio SMS remains deferred until TFV clears (draft on
    vendor immediately.
 4. **Resolve the sender to a thread** — an active one for that number, or a new
    one. `intake.phones.lookup_key` matches the number to a candidate, and it
-   refuses to guess a country code for the reason `AGENTS.md` records: a wrong
-   phone match discloses somebody else's record.
-5. **Close the suppression gap.** `Suppression` is keyed on email. The stopped-
-   thread lookup covers a stranger's STOP, but the durable fix is a phone
-   column, which touches a table the voice branch also writes to — hence
-   deferred, and it must land before the first outbound text.
-6. **HELP.** Carrier-mandated alongside STOP, and not implemented.
-7. **Quiet hours.** TCPA is 8am–9pm in the *recipient's* local time, which
-   means capturing a timezone. Web chat needs none of this; SMS cannot ship
-   without it.
+   refuses to guess a country code for the reason
+   `packages/core/juicebox/intake/AGENTS.md` records: a wrong phone match
+   discloses somebody else's record.
+5. ~~**Close the suppression gap.**~~ Done. `Suppression` grew a phone column,
+   `handle_stop` writes it and `is_blocked` reads it; the stopped-thread lookup
+   stays as the second read, because `lookup_key` refuses to guess a country
+   code and a number it cannot parse has no `Suppression` row.
+6. ~~**HELP.**~~ Done — `suppression.looks_like_help`, carrier-mandated
+   alongside STOP.
+7. ~~**Quiet hours.**~~ Done — `messaging/cadence.py`, with the
+   unknown-timezone window and the reply carve-out from
+   `CANDIDATE_AGENT_PLAN.md` §3. Deferral reuses `Job.run_at`; there is no
+   scheduler.
 
-## Before this reaches production
+Items 1 through 4 are the ones that remain, and none of them can be exercised
+until the 10DLC campaign clears.
 
-Two gates, neither optional. Both are why the branch is a PR rather than a merge.
+## Before this reached production — both gates are closed
+
+Kept because both are the kind of thing that gets re-opened.
 
 1. **The chat routes are unauthenticated and have model spend behind them.**
    That is by design — a stranger on a careers page has no principal — and the
@@ -212,84 +237,41 @@ Two gates, neither optional. Both are why the branch is a PR rather than a merge
    open. This is the billing-DoS shape `VOICE_INTAKE_PLAN.md` flags for voice
    minutes, arriving here as tokens.
 
-   **Until a rate limit is in, do not point a public widget at this.** The
-   routes are harmless while nothing links to them, and the recruiter-facing
-   `/v1/intake/widget-token` is authenticated as normal.
-
-   The obvious place is the edge, where `deploy/Caddyfile` already blocks
-   `/v1/auth/signup` for the same class of reason — but that is the wrong
-   answer here. `docker-compose.prod.yml` runs the stock `caddy:2-alpine`, and
-   Caddy's `rate_limit` is a third-party module that needs an `xcaddy` build.
-   The chain is caddy -> web (nginx) -> api, and `limit_req` *is* compiled into
-   the stock nginx image, so the config-only fix lives in
-   `packages/web/nginx.conf`:
-
-   ```nginx
-   # http context: conf.d/*.conf is included inside http{}, so this goes at the
-   # top of the file, outside the server{} block.
-   limit_req_zone $binary_remote_addr zone=intake_chat:10m rate=20r/m;
-
-   # Behind Caddy, $binary_remote_addr is the Caddy container's IP -- without
-   # this every visitor shares one bucket and the limit throttles everyone or
-   # nobody.
-   set_real_ip_from 172.16.0.0/12;   # docker bridge
-   real_ip_header X-Forwarded-For;
-   real_ip_recursive on;
-
-   # inside server{}, ABOVE `location /v1/` so it wins the prefix match
-   location /v1/intake/chat/ {
-     limit_req zone=intake_chat burst=10 nodelay;
-     limit_req_status 429;
-     set $api_upstream api;
-     proxy_pass http://$api_upstream:8000;
-     proxy_set_header Host $host;
-     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-     proxy_set_header X-Forwarded-Proto $scheme;
-     proxy_read_timeout 300s;
-   }
-   ```
+   **Closed by a rate limit in `packages/web/nginx.conf`** — `limit_req_zone
+   intake_chat` at 20r/m with `burst=10`, on a `location /v1/intake/chat/` block
+   above `location /v1/` so it wins the prefix match. It is nginx rather than
+   the edge because `docker-compose.prod.yml` runs the stock `caddy:2-alpine`
+   and Caddy's `rate_limit` is a third-party module needing an `xcaddy` build,
+   while `limit_req` is compiled into the stock nginx image. The
+   `set_real_ip_from` / `real_ip_header` lines beside it are load-bearing:
+   behind Caddy, `$binary_remote_addr` is the Caddy container's IP, so without
+   them every visitor shares one bucket and the limit throttles everyone or
+   nobody.
 
    The durable version is still a per-org thread-creation cap in the route,
-   where it can be counted per tenant rather than per IP.
+   where it can be counted per tenant rather than per IP. Not built.
 
 2. **Migration rehearsal.** `deploy/README.md` asks for a rehearsal against a
    restored dump on staging before merging to `main`. `b7e2c94af013` creates
    two tables and adds one column to `candidate_preferences` through
    `batch_alter_table` — on SQLite that rebuilds the table, on Postgres it is a
-   plain `ALTER`. The Postgres path is the one to watch, and CI covers it.
+   plain `ALTER`. The Postgres path is the one to watch, and CI covers it. This
+   is standing practice now, not a one-off: `deploy/STAGING.md`.
 
 ---
 
-## Handover
+## The web chat surface
 
-**Branch:** `feat/messaging-intake`, off `d481e52`. Open as a PR against `main`,
-not merged — see the two gates above, and the merge-order note below.
+Web chat works end to end with or without an `ANTHROPIC_API_KEY`. A recruiter
+gets a widget token from `GET /v1/intake/widget-token` (authenticated as
+normal); the page posts to `POST /v1/intake/chat/sessions` and then
+`.../messages`. A finished conversation writes a `CandidatePreference` that
+`jobmatch.engine.score_pair` can read.
 
-**What works today:** web chat, end to end, with or without an
-`ANTHROPIC_API_KEY`. Recruiter gets a widget token from
-`GET /v1/intake/widget-token`; the page posts to `POST /v1/intake/chat/sessions`
-and then `.../messages`. A finished conversation writes a `CandidatePreference`
-that `jobmatch.engine.score_pair` can read.
-
-**What is not built:** SMS (the number has no SMS), nudging (decided, not
-written), HELP, quiet hours, a candidate review step, and any recruiter alert
-when an intake lands.
-
-**Merge order — decided: voice first, messaging second.** Both branches add an
-Alembic revision with `down_revision = c1a7f4e05b93`, so one has to rebase, and
-it should be this one:
-
-- This branch is strictly additive (new package, new tables, new routes) and
-  touches neither `intake/` nor `config.py`. Rebasing it is a one-line
-  `down_revision` change and a re-run of `tests/test_migrations.py`.
-- Voice is mid-Phase-2. Rebasing a migration while still writing against it is
-  the worse of the two interruptions.
-- This branch has two deploy gates anyway, so nothing is gained by landing it
-  first.
-- The `_heuristic_titles` bug above is in voice's area; if they fix it before
-  merging, this branch inherits it for free.
-
-Do not combine the two migrations into one.
+The merge-order reasoning that used to sit here is spent — both branches landed.
+The one rule it produced outlived it and is now in the root `AGENTS.md`: one
+Alembic revision per change, never stacked onto a mid-chain parent, and two
+parallel branches' migrations are never combined into one.
 
 ---
 
@@ -337,9 +319,10 @@ texting them to ask.
    path, an opt-out-rate circuit breaker per org, and the org named in the first
    message of every thread — a shared number cannot identify the sender, so the
    message has to. `CANDIDATE_AGENT_PLAN.md` §2.
-3. **Nudge cadence.** Proposed and awaiting confirmation: first nudge at 48h of
-   silence, at most 2 per thread, at least 72h apart, never after a wrap-up or
-   an opt-out.
+3. ~~**Nudge cadence.**~~ Settled and encoded: first nudge at 48h of silence,
+   at most 2 per thread, at least 72h apart, never after a wrap-up or an
+   opt-out. `cadence.py` enforces it. Nothing sends a nudge yet, so the budget
+   has never been spent.
 4. **Nudge channel for web threads** — email fallback through the outreach
    stack once `contact_email` is known, or leave nudging inert until SMS?
 
@@ -355,9 +338,11 @@ texting them to ask.
    the brief already pointed at. Roughly half a day. Confirm current TCPA
    specifics with counsel regardless — the consent and revocation rules have
    moved recently.
-6. **Does a human get told when an intake lands?** Nothing does today.
-   `record_event` writes an audit row and stops there. Voice Phase 4 has
-   "recruiter alert on material change"; the same need applies here.
+6. **Does a human get told when an intake lands?** Still nothing.
+   `record_event` writes an audit row and stops there, and
+   `messaging/notify.py` notifies the *candidate*, not a recruiter. Voice
+   Phase 4 has "recruiter alert on material change"; the same need applies
+   here.
 7. **Should the candidate review what was captured?** Voice Phase 3 has a
    public review page. In chat it is more natural and nearly free — "here is
    what I have, anything wrong?" before wrap-up. It changes the definition of
@@ -370,5 +355,9 @@ texting them to ask.
    before the first message. Widget, voice call, or recruiter attestation?
 10. **Retention** for thread transcripts, alongside the voice recording policy.
 11. **Whether `IntakeThread` and `IntakeCall` merge** into an `IntakeSession`
-    with a `channel` column once both branches land. Worth doing; a rename
-    before the merge is a guaranteed conflict.
+    with a `channel` column. Both branches landed, so the conflict argument for
+    deferring it has expired; what remains is that a thread has no duration or
+    recording and a call has no message counts, which is why
+    `GET /v1/intake/threads` is a sibling of `/calls` rather than a widened
+    response. Still worth doing, and a review queue should not be what forces
+    it.

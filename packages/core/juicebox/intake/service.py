@@ -458,8 +458,9 @@ def link_caller(db: Session, call: IntakeCall) -> str | None:
     waiting to happen. This is the same bar the text channel sets, and the
     reason it sets it: an address identifies a person on its own.
 
-    **Creating anybody at all needs a completed intake.** ``AGENTS.md`` records
-    that a cold inbound call must not put a stranger in the CRM, and the text
+    **Creating anybody at all needs a completed intake.** This package's
+    ``AGENTS.md`` records that a cold inbound call must not put a stranger in
+    the CRM, and the text
     channel spends the same currency: requiring the gate to have closed makes a
     junk row cost a whole intake rather than one sentence. A caller who is new
     to us is asked to run the full intake anyway, so this is not a case the
@@ -631,9 +632,10 @@ def _enqueue_preference_match(
     enqueue_match_for_candidate(db, candidate, preference=preference)
     # And go looking for postings that do not exist yet, exactly as the thread
     # path does. Scoring against the book we happen to hold is half the job:
-    # AGENTS.md records that these two writers diverge silently because they
-    # never conflict textually, and this was one of the divergences -- a caller
-    # got matched against today's postings and a texter got a search.
+    # This package's AGENTS.md records that these two writers diverge silently
+    # because they never conflict textually, and this was one of the
+    # divergences -- a caller got matched against today's postings and a texter
+    # got a search.
     enqueue_discovery_for_candidate(db, candidate=candidate, preference=preference)
 
 

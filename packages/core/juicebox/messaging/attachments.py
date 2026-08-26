@@ -4,7 +4,7 @@ The upload page (``uploads.py``) remains the route for channels that cannot
 carry files — web chat — and the fallback when a download fails. But Linq is
 iMessage: "send us your resume" invites an attachment, and the webhook hands
 us a CDN URL for exactly that. Ignoring it (the old accepted gap in
-LINQ_SETUP.md) meant the most natural reply to our own question lost the
+docs/LINQ_SETUP.md) meant the most natural reply to our own question lost the
 document.
 
 Flow: the webhook records the inbound message and enqueues one

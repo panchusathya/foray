@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..deps import CommittingRoute, get_db
 from ..models import Candidate, CandidateAuthGrant, CandidateEmail, PortalOtp, utcnow
-from ..outreach.sender import OutboundEmail, get_sender
+from ..outreach.sender import OutboundEmail, sender_for_org
 from ..portal.links import mint_session_token
 from ..portal.mail import portal_sender
 from ..security import TokenError, decode_access_token
@@ -224,7 +224,7 @@ def otp_request(payload: OtpRequestIn, db: Session = Depends(get_db)) -> dict:
     db.flush()
 
     from_email, from_name = portal_sender()
-    get_sender().send(
+    sender_for_org(db, candidate.org_id).send(
         OutboundEmail(
             to=email,
             subject=f"Your sign-in code: {code}",

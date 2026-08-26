@@ -5,8 +5,8 @@ no system packages. One clean template on purpose — the differentiator is the
 content pipeline, not a theme gallery, and every escaping bug lives in the
 one place ``_escape`` is.
 
-The layout follows the classic finance/consulting resume: centered name and
-contact line, ruled section headings, two-column entry rows (organization
+The layout follows the classic finance/consulting resume: left-aligned name
+and contact line, ruled section headings, two-column entry rows (organization
 bold left, location bold right; title italic left, dates italic right), and
 a single SKILLS & INTERESTS block of labeled lines. Section ORDER flexes
 with the person: professional experience leads, unless the record reads as a
@@ -23,7 +23,7 @@ import re
 from datetime import date
 from xml.sax.saxutils import escape as _xml_escape
 
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
@@ -38,37 +38,37 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-_MARGIN = 0.75 * inch
+_MARGIN = 0.50 * inch
 _CONTENT_WIDTH = LETTER[0] - 2 * _MARGIN
 
 _NAME = ParagraphStyle(
-    "name", fontName="Helvetica-Bold", fontSize=16, leading=20, alignment=TA_CENTER
+    "name", fontName="Times-Bold", fontSize=16, leading=19, alignment=TA_LEFT
 )
 _CONTACT = ParagraphStyle(
     "contact",
-    fontName="Helvetica",
+    fontName="Times-Roman",
     fontSize=9,
-    leading=12,
-    textColor="#444444",
-    alignment=TA_CENTER,
+    leading=11,
+    textColor="#000000",
+    alignment=TA_LEFT,
 )
 _HEADING = ParagraphStyle(
-    "heading", fontName="Helvetica-Bold", fontSize=11, leading=14, spaceBefore=10, spaceAfter=2
+    "heading", fontName="Times-Bold", fontSize=10, leading=13, spaceBefore=9, spaceAfter=2
 )
-_ROLE = ParagraphStyle("role", fontName="Helvetica-Bold", fontSize=10, leading=13, alignment=TA_LEFT)
+_ROLE = ParagraphStyle("role", fontName="Times-Bold", fontSize=10, leading=12, alignment=TA_LEFT)
 _ROLE_R = ParagraphStyle("role_r", parent=_ROLE, alignment=TA_RIGHT)
 _TITLE = ParagraphStyle(
-    "title", fontName="Helvetica-Oblique", fontSize=10, leading=13, alignment=TA_LEFT
+    "title", fontName="Times-Italic", fontSize=10, leading=12, alignment=TA_LEFT
 )
 _DATES = ParagraphStyle(
     "dates",
-    fontName="Helvetica-Oblique",
+    fontName="Times-Italic",
     fontSize=9,
-    leading=13,
-    textColor="#555555",
+    leading=12,
+    textColor="#000000",
     alignment=TA_RIGHT,
 )
-_BODY = ParagraphStyle("body", fontName="Helvetica", fontSize=10, leading=13)
+_BODY = ParagraphStyle("body", fontName="Times-Roman", fontSize=10, leading=12)
 _BULLET = ParagraphStyle("bullet", parent=_BODY, leftIndent=0)
 
 

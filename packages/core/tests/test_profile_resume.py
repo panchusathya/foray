@@ -257,6 +257,17 @@ class TestAdaptiveLayout:
         )
         assert _education_first(structured, self.TODAY) is False
 
+    def test_the_reference_layout_is_left_aligned_and_uses_times(self):
+        from reportlab.lib.enums import TA_LEFT
+
+        from juicebox.docgen.render import _BODY, _CONTACT, _NAME
+
+        assert _NAME.alignment == TA_LEFT
+        assert _CONTACT.alignment == TA_LEFT
+        assert _NAME.fontName == "Times-Bold"
+        assert _CONTACT.fontName == "Times-Roman"
+        assert _BODY.fontName == "Times-Roman"
+
     def test_a_student_leads_with_education(self):
         from juicebox.docgen.render import _education_first
 

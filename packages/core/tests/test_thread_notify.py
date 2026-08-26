@@ -36,7 +36,7 @@ from juicebox.messaging.notify import (
 )
 from juicebox.messaging.suppression import handle_stop
 from juicebox.messaging.threads import open_thread, record_inbound, record_outbound
-from juicebox.models import IntakeMessage, JobMatch, JobPosting, JobProposal
+from juicebox.models import IntakeMessage, JobMatch, JobPosting, JobProposal, utcnow
 from juicebox.worker import process_job
 
 #: The card head joins title and company with an em dash. Spelled as an
@@ -96,6 +96,11 @@ def _posting(session, org_id, *, company="Anthropic", suffix="1"):
         company_normalized=company.lower(),
         jd_text="Build things.",
         status="open",
+        # Pre-resolved to a supported vendor: the proposal gate only cards
+        # roles an adapter can submit to, and resolving here would hit the
+        # network. The stamp makes resolve_target answer from the row.
+        ats_vendor="greenhouse",
+        ats_resolved_at=utcnow(),
     )
     session.add(posting)
     session.flush()
@@ -247,8 +252,15 @@ class TestEvents:
             session, thread=thread, event=EVENT_PACKAGE_READY, subject_id=application.id
         )
         _run(session, job)
-        body = channel.bodies[-1]
-        assert "Figma" in body and "/m/" in body
+        ready = channel.bodies[0]
+        assert "Figma" in ready and "/m/" in ready
+        # The follow-up questions ride BEHIND the ready message. The worker
+        # used to ask them inline while this notification sat queued, so
+        # "what should we put for comp?" always overtook "your application
+        # is ready" -- the reverse of the order both messages assume.
+        if len(channel.bodies) > 1:
+            assert "ready to review" in ready
+            assert "asks a couple of things" in channel.bodies[1]
 
     def test_application_sent_reacts_like_on_the_consenting_inbound(
         self, session, account, channel, thread

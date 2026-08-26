@@ -80,6 +80,11 @@ def _posting(session, org_id, *, company="Anthropic", title="ML Engineer", suffi
         company_normalized=company.lower(),
         jd_text="Build things.",
         status="open",
+        # Pre-resolved to a supported vendor: the proposal gate only cards
+        # roles an adapter can submit to, and resolving here would hit the
+        # network. The stamp makes resolve_target answer from the row.
+        ats_vendor="greenhouse",
+        ats_resolved_at=utcnow(),
     )
     session.add(posting)
     session.flush()

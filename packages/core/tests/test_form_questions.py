@@ -231,9 +231,10 @@ class TestAugment:
 
         application = SimpleNamespace(id="app_x", form_answers=answers)
         posting = SimpleNamespace(id="jpost_x")
-        return questions_mod.augment_with_form_questions(
+        merged, _outcome = questions_mod.augment_with_form_questions(
             session, application=application, posting=posting, answers=answers
         )
+        return merged
 
     def _question(self, **kwargs):
         from juicebox.applications.submit.browser.questions import FormQuestion
@@ -332,13 +333,14 @@ class TestAugment:
 
         monkeypatch.setattr(browser_q, "discover", boom)
         answers = [{"key": "why_company", "question": "Why?", "answer": ""}]
-        merged = questions_mod.augment_with_form_questions(
+        merged, outcome = questions_mod.augment_with_form_questions(
             session,
             application=SimpleNamespace(id="app_x", form_answers=answers),
             posting=SimpleNamespace(id="jpost_x"),
             answers=answers,
         )
         assert merged is answers
+        assert outcome.startswith("skipped: discovery failed")
 
 
 from juicebox.models import Application, Candidate, JobPosting

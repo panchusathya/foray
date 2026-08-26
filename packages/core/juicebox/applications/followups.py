@@ -19,12 +19,12 @@ knows, so a candidate who volunteered a number is never asked for it again --
 and the extractor absorbs whatever comes back on the next turn, so the second
 application does not ask a third time.
 
-``why_company`` is never *answered* for somebody -- it is blank by design
-(``answers.py``: we do not write their enthusiasm for them) and it is theirs to
-fill in on the portal. It is still **named** in the follow-up, which it was
-not: the portal showed an empty "why this company" while the text asked only
-about comp, so it read as a question the agent had missed rather than one it
-had deliberately left.
+``why_company`` arrives *drafted* now (``answers.py``: from the resume and
+the posting, flagged ``needs_review``), so the follow-up hands the draft over
+for review rather than asking for a paragraph by SMS. A blank one -- no model
+to draft with -- is still named and pointed at the portal: an empty "why this
+company" the text never mentions reads as a question the agent missed rather
+than one it deliberately left.
 """
 
 from __future__ import annotations
@@ -49,14 +49,30 @@ ASKABLE: dict[str, str] = {
 #: Ask order, so the message reads the same way every time.
 ASK_ORDER: tuple[str, ...] = ("salary_expectation", "notice_period", "work_authorization")
 
-#: Blanks we will not fill and will not ask to be answered over text, because
-#: the answer has to be in the candidate's own words. Named in the message
-#: anyway: the portal showed an empty "why this company" while the text asked
-#: only about comp, which reads as the agent having missed one rather than
-#: having left it deliberately.
+#: Blanks that are answered in the portal, not over text. ``why_company`` is
+#: normally *drafted* by the package build now (``docgen.answers``); it lands
+#: here only when there was no model to draft with, and the message hands it
+#: over rather than asking for a paragraph by SMS.
 PORTAL_ONLY: dict[str, str] = {
     "why_company": "why {company}",
 }
+
+
+def drafted_for_review(application: Application) -> list[dict]:
+    """Answers we drafted that the candidate has not touched yet.
+
+    Named in the follow-up so the draft is read as a draft: an unmentioned
+    generated paragraph in somebody's voice is the words-in-your-mouth problem
+    in a new place. ``edited`` clears it -- once they have been in the box the
+    words are theirs.
+    """
+    return [
+        item
+        for item in (application.form_answers or [])
+        if item.get("needs_review")
+        and str(item.get("answer") or "").strip()
+        and not item.get("edited")
+    ]
 
 
 def blank_answers(application: Application) -> list[str]:
@@ -111,9 +127,10 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
     """One message naming the role and the blanks, or "" when nothing is owed."""
     missing = blank_answers(application)
     mine = portal_only_blanks(application)
+    drafted = drafted_for_review(application)
     form_blanks = form_question_blanks(application)
     attestations = attestation_count(application)
-    if not missing and not mine and not form_blanks and not attestations:
+    if not missing and not mine and not drafted and not form_blanks and not attestations:
         return ""
 
     where = role_phrase(posting)
@@ -126,8 +143,13 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
     company = ((posting.company if posting else "") or "the company").strip()
     for key in mine:
         lines.append(
-            f"- {PORTAL_ONLY[key].format(company=company)} — that one's yours to write, "
-            "i won't put words in your mouth. add it in the app and i'll include it."
+            f"- {PORTAL_ONLY[key].format(company=company)} — "
+            "write it in the app and i'll include it."
+        )
+    for _item in drafted:
+        lines.append(
+            f"- i drafted why {company} for you from your background — "
+            "read it in the app and change anything before it goes out."
         )
     for item in form_blanks[:MAX_NAMED_FORM_QUESTIONS]:
         question = str(item.get("question") or "").strip().rstrip("?")
@@ -161,8 +183,10 @@ def role_phrase(posting: JobPosting | None) -> str:
     was asked in."""
     if posting is None:
         return ""
+    from ..presentation.jobcard import clean_title
+
     company = (posting.company or "").strip()
-    title = (posting.title or "").strip()
+    title = clean_title((posting.title or "").strip(), company)
     if company and title:
         return f"the {title} application at {company}"
     if company:
@@ -328,15 +352,20 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     """
     missing = blank_answers(application)
     # Everything the message hands over rather than asks: the write-it-yourself
-    # keys, this form's own questions, and the self-ID entries. The self-ID
-    # ones are named here only so the ask-once flag lands on their rows -- the
-    # rendered message carries them as a count, never by name.
-    mine = portal_only_blanks(application) + [
-        str(item.get("key"))
-        for item in (application.form_answers or [])
-        if item.get("kind") in ("custom", "attestation")
-        and not str(item.get("answer") or "").strip()
-    ]
+    # keys, drafts awaiting the candidate's eyes, this form's own questions,
+    # and the self-ID entries. The self-ID ones are named here only so the
+    # ask-once flag lands on their rows -- the rendered message carries them
+    # as a count, never by name.
+    mine = (
+        portal_only_blanks(application)
+        + [str(item.get("key")) for item in drafted_for_review(application)]
+        + [
+            str(item.get("key"))
+            for item in (application.form_answers or [])
+            if item.get("kind") in ("custom", "attestation")
+            and not str(item.get("answer") or "").strip()
+        ]
+    )
     if not missing and not mine:
         return {"asked": [], "skipped": "package answered everything"}
 

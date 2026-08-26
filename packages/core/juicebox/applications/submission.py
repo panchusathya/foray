@@ -345,7 +345,7 @@ def _remember_account(db: Session, application: Application, target, result) -> 
             org_id=application.org_id,
             candidate_id=application.candidate_id,
             vendor=target.vendor,
-            tenant=target.tenant,
+            tenant=_account_tenant(target),
             username=str(payload["username"]),
             password=str(payload["password"]),
         )
@@ -721,7 +721,23 @@ def build_context(
 
 #: Vendors that make a candidate register before they can apply, and are
 #: therefore the only ones a stored portal login means anything for.
-_REGISTERING_VENDORS = (detect.VENDOR_WORKDAY, detect.VENDOR_ORACLE)
+_REGISTERING_VENDORS = (detect.VENDOR_WORKDAY, detect.VENDOR_ORACLE, detect.VENDOR_YC)
+
+
+def _account_tenant(target) -> str:
+    """The namespace a stored portal login is keyed on.
+
+    Workday and Oracle accounts belong to one employer's tenant. A YC account
+    does not: the login lives at workatastartup.com and spans every YC
+    company, while ``target.tenant`` carries the company slug -- keying on it
+    would register a fresh account per employer and park each one on a
+    verification mail that reads as a duplicate signup.
+    """
+    if target.vendor == detect.VENDOR_YC:
+        from .submit.browser.yc import ACCOUNT_TENANT
+
+        return ACCOUNT_TENANT
+    return target.tenant
 
 
 def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str]:
@@ -737,7 +753,7 @@ def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str
 
     try:
         return stored_account(
-            db, candidate_id=candidate.id, vendor=target.vendor, tenant=target.tenant
+            db, candidate_id=candidate.id, vendor=target.vendor, tenant=_account_tenant(target)
         )
     except Exception as exc:  # noqa: BLE001 - a missing login is registering again
         logger.warning("could not read the stored portal account: %s", exc)

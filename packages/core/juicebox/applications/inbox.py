@@ -367,6 +367,11 @@ _ATS_VENDOR_DOMAINS = {
     "bamboohr.com": "bamboohr",
     "workable.com": "workable",
     "workablemail.com": "workable",
+    # YC's account and application mail. ycombinator.com is the vendor's own
+    # robot here, never an employer: applications to YC itself go through its
+    # ATS, not from this domain.
+    "ycombinator.com": "yc",
+    "workatastartup.com": "yc",
 }
 
 

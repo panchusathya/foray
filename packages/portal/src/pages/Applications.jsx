@@ -292,14 +292,27 @@ function AnswersCard({ application, onSaved, locked }) {
 
   const row = (answer) => {
     const value = drafts[answer.key] !== undefined ? drafts[answer.key] : answer.answer || '';
+    // A deliberate blank is the agent waiting on the candidate, not a bug —
+    // three empty boxes with no explanation is what made a working package
+    // read as a broken form. A draft the candidate hasn't touched says so
+    // too: it's their words to change, not ours to assert.
+    const draftPending = answer.needs_review && answer.answer && !answer.edited;
     return (
       <div className="qa" key={answer.key}>
         <div className="q">
           {answer.question}
           {answer.form_required ? <span className="req" title="The form requires this"> *</span> : null}
+          {draftPending ? (
+            <span className="tiny muted" title="Drafted from your background — edit anything">
+              {' '}· drafted for you — make it yours
+            </span>
+          ) : null}
+          {!answer.answer && !locked ? (
+            <span className="tiny muted"> · waiting on you</span>
+          ) : null}
         </div>
         {locked ? (
-          <div className="a">{answer.answer || <em className="muted">left blank</em>}</div>
+          <div className="a">{answer.answer || <em className="muted">waiting on you — nothing was sent for this</em>}</div>
         ) : (
           <textarea
             className="a-edit"

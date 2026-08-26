@@ -180,6 +180,20 @@ class TestVendorDetection:
                 "12345",
                 detect.TIER_BROWSER,
             ),
+            (
+                "https://www.ycombinator.com/companies/deep24/jobs/upFGSQJ-founding-engineer",
+                "yc",
+                "deep24",
+                "upFGSQJ-founding-engineer",
+                detect.TIER_BROWSER,
+            ),
+            (
+                "https://www.workatastartup.com/jobs/123456",
+                "yc",
+                "",
+                "123456",
+                detect.TIER_BROWSER,
+            ),
         ],
     )
     def test_known_shapes(self, url, vendor, tenant, job_id, tier):
@@ -199,6 +213,10 @@ class TestVendorDetection:
             # An oraclecloud host that is not a candidate-experience page: the
             # required locator is what stops us claiming a marketing page.
             "https://eeho.fa.us2.oraclecloud.com/about",
+            # A YC company profile and a WaaS listing page: both in the book
+            # today, neither is a posting anybody can apply to.
+            "https://www.ycombinator.com/companies/nessie",
+            "https://www.workatastartup.com/jobs/l/software-engineer",
             "",
             "not-a-url",
         ],

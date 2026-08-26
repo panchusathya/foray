@@ -67,8 +67,10 @@ class OutboundMessage:
     verbatim: bool = False
     # Media travelling with this message -- today, a rendered job card. Empty
     # is a text send, and a channel with no media support ignores it rather
-    # than failing: `body` is always a complete message on its own, which is
-    # what lets an image be best-effort without ever costing the words.
+    # than failing. A job card sends as the image *alone* (empty body) when
+    # the media part is already in hand; the caller only drops the words once
+    # the upload has succeeded, so a bubble always carries the role one way
+    # or the other.
     media: tuple[OutboundMedia, ...] = ()
 
 

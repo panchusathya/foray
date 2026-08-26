@@ -218,23 +218,30 @@ class TestManaging:
 
         result = _say(session, thread, "find me some roles", native_id="m-present")
         assert result.action == "presented"
-        # One message per role now, so the cards are a burst and the last
-        # body is the "thumbs up any of those" tail.
+        # Linq: one media bubble per role (placeholder body + vCard URL) and a tail.
         burst = "\n".join(channel.bodies)
-        assert "1/2  ML Engineer — Anthropic" in burst
-        assert "tap the ones" in channel.bodies[-1].lower()
-        assert "Current title matches" in burst
+        assert "[contact card] ML Engineer — Anthropic" in burst
+        assert "[contact card] ML Engineer — Figma" in burst
+        assert "tap a card" in channel.bodies[-1].lower()
         assert "/m/" in channel.bodies[-1]
-        # Never a score. Card lines only: the link is a JWT whose random bytes
-        # contain "0.9" about 1.5% of the time.
-        # The raw score must never reach the candidate. The card messages
-        # are checked directly now -- the portal link, whose random JWT
-        # can contain "0.9" by chance, lives in its own tail message.
+        card_messages = [item[1] for item in channel.sent if item[1].media_url]
+        assert len(card_messages) == 2
+        assert all(m.verbatim for m in card_messages)
+        assert all(".vcf?" in m.media_url for m in card_messages)
+        # Reasons live on the vCard, not the transcript placeholder.
+        assert "Current title matches" not in burst
         assert "0.9" not in "".join(channel.bodies[:-1])
 
         frame = thread.last_presented or []
         assert [entry["company"] for entry in frame] == ["Anthropic", "Figma"]
-        assert len(session.scalars(select(JobProposal)).all()) == 2
+        proposals = list(session.scalars(select(JobProposal)).all())
+        assert len(proposals) == 2
+        from juicebox.models import IntakeMessage
+
+        for proposal in proposals:
+            row = session.get(IntakeMessage, proposal.message_id)
+            assert row is not None and row.direction == "outbound"
+            assert "[contact card]" in (row.body or "")
 
         result = _say(session, thread, "apply to 2", native_id="m-apply")
         assert result.action == "applied"
@@ -636,25 +643,6 @@ class TestPollSelection:
         )
         assert is_me
 
-    def test_a_poll_needs_two_options(self):
-        """One job is not a poll, it is a worse yes/no button."""
-        import pytest as _pytest
-
-        from juicebox.messaging.linq import LinqSendError, create_poll
-
-        with _pytest.raises(LinqSendError, match="two options"):
-            create_poll(chat_id="c", options=["only one"], idempotency_key="k")
-
-    def test_option_text_matches_the_card(self, session, account, channel, thread):
-        """The label has to be reproducible: it is the join key on poll.sent."""
-        from juicebox.messaging.manager import _poll_option_text
-
-        assert (
-            _poll_option_text({"title": "Strategic Finance Analyst", "company": "Rippling"})
-            == "Strategic Finance Analyst — Rippling"
-        )
-        assert _poll_option_text({"title": "Analyst", "company": ""}) == "Analyst"
-
 
 class TestChatCourtesies:
     """Read receipts and typing: the two things that make a wait feel answered.
@@ -715,3 +703,172 @@ class TestChatCourtesies:
         finally:
             linq.mark_chat_read = original
         assert called == []
+
+    def test_send_reaction_payload_shape(self):
+        from juicebox.messaging.linq import send_reaction
+
+        seen, transport = self._calls()
+        assert send_reaction("m-1", "love", transport=transport) is True
+        assert seen == [("POST", "/messages/m-1/reactions")]
+
+    def test_send_reaction_rejects_unknown_types(self):
+        from juicebox.messaging.linq import send_reaction
+
+        seen, transport = self._calls()
+        assert send_reaction("m-1", "sticker", transport=transport) is False
+        assert send_reaction("", "like", transport=transport) is False
+        assert seen == []
+
+    def test_send_reaction_skips_when_unconfigured(self):
+        from juicebox.messaging.linq import send_reaction
+
+        assert send_reaction("m-1", "like") is False
+
+    def test_send_message_media_is_a_media_only_part(self):
+        from juicebox.messaging.linq import send_message
+
+        captured = []
+
+        def transport(method, url, body):
+            captured.append(body)
+            return {"id": "linq-m-1"}
+
+        native = send_message(
+            chat_id="chat-1",
+            body="[contact card] ignored",
+            idempotency_key="k",
+            media_url="https://example.com/x.vcf",
+            filename="acme-role.vcf",
+            transport=transport,
+        )
+        assert native == "linq-m-1"
+        parts = captured[0]["message"]["parts"]
+        assert parts == [
+            {"type": "media", "url": "https://example.com/x.vcf", "filename": "acme-role.vcf"}
+        ]
+
+
+class TestWebCardsStayText:
+    def test_web_thread_still_sends_render_card_text(self, session, account):
+        from juicebox.messaging.channels import WEB
+
+        fake = FakeChannel()
+        set_channel(WEB, fake)
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+        )
+        thread = _managed(session, thread)
+        org_id = account["org_id"]
+        for index, company in enumerate(("Anthropic", "Figma")):
+            posting = _posting(session, org_id, company=company, suffix=f"web{index}")
+            session.add(
+                JobMatch(
+                    org_id=org_id,
+                    job_posting_id=posting.id,
+                    candidate_id=thread.candidate_id,
+                    score=0.9,
+                    criteria=[STRONG],
+                    status="new",
+                )
+            )
+        session.flush()
+        _say(session, thread, "find me some roles", native_id="web-present")
+        burst = "\n".join(fake.bodies)
+        assert "ML Engineer — Anthropic" in burst
+        assert "ML Engineer — Figma" in burst
+        assert "Current title matches" in burst
+        assert "1/" in burst
+        assert not any(item[1].media_url for item in fake.sent)
+
+
+class TestTapbackAppliesToCardRows:
+    def test_a_like_on_a_card_row_applies(self, session, account, channel, thread):
+        from juicebox.jobs import KIND_INTAKE_TURN
+        from juicebox.models import IntakeMessage
+        from juicebox.routers.messaging import _handle_linq_reaction
+        from juicebox.worker import process_job
+
+        thread = _managed(session, thread)
+        posting = _posting(session, account["org_id"], company="Rippling", suffix="tb")
+        session.add(
+            JobMatch(
+                org_id=account["org_id"],
+                job_posting_id=posting.id,
+                candidate_id=thread.candidate_id,
+                score=0.9,
+                criteria=[STRONG],
+                status="new",
+            )
+        )
+        session.flush()
+        _say(session, thread, "find me roles", native_id="tb-present")
+        proposal = session.scalar(select(JobProposal))
+        card = session.get(IntakeMessage, proposal.message_id)
+        assert card is not None and card.provider_native_id
+        result = _handle_linq_reaction(
+            session,
+            {
+                "event_type": "reaction.added",
+                "data": {
+                    "chat_id": thread.provider_thread_id,
+                    "message_id": card.provider_native_id,
+                    "reaction_type": "like",
+                    "is_from_me": False,
+                },
+            },
+        )
+        assert result["acted"] is True
+        jobs = list(session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all())
+        job = next(j for j in jobs if (j.payload or {}).get("apply_proposal_id") == proposal.id)
+        job.status = "running"
+        process_job(session, job, now=datetime.now(tz=UTC))
+        application = session.scalar(select(Application))
+        assert application is not None
+        assert application.job_posting_id == posting.id
+
+
+class TestAckReactions:
+    def test_thanks_on_linq_loves_and_sends_a_warm_line(self, session, channel, thread):
+        thread = _managed(session, thread)
+        result = _say(session, thread, "thanks!", native_id="ack-thanks")
+        assert result.action == "acknowledged"
+        assert channel.reactions == [("ack-thanks", "love")]
+        assert "anytime" in channel.bodies[-1].lower()
+        assert result.sent
+
+    def test_great_on_linq_likes_and_stays_silent(self, session, channel, thread):
+        thread = _managed(session, thread)
+        before = list(channel.bodies)
+        result = _say(session, thread, "great", native_id="ack-great")
+        assert result.action == "acknowledged"
+        assert channel.reactions == [("ack-great", "like")]
+        assert channel.bodies == before
+        assert result.sent == []
+
+    def test_ok_still_routes_to_affirm(self, session, channel, thread):
+        from juicebox.messaging import intents
+
+        assert intents.classify("ok", presented=[]).kind == intents.INTENT_AFFIRM
+        assert intents.classify("thanks", presented=[]).kind == intents.INTENT_ACK
+        assert intents.classify("thanks", presented=[]).reaction == "love"
+
+    def test_thanks_on_web_sends_the_warm_line_without_a_reaction(self, session, account):
+        from juicebox.messaging.channels import WEB, WebChatChannel
+        from juicebox.messaging.threads import messages_of
+
+        set_channel(WEB, WebChatChannel())
+        thread = open_thread(
+            session,
+            org_id=account["org_id"],
+            channel=WEB,
+            consent_messaging=True,
+        )
+        thread = _managed(session, thread)
+        result = _say(session, thread, "thanks", native_id="web-thanks")
+        assert result.action == "acknowledged"
+        bodies = [m.body for m in messages_of(session, thread) if m.direction == "outbound"]
+        assert any("anytime" in (b or "").lower() for b in bodies)
+

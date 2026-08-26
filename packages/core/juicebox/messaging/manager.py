@@ -46,8 +46,11 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_card
+from ..presentation.logo import photo_for, posting_domain
+from ..presentation.vcard import vcard_filename
 from . import identity, intents, prompts
-from .channels import OutboundMessage
+from .channels import LINQ, OutboundMessage
+from .jobcards import mint_jobcard_link
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +143,8 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         # "yes" almost always means yes to the thing we just offered, and the
         # thing we offer is roles.
         return present_matches(db, thread=thread, state=state)
+    if intent.kind == intents.INTENT_ACK:
+        return _acknowledge(db, thread=thread, last=last, state=state, intent=intent)
     if intent.kind == intents.INTENT_DECLINE:
         return _say(_fresh(db, thread, prompts.MANAGER_ACK_DECLINE, prompts.MANAGER_STANDING_BY))
     if intent.kind == intents.INTENT_PROFILE_ANSWER:
@@ -566,42 +571,13 @@ def present_matches(
     # each one gets its own bubble, which is how a phone renders a list of
     # things and what a person can react to individually. A thumbs-up on a
     # bubble is only meaningful if the bubble is one job.
+    #
+    # Proposal first so the vCard URL can include its id; then send; then
+    # backfill message_id so a tapback still resolves to this card.
     rows = []
-    for index, card in enumerate(cards, start=1):
-        # verbatim: the card quotes employers and role titles out of a posting.
-        # Those are somebody else's proper nouns, not our lowercase voice.
-        rows.append(
-            _deliver(
-                db,
-                thread=thread,
-                message=OutboundMessage(
-                    body=render_card(
-                        {k: v for k, v in card.items() if k != "recruiter_only"},
-                        index=index,
-                        total=len(cards),
-                    ),
-                    verbatim=True,
-                ),
-                origin=origin,
-            )
-        )
-    row = rows[0] if rows else None
-    tail = _deliver(
-        db,
-        thread=thread,
-        message=OutboundMessage(
-            body=(
-                "tap the ones you want me to apply to — or reply with a number "
-                f"for detail. all of them: {link}"
-            )
-        ),
-        origin=origin,
-    )
-    rows.append(tail)
-
     frame = []
     now = utcnow()
-    for (match, posting), card in zip(pairs, cards, strict=True):
+    for index, ((match, posting), card) in enumerate(zip(pairs, cards, strict=True), start=1):
         proposal = JobProposal(
             org_id=thread.org_id,
             candidate_id=candidate_id,
@@ -609,19 +585,35 @@ def present_matches(
             job_match_id=match.id,
             channel=thread.channel,
             thread_id=thread.id,
-            # The message that carried THIS card. A reaction arrives with a
-            # message_id, so a thumbs-up can only be resolved to a job if each
-            # proposal remembers its own bubble.
-            message_id=(
-                rows[len(frame)].id
-                if len(frame) < len(rows) and rows[len(frame)] is not None
-                else None
-            ),
             status="proposed",
             reasons=card["reasons"],
         )
         db.add(proposal)
         db.flush()
+        try:
+            photo_for(posting_domain(posting), posting.company or "")
+        except Exception as exc:  # noqa: BLE001 - pre-warm; GET still has a fallback
+            logger.info("jobcard photo pre-warm missed for %s: %s", posting.id, exc)
+
+        if thread.channel == LINQ:
+            message = OutboundMessage(
+                body=f"[contact card] {card['title']} — {card['company']}",
+                media_url=mint_jobcard_link(proposal),
+                media_filename=vcard_filename(card),
+                verbatim=True,
+            )
+        else:
+            message = OutboundMessage(
+                body=render_card(
+                    {k: v for k, v in card.items() if k != "recruiter_only"},
+                    index=index,
+                    total=len(cards),
+                ),
+                verbatim=True,
+            )
+        row = _deliver(db, thread=thread, message=message, origin=origin)
+        proposal.message_id = row.id if row is not None else None
+        rows.append(row)
         frame.append(
             {
                 "proposal_id": proposal.id,
@@ -630,55 +622,42 @@ def present_matches(
                 "title": posting.title,
             }
         )
+
+    tail = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=prompts.PRESENT_TAIL.format(link=link)),
+        origin=origin,
+    )
+    rows.append(tail)
     thread.last_presented = frame
     thread.presented_at = now
     db.flush()
-    _offer_poll(db, thread=thread, frame=frame)
     return TurnResult(ACTION_PRESENTED, thread, state, sent=[r for r in rows if r])
 
 
-def _offer_poll(db: Session, *, thread: IntakeThread, frame: list[dict]) -> None:
-    """A native poll, so choosing a job is a tap rather than a sentence.
+def _acknowledge(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, intent):
+    """A pure thanks / great / haha: tapback, and sometimes a warm line.
 
-    Best-effort on purpose. The cards and the "reply with a number" path have
-    already gone out, so a poll that fails to send costs a nicer affordance
-    and nothing else -- it must never take down a turn that has already
-    delivered the roles.
-
-    Option ids are not known yet. They arrive on `poll.sent`, which is where
-    each one is matched back to a proposal by its text; that is why the option
-    text is stored on the frame now.
+    like/laugh stay silent when the reaction landed. Gratitude (love) always
+    gets the canned line — that is the deterministic "sometimes more
+    conversational" subset. If a reaction is impossible (web, no native id,
+    no consent) there is never dead air.
     """
-    from .channels import LINQ
-    from .linq import LinqSendError, create_poll
+    from .conversation import TurnResult, _deliver, react_to_message
 
-    if thread.channel != LINQ or not thread.provider_thread_id or len(frame) < 2:
-        return
-    for entry in frame:
-        entry["option_text"] = _poll_option_text(entry)
-    thread.last_presented = list(frame)
-    db.flush()
-
-    try:
-        poll_message_id = create_poll(
-            chat_id=thread.provider_thread_id,
-            options=[entry["option_text"] for entry in frame],
-            idempotency_key=f"poll:{thread.id}:{frame[0]['proposal_id']}",
+    reacted = False
+    if intent.reaction:
+        reacted = react_to_message(
+            db, thread=thread, message=last, reaction=intent.reaction
         )
-    except LinqSendError as exc:
-        logger.warning("poll not sent for thread %s: %s", thread.id, exc)
-        return
-    # No column for the poll id, and none needed: vote events carry chat.id,
-    # which already identifies the thread, and the option ids land on the
-    # frame when poll.sent arrives.
-    logger.info("poll %s offered %d roles on thread %s", poll_message_id, len(frame), thread.id)
-
-
-def _poll_option_text(entry: dict) -> str:
-    """What the option says. Matched back by exact text when poll.sent lands."""
-    title = (entry.get("title") or "Role").strip()
-    company = (entry.get("company") or "").strip()
-    label = f"{title} — {company}" if company else title
-    from .linq import MAX_OPTION_CHARS
-
-    return label[:MAX_OPTION_CHARS]
+    want_line = intent.reaction == "love" or not reacted or not intent.reaction
+    sent: list = []
+    if want_line:
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=prompts.MANAGER_ACK_WARM, verbatim=True),
+        )
+        sent = [r for r in [row] if r]
+    return TurnResult("acknowledged", thread, state, sent=sent)

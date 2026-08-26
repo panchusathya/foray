@@ -39,7 +39,7 @@ an earlier answer.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import select
@@ -580,12 +580,7 @@ def _deliver(
     and a channel does not have a session.
     """
     body = message.body if message.verbatim else prompts.lowercase_outbound(message.body)
-    lowered = OutboundMessage(
-        body=body,
-        asked_field=message.asked_field,
-        send_key=message.send_key,
-        verbatim=message.verbatim,
-    )
+    lowered = replace(message, body=body)
     channel = get_channel(thread.channel)
     if not channel.is_configured():
         logger.warning(
@@ -619,6 +614,39 @@ def _deliver(
         logger.warning("intake send failed on thread %s: %s", thread.id, exc.detail)
         result = DeliveryResult(status="failed", error=exc.detail[:400])
     return record_outbound(db, thread=thread, message=outbound, result=result, origin=origin)
+
+
+def react_to_message(
+    db: Session,
+    *,
+    thread: IntakeThread,
+    message: IntakeMessage | None,
+    reaction: str,
+) -> bool:
+    """Best-effort tapback on an existing message. Never raises.
+
+    Reactions are courtesies — they intentionally bypass cadence budgets,
+    like typing indicators. They never write a message row: a 👍 is not a
+    turn, and counting it as outbound would freeze the "never two outbound
+    in a row" bookkeeping on a reaction that is not a bubble.
+    """
+    from .suppression import is_blocked
+
+    try:
+        native_id = (getattr(message, "provider_native_id", None) or "").strip()
+        if message is None or not native_id or not reaction:
+            return False
+        channel = get_channel(thread.channel)
+        if not channel.is_configured():
+            return False
+        if channel.requires_consent() and not thread.consent_messaging:
+            return False
+        if is_blocked(db, thread=thread):
+            return False
+        return bool(channel.react(provider_message_id=native_id, reaction=reaction))
+    except Exception as exc:  # noqa: BLE001 - courtesy; never fail a turn
+        logger.warning("react_to_message failed on thread %s: %s", thread.id, exc)
+        return False
 
 
 def deliver(

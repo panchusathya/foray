@@ -25,13 +25,13 @@ from sqlalchemy.orm import Session
 
 from ..intake.schema import coverage
 from ..jobs import KIND_THREAD_NOTIFY, Job, enqueue
-from ..models import Application, IntakeThread, JobPosting
+from ..models import Application, IntakeMessage, IntakeThread, JobPosting
 from ..portal.links import mint_portal_link
 from . import cadence, prompts
 from .channels import OutboundMessage
 from .manager import MANAGER_MODES, present_matches
 from .suppression import is_blocked
-from .threads import STATUS_ACTIVE
+from .threads import INBOUND, STATUS_ACTIVE
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,26 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             message=OutboundMessage(body=body, verbatim=True),
             origin="proactive",
         )
-        return {"event": event, "sent": 1 if row is not None else 0}
+        reacted = False
+        if event == EVENT_APPLICATION_SENT and application.consenting_message_id:
+            from .conversation import react_to_message
+
+            consenting = db.get(IntakeMessage, application.consenting_message_id)
+            # Tapback-apply binds consenting_message_id to our outbound tail
+            # today; 👍 that bubble would look like we liked our own card.
+            # Only react when the yes was a candidate inbound.
+            if (
+                consenting is not None
+                and consenting.thread_id == thread.id
+                and consenting.direction == INBOUND
+            ):
+                reacted = react_to_message(
+                    db, thread=thread, message=consenting, reaction="like"
+                )
+        result = {"event": event, "sent": 1 if row is not None else 0}
+        if event == EVENT_APPLICATION_SENT:
+            result["reacted"] = reacted
+        return result
 
     if event == EVENT_STATUS_CHANGED:
         from ..applications.service import application_status_summary

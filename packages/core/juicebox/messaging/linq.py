@@ -259,19 +259,35 @@ def send_message(
     chat_id: str,
     body: str,
     idempotency_key: str,
+    media_url: str = "",
+    filename: str = "",
     transport: Transport | None = None,
 ) -> str:
-    """Send one outbound text reply. Returns Linq's message id."""
-    settings = get_settings()
-    if not settings.linq_api_key:
-        raise LinqSendError("LINQ_API_KEY is not configured")
+    """Send one outbound reply. Returns Linq's message id.
+
+    A ``media_url`` is a media-only bubble: Linq fetches the public HTTPS URL
+    and the transcript body stays on our row. Text and media are not mixed;
+    a caption on a contact card would render as a second bubble.
+    """
     if not chat_id:
         raise LinqSendError("chat_id is required")
+    settings = get_settings()
+    # Injected transport is the client — requiring a key here made media
+    # payload tests unreachable without credentials.
+    if transport is None and not settings.linq_api_key:
+        raise LinqSendError("LINQ_API_KEY is not configured")
 
     url = f"{LINQ_API_BASE}/chats/{chat_id}/messages"
+    if media_url:
+        part: dict[str, Any] = {"type": "media", "url": media_url}
+        if filename:
+            part["filename"] = filename
+        parts = [part]
+    else:
+        parts = [{"type": "text", "value": body}]
     payload = {
         "message": {
-            "parts": [{"type": "text", "value": body}],
+            "parts": parts,
             "idempotency_key": idempotency_key,
         }
     }
@@ -306,74 +322,6 @@ def send_message(
 
 
 POLL_EVENTS = frozenset({"poll.sent", "poll.vote.added", "poll.vote.removed"})
-
-# iMessage renders a poll natively, so picking a job is a tap rather than a
-# sentence somebody has to phrase and we have to parse.
-MAX_POLL_OPTIONS = 10
-MAX_OPTION_CHARS = 100
-
-
-def create_poll(
-    *,
-    chat_id: str,
-    options: list[str],
-    idempotency_key: str,
-    transport: Transport | None = None,
-) -> str:
-    """Send a poll. Returns Linq's message id for the poll.
-
-    The API takes no question -- the prompt is a separate text message, which
-    is why the caller sends one first. Two options minimum; a poll with one
-    job in it is a worse "apply?" button than just asking.
-    """
-    # Request shape first, configuration second: a call with one option is
-    # wrong however the deployment is configured, and reporting a missing key
-    # for it sends whoever is debugging to the wrong place.
-    if not chat_id:
-        raise LinqSendError("chat_id is required")
-    trimmed = [o.strip()[:MAX_OPTION_CHARS] for o in options if o and o.strip()]
-    if len(trimmed) < 2:
-        raise LinqSendError("a poll needs at least two options")
-    settings = get_settings()
-    if not settings.linq_api_key:
-        raise LinqSendError("LINQ_API_KEY is not configured")
-
-    url = f"{LINQ_API_BASE}/chats/{chat_id}/polls"
-    payload = {
-        "poll": {
-            "options": [{"text": text} for text in trimmed[:MAX_POLL_OPTIONS]],
-            "idempotency_key": idempotency_key,
-        }
-    }
-    try:
-        if transport is not None:
-            response = transport("POST", url, payload)
-        else:
-            http = httpx.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {settings.linq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=30.0,
-            )
-            http.raise_for_status()
-            response = http.json()
-    except httpx.HTTPError as exc:
-        logger.warning("Linq poll send failed: %s", exc)
-        raise LinqSendError(str(exc)) from exc
-    except ValueError as exc:
-        raise LinqSendError(f"malformed poll response: {exc}") from exc
-
-    message_id = ""
-    if isinstance(response, dict):
-        message_id = str(
-            response.get("id") or (response.get("message") or {}).get("id") or ""
-        ).strip()
-    if not message_id:
-        raise LinqSendError("Linq returned no poll message id")
-    return message_id
 
 
 def parse_poll_options(payload: dict) -> tuple[str, list[tuple[str, str]]]:
@@ -650,6 +598,65 @@ def maybe_start_typing(thread: IntakeThread) -> None:
 
 def _typing_request(method: str, chat_id: str, *, transport: Transport | None = None) -> None:
     _chat_action(method, chat_id, "typing", transport=transport)
+
+
+# Tapbacks we will send. Linq also accepts dislike | question | custom;
+# those are inbound-only here — acting on an ambiguous tapback would
+# submit an application, and sending one would be a mood we did not have.
+OUTBOUND_REACTIONS = frozenset({"like", "love", "laugh", "emphasize"})
+
+
+def send_reaction(
+    message_id: str,
+    reaction: str,
+    *,
+    operation: str = "add",
+    transport: Transport | None = None,
+) -> bool:
+    """POST a tapback onto a message. Never raises.
+
+    Reactions are courtesies, same class as typing indicators: a failed one
+    costs a heart, and a turn that died because a receipt 500'd would cost
+    the conversation. Returns True only when the vendor was reached with a
+    valid payload — ACK handling uses that to decide silence vs a warm line.
+    """
+    if not message_id or reaction not in OUTBOUND_REACTIONS:
+        return False
+    if operation not in ("add", "remove"):
+        return False
+    settings = get_settings()
+    # An injected transport IS the client, so it does not need our API key --
+    # same seam as ``_chat_action``.
+    if transport is None and not settings.linq_api_key:
+        return False
+    url = f"{LINQ_API_BASE}/messages/{message_id}/reactions"
+    payload = {"operation": operation, "type": reaction}
+    try:
+        if transport is not None:
+            transport("POST", url, payload)
+            return True
+        response = httpx.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {settings.linq_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=5.0,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "linq reaction %s %s -> %s (%s)",
+                operation,
+                reaction,
+                response.status_code,
+                (response.text or "")[:200],
+            )
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 - never raise; this is a courtesy
+        logger.warning("linq reaction failed: %s", exc)
+        return False
 
 
 def _chat_action(

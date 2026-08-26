@@ -27,6 +27,7 @@ INTENT_NETWORKING = "networking"
 INTENT_PROFILE_ANSWER = "profile_answer"
 INTENT_DECLINE = "decline"
 INTENT_AFFIRM = "affirm"
+INTENT_ACK = "acknowledgment"
 INTENT_OTHER = "other"
 
 # Bare confirmations and refusals, matched on the whole message only -- "no"
@@ -40,12 +41,43 @@ _AFFIRMATIVE = frozenset(
      "go ahead", "do it"}
 )
 
+# Pure acknowledgments. Whole-message only, and never the consent words in
+# ``_AFFIRMATIVE`` — "ok" on a pending apply must stay AFFIRM. The value is
+# the tapback we send; keyword matching is the only source of a reaction type.
+ACK_REACTIONS: dict[str, str] = {
+    "great": "like",
+    "awesome": "like",
+    "perfect": "like",
+    "cool": "like",
+    "nice": "like",
+    "got it": "like",
+    "👍": "like",
+    "🙌": "like",
+    "thanks": "love",
+    "thank you": "love",
+    "thx": "love",
+    "ty": "love",
+    "love it": "love",
+    "appreciate it": "love",
+    "🙏": "love",
+    "❤️": "love",
+    "❤": "love",
+    "haha": "laugh",
+    "lol": "laugh",
+    "lmao": "laugh",
+    "😂": "laugh",
+}
+
 
 @dataclass(frozen=True)
 class Intent:
     kind: str
     # 1-based index into the presented list; 0 = no specific role referenced.
     selection: int = 0
+    # Outbound tapback for INTENT_ACK. Filled only by the keyword map — the
+    # LLM path may return acknowledgment without one, and then we send a line
+    # instead of guessing like vs love.
+    reaction: str = ""
 
 
 _ORDINALS = {
@@ -145,6 +177,9 @@ def classify(body: str, *, presented: list[dict[str, Any]]) -> Intent:
     # ones to a reader.
     if _bare(text) in _NEGATIVE:
         return Intent(INTENT_DECLINE)
+    ack = ACK_REACTIONS.get(_bare(text))
+    if ack:
+        return Intent(INTENT_ACK, reaction=ack)
     if _bare(text) in _AFFIRMATIVE:
         return Intent(INTENT_AFFIRM)
 

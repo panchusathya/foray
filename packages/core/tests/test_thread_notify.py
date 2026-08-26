@@ -25,6 +25,7 @@ from juicebox.messaging.channels import (
 )
 from juicebox.messaging.manager import MODE_MANAGING
 from juicebox.messaging.notify import (
+    EVENT_APPLICATION_SENT,
     EVENT_MATCHES_READY,
     EVENT_PACKAGE_READY,
     EVENT_PROFILE_READY,
@@ -34,7 +35,7 @@ from juicebox.messaging.notify import (
     notify_candidate,
 )
 from juicebox.messaging.suppression import handle_stop
-from juicebox.messaging.threads import open_thread, record_outbound
+from juicebox.messaging.threads import open_thread, record_inbound, record_outbound
 from juicebox.models import IntakeMessage, JobMatch, JobPosting, JobProposal
 from juicebox.worker import process_job
 
@@ -195,9 +196,9 @@ class TestEvents:
         job = enqueue_notify(session, thread=thread, event=EVENT_PROFILE_READY, subject_id="s")
         _run(session, job)
 
-        # One message per role; the last body is the follow-on prompt.
+        # One media bubble per role on Linq; the last body is the follow-on prompt.
         body = "\n".join(channel.bodies)
-        assert "1/1  ML Engineer — Anthropic" in body
+        assert "[contact card] ML Engineer — Anthropic" in body
         # Card lines only: the portal link is a JWT whose random bytes contain
         # "0.9" about 1.5% of the time (see test_messaging_manager._card_lines).
         card_lines = "\n".join(line for line in body.splitlines() if "/m/" not in line)
@@ -240,6 +241,54 @@ class TestEvents:
         _run(session, job)
         body = channel.bodies[-1]
         assert "Figma" in body and "/m/" in body
+
+    def test_application_sent_reacts_like_on_the_consenting_inbound(
+        self, session, account, channel, thread
+    ):
+        posting = _posting(session, account["org_id"], company="Notion", suffix="sent")
+        inbound, _ = record_inbound(
+            session, thread=thread, body="apply to 1", provider_native_id="in-apply"
+        )
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=thread.candidate_id,
+            job_posting_id=posting.id,
+            consenting_message_id=inbound.id,
+            consent_verbatim="apply to 1",
+        )
+        session.flush()
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert any("Notion" in b for b in channel.bodies)
+        assert ("in-apply", "like") in channel.reactions
+
+    def test_application_sent_does_not_react_to_our_own_outbound(
+        self, session, account, channel, thread
+    ):
+        posting = _posting(session, account["org_id"], company="Linear", suffix="out")
+        outbound = record_outbound(
+            session,
+            thread=thread,
+            message=OutboundMessage(body="a card"),
+            result=DeliveryResult(status="sent", provider_native_id="out-card"),
+        )
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=thread.candidate_id,
+            job_posting_id=posting.id,
+            consenting_message_id=outbound.id,
+        )
+        session.flush()
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert any("Linear" in b for b in channel.bodies)
+        assert channel.reactions == []
 
     def test_recruiter_transition_notifies_the_candidate(
         self, session, account, channel, thread

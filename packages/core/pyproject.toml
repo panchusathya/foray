@@ -32,6 +32,10 @@ dependencies = [
     # would drag in pango/cairo, and headless chromium is a browser.
     "pypdf>=4.0",
     "reportlab>=4.1",
+    # Contact-card photos (presentation/logo.py). 10.1+ ships a resizable
+    # default font; manylinux wheels, no apt. Already a reportlab transitive
+    # — the direct pin is so logo art does not depend on that.
+    "Pillow>=10.1",
 ]
 
 [project.optional-dependencies]

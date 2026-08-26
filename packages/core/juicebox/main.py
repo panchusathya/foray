@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(messaging.chat_router)
     app.include_router(messaging.linq_router)
     app.include_router(messaging.upload_router)
+    app.include_router(messaging.jobcard_router)
     # The candidate portal: auth is public (link exchange, OTP), the rest is
     # candidate-principal only. The portal's own nginx exposes just this
     # prefix, so from apply.goforay.io nothing else here exists.

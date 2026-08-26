@@ -35,7 +35,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -103,12 +102,6 @@ linq_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/linq", t
 upload_router = APIRouter(
     route_class=CommittingRoute, prefix="/v1/intake/uploads", tags=["intake"]
 )
-# Contact-card vCards Linq fetches as media. Unauthenticated like uploads:
-# a purpose-scoped HMAC bound to one proposal, no principal.
-jobcard_router = APIRouter(
-    route_class=CommittingRoute, prefix="/v1/intake/jobcards", tags=["intake"]
-)
-
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
 )
@@ -482,52 +475,6 @@ async def upload_resume(
     return HTMLResponse(_UPLOAD_DONE, status_code=201)
 
 
-_NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-
-
-@jobcard_router.get("/{proposal_id}.vcf")
-def jobcard_vcf(
-    proposal_id: str, token: str = Query(default=""), db: Session = Depends(get_db)
-):
-    """The vCard Linq fetches for a job-match contact card.
-
-    A GET has no side effects, so a link preview prefetch cannot consume
-    anything. Bad token and unknown proposal are the same 404 so an id is
-    not confirmable by probing.
-    """
-    from ..messaging.jobcards import verify_jobcard_token
-    from ..models import JobMatch, JobPosting, JobProposal
-    from ..presentation.jobcard import jobcard
-    from ..presentation.logo import contact_photo, photo_for, posting_domain
-    from ..presentation.vcard import build_vcard, vcard_filename
-
-    if not verify_jobcard_token(proposal_id, token):
-        raise _NOT_FOUND
-    proposal = db.get(JobProposal, proposal_id)
-    if proposal is None:
-        raise _NOT_FOUND
-    posting = db.get(JobPosting, proposal.job_posting_id)
-    if posting is None:
-        raise _NOT_FOUND
-    match = db.get(JobMatch, proposal.job_match_id) if proposal.job_match_id else None
-    card = jobcard(posting, match)
-    if proposal.reasons:
-        card = {**card, "reasons": list(proposal.reasons)}
-    try:
-        photo = photo_for(posting_domain(posting), posting.company or "")
-        payload = build_vcard(card, photo_png=photo)
-    except Exception:  # noqa: BLE001 - never 500 over a favicon
-        logger.warning("jobcard render fell back to monogram for %s", proposal_id)
-        photo = contact_photo(None, company=posting.company or "")
-        payload = build_vcard(card, photo_png=photo)
-    filename = vcard_filename(card)
-    return Response(
-        content=payload,
-        media_type="text/vcard",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
-
-
 @linq_router.post("/webhook")
 def linq_webhook(
     raw: bytes = Depends(raw_body),
@@ -619,6 +566,15 @@ def linq_webhook(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="This conversation has reached its message limit",
         )
+
+    # Which protocol this thread is actually on, remembered before anything
+    # can return early. It decides whether an outbound job card can carry an
+    # image or has to stay text-only, and the answer changes per message: an
+    # iMessage thread drops to SMS often enough that the last delivery is the
+    # only honest evidence. Only ever overwritten by a real value, so a payload
+    # that omits `service` leaves what we already knew intact.
+    if inbound.service:
+        thread.last_service = inbound.service
 
     message, created = record_inbound(
         db,

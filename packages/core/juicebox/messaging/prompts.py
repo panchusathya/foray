@@ -427,9 +427,17 @@ NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 # exactly one question (the footer's "reply with a number").
 MAX_CARD_MESSAGE_CHARS = 900
 
+# One tail after the cards, and every clause in it is something the candidate
+# can do without leaving the thread. What it used to open with -- "tap a card
+# for details" -- was an instruction to go elsewhere to find out what the job
+# was, because the card was a vCard and carried almost nothing. The card
+# carries the detail now, so the tail is the two gestures and then, last, the
+# dashboard: that link is for tracking what is already in flight, not for
+# reading these or applying to them.
 PRESENT_TAIL = (
-    "tap a card for details — a 👍 tapback on one and i'll apply for you. "
-    "or reply with a number. all of them: {link}"
+    "👍 any of these and i'll apply for you. 👎 and i'll drop it. "
+    "reply with a number if you want more first. "
+    "everything in flight, any time: {link}"
 )
 
 

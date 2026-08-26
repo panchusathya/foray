@@ -71,6 +71,23 @@ def artifact_relpath(*, org_id: str, application_id: str, label: str, suffix: st
     return relpath
 
 
+def card_relpath(*, org_id: str, posting_id: str, variant: str = "card") -> str:
+    """``{org}/cards/{posting}-{variant}.png`` for a rendered job card.
+
+    Deliberately **not** versioned in the path, unlike ``artifact_relpath``,
+    which keeps every retry. A card is a projection of a posting, so the
+    current render is the only one worth having and a re-render should replace
+    its predecessor rather than accumulate a numbered pile of near-identical
+    PNGs in a volume that only grows.
+
+    Under the org rather than the candidate because the same bytes are sent to
+    everybody shown this role -- filing it per candidate would imply a card
+    that is about a person, which would then be wrong to share.
+    """
+    cleaned = _LABEL_SAFE.sub("-", (variant or "card").strip().lower()).strip("-") or "card"
+    return f"{org_id}/cards/{posting_id}-{cleaned}.png"
+
+
 def document_abspath(relpath: str) -> Path:
     root = storage_root()
     resolved = (root / relpath).resolve()

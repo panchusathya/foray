@@ -46,11 +46,9 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_card
-from ..presentation.logo import photo_for, posting_domain
-from ..presentation.vcard import vcard_filename
+from . import cards as cards_media
 from . import identity, intents, prompts
-from .channels import LINQ, OutboundMessage
-from .jobcards import mint_jobcard_link
+from .channels import OutboundMessage
 
 logger = logging.getLogger(__name__)
 
@@ -598,27 +596,20 @@ def present_matches(
         )
         db.add(proposal)
         db.flush()
-        try:
-            photo_for(posting_domain(posting), posting.company or "")
-        except Exception as exc:  # noqa: BLE001 - pre-warm; GET still has a fallback
-            logger.info("jobcard photo pre-warm missed for %s: %s", posting.id, exc)
 
-        if thread.channel == LINQ:
-            message = OutboundMessage(
-                body=f"[contact card] {card['title']} — {card['company']}",
-                media_url=mint_jobcard_link(proposal),
-                media_filename=vcard_filename(card),
-                verbatim=True,
-            )
-        else:
-            message = OutboundMessage(
-                body=render_card(
-                    {k: v for k, v in card.items() if k != "recruiter_only"},
-                    index=index,
-                    total=len(cards),
-                ),
-                verbatim=True,
-            )
+        # The text card is the message, on every channel and every protocol.
+        # An image is added to it where one will render inline; it is never a
+        # substitute for the words. That ordering is the whole difference from
+        # the vCard this replaces: that was a media-only bubble reading
+        # "[contact card] Title - Company", so a thread where the attachment
+        # failed to fetch showed a role with no detail and no way to act, and a
+        # thread where it worked still needed a tap to read anything.
+        shown = {k: v for k, v in card.items() if k != "recruiter_only"}
+        message = OutboundMessage(
+            body=render_card(shown, index=index, total=len(cards)),
+            media=cards_media.card_media(db, thread=thread, posting=posting, card=shown),
+            verbatim=True,
+        )
         row = _deliver(db, thread=thread, message=message, origin=origin)
         proposal.message_id = row.id if row is not None else None
         rows.append(row)

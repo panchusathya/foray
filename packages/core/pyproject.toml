@@ -32,9 +32,11 @@ dependencies = [
     # would drag in pango/cairo, and headless chromium is a browser.
     "pypdf>=4.0",
     "reportlab>=4.1",
-    # Contact-card photos (presentation/logo.py). 10.1+ ships a resizable
-    # default font; manylinux wheels, no apt. Already a reportlab transitive
-    # — the direct pin is so logo art does not depend on that.
+    # Employer logos (presentation/logo.py) and the rendered job card
+    # (presentation/cardimage.py, presentation/palette.py). 10.1+ ships a
+    # resizable default font; manylinux wheels, no apt, unlike the weasyprint
+    # and headless-chromium routes rejected above. Already a reportlab
+    # transitive — the direct pin is so this art does not depend on that.
     "Pillow>=10.1",
 ]
 
@@ -57,6 +59,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["juicebox*"]
+
+# The card renderer loads these by path at runtime. Without this they are left
+# out of a built wheel and every card silently falls back to Pillow's bitmap
+# font -- which does not fail, it just looks wrong, and only in production.
+[tool.setuptools.package-data]
+"juicebox.presentation" = ["fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

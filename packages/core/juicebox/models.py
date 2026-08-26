@@ -1510,6 +1510,14 @@ class IntakeThread(Base, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(64), default="")
     timezone_source: Mapped[str] = mapped_column(String(24), default="")
 
+    # iMessage | RCS | SMS, as last reported by Linq on an inbound message.
+    # Empty means we have never been told, and that is not the same as SMS:
+    # presentation falls back to text-only for both, but a guess either way
+    # would be wrong half the time. Read by `messaging.cards.wants_image`,
+    # because an image on a non-rich thread is an MMS -- carrier cost,
+    # recompression, and some carriers strip it outright.
+    last_service: Mapped[str] = mapped_column(String(16), default="", server_default="")
+
     inbound_count: Mapped[int] = mapped_column(Integer, default=0)
     outbound_count: Mapped[int] = mapped_column(Integer, default=0)
     last_inbound_at: Mapped[datetime | None] = mapped_column(
@@ -1850,6 +1858,42 @@ class JobProposal(Base, TimestampMixin):
     )
     decline_reason: Mapped[str] = mapped_column(String(240), default="")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JobCardAsset(Base, TimestampMixin):
+    """A rendered job-card image, so one posting renders once.
+
+    A role proposed to thirty candidates is one card, and re-rendering plus
+    re-uploading it thirty times is thirty uploads for identical bytes.
+    ``card_version`` is what invalidates the cache when the renderer or the
+    palette changes -- without it a design fix would never reach a posting
+    anybody had already been shown, which is a cache that quietly outlives the
+    code it cached.
+
+    Org-scoped even though a posting's card contains nothing tenant-specific,
+    because the Linq attachment it points at was uploaded on an org's
+    credentials and is not ours to hand to another one.
+    """
+
+    __tablename__ = "job_card_assets"
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_posting_id", "variant", name="uq_job_card_asset"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jcard"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    job_posting_id: Mapped[str] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), index=True
+    )
+    #: Which rendering this is. One value today ("card"); the column exists so
+    #: a second size does not need a migration.
+    variant: Mapped[str] = mapped_column(String(24), default="card")
+    storage_path: Mapped[str] = mapped_column(String(400), default="")
+    #: Linq's durable handle for the uploaded bytes. Reused across sends; a
+    #: blank one means the next send uploads.
+    attachment_id: Mapped[str] = mapped_column(String(120), default="")
+    card_version: Mapped[str] = mapped_column(String(40), default="")
+    rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Application(Base, TimestampMixin):

@@ -39,6 +39,10 @@ from juicebox.messaging.threads import open_thread, record_inbound, record_outbo
 from juicebox.models import IntakeMessage, JobMatch, JobPosting, JobProposal
 from juicebox.worker import process_job
 
+#: The card head joins title and company with an em dash. Spelled as an
+#: escape because a literal one here has been mangled by tooling before.
+EM_DASH = "—"
+
 # Winter, so Eastern is EST: the unknown-zone window (11:00-21:00 ET) is
 # 16:00Z-02:00Z. Inside, and outside.
 IN_WINDOW = datetime(2026, 1, 15, 17, 0, tzinfo=UTC)
@@ -199,9 +203,10 @@ class TestEvents:
         job = enqueue_notify(session, thread=thread, event=EVENT_PROFILE_READY, subject_id="s")
         _run(session, job)
 
-        # One media bubble per role on Linq; the last body is the follow-on prompt.
+        # One text card per role; the last body is the follow-on prompt.
         body = "\n".join(channel.bodies)
-        assert "[contact card] ML Engineer — Anthropic" in body
+        assert f"ML Engineer {EM_DASH} Anthropic" in body
+        assert "[contact card]" not in body
         # Card lines only: the portal link is a JWT whose random bytes contain
         # "0.9" about 1.5% of the time (see test_messaging_manager._card_lines).
         card_lines = "\n".join(line for line in body.splitlines() if "/m/" not in line)

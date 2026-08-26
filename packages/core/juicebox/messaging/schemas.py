@@ -23,6 +23,12 @@ class ChatStartIn(BaseModel):
     """
 
     token: str = Field(min_length=1, description="Signed widget token: <org_id>.<signature>")
+    # A stable, widget-generated browser id (localStorage). It is what lets a
+    # STOP outlive the session that said it: a stopped thread binds to
+    # (channel, from_address), and a widget thread without one has no
+    # from_address — so a new session used to start asking questions again.
+    # Optional because old embeds don't send it; those keep today's behavior.
+    visitor_id: str = Field(default="", max_length=200)
 
 
 class ChatMessageIn(BaseModel):

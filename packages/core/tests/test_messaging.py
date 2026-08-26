@@ -750,6 +750,38 @@ class TestChatApi:
         assert len(body["messages"]) == 2
         assert body["messages"][0]["direction"] == "outbound"
 
+    def test_a_widget_stop_binds_across_new_sessions(self, client, widget_token):
+        """STOP said in one browser session must hold when the same browser
+        opens a fresh session — the visitor id is what carries it over."""
+        started = client.post(
+            "/v1/intake/chat/sessions",
+            json={"token": widget_token, "visitor_id": "vis-abc123"},
+        ).json()
+        stopped = client.post(
+            f"/v1/intake/chat/sessions/{started['thread_id']}/messages",
+            json={"token": started["thread_token"], "body": "STOP", "client_message_id": "m-1"},
+        ).json()
+        assert stopped["status"] == STATUS_STOPPED
+
+        again = client.post(
+            "/v1/intake/chat/sessions",
+            json={"token": widget_token, "visitor_id": "vis-abc123"},
+        )
+        assert again.status_code == 403
+
+        # A different browser is a different person; it still gets a session.
+        other = client.post(
+            "/v1/intake/chat/sessions",
+            json={"token": widget_token, "visitor_id": "vis-other"},
+        )
+        assert other.status_code == 201
+
+    def test_an_embed_without_a_visitor_id_keeps_working(self, client, widget_token):
+        """Old embeds send no visitor_id; nothing binds, nothing breaks."""
+        response = client.post("/v1/intake/chat/sessions", json={"token": widget_token})
+        assert response.status_code == 201
+        assert response.json()["status"] == "active"
+
     def test_the_org_thread_creation_cap_refuses_excess_sessions(
         self, client, widget_token, monkeypatch
     ):

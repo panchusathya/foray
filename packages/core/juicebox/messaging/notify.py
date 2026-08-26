@@ -4,8 +4,11 @@ A notification is a message nobody asked for, which is exactly why every gate
 in the stack applies to it and none can be skipped:
 
 * ``cadence.may_initiate`` — quiet hours (deferred to the window via
-  ``Job.run_at``, no scheduler), the nudge budget, and the per-org opt-out
-  circuit breaker.
+  ``Job.run_at``, no scheduler) and the per-org opt-out circuit breaker.
+  Deliberately NOT the nudge budget: that counts nudges, and a notification's
+  own dedup is the event-keyed job. When it did apply here, two early
+  notifications spent the budget and every later application-sent text on
+  the thread was silently skipped.
 * ``suppression.is_blocked`` and the consent check in ``_deliver``.
 * The proposal budgets, when the notification carries cards.
 
@@ -86,7 +89,7 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
     if thread.status != STATUS_ACTIVE or is_blocked(db, thread=thread):
         return {"skipped": "thread inactive or blocked"}
 
-    decision = cadence.may_initiate(db, thread=thread, now=now)
+    decision = cadence.may_initiate(db, thread=thread, now=now, kind=cadence.INITIATIVE_NOTIFY)
     if not decision.allowed:
         if decision.reason == cadence.REASON_QUIET_HOURS and decision.resume_at:
             return {"defer": True, "defer_until": decision.resume_at, "reason": decision.reason}

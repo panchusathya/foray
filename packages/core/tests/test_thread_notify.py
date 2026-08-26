@@ -141,23 +141,26 @@ class TestGates:
         _run(session, job)
         assert channel.bodies == []
 
-    def test_nudge_budget_stops_the_third(self, session, account, channel, thread):
+    def test_earlier_notifications_do_not_spend_a_budget(self, session, account, channel, thread):
+        """The nudge budget counts nudges, not notifications. When it counted
+        every proactive row, two early notifications silenced the third
+        application-sent text on the thread forever."""
         for index in range(2):
             row = record_outbound(
                 session,
                 thread=thread,
-                message=OutboundMessage(body=f"earlier nudge {index}"),
+                message=OutboundMessage(body=f"earlier notification {index}"),
                 result=DeliveryResult(status="sent"),
                 origin="proactive",
             )
-            row.sent_at = IN_WINDOW - timedelta(days=10 + index * 4)
+            row.sent_at = IN_WINDOW - timedelta(hours=1 + index)
         session.flush()
         channel.sent.clear()
 
         job = enqueue_notify(session, thread=thread, event=EVENT_PROFILE_READY, subject_id="x")
         _run(session, job)
         assert job.status == "succeeded"
-        assert channel.bodies == []  # dropped, not deferred: budgets do not heal
+        assert channel.bodies != []
 
     def test_circuit_breaker_pauses_the_org(self, session, account, channel, thread):
         from juicebox.messaging.threads import STATUS_STOPPED, close_thread
@@ -203,7 +206,7 @@ class TestEvents:
         # "0.9" about 1.5% of the time (see test_messaging_manager._card_lines).
         card_lines = "\n".join(line for line in body.splitlines() if "/m/" not in line)
         assert "0.9" not in card_lines
-        # Recorded as proactive, so it spends the nudge budget.
+        # Recorded as proactive: a message nobody asked for, on the audit trail.
         row = session.scalar(
             select(IntakeMessage)
             .where(IntakeMessage.thread_id == thread.id, IntakeMessage.origin == "proactive")

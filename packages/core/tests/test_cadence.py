@@ -16,12 +16,17 @@ from sqlalchemy import select
 from juicebox.jobs import KIND_INTAKE_TURN, enqueue
 from juicebox.messaging import cadence
 from juicebox.messaging.cadence import (
+    INITIATIVE_NUDGE,
     MAX_NUDGES_PER_THREAD,
+    NUDGE_FIRST_AFTER_HOURS,
+    ORIGIN_NUDGE,
     REASON_IN_WINDOW,
     REASON_NUDGE_BUDGET,
+    REASON_NUDGE_TOO_SOON,
     REASON_ORG_CIRCUIT_OPEN,
     REASON_QUIET_HOURS,
     REASON_REPLY_WINDOW,
+    REASON_THREAD_NOT_ACTIVE,
     TZ_SOURCE_STATED,
     in_send_window,
     may_initiate,
@@ -223,37 +228,88 @@ class TestRunTurnDeferral:
 
 
 class TestInitiatedOutbound:
-    def _proactive(self, session, thread, *, sent_at, body="nudge"):
+    def _sent(self, session, thread, *, sent_at, origin, body="ping"):
         row = record_outbound(
             session,
             thread=thread,
             message=OutboundMessage(body=body),
             result=DeliveryResult(status="sent"),
-            origin="proactive",
+            origin=origin,
         )
         row.sent_at = sent_at
         session.flush()
         return row
 
-    def test_nudge_budget_is_spent_by_sent_rows(self, session, linq_thread):
+    def _quiet_for(self, session, thread, *, now, hours):
+        """The candidate last spoke `hours` ago."""
+        thread.last_inbound_at = now - timedelta(hours=hours)
+        session.flush()
+
+    def test_nudge_budget_is_spent_by_sent_nudges(self, session, linq_thread):
         now = HALF_ELEVEN_ET
+        self._quiet_for(session, linq_thread, now=now, hours=24 * 30)
         for i in range(MAX_NUDGES_PER_THREAD):
-            self._proactive(session, linq_thread, sent_at=now - timedelta(days=10 + i * 4))
-        decision = may_initiate(session, thread=linq_thread, now=now)
+            self._sent(
+                session,
+                linq_thread,
+                sent_at=now - timedelta(days=10 + i * 4),
+                origin=ORIGIN_NUDGE,
+            )
+        decision = may_initiate(session, thread=linq_thread, now=now, kind=INITIATIVE_NUDGE)
         assert not decision.allowed and decision.reason == REASON_NUDGE_BUDGET
         # Budget refusals carry no retry time: waiting does not restore one.
         assert decision.resume_at is None
 
     def test_nudges_keep_their_distance(self, session, linq_thread):
         now = HALF_ELEVEN_ET
-        self._proactive(session, linq_thread, sent_at=now - timedelta(hours=24))
-        decision = may_initiate(session, thread=linq_thread, now=now)
-        assert not decision.allowed and decision.reason == REASON_NUDGE_BUDGET
+        self._quiet_for(session, linq_thread, now=now, hours=24 * 30)
+        self._sent(session, linq_thread, sent_at=now - timedelta(hours=24), origin=ORIGIN_NUDGE)
+        decision = may_initiate(session, thread=linq_thread, now=now, kind=INITIATIVE_NUDGE)
+        assert not decision.allowed and decision.reason == REASON_NUDGE_TOO_SOON
+        # The gap is time-based, so a scheduler gets a retry instant.
+        assert decision.resume_at == now - timedelta(hours=24) + timedelta(hours=72)
 
-        # 72h later the second (and last) nudge is allowed.
+        # 72h after the first nudge, the second (and last) is allowed.
         later = now + timedelta(hours=49)
-        decision = may_initiate(session, thread=linq_thread, now=later)
+        decision = may_initiate(session, thread=linq_thread, now=later, kind=INITIATIVE_NUDGE)
         assert decision.allowed
+
+    def test_first_nudge_waits_for_silence(self, session, linq_thread):
+        # They spoke an hour ago: not silence, whatever the budget says.
+        now = HALF_ELEVEN_ET
+        self._quiet_for(session, linq_thread, now=now, hours=1)
+        decision = may_initiate(session, thread=linq_thread, now=now, kind=INITIATIVE_NUDGE)
+        assert not decision.allowed and decision.reason == REASON_NUDGE_TOO_SOON
+        assert decision.resume_at == linq_thread.last_inbound_at.replace(
+            tzinfo=UTC
+        ) + timedelta(hours=NUDGE_FIRST_AFTER_HOURS)
+
+        # At 48h of silence the first nudge goes.
+        later = now + timedelta(hours=NUDGE_FIRST_AFTER_HOURS)
+        decision = may_initiate(session, thread=linq_thread, now=later, kind=INITIATIVE_NUDGE)
+        assert decision.allowed
+
+    def test_no_nudge_after_a_wrap_up(self, session, linq_thread):
+        now = HALF_ELEVEN_ET
+        self._quiet_for(session, linq_thread, now=now, hours=24 * 30)
+        close_thread(session, thread=linq_thread, status="complete", reason="wrapped")
+        decision = may_initiate(session, thread=linq_thread, now=now, kind=INITIATIVE_NUDGE)
+        assert not decision.allowed and decision.reason == REASON_THREAD_NOT_ACTIVE
+
+    def test_notifications_are_not_held_by_the_nudge_budget(self, session, linq_thread):
+        # The regression this split exists for: two earlier proactive
+        # notifications used to spend the "nudge" budget, and the third
+        # application-sent text was silently skipped forever.
+        now = HALF_ELEVEN_ET
+        for i in range(MAX_NUDGES_PER_THREAD + 1):
+            self._sent(
+                session,
+                linq_thread,
+                sent_at=now - timedelta(hours=1 + i),
+                origin="proactive",
+            )
+        decision = may_initiate(session, thread=linq_thread, now=now)
+        assert decision.allowed and decision.reason == REASON_IN_WINDOW
 
     def test_initiated_sends_have_no_reply_window(self, session, linq_thread):
         # A fresh inbound message lets a *reply* through at 21:30 ET, but a
@@ -396,15 +452,18 @@ class TestOriginColumn:
         )
         assert row.origin == "reply"
 
-    def test_failed_proactive_rows_do_not_spend_the_budget(self, session, linq_thread):
-        record_outbound(
-            session,
-            thread=linq_thread,
-            message=OutboundMessage(body="nudge"),
-            result=DeliveryResult(status="failed", error="boom"),
-            origin="proactive",
-        )
-        decision = may_initiate(session, thread=linq_thread, now=HALF_ELEVEN_ET)
+    def test_failed_nudge_rows_do_not_spend_the_budget(self, session, linq_thread):
+        now = HALF_ELEVEN_ET
+        linq_thread.last_inbound_at = now - timedelta(days=30)
+        for _ in range(MAX_NUDGES_PER_THREAD):
+            record_outbound(
+                session,
+                thread=linq_thread,
+                message=OutboundMessage(body="nudge"),
+                result=DeliveryResult(status="failed", error="boom"),
+                origin=ORIGIN_NUDGE,
+            )
+        decision = may_initiate(session, thread=linq_thread, now=now, kind=INITIATIVE_NUDGE)
         assert decision.allowed
 
 

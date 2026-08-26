@@ -760,6 +760,10 @@ class InboundEmail(BaseModel):
     body: str = ""
     in_reply_to: str | None = None
     candidate_email: str | None = None
+    # The inbound mail's own RFC Message-ID, when the ESP's parse payload
+    # carries headers. It is the reply's identity: without one, a redelivered
+    # webhook is only recognisable by hashing the delivery itself.
+    message_id: str = Field(default="", max_length=300)
 
     model_config = ConfigDict(populate_by_name=True)
 

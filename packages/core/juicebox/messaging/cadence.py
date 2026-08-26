@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..enrich.taxonomy import normalize_location
 from ..models import Candidate, IntakeThread, utcnow
-from .threads import STATUS_STOPPED
+from .threads import STATUS_ACTIVE, STATUS_STOPPED
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +48,26 @@ QUIET_LOCAL_END_HOUR = 21
 # Nudge budget, decided in MESSAGING_INTAKE_PLAN and restated in
 # CANDIDATE_AGENT_PLAN §4.2: first nudge at 48h of silence, at most two per
 # thread, at least 72h apart, never after a wrap-up or an opt-out. The budget
-# is counted from message rows (origin="proactive"), not a counter column, so
-# it cannot drift from what was actually sent.
+# is counted from message rows (origin="nudge"), not a counter column, so it
+# cannot drift from what was actually sent. Notifications write
+# origin="proactive" and are deliberately NOT counted: an application-sent
+# text is event-driven and idempotent per event, and holding the third one
+# because two earlier notifications "spent the nudge budget" silenced exactly
+# the messages candidates most expect.
 NUDGE_FIRST_AFTER_HOURS = 48
 MAX_NUDGES_PER_THREAD = 2
 NUDGE_MIN_GAP_HOURS = 72
+
+# What kind of initiated send `may_initiate` is deciding. A nudge ("are you
+# still there?") carries the full nudge budget; a notification (application
+# sent, matches ready) is gated by quiet hours and the org circuit breaker
+# only — its idempotency lives in the event key, not a per-thread counter.
+INITIATIVE_NOTIFY = "notify"
+INITIATIVE_NUDGE = "nudge"
+
+#: IntakeMessage.origin for a nudge row — distinct from "proactive" so the
+#: nudge budget charges for nudges and nothing else.
+ORIGIN_NUDGE = "nudge"
 
 # How the thread's timezone was resolved, best source first. "area_code" is
 # reserved: the plan allows it as a tie-breaker but "not good enough to
@@ -67,6 +82,8 @@ REASON_IN_WINDOW = "in-window"
 REASON_QUIET_HOURS = "quiet-hours"
 REASON_ORG_CIRCUIT_OPEN = "org-circuit-open"
 REASON_NUDGE_BUDGET = "nudge-budget"
+REASON_NUDGE_TOO_SOON = "nudge-too-soon"
+REASON_THREAD_NOT_ACTIVE = "thread-not-active"
 
 
 @dataclass(frozen=True)
@@ -383,14 +400,14 @@ def org_outbound_allowed(db: Session, *, org_id: str, now: datetime | None = Non
     return True
 
 
-def _proactive_rows(db: Session, thread: IntakeThread) -> list[datetime]:
+def _nudge_rows(db: Session, thread: IntakeThread) -> list[datetime]:
     from ..models import IntakeMessage  # local import mirrors worker style
 
     rows = db.scalars(
         select(IntakeMessage.sent_at)
         .where(
             IntakeMessage.thread_id == thread.id,
-            IntakeMessage.origin == "proactive",
+            IntakeMessage.origin == ORIGIN_NUDGE,
             IntakeMessage.status == "sent",
         )
         .order_by(IntakeMessage.seq)
@@ -398,28 +415,67 @@ def _proactive_rows(db: Session, thread: IntakeThread) -> list[datetime]:
     return [ts for ts in (_aware(t) for t in rows) if ts is not None]
 
 
+def _nudge_budget(
+    db: Session, *, thread: IntakeThread, now: datetime
+) -> CadenceDecision | None:
+    """The nudge-only gates, or ``None`` when the nudge may proceed to quiet
+    hours. CANDIDATE_AGENT_PLAN §4.2: first at 48h of silence, at most two per
+    thread, at least 72h apart, never after a wrap-up or an opt-out.
+    """
+    # "Never after a wrap-up or an opt-out": a completed or stopped thread has
+    # nothing to nudge back to life.
+    if thread.status != STATUS_ACTIVE:
+        return CadenceDecision(False, REASON_THREAD_NOT_ACTIVE)
+
+    # Silence is measured from *their* last message: our own outbound does not
+    # reset it, or a reply we sent would postpone the nudge it precedes.
+    last_heard = _aware(thread.last_inbound_at) or _aware(thread.created_at) or now
+    quiet_since = timedelta(hours=NUDGE_FIRST_AFTER_HOURS)
+    if now - last_heard < quiet_since:
+        return CadenceDecision(
+            False, REASON_NUDGE_TOO_SOON, resume_at=last_heard + quiet_since
+        )
+
+    sent = _nudge_rows(db, thread)
+    if len(sent) >= MAX_NUDGES_PER_THREAD:
+        return CadenceDecision(False, REASON_NUDGE_BUDGET)
+    if sent:
+        gap = timedelta(hours=NUDGE_MIN_GAP_HOURS)
+        if now - sent[-1] < gap:
+            return CadenceDecision(False, REASON_NUDGE_TOO_SOON, resume_at=sent[-1] + gap)
+    return None
+
+
 def may_initiate(
-    db: Session, *, thread: IntakeThread, now: datetime | None = None
+    db: Session,
+    *,
+    thread: IntakeThread,
+    now: datetime | None = None,
+    kind: str = INITIATIVE_NOTIFY,
 ) -> CadenceDecision:
     """May we send a message nobody asked for — a nudge, proposal, or notify?
 
     Everything ``may_send_now`` checks except the reply window (there is no
-    reply to be in the window of), plus the org circuit breaker and the nudge
-    budget. Refusals for budget reasons carry no ``resume_at``: waiting does
-    not restore a spent budget, and silence is information.
+    reply to be in the window of), plus the org circuit breaker. A nudge
+    (``kind=INITIATIVE_NUDGE``) additionally carries the whole nudge budget —
+    48h of silence first, at most two, 72h apart. A notification does not:
+    its dedup lives in the event-keyed job, and the budget held here used to
+    silence the third application-sent text on a thread, which is why
+    ``NUDGE_FIRST_AFTER_HOURS`` could never be enforced in this gate before
+    the two kinds were split.
+
+    Count refusals carry no ``resume_at`` — waiting does not restore a spent
+    budget. Time refusals (too soon, gap) do, so a scheduler can requeue.
     """
     now = now or utcnow()
 
     if not org_outbound_allowed(db, org_id=thread.org_id, now=now):
         return CadenceDecision(False, REASON_ORG_CIRCUIT_OPEN)
 
-    sent = _proactive_rows(db, thread)
-    if len(sent) >= MAX_NUDGES_PER_THREAD:
-        return CadenceDecision(False, REASON_NUDGE_BUDGET)
-    if sent:
-        gap = timedelta(hours=NUDGE_MIN_GAP_HOURS)
-        if now - sent[-1] < gap:
-            return CadenceDecision(False, REASON_NUDGE_BUDGET)
+    if kind == INITIATIVE_NUDGE:
+        refused = _nudge_budget(db, thread=thread, now=now)
+        if refused is not None:
+            return refused
 
     zone, source = resolve_timezone(db, thread=thread)
     if in_send_window(now, zone_name=zone):

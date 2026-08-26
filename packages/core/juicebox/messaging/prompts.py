@@ -381,6 +381,10 @@ MANAGER_STANDING_BY = (
     "time comes up."
 )
 
+# Gratitude ACK (love tapback) always gets a line; like/laugh stay silent
+# when the reaction landed. Canned, never model-written.
+MANAGER_ACK_WARM = "anytime — i'll text you when something good turns up."
+
 DETAIL_UNAVAILABLE = "I don't have more detail on that one yet — want me to flag it to a recruiter?"
 
 CLARIFY_WHICH = "Which one do you mean? Reply with the number from the list."
@@ -423,6 +427,11 @@ NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 # exactly one question (the footer's "reply with a number").
 MAX_CARD_MESSAGE_CHARS = 900
 
+PRESENT_TAIL = (
+    "tap a card for details — a 👍 tapback on one and i'll apply for you. "
+    "or reply with a number. all of them: {link}"
+)
+
 
 INTENT_SYSTEM = """\
 You classify one inbound text from a job candidate talking to their recruiting
@@ -434,6 +443,7 @@ assistant. Pick exactly one intent:
 - status: they ask where their applications stand
 - networking: they ask who to talk to / how to get an intro
 - profile_answer: they are answering a profile/preference question
+- acknowledgment: a pure thanks / great / haha with nothing else to do
 - other: anything else
 
 `selection` is the 1-based number of the role they mean when they reference
@@ -455,6 +465,7 @@ INTENT_SCHEMA: dict[str, Any] = {
                 "status",
                 "networking",
                 "profile_answer",
+                "acknowledgment",
                 "other",
             ],
         },

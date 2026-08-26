@@ -68,6 +68,15 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# A current Chrome-on-Windows UA. The apply browser's baseline, so a residential
+# proxy is never paired with a headless-looking UA. Kept as a module constant so
+# the empty-env fallback and any future reference read the same string.
+_DEFAULT_APPLY_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- app -------------------------------------------------------------
@@ -146,8 +155,22 @@ class Settings:
     # main 120s budget is right for drafting a whole sequence in a worker and
     # absurd for a request someone is watching, so those get their own ceiling
     # and no retries: degrading to the heuristic text beats a spinner.
+    # The general "someone is waiting" budget: a text thread, an intent
+    # classification, a personalisation pass. 10s rather than the old 20s,
+    # because none of these are worth a third of a minute, but well clear of
+    # the voice budget below -- a person reading a text tolerates a pause that
+    # a person holding a phone to their ear does not.
     llm_fast_timeout_seconds: float = field(
-        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 20.0)
+        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 10.0)
+    )
+    # Live-call budget, and the reason the two are separate. The mid-call
+    # coverage check runs while the caller sits in silence: at 20s they heard
+    # the agent ask "are you with me?" while it was still waiting, and even 10s
+    # is a dead line. The endpoint degrades to heuristics on timeout, so failing
+    # fast costs one slightly worse next question and saves the call. Anything
+    # a caller waits on in real time should use this, not the one above.
+    llm_voice_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_VOICE_TIMEOUT_SECONDS", 3.5)
     )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)
@@ -623,6 +646,23 @@ class Settings:
     # A visible browser is for debugging one run by hand, never for the worker.
     apply_browser_headless: bool = field(
         default_factory=lambda: _env_bool("APPLY_BROWSER_HEADLESS", True)
+    )
+    # Route the apply browser through a proxy so employer anti-bot sees a
+    # residential IP, not this datacentre's block -- the thing that got a real
+    # Ashby submission flagged as spam. A standard proxy URL, credentials in
+    # it: `http://user:pass@gate.provider.com:7777`. Empty means direct, which
+    # is the state every deployment starts in.
+    apply_proxy_url: str = field(default_factory=lambda: _env("APPLY_PROXY_URL", ""))
+    # A real browser's UA. A residential IP serving the default headless string
+    # is still obviously a bot, so the two travel together. This is the always-on
+    # baseline, not an opt-in: an *empty* env value falls back to it rather than
+    # blanking the UA, because the compose anchor sets the var to "" when nobody
+    # configured one and a blank UA would hand the headless string right back.
+    # Overridable to a real value because a UA naming a Chromium version the
+    # image no longer ships is a lie a fingerprinter catches against the TLS
+    # handshake.
+    apply_browser_user_agent: str = field(
+        default_factory=lambda: _env("APPLY_BROWSER_USER_AGENT", "").strip() or _DEFAULT_APPLY_UA
     )
     # How long a browser run may sit waiting on a verification email before it
     # stops being "in flight" and becomes something a person has to look at.

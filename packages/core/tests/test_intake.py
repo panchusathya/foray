@@ -163,13 +163,22 @@ class TestCoverageGate:
     def test_core_keys_are_the_retrieval_set(self):
         assert CORE_KEYS == (
             "spec.job_titles",
-            "spec.seniority",
             "spec.locations",
             "spec.remote_ok",
             "compensation",
         )
         assert "spec.must_have_skills" not in CORE_KEYS
         assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
+
+    def test_seniority_does_not_block_a_short_call(self):
+        """It is derivable from the titles, and asking for it out loud landed as
+        jargon on a real call -- "what do you mean by level?" -- while blocking
+        the gate, so a candidate could not finish until they had answered a
+        question they did not understand. Still required on a full pass; never
+        core."""
+        assert "spec.seniority" not in CORE_KEYS
+        assert FIELDS_BY_KEY["spec.seniority"].core is False
+        assert "spec.seniority" in REQUIRED_KEYS
 
     def test_linkedin_short_gate_drops_survey_fields(self):
         from juicebox.intake.schema import LINKEDIN_SHORT_KEYS
@@ -339,9 +348,15 @@ class TestModelExtraction:
         assert "already_known" in sent
 
     def test_a_model_failure_degrades_instead_of_raising(self, scripted_llm):
+        """Still degrades rather than raising -- but says which kind of
+        heuristic read this is. `EXTRACTOR_HEURISTIC` means nobody configured a
+        model; this means one was configured and did not answer."""
+        from juicebox.intake.extract import EXTRACTOR_HEURISTIC_DEGRADED
+
         scripted_llm([LLMUnavailable("model down")])
         result = extract_intake(COMPLETE_TRANSCRIPT)
-        assert result.extractor == EXTRACTOR_HEURISTIC
+        assert result.extractor == EXTRACTOR_HEURISTIC_DEGRADED
+        assert result.extractor != EXTRACTOR_HEURISTIC
         assert result.review_needed
 
 

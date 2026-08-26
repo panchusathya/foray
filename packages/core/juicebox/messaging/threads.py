@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -163,12 +164,7 @@ def with_send_key(
     if message.send_key:
         return message
     seq = _next_seq(db, thread)
-    return OutboundMessage(
-        body=message.body,
-        asked_field=message.asked_field,
-        send_key=f"{thread.id}:{seq}",
-        verbatim=message.verbatim,
-    )
+    return replace(message, send_key=f"{thread.id}:{seq}")
 
 
 def _next_seq(db: Session, thread: IntakeThread) -> int:

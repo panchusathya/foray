@@ -79,13 +79,20 @@ FIELDS: tuple[IntakeField, ...] = (
         client_question="Is this person applying for the job I have open?",
         core=True,
     ),
+    # Not `core`, and deliberately not asked as "what level are you targeting?".
+    # On a real call that question landed as jargon -- the candidate asked what
+    # we meant by "level" -- and it was blocking the gate, so the call could not
+    # wrap until they had answered a question they did not understand. It is
+    # also the one required field we can usually derive: `infer_seniority_from_title`
+    # reads it off the titles they are going after, which is the same answer
+    # without the dead air. Left in the schema so the field is still filled and
+    # still reviewable; demoted so nobody has to say the word "level" out loud.
     IntakeField(
         key="spec.seniority",
         tier=TIER_REQUIRED,
         paths=("spec.seniority",),
-        asks="What level they expect to come in at, IC or management.",
+        asks="Whether they want to stay hands-on or move into managing -- ask it in those words, never as \"what level\".",
         client_question="Am I looking at a senior IC or someone who wants my manager slot?",
-        core=True,
     ),
     IntakeField(
         key="spec.locations",

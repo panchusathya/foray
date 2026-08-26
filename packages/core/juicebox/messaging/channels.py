@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from ..config import get_settings
-from .linq import LinqSendError, send_message, stop_typing
+from .linq import LinqSendError, send_message, send_reaction, stop_typing
 
 WEB = "web"
 LINQ = "linq"
@@ -59,6 +60,12 @@ class OutboundMessage:
     # "ml engineer at anthropic" makes a proper noun look like a typo and the
     # card harder to skim. Prose stays lowercase; other people's names do not.
     verbatim: bool = False
+    # Public HTTPS URL for a media-only bubble (a vCard, a photo). Blank is a
+    # text send. The body is still stored on our row for the transcript.
+    media_url: str = ""
+    # Optional filename Linq/iMessage uses to pick a renderer. The vCard
+    # route's ``.vcf`` slug lives here so the wire part is not just the id.
+    media_filename: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,10 @@ class MessageChannel(Protocol):
         provider_thread_id: str = "",
     ) -> DeliveryResult: ...
 
+    def react(self, *, provider_message_id: str, reaction: str) -> bool:
+        """Best-effort tapback. True only when the vendor accepted it."""
+        ...
+
 
 class WebChatChannel:
     """The browser widget. There is no vendor and nothing leaves the process.
@@ -134,6 +145,12 @@ class WebChatChannel:
         provider_thread_id: str = "",
     ) -> DeliveryResult:
         return DeliveryResult(status="sent")
+
+    def react(self, *, provider_message_id: str, reaction: str) -> bool:
+        # The widget has no tapbacks. Returning True here would make an ACK
+        # go silent on web ("great" with no reply) — the manager sends a
+        # warm line when this is False.
+        return False
 
 
 class LinqChannel:
@@ -165,10 +182,15 @@ class LinqChannel:
                 chat_id=provider_thread_id,
                 body=message.body,
                 idempotency_key=message.send_key or message.asked_field or message.body[:255],
+                media_url=message.media_url,
+                filename=message.media_filename or _filename_from_url(message.media_url),
             )
         except LinqSendError as exc:
             raise ChannelError(str(exc)) from exc
         return DeliveryResult(status="sent", provider_native_id=message_id)
+
+    def react(self, *, provider_message_id: str, reaction: str) -> bool:
+        return send_reaction(provider_message_id, reaction)
 
 
 class FakeChannel:
@@ -183,7 +205,8 @@ class FakeChannel:
     def __init__(self, *, configured: bool = True, consent: bool = False) -> None:
         self._configured = configured
         self._consent = consent
-        self.sent: list[tuple[str, OutboundMessage]] = []
+        self.sent: list[tuple[str, OutboundMessage, str]] = []
+        self.reactions: list[tuple[str, str]] = []
         self.fail_next: str = ""
 
     def is_configured(self) -> bool:
@@ -207,9 +230,23 @@ class FakeChannel:
             status="sent", provider_native_id=f"fake-{len(self.sent)}"
         )
 
+    def react(self, *, provider_message_id: str, reaction: str) -> bool:
+        if not provider_message_id or not reaction:
+            return False
+        self.reactions.append((provider_message_id, reaction))
+        return True
+
     @property
     def bodies(self) -> list[str]:
         return [item[1].body for item in self.sent]
+
+
+def _filename_from_url(url: str) -> str:
+    """Last path segment of a media URL, if it looks like a filename."""
+    if not url:
+        return ""
+    name = urlparse(url).path.rsplit("/", 1)[-1].strip()
+    return name if "." in name else ""
 
 
 _channels: dict[str, MessageChannel] = {}

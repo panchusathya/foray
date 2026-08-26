@@ -69,16 +69,30 @@ INBOUND_NAME = "foray-status-inbound"
 # Retell runs the conversation on its own model list, which is entirely
 # proprietary -- no open-source option exists there, so the house policy of
 # cheap open models governs our extraction (OpenRouter) but cannot reach this.
-# `mini` rather than `nano`: this agent drives an eleven-item checklist through
-# a tool call every few turns, and the nano tier drops tool calls under that
-# load, which presents as an agent that forgets to ask things.
-AGENT_MODEL = "gpt-4.1-mini"
+#
+# Sonnet rather than the `mini` tier it used to be. Two things went wrong on
+# `gpt-4.1-mini` that are both instruction-following failures rather than
+# knowledge ones: it read as flat and robotic however warm the prompt was, and
+# -- worse -- when the prompt asked for a fact the dynamic variables did not
+# carry, it invented one rather than saying it did not know. A live call had it
+# state a confident "April 15th" for a date no code path can produce. The
+# grounding rule below is only as good as the model's willingness to obey a
+# negative instruction under social pressure, so this is not a luxury tier.
+#
+# Swapping is one constant and one `apply`, so A/B this against
+# `claude-4.6-sonnet` or `gpt-5.6-luna` on a real call before settling.
+AGENT_MODEL = "claude-5-sonnet"
 
 # Warm, calm, unhurried American female. Do not guess a replacement --
 # `voices --gender female` lists the catalogue so the pick is auditable, and
-# nearby fits if this one wears badly on a phone are 11labs-Nina (softer) and
-# 11labs-Kate (more corporate). Judge through a phone speaker, not a demo page.
-VOICE_ID = "11labs-Myra"
+# nearby fits if this one wears badly on a phone are cartesia-Cleo and
+# inworld-Maren. Judge through a phone speaker, not a demo page.
+#
+# Cartesia rather than 11labs, same voice character: the 11labs render of Myra
+# was the single thing most often described as robotic on a real call. Cartesia
+# carries sentence-level prosody better at phone bandwidth, which is where this
+# is actually heard.
+VOICE_ID = "cartesia-Myra"
 
 # Spoken so TTS does not read +16283865454 as noise. Recognition of the
 # follow-up sender is the entire point of saying it.
@@ -89,14 +103,29 @@ RECRUITER_NAME = "Vivian"
 VOICE_SPEED = 0.92
 # A little variation so the delivery is not flat.
 VOICE_TEMPERATURE = 0.85
-# Lower than default so she does not talk over a thinking pause.
-INTERRUPTION_SENSITIVITY = 0.4
+# How readily the CALLER can cut in on the agent -- not, as this was once
+# commented, how reluctant the agent is to talk over a pause. At 0.4 the agent
+# talked straight through people and discarded what they said while it was
+# speaking, which on a real call is the rudest thing it did. Near the 1.0
+# default it yields almost immediately. The original worry -- cutting in on
+# someone who is still thinking -- is what RESPONSIVENESS and the backchannel
+# below are for.
+INTERRUPTION_SENSITIVITY = 0.9
 # Still answers promptly after they finish.
 RESPONSIVENESS = 0.85
 # The "mm-hm" that makes a listener sound present.
 ENABLE_BACKCHANNEL = True
 # Present, not constant -- more than this sounds like a tic.
 BACKCHANNEL_FREQUENCY = 0.6
+
+# How long the agent waits in silence before nudging ("are you still there?").
+# Retell's default is around ten seconds, which on a real call fired while
+# `check_coverage` was still waiting on its extraction -- so the caller heard
+# an agent ask "are you with me?" for no reason, mid-answer. Fifteen seconds
+# sits past the tool's worst honest case now that the fast timeout is short.
+REMINDER_TRIGGER_MS = 15_000
+# Once. A second unprompted nudge is how a pause turns into an interrogation.
+REMINDER_MAX_COUNT = 1
 
 # A hard ceiling, not a target. The gate ends a good call in two to three
 # minutes; this only stops a wedged one from billing for an hour.
@@ -107,10 +136,32 @@ _SHARED_RULES = """
 
 Ask ONE question at a time and wait. This is a phone call, not a form.
 
-Acknowledge an answer in five words or fewer, then ask the next question.
-NEVER read their answer back to them -- "Got it." beats "Thank you for sharing
-that you want a level four backend role in the Bay Area." The recap at the end
-is the only place you repeat anything, and only if they want it.
+Acknowledge an answer briefly -- a few words, sometimes a short clause -- then
+ask the next question. Do not read their answer back to them: "Got it." beats
+"Thank you for sharing that you want a backend role in the Bay Area." The recap
+at the end is the only place you repeat anything, and only if they want it.
+
+Brief is not clipped, though. A string of two-word replies reads as a machine
+working through a list. Vary how you take an answer in, let a sentence run its
+natural length when it wants to, and stay recognisably the same person from the
+first question to the last.
+
+## Anything spelled: confirm it before you move on
+
+Two things you must get exactly right, because everything afterwards depends on
+them and a wrong one fails silently: their **email address** and their **name**.
+
+Confirm the email by reading it back the moment they give it, before the next
+question. Spell the part before the @ letter by letter, and say the domain as
+the word people say -- "gmail dot com", never "g-m-a-i-l". So for
+tushar31gupta@gmail.com: "Let me make sure I have that -- t-u-s-h-a-r-3-1-g-u-p-t-a
+at gmail dot com?" Wait for a yes. If they correct you, read it back once more.
+
+Spell an unusual or unclear name back the same way. A common name you clearly
+heard does not need it.
+
+This is the one deliberate exception to not reading answers back. Do not extend
+it to anything else.
 
 A cooperative call is done in two or three minutes. If they ask how long this
 will take, say "just a couple of minutes" -- never a larger number.
@@ -154,6 +205,11 @@ it. Never ask a declined question twice.
 
 ## Hard rules
 
+- Never state a specific fact you were not given. No date, figure, company or
+  job title that is not written in the variables you were handed or that the
+  caller has just said on this call. If you do not have it, say so and offer
+  the recruiter -- an invented detail sounds exactly like a real one, and they
+  will believe it.
 - Never promise a role, an interview, or an introduction.
 - Never name a client company, and never invent one.
 - Never give legal, visa, or immigration advice beyond noting what they told you
@@ -264,23 +320,25 @@ spent twenty minutes with, which is exactly what this line is meant to stop.
 
 ## If `caller_known` is true
 
-Greet them by first name and carry on as though the last conversation were
-yesterday, because to them it was.
+**You have already said hello.** Your greeting was spoken before this turn --
+it named them and named you. Do not greet them again, do not reintroduce
+yourself, and do not say their name twice in two sentences. Carry straight on
+as though the last conversation were yesterday, because to them it was.
 
-`caller_since` says when you last spoke. `caller_recent_text` is the last thing
-they texted us, in their words. Use whichever is there to open, then ask what
-has changed. One opener, never two:
+Your next words are the recording line and then what has changed. Keep it to
+one breath: "Quick thing first -- this call's recorded so a recruiter can read
+it later, is that okay?" Once they agree, ask what's new.
 
-- "Hi {{{{caller_first_name}}}} -- good to hear from you. What's changed?"
-- "Hi {{{{caller_first_name}}}} -- we spoke {{{{caller_since}}}}. What's new?"
-- Their text was about something specific: name that thing in your own words
-  and ask where it landed. If they texted "Got the Stripe onsite booked for
-  Thursday", say "Hi {{{{caller_first_name}}}} -- how did the Stripe onsite
-  go?" Do not read their message back to them verbatim; quoting a text aloud
-  sounds like a machine reading a log, and paraphrasing it sounds like someone
-  who remembers.
+`caller_recent_text` is the last thing they texted us, in their words. If it
+was about something specific, that is the better way in than a general "what's
+changed" -- name that thing in your own words and ask where it landed. If they
+texted "Got the Stripe onsite booked for Thursday", ask how the Stripe onsite
+went. Do not read their message back verbatim; quoting a text aloud sounds like
+a machine reading a log, and paraphrasing it sounds like someone who remembers.
 
-If both are empty, greet them by name and ask what's changed.
+`caller_since` says roughly when you last spoke, in words like "a few weeks
+ago". You may use those words -- never a date built out of them. If neither
+`caller_recent_text` nor `caller_since` is there, just ask what's changed.
 
 Then let them talk. Whatever they came to tell you is the point of the call --
 a new interview, an offer, a timeline that moved, a change of mind. Take it
@@ -289,8 +347,8 @@ first, before anything you want to ask.
 **Tell them anything in `caller_on_file`, without hedging.** It is their own
 record, in their own words, from their own last call, and they are on the
 number we hold it against. If they ask what they told you, what you have, what
-they said their target was, or ask you to read any of it back -- answer, plainly
-and specifically. Say the number. Name the company. Give the date.
+they said their target was, or ask you to read any of it back -- answer plainly,
+in the words the record uses.
 
 There is no part of it you have to be careful about with them. Not comp, not
 the offer they are holding, not the fact that their current manager does not
@@ -298,6 +356,45 @@ know. They told us; they are entitled to hear it back. Being evasive with
 somebody about their own disclosure is the single thing most likely to go wrong
 on this call, and it is worse than useless -- it is a company that took their
 information and then acted cagey about handing it back.
+
+## The number and address we hold
+
+`caller_phone` is the number they are calling from, grouped for reading aloud.
+`caller_email` is the address on their record. If they ask what number or what
+email you have for them -- "what number do you have on file?" -- read it back.
+It is their own contact detail and they are calling from it.
+
+Read the number in the groups given, not as one long run of digits. Spell the
+part of the email before the @ letter by letter and say the domain as a word.
+
+If either is empty you do not have it: say so, and offer to have the recruiter
+confirm. Do not reconstruct a number from anything else you have been told.
+
+## What you may state as fact
+
+Everything you know about this caller is in the variables above:
+`caller_first_name`, `caller_since`, `caller_recent_text`, `caller_on_file`,
+`caller_open_topics`, `caller_phone`, `caller_email`. There is nothing else.
+You have no memory of them, no notes beyond that text, and no access to
+anything the variables do not say.
+
+**Never state a specific detail that is not written in one of those variables.**
+Not a date, not a number, not a company, not a job title. If a variable is
+empty or does not mention the thing they asked about, you do not know it --
+say so and offer the recruiter.
+
+Dates are the trap, so be exact about them. `caller_since` is deliberately
+approximate: it says things like "a few weeks ago" or "last week", never a
+calendar date. Say it in exactly the words it gives you. **Never convert it
+into a date, and never name a month or a day.** If they press for when
+precisely, say you do not have the exact date in front of you.
+
+"Answer without hedging" means do not be cagey about what the record *does*
+say. It does not mean produce an answer for everything asked. Guessing a
+plausible figure or date is not confidence -- it is the worst failure available
+to you on this call, because they will believe it and correct their own memory
+against it. "I do not have that in front of me -- the recruiter can confirm"
+is always a complete and acceptable answer.
 
 What `caller_on_file` genuinely cannot tell you is anything from our side: it
 holds what *they* said, so it says nothing about client feedback, whether
@@ -422,9 +519,13 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 "name": "check_coverage",
                 "description": COVERAGE_TOOL_DESCRIPTION,
                 "url": f"{base}/v1/intake/coverage",
-                # The call answers in about a second, so an "let me check"
-                # filler would be more jarring than the pause it covers.
-                "speak_during_execution": False,
+                # It answers in about a second when the extraction behind it is
+                # warm, and took far longer than that on a real call -- long
+                # enough for the caller to ask whether anyone was there. The
+                # fast timeout is the actual fix; this is the belt to its
+                # braces, so a slow check sounds like a person thinking rather
+                # than a dropped line.
+                "speak_during_execution": True,
                 # The whole point: the result decides the next question.
                 "speak_after_execution": True,
                 "parameters": {
@@ -460,6 +561,8 @@ def delivery_body() -> dict:
         "responsiveness": RESPONSIVENESS,
         "enable_backchannel": ENABLE_BACKCHANNEL,
         "backchannel_frequency": BACKCHANNEL_FREQUENCY,
+        "reminder_trigger_ms": REMINDER_TRIGGER_MS,
+        "reminder_max_count": REMINDER_MAX_COUNT,
     }
 
 
@@ -479,6 +582,12 @@ DEFAULT_DYNAMIC_VARIABLES = {
     "caller_recent_text": "",
     "caller_on_file": "",
     "caller_open_topics": "",
+    "caller_phone": "",
+    "caller_email": "",
+    # Must never be empty: it is the agent's whole first line, so a blank here
+    # is the silence this was written to fix. The unknown-caller wording is the
+    # right fallback -- if the webhook did not answer we do not know a name.
+    "caller_greeting": "Hi, this is Vivian at Foray -- thanks for calling.",
 }
 
 
@@ -499,17 +608,29 @@ SPECS = [
     {
         "name": OUTBOUND_NAME,
         "prompt": OUTBOUND_PROMPT,
+        # Warm first, disclosure second, and short. The old version put "an AI
+        # recruiting assistant with Foray, calling because you asked us to get
+        # in touch" and the recording notice into one unbroken breath, which
+        # opened the call sounding like a compliance script being read. The
+        # recording question still lives here rather than in the prompt, because
+        # it must be asked on every single call and an opener cannot forget.
         "begin_message": (
-            f"Hi, this is {RECRUITER_NAME}, an AI recruiting assistant with Foray, "
-            "calling because you asked us to get in touch. Before we start -- this "
-            "call is recorded so a recruiter can read it later. Is that OK with you?"
+            f"Hi, it's {RECRUITER_NAME} from Foray -- you asked us to give you a "
+            "call. Quick thing first: this call's recorded so a recruiter can "
+            "read it later. Is that okay?"
         ),
     },
     {
         "name": INBOUND_NAME,
         "prompt": INBOUND_PROMPT,
-        # Inbound has no begin_message: the caller dialled us and speaks first.
-        "begin_message": "",
+        # The agent speaks first, always. The old empty string here rested on
+        # "whoever dialled speaks first", which is true of people and not of
+        # someone who has just heard a click and does not know if the line is
+        # live -- on a real call the caller said "hello?" into silence and had
+        # to prompt it. The text comes from `caller_greeting`, composed by the
+        # ring-time webhook, so a known caller gets their name in the first
+        # four words and an unknown one gets a plain warm hello.
+        "begin_message": "{{caller_greeting}}",
     },
 ]
 

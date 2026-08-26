@@ -126,6 +126,7 @@ def create_app() -> FastAPI:
     # The OAuth callback inside is unauthenticated by necessity and carries
     # its own signed state.
     app.include_router(connect.router)
+    app.include_router(messaging.jobcard_router)
     # The candidate portal: auth is public (link exchange, OTP), the rest is
     # candidate-principal only. The portal's own nginx exposes just this
     # prefix, so from apply.goforay.io nothing else here exists.

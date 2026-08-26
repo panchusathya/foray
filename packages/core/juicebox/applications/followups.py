@@ -116,16 +116,7 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
     if not missing and not mine and not form_blanks and not attestations:
         return ""
 
-    where = ""
-    if posting is not None:
-        company = (posting.company or "").strip()
-        title = (posting.title or "").strip()
-        if company and title:
-            where = f"the {title} application at {company}"
-        elif company:
-            where = f"the application at {company}"
-        elif title:
-            where = f"the {title} application"
+    where = role_phrase(posting)
     head = (
         f"{where} asks a couple of things I don't have yet:"
         if where
@@ -162,6 +153,146 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
             else "your application needs a few things from you:"
         )
     return head + "\n\n" + "\n".join(lines)
+
+
+def role_phrase(posting: JobPosting | None) -> str:
+    """``the Founding Engineer application at Sourcebot``, or "" with nothing
+    to name. Shared so an answer is acknowledged in the same words the question
+    was asked in."""
+    if posting is None:
+        return ""
+    company = (posting.company or "").strip()
+    title = (posting.title or "").strip()
+    if company and title:
+        return f"the {title} application at {company}"
+    if company:
+        return f"the application at {company}"
+    if title:
+        return f"the {title} application"
+    return ""
+
+
+def awaiting_text_answers(
+    db: Session, *, org_id: str, candidate_id: str
+) -> Application | None:
+    """The application whose texted questions are still unanswered.
+
+    This is the missing half of ``ask_for_missing``. That function asks, marks
+    the rows it asked about, and then nothing on the messaging side ever looked
+    again -- so a candidate who answered got the generic "noted, thanks" and
+    the application they were answering *for* stayed blank until they happened
+    to open the portal, which is the only place ``refill_from_preference`` was
+    ever called from.
+
+    Only applications that actually asked count (``asked`` on the row). A
+    package that filled everything from the preference asked nothing and must
+    not capture the next unrelated thing the candidate says.
+
+    Newest first: if two applications are somehow both waiting, the one asked
+    about most recently is the one being answered.
+    """
+    if not candidate_id:
+        return None
+    rows = db.scalars(
+        select(Application)
+        .where(
+            Application.org_id == org_id,
+            Application.candidate_id == candidate_id,
+            Application.status.in_(("draft", "prepared")),
+        )
+        .order_by(Application.updated_at.desc())
+    ).all()
+    for application in rows:
+        answers = application.form_answers or []
+        for item in answers:
+            key = str(item.get("key") or "")
+            if (
+                key in ASKABLE
+                and item.get("asked")
+                and not str(item.get("answer") or "").strip()
+            ):
+                return application
+    return None
+
+
+def asked_blanks(application: Application) -> list[str]:
+    """Keys we asked this candidate for over text and still do not have.
+
+    Narrower than ``blank_answers`` on purpose, and the difference is not
+    cosmetic. ``blank_answers`` walks ``ASK_ORDER`` and reads a key that is
+    *absent* from ``form_answers`` as blank, which is right for deciding what a
+    package still owes -- ``build_form_answers`` writes all four, so an absent
+    key there means something went wrong.
+
+    It is wrong for deciding whether a conversation is finished. A key nobody
+    was ever asked about is not outstanding from the candidate's point of view,
+    and counting it would mean the answer set never reads as complete: the
+    acknowledgement would forever say "one more thing" and the submission
+    retry would never fire.
+    """
+    return [
+        str(item.get("key"))
+        for item in (application.form_answers or [])
+        if str(item.get("key")) in ASKABLE
+        and item.get("asked")
+        and not str(item.get("answer") or "").strip()
+    ]
+
+
+def absorb_text_answers(db: Session, application: Application) -> dict:
+    """Fold what the candidate just said into this application, and report.
+
+    Returns ``{"filled": [...], "missing": [...], "handover": bool}``.
+    ``filled`` is what this turn resolved, which is what makes the difference
+    between confirming an answer and admitting we did not understand it -- the
+    two replies a bare "noted, thanks" was collapsing into one.
+    """
+    filled = refill_from_preference(db, application)
+    return {
+        "filled": filled,
+        "missing": asked_blanks(application),
+        "handover": bool(
+            portal_only_blanks(application)
+            or form_question_blanks(application)
+            or attestation_count(application)
+        ),
+    }
+
+
+def answer_acknowledgement(
+    application: Application, posting: JobPosting | None, outcome: dict
+) -> str:
+    """What to say back once an answer has been folded in.
+
+    Four cases, and the point of separating them is that three of them were
+    previously the same sentence -- "noted, thanks. anything else you want me
+    looking for?" -- which named no role, described nothing that had happened,
+    and invited a fresh job search on top of an application that was still
+    waiting on the candidate.
+    """
+    where = role_phrase(posting) or "your application"
+    filled = outcome.get("filled") or []
+    missing = outcome.get("missing") or []
+
+    if missing and not filled:
+        # We did not understand it. Re-asking the specific thing is honest;
+        # "noted, thanks" claims an answer landed when none did.
+        asks = " ".join(ASKABLE[key] for key in missing)
+        return f"sorry, i didn't catch that for {where} — {asks}"
+
+    if missing:
+        asks = " ".join(ASKABLE[key] for key in missing)
+        return f"got it, thanks. one more for {where}: {asks}"
+
+    if outcome.get("handover"):
+        # Everything answerable over text is in. What is left is deliberately
+        # not askable here -- their own words, the form's own questions, and
+        # self-ID -- so this says where it lives rather than asking again.
+        return (
+            f"that's everything i needed for {where}. the last few bits are "
+            "yours to fill in — they're waiting in the app."
+        )
+    return f"perfect, that's {where} complete. i'll take it from here."
 
 
 def thread_for(db: Session, application: Application) -> IntakeThread | None:

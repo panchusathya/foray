@@ -1064,6 +1064,8 @@ _RESUME_JSON_SCHEMA: dict[str, Any] = {
         "skills",
         "certifications",
         "languages",
+        "leadership",
+        "interests",
     ],
     "properties": {
         "contact": {
@@ -1097,7 +1099,7 @@ _RESUME_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["company", "title", "start", "end", "bullets"],
+                "required": ["company", "title", "start", "end", "location", "bullets"],
                 "properties": {
                     "company": {"type": "string"},
                     "title": {"type": "string"},
@@ -1109,6 +1111,10 @@ _RESUME_JSON_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "description": "YYYY-MM, YYYY, 'present', or empty",
                     },
+                    "location": {
+                        "type": "string",
+                        "description": "City/state as written next to the role, else empty.",
+                    },
                     "bullets": {"type": "array", "items": {"type": "string"}},
                 },
             },
@@ -1118,22 +1124,55 @@ _RESUME_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["school", "degree", "field", "start_year", "end_year"],
+                "required": ["school", "degree", "field", "start_year", "end_year", "details"],
                 "properties": {
                     "school": {"type": "string"},
                     "degree": {"type": "string"},
                     "field": {"type": "string"},
                     "start_year": {"type": "string"},
                     "end_year": {"type": "string"},
+                    "details": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The labeled lines under the school, verbatim: "
+                        "'Honors: ...', 'GPA: ...', 'Coursework: ...', 'Organizations: ...'.",
+                    },
                 },
             },
         },
         "skills": {"type": "array", "items": {"type": "string"}},
-        "certifications": {"type": "array", "items": {"type": "string"}},
+        "certifications": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Certifications AND licenses (Series 79, CFA, PMP...), as written.",
+        },
         "languages": {
             "type": "array",
             "items": {"type": "string"},
             "description": "Spoken languages as stated, e.g. 'Spanish (fluent)'.",
+        },
+        "leadership": {
+            "type": "array",
+            "description": "The resume's own leadership / activities / volunteering / "
+            "organizations section, when it has one. `company` holds the organization.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "title", "start", "end", "location", "bullets"],
+                "properties": {
+                    "company": {"type": "string"},
+                    "title": {"type": "string"},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "location": {"type": "string"},
+                    "bullets": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "interests": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Interests/hobbies as listed, e.g. 'Pickleball'. Empty if none.",
         },
     },
 }
@@ -1143,8 +1182,12 @@ You read the plain text extracted from an uploaded resume and return it as \
 structured JSON. Transcription, not improvement: keep the person's own wording \
 in bullets, fix nothing but whitespace, and leave a field empty rather than \
 guess. Dates only as written -- never infer a month that is not there. Skip \
-boilerplate (page headers, "references available on request"). If the text is \
-not a resume, return empty arrays and an empty summary.
+boilerplate (page headers, "references available on request"). Employment \
+history goes in `experience`; clubs, societies, volunteering and campus \
+organizations go in `leadership` when the resume separates them. Keep the \
+labeled lines under a school (Honors, GPA, Coursework, Organizations, \
+Affiliations) verbatim in that entry's `details`. If the text is not a \
+resume, return empty arrays and an empty summary.
 """
 
 RESUME_PARSE_SCHEMA: dict[str, Any] = _RESUME_JSON_SCHEMA

@@ -72,6 +72,7 @@ def payload_from_resume_v1(
                 "start_date": str(job.get("start") or "")[:7],
                 "end_date": "" if is_current else end[:7],
                 "is_current": is_current,
+                "location": str(job.get("location") or ""),
                 "description": "\n".join(str(b) for b in job.get("bullets") or []),
             }
         )

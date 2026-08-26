@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..llm.client import get_llm
@@ -43,6 +44,7 @@ def build_resume_json(
     keyword-screen stage.
     """
     base = _deterministic_resume(candidate, preference=preference, posting=posting)
+    _graft_uploaded_sections(db, candidate, base)
 
     llm = get_llm()
     if not llm.available:
@@ -68,6 +70,51 @@ def build_resume_json(
     return tailored, "llm"
 
 
+def _graft_uploaded_sections(db: Session, candidate: Candidate, base: dict) -> None:
+    """Carry over what the CRM has no columns for, from their own upload.
+
+    Leadership, interests, languages, certifications and the labeled lines
+    under a school (Honors, GPA, Coursework) exist only on the parsed
+    ``resume.v1`` of the candidate's uploaded resume — the Candidate row has
+    nowhere to hold them. A generated resume that silently dropped somebody's
+    licenses or campus leadership would be a worse document than the one they
+    gave us. Sections graft only into blanks; nothing the deterministic base
+    asserts is replaced.
+    """
+    from ..models import CandidateDocument
+
+    uploaded = db.scalar(
+        select(CandidateDocument)
+        .where(
+            CandidateDocument.candidate_id == candidate.id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+        )
+        .order_by(CandidateDocument.created_at.desc())
+    )
+    structured = uploaded.structured if uploaded is not None else None
+    if not isinstance(structured, dict) or not structured:
+        return
+
+    for key in ("leadership", "interests", "languages", "certifications"):
+        if not base.get(key) and structured.get(key):
+            base[key] = list(structured[key])
+
+    details_by_school = {
+        str(edu.get("school") or "").strip().casefold(): [
+            str(line) for line in edu.get("details") or []
+        ]
+        for edu in structured.get("education") or []
+        if isinstance(edu, dict)
+    }
+    for edu in base.get("education") or []:
+        if edu.get("details"):
+            continue
+        lines = details_by_school.get(str(edu.get("school") or "").strip().casefold())
+        if lines:
+            edu["details"] = lines
+
+
 def _tailor_is_honest(base: dict, tailored: dict) -> bool:
     """The invention guard. Every employer, school, and credential in the
     output must exist in the input — reordering and cutting are the model's
@@ -90,6 +137,11 @@ def _tailor_is_honest(base: dict, tailored: dict) -> bool:
     base_schools = _casefold_set(base.get("education") or [], "school")
     for school in _casefold_set(tailored.get("education") or [], "school"):
         if school not in base_schools:
+            return False
+
+    base_orgs = _casefold_set(base.get("leadership") or [], "company")
+    for org in _casefold_set(tailored.get("leadership") or [], "company"):
+        if org not in base_orgs:
             return False
 
     base_certs = {str(c).strip().casefold() for c in base.get("certifications") or []}
@@ -136,6 +188,7 @@ def _deterministic_resume(
                 "title": exp.title or "",
                 "start": exp.start_date or "",
                 "end": "present" if exp.is_current else (exp.end_date or ""),
+                "location": exp.location or "",
                 "bullets": bullets,
             }
         )
@@ -147,6 +200,7 @@ def _deterministic_resume(
             "field": edu.field_of_study or "",
             "start_year": str(edu.start_year or ""),
             "end_year": str(edu.end_year or ""),
+            "details": [],
         }
         for edu in (candidate.educations or [])
     ]
@@ -174,9 +228,12 @@ def _deterministic_resume(
         "education": education,
         "skills": skills,
         "certifications": [],
-        # Candidate has no languages column; an uploaded resume's languages
-        # live on its CandidateDocument.structured. Empty is honest here.
+        # The Candidate row has no columns for these; the candidate's own
+        # uploaded resume fills them via _graft_uploaded_sections. Empty is
+        # honest here.
         "languages": [],
+        "leadership": [],
+        "interests": [],
     }
 
 

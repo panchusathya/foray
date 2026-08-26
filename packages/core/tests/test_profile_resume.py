@@ -238,3 +238,104 @@ class TestSkillCasing:
         assert display_skill("scikit-learn") == "Scikit-learn"
         assert display_skill("LaTeX") == "LaTeX"
         assert display_skill("iOS accessibility") == "iOS accessibility"
+
+
+class TestAdaptiveLayout:
+    """Section order flexes with the person, the way career centers teach it."""
+
+    TODAY = __import__("datetime").date(2026, 8, 25)
+
+    def _structured(self, *, experience, education):
+        return {"experience": experience, "education": education}
+
+    def test_a_working_professional_leads_with_experience(self):
+        from juicebox.docgen.render import _education_first
+
+        structured = self._structured(
+            experience=[{"start": "2016-07", "end": "present"}],
+            education=[{"end_year": "2016"}],
+        )
+        assert _education_first(structured, self.TODAY) is False
+
+    def test_a_student_leads_with_education(self):
+        from juicebox.docgen.render import _education_first
+
+        structured = self._structured(
+            # Two summer internships can SPAN two years; the future
+            # graduation year is what marks a student.
+            experience=[
+                {"start": "2025-06", "end": "2025-08"},
+                {"start": "2026-06", "end": "2026-08"},
+            ],
+            education=[{"end_year": "2027"}],
+        )
+        assert _education_first(structured, self.TODAY) is True
+
+    def test_no_experience_at_all_leads_with_education(self):
+        from juicebox.docgen.render import _education_first
+
+        assert _education_first(self._structured(experience=[], education=[{}]), self.TODAY)
+
+    def test_an_executive_program_does_not_make_a_student(self):
+        from juicebox.docgen.render import _education_first
+
+        structured = self._structured(
+            experience=[{"start": "2014-01", "end": "present"}],
+            education=[{"end_year": "2027"}],  # an EMBA in progress
+        )
+        assert _education_first(structured, self.TODAY) is False
+
+    def test_the_page_takes_every_new_section_in_stride(self):
+        from juicebox.docgen.render import render_resume_pdf
+
+        data = render_resume_pdf(
+            {
+                "contact": {"name": "Jordan Lee", "email": "j@l.dev", "phone": "555"},
+                "summary": "",
+                "experience": [
+                    {
+                        "company": "Acme",
+                        "title": "Intern",
+                        "start": "2026-06",
+                        "end": "2026-08",
+                        "location": "San Francisco, CA",
+                        "bullets": ["Did the work"],
+                    }
+                ],
+                "education": [
+                    {
+                        "school": "USC",
+                        "degree": "BS",
+                        "field": "Economics",
+                        "start_year": "2023",
+                        "end_year": "2027",
+                        "details": ["Honors: Dean's List", "GPA: 3.9/4.0"],
+                    }
+                ],
+                "skills": ["python"],
+                "certifications": ["Series 79"],
+                "languages": ["Hindi (native)"],
+                "leadership": [
+                    {
+                        "company": "Value Investing Group",
+                        "title": "Investment Associate",
+                        "start": "2024-08",
+                        "end": "present",
+                        "location": "Los Angeles, CA",
+                        "bullets": ["Admitted at ~1% acceptance rate"],
+                    }
+                ],
+                "interests": ["Pickleball", "Cricket"],
+            },
+            today=self.TODAY,
+        )
+        assert data.startswith(b"%PDF-")
+        from juicebox.docgen.parse import extract_pdf_text
+
+        text = extract_pdf_text(data)
+        assert "LEADERSHIP & INVOLVEMENT" in text
+        assert "SKILLS & INTERESTS" in text
+        assert "Series 79" in text
+        assert "Dean's List" in text
+        # Student record: education prints before the internship.
+        assert text.index("EDUCATION") < text.index("PROFESSIONAL EXPERIENCE")

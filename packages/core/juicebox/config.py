@@ -547,9 +547,8 @@ class Settings:
 
     # --- LinkedIn profile ingestion (paid, worker-only) ----------------------
     # Which paid provider `get_profile_provider` returns: apify | scrapin.
-    # The free browser scrape is tried first by `enrich.profile_sources` and
-    # only reaches here when it fails -- which, with no LINKEDIN_SESSION_COOKIE
-    # set, is every time.
+    # Reached first unless `linkedin_scrape_enabled` turns the free scrape back
+    # on -- see that setting for why the cost order was inverted.
     profile_provider: str = field(
         default_factory=lambda: _env("PROFILE_PROVIDER", "apify").lower()
     )
@@ -683,6 +682,24 @@ class Settings:
     # key does not post to Stripe's board. Keys live per (org, vendor, tenant)
     # in `ats_board_credentials`; see applications/credentials.py.
 
+    # Whether the free browser scrape runs before the paid provider.
+    #
+    # Off by default, which inverts the cost order the ladder was built on, for
+    # a reason measured on a live intake: the scrape cannot work without a
+    # logged-in session, and it does not fail fast. It launches Chromium, waits
+    # out a 30s navigation against linkedin.com from a datacentre IP, and
+    # `_playwright_fetch` retries the whole thing once -- roughly a minute
+    # spent guaranteeing a miss, with the paid lookup still to come after it.
+    # A candidate mid-conversation sits through all of it.
+    #
+    # Free-then-paid is still the right ladder wherever the scrape can
+    # actually succeed, so this is a switch rather than a deletion: set it true
+    # alongside a real LINKEDIN_SESSION_COOKIE and the old order comes back.
+    # With no session configured the scrape is skipped regardless -- see
+    # `enrich.profile_sources.scrape_first`.
+    linkedin_scrape_enabled: bool = field(
+        default_factory=lambda: _env_bool("LINKEDIN_SCRAPE_ENABLED", False)
+    )
     # Logged-in LinkedIn session for the intake scraper. JSON cookie array
     # (Playwright storage_state) or a raw ``li_at=...`` string. Never commit.
     linkedin_session_cookie: str = field(

@@ -226,6 +226,112 @@ def send_message(
     return message_id
 
 
+def start_chat(
+    *,
+    to_handle: str,
+    body: str,
+    idempotency_key: str,
+    transport: Transport | None = None,
+) -> tuple[str, str]:
+    """Open a new chat with its first message. Returns (chat_id, message_id).
+
+    ``POST /v3/chats`` — the outbound-initiate half of the Partner API. Used
+    only by the voice handoff (``messaging/voice_handoff.py``), after an
+    explicit opt-in captured on a recorded call. Everything else outbound
+    stays a *reply* to an existing chat, which is what keeps the inbound-first
+    posture checkable — this function is not a general-purpose sender, and a
+    new caller of it needs the same consent story the handoff has.
+
+    The parts shape mirrors ``send_message`` and ``parse_inbound`` (``value``,
+    not ``body``) — one schema family across the integration, verified against
+    the live reply path.
+    """
+    settings = get_settings()
+    if not settings.linq_api_key:
+        raise LinqSendError("LINQ_API_KEY is not configured")
+    if not settings.linq_from_number:
+        raise LinqSendError("LINQ_FROM_NUMBER is not configured")
+    if not to_handle:
+        raise LinqSendError("to_handle is required")
+
+    url = f"{LINQ_API_BASE}/chats"
+    payload = {
+        "from": settings.linq_from_number,
+        "to": [to_handle],
+        "message": {
+            "parts": [{"type": "text", "value": body}],
+            "idempotency_key": idempotency_key,
+        },
+    }
+    try:
+        if transport is not None:
+            response = transport("POST", url, payload)
+        else:
+            http = httpx.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.linq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30.0,
+            )
+            http.raise_for_status()
+            response = http.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Linq chat create failed: %s", exc)
+        raise LinqSendError(str(exc)) from exc
+    except ValueError as exc:
+        raise LinqSendError(f"malformed response: {exc}") from exc
+
+    chat_id = ""
+    message_id = ""
+    if isinstance(response, dict):
+        chat = response.get("chat") if isinstance(response.get("chat"), dict) else {}
+        chat_id = str(response.get("chat_id") or chat.get("id") or "").strip()
+        message = response.get("message") if isinstance(response.get("message"), dict) else {}
+        message_id = str(message.get("id") or response.get("message_id") or "").strip()
+    if not chat_id:
+        raise LinqSendError("Linq returned no chat id")
+    return chat_id, message_id
+
+
+def check_imessage(handle: str, *, transport: Transport | None = None) -> bool:
+    """Whether this handle can receive iMessage. Fails closed.
+
+    The Linq rollout is iMessage-only on purpose (``SMS_ENABLEMENT.md``):
+    their SMS/RCS fallback rides a registration model that is still an open
+    question, so a handle this check cannot vouch for is not texted — the
+    caller parks the send for a human instead. An API error is therefore
+    ``False``, never a retry loop: a recruiter following up beats a candidate
+    silently not receiving a promised text.
+    """
+    settings = get_settings()
+    if not settings.linq_api_key or not handle:
+        return False
+    url = f"{LINQ_API_BASE}/capability/check_imessage"
+    payload = {"handle": handle}
+    try:
+        if transport is not None:
+            response = transport("POST", url, payload)
+        else:
+            http = httpx.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.linq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15.0,
+            )
+            http.raise_for_status()
+            response = http.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("Linq iMessage capability check failed for %s: %s", handle, exc)
+        return False
+    return bool(isinstance(response, dict) and response.get("capable"))
+
+
 POLL_EVENTS = frozenset({"poll.sent", "poll.vote.added", "poll.vote.removed"})
 
 # iMessage renders a poll natively, so picking a job is a tap rather than a

@@ -75,10 +75,12 @@ STATUS_FAILED = "failed"
 # ``messaging.identity.UNATTRIBUTED_REASON`` records.
 UNIDENTIFIED_REASON = "caller not identified"
 
-# Written when the wrap-up pitched roles and the caller opted into texts, but
-# no channel can deliver the promised list -- no standing text thread, SMS not
-# enabled. The promise was made on a recorded call, so it must land on a human
-# rather than evaporate.
+# Written by messaging.voice_handoff when the wrap-up pitched roles and the
+# caller opted into texts, but nothing can deliver the promised list -- no
+# standing thread, Linq disabled or the handle not iMessage-capable. The
+# promise was made on a recorded call, so it lands on the review queue for a
+# human rather than evaporating. Defined here (not in voice_handoff) so intake
+# owns the review-reason vocabulary alongside UNIDENTIFIED_REASON.
 TEXT_PROMISE_REASON = "match list promised by text; no channel can send it -- follow up manually"
 
 # The number is what the caller's *device* claims, and ANI is spoofable. So a
@@ -401,7 +403,7 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         call.review_needed = True
         call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
-    _flag_undeliverable_text_promise(db, call)
+    _schedule_match_text(db, call)
     write_field_answers(db, call=call, result=result)
 
     record_event(
@@ -435,44 +437,22 @@ def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
         call.contact_email = result.contact_email[:255]
 
 
-def _flag_undeliverable_text_promise(db: Session, call: IntakeCall) -> None:
-    """Park a review flag when the pitched list has no way to reach the caller.
+def _schedule_match_text(db: Session, call: IntakeCall) -> None:
+    """Queue delivery of the match list the wrap-up pitch promised.
 
-    The wrap-up pitch offers the full match list by text. Delivery is nothing
-    new: a candidate with a standing text thread gets it from the
-    ``matches.ready`` notification the rescore already fires, and the SMS flag
-    stands for the Twilio path (``sms_enabled`` is documented as "must not
-    promise a text that cannot send", so true means a sender exists). What
-    cannot be allowed is the third case falling silently: a caller who was
-    pitched roles and said yes to texts, whom nothing can text. That promise
-    was made on a recorded call, so it lands on the review queue for a human
-    to keep.
+    Only when both halves of the promise exist on the call row: roles were
+    pitched (``matches_offered``) and the caller explicitly opted into texts
+    (``sms_opt_in``). Routing — an existing thread, a new Linq chat, or a
+    parked review flag when nothing can send — lives in
+    ``messaging.voice_handoff.handle_match_text``, in the worker, where it can
+    wait for the rescore the cards read.
     """
     if not call.sms_opt_in or not (call.matches_offered or []):
         return
-    if get_settings().sms_enabled:
-        return
-    if call.candidate_id:
-        # Late import: messaging imports intake, so the reverse must stay lazy.
-        from ..messaging.notify import manager_thread_for
+    # Late import: messaging imports intake, so the reverse must stay lazy.
+    from ..messaging.voice_handoff import schedule_match_text
 
-        if manager_thread_for(db, org_id=call.org_id, candidate_id=call.candidate_id):
-            return
-    call.review_needed = True
-    call.review_reason = _join_reasons(call.review_reason, TEXT_PROMISE_REASON)
-    record_event(
-        db,
-        org_id=call.org_id,
-        type="intake.match_text.parked",
-        subject_type="intake_call",
-        subject_id=call.id,
-        payload={
-            "candidate_id": call.candidate_id,
-            "posting_ids": [
-                entry.get("posting_id") for entry in (call.matches_offered or [])
-            ],
-        },
-    )
+    schedule_match_text(db, call)
 
 
 def link_caller(db: Session, call: IntakeCall) -> str | None:

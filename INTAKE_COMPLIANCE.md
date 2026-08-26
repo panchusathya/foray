@@ -88,8 +88,16 @@ roles" — and every part of it keeps the channel evaluation-free:
 The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
 The wrap-up pitch precedes the question ("I'd love to text you the full
 list...") but never rewords it: one canonical ask, whatever surrounded it, is
-what keeps `sms_opt_in` plus the transcript usable as an evidence record. A
-caller who opts in after being pitched, whom no channel can yet text, is
+what keeps `sms_opt_in` plus the transcript usable as an evidence record.
+
+A caller who opts in after being pitched is texted the list through Linq
+(`messaging/voice_handoff.py`) — the one outbound-initiated chat in the
+system, and it is not cold outreach: the contact was candidate-initiated, the
+consent is explicit and on the recorded call, and the message is the exact
+follow-up the consent named. Guardrails on the send itself: a STOP or
+suppression that arrived *after* the call outranks the call's consent (latest
+signal wins); numbers Linq cannot vouch for as iMessage are not sent to
+(rollout decision, `SMS_ENABLEMENT.md`); and anything that cannot send is
 parked on the review queue (`intake.match_text.parked`) so the promise lands
 on a human instead of evaporating.
 

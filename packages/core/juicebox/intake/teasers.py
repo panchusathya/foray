@@ -35,10 +35,11 @@ states is pay transparency and inventing one is a promise.
 
 **The delivery promise tracks what can actually send.** The close must not
 promise a text no channel can deliver (the ``sms_enabled`` comment in
-``config.py`` records that rule). The guidance therefore checks for a standing
-text thread first, then the SMS flag, and otherwise promises a recruiter
-follow-up — and ``service.extract_call`` parks a review flag when an opted-in
-caller was pitched but nothing can text them.
+``config.py`` records that rule). The guidance mirrors the routing in
+``messaging.voice_handoff``: a standing text thread first, then a new Linq
+chat where Linq is enabled and the number is clean, and otherwise a recruiter
+follow-up — with the handler parking a review flag whenever an opted-in caller
+was pitched and the send still cannot happen.
 """
 
 from __future__ import annotations
@@ -78,15 +79,16 @@ GUIDANCE_NOT_READY = (
 )
 
 # What to say around the lines. One string per delivery case, chosen in
-# `_delivery_confirmations`; the consent question itself stays in the prompt,
-# verbatim and unchanged, so the TCPA wording never varies by code path.
+# `_delivery_confirmation`; the consent question itself stays in the prompt,
+# verbatim and unchanged, so the TCPA wording never varies by code path. Each
+# case mirrors a route in messaging.voice_handoff.handle_match_text -- the
+# promise and the delivery must not drift apart.
 _YES_THREAD = (
     "tell them the full list will land in the text thread they already have "
     "with Foray"
 )
-_YES_SMS = (
-    "tell them to keep an eye out for a text from this number with the full "
-    "list"
+_YES_LINQ = (
+    "tell them to keep an eye out for a text from Foray with the full list"
 )
 _YES_RECRUITER = "tell them a recruiter will send the full list over shortly"
 
@@ -330,16 +332,22 @@ def _more_line(extra: int) -> str:
 def _delivery_confirmation(db: Session, call: IntakeCall) -> str:
     """What the agent may say after a yes, per what can actually send.
 
-    A standing text thread delivers through the existing matches.ready
-    notification the rescore already fires; the SMS flag promises the future
-    Twilio path; with neither, the honest promise is a recruiter.
+    Mirrors the routing in ``messaging.voice_handoff.handle_match_text``: a
+    standing text thread delivers through the matches.ready notification, a
+    new Linq chat covers everyone else Linq can reach, and with neither the
+    honest promise is a recruiter. Deliberately NOT ``sms_enabled``-aware:
+    that flag flips a close sentence for a sender that does not exist yet, and
+    this promise must never outrun the handler.
     """
+    # Late imports: messaging imports intake, so the reverse must stay lazy.
     if call.candidate_id:
-        # Late import: messaging imports intake, so the reverse must stay lazy.
         from ..messaging.notify import manager_thread_for
 
         if manager_thread_for(db, org_id=call.org_id, candidate_id=call.candidate_id):
             return _YES_THREAD
-    if get_settings().sms_enabled:
-        return _YES_SMS
+    from ..messaging.voice_handoff import can_text_by_linq
+    from .service import counterparty_number
+
+    if can_text_by_linq(db, org_id=call.org_id, phone=counterparty_number(call)):
+        return _YES_LINQ
     return _YES_RECRUITER

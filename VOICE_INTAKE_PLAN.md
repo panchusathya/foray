@@ -21,14 +21,19 @@ sentences (company, role, location, the posting's own pay range), a composed
 count of the rest, and how to offer the full list by text. Lines are read
 verbatim; company names, pay figures and counts remain things the agent may
 never invent. The pitch precedes the unchanged TCPA ask; delivery of the full
-list rides the existing `matches.ready` notification when the caller has a
-text thread, and otherwise parks on the review queue
+list is delivered by `KIND_INTAKE_MATCH_TEXT` → `messaging/voice_handoff.py`:
+into the existing thread when the caller has one, else a **new Linq chat**
+(`POST /v3/chats` via `linq.start_chat`, iMessage-capable numbers only,
+`LINQ_ENABLED`-gated — the one outbound-initiated chat in the system, riding
+the explicit recorded opt-in), and otherwise parked on the review queue
 (`intake.match_text.parked`) so the promise lands on a human. New pieces:
-`intake/teasers.py`, `/v1/intake/matches`, `intake_calls.matches_offered`,
+`intake/teasers.py`, `messaging/voice_handoff.py`, `/v1/intake/matches`,
+`linq.start_chat` / `linq.check_imessage`, `intake_calls.matches_offered`,
 settings `INTAKE_TEASERS_ENABLED` / `INTAKE_TEASER_COUNT` /
-`INTAKE_TEASER_MIN_SCORE`, `tests/test_intake_teasers.py`, and two new prompt
-guards in `deploy/tests/check_agent_prompts.py`. Compliance reasoning in
-`INTAKE_COMPLIANCE.md` §5.
+`INTAKE_TEASER_MIN_SCORE`, `tests/test_intake_teasers.py` /
+`tests/test_voice_handoff.py`, and two new prompt guards in
+`deploy/tests/check_agent_prompts.py`. Compliance reasoning in
+`INTAKE_COMPLIANCE.md` §5–6.
 
 **Phase 0 (recon) complete.** Findings below changed five things in the original plan.
 

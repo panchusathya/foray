@@ -382,6 +382,16 @@ NOTIFY_APPLICATION_SENT = (
 
 NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 
+# The first message of a chat we opened after a voice call — the one outbound
+# message that is not a reply, sent only on an explicit opt-in captured on the
+# recorded call (messaging/voice_handoff.py). Canned like every notification.
+# No time promise ("in a moment") — the match cards behind it ride the notify
+# queue and may defer to the send window.
+VOICE_HANDOFF_GREETING = (
+    "Hi{name} — it's {recruiter} with Foray. Great talking just now. I'll "
+    "send the roles I mentioned, plus the rest of your list, right here."
+)
+
 # Presenting cards relaxes the 320-char single-question budget: a numbered
 # block of three roles is legitimately longer. Still hard-capped, and still
 # exactly one question (the footer's "reply with a number").

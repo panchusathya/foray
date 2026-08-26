@@ -72,6 +72,11 @@ KIND_LINKEDIN_SCRAPE = "intake.linkedin.scrape"
 # enqueued by a call ending, not on a schedule.
 KIND_INTAKE_EXTRACT = "intake.extract"
 
+# Delivering the match list a voice call promised by text (the wrap-up pitch
+# plus an explicit opt-in). Enqueued by extraction when both are on the call
+# row; keyed on the call id -- one promise, one text. Never on ensure_ticks.
+KIND_INTAKE_MATCH_TEXT = "intake.match_text"
+
 # Parsing one uploaded candidate document (pypdf + one model call). Enqueued
 # by an upload landing; never on ensure_ticks.
 KIND_DOC_PARSE = "docs.parse"

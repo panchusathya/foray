@@ -532,13 +532,25 @@ just said they wanted, then the offer to text the full list. Non-obvious rules:
   in the exact words the prompt has always had -- one wording is what keeps
   the transcript an evidence record, and `check_the_consent_ask_is_still_verbatim`
   fails the build if a prompt edit forks it.
-- **The promise tracks what can actually send.** Guidance offers "keep an eye
-  out for a text" only when a standing text thread exists (the rescore's
-  `matches.ready` notification delivers there) or `sms_enabled` is true;
-  otherwise it promises a recruiter. An opted-in caller who was pitched and
-  cannot be texted lands on the review queue with
-  `TEXT_PROMISE_REASON` (`intake.match_text.parked`) -- the promise was made
-  on a recorded call, so it must land on a human rather than evaporate.
+- **The promise tracks what can actually send, and delivery is a queued job.**
+  Extraction enqueues `KIND_INTAKE_MATCH_TEXT` when both halves of the promise
+  are on the call row; `messaging/voice_handoff.py` routes it: a standing
+  managing thread gets the `matches.ready` notification (keyed on the call id,
+  not the daily bucket, so a routine rescore that already texted today cannot
+  swallow it), otherwise Linq opens a new chat, otherwise the call parks on
+  review with `TEXT_PROMISE_REASON` (`intake.match_text.parked`) -- a promise
+  made on a recorded call lands on a human rather than evaporating. The
+  mid-call guidance (`_delivery_confirmation`) mirrors that routing exactly
+  and is deliberately not `sms_enabled`-aware: the promise must never outrun
+  the handler. The handoff is **the only caller of `linq.start_chat`** -- the
+  one outbound-first send with a consent story (candidate-initiated call,
+  explicit opt-in, latched flag, transcript as evidence). A new caller of
+  `start_chat` needs its own consent story, not this one's. A STOP that
+  arrived after the call outranks the call's consent; a handle the iMessage
+  capability check cannot vouch for is parked, never fallback-texted; and the
+  handler defers until the rescore lands (bounded by `FRESHNESS_PATIENCE`),
+  because a greeting followed by "nothing clears the bar" silence is worse
+  than a greeting a minute later.
 - **`matches_offered` is evidence, like the gate snapshot.** What was pitched,
   verbatim with posting ids and scores, on the call row -- the book moves and
   the record gets edited, so "what was this caller told" must not be a

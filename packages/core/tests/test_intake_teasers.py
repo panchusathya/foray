@@ -397,10 +397,12 @@ class TestMatchesEndpoint:
         call = session.scalar(select(IntakeCall))
         assert (call.matches_offered or []) == []
 
-    def test_the_promise_tracks_sms_when_enabled(
+    def test_the_promise_tracks_linq_when_it_can_send(
         self, client, session, signer, owned_number, monkeypatch
     ):
-        monkeypatch.setenv("SMS_ENABLED", "true")
+        monkeypatch.setenv("LINQ_ENABLED", "true")
+        monkeypatch.setenv("LINQ_API_KEY", "lk_test")
+        monkeypatch.setenv("LINQ_FROM_NUMBER", "+14155550100")
         from juicebox.config import reset_settings_cache
 
         reset_settings_cache()
@@ -408,7 +410,28 @@ class TestMatchesEndpoint:
         _posting(session, owned_number.org_id)
         post_webhook(client, signer)
         response = post(client, signer, function_call())
-        assert "text from this number" in response.json()["guidance"]
+        assert "text from Foray" in response.json()["guidance"]
+
+    def test_the_promise_never_offers_linq_to_an_opted_out_number(
+        self, client, session, signer, owned_number, monkeypatch
+    ):
+        from juicebox.models import Suppression
+
+        monkeypatch.setenv("LINQ_ENABLED", "true")
+        monkeypatch.setenv("LINQ_API_KEY", "lk_test")
+        monkeypatch.setenv("LINQ_FROM_NUMBER", "+14155550100")
+        from juicebox.config import reset_settings_cache
+
+        reset_settings_cache()
+        session.add(
+            Suppression(org_id=owned_number.org_id, email=None, phone=CANDIDATE_NUMBER)
+        )
+        session.commit()
+        _stub_extraction(monkeypatch, _filled_required())
+        _posting(session, owned_number.org_id)
+        post_webhook(client, signer)
+        response = post(client, signer, function_call())
+        assert "recruiter will send the full list" in response.json()["guidance"]
 
     def test_the_promise_prefers_a_standing_thread(
         self, client, session, signer, owned_number, monkeypatch
@@ -444,7 +467,8 @@ def post_webhook(client, signer):
 
 
 # --------------------------------------------------------------------------
-# the promise must land on a human when nothing can text
+# extraction queues the follow-up; the handler's own tests live in
+# test_voice_handoff.py
 # --------------------------------------------------------------------------
 
 
@@ -483,45 +507,56 @@ class TestUndeliverablePromise:
         service.extract_call(session, call)
         session.commit()
 
-    def test_an_undeliverable_promise_lands_on_review(self, session, account, monkeypatch):
+    def _handoff_jobs(self, session):
+        from juicebox.jobs import KIND_INTAKE_MATCH_TEXT
+        from juicebox.models import Job
+
+        return session.scalars(
+            select(Job).where(Job.kind == KIND_INTAKE_MATCH_TEXT)
+        ).all()
+
+    def test_extraction_queues_the_followup_once(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], candidate_id=person.id)
         self._extract(session, call, monkeypatch)
+        jobs = self._handoff_jobs(session)
+        assert len(jobs) == 1
+        assert jobs[0].payload == {"intake_call_id": call.id}
+
+    def test_an_undeliverable_promise_lands_on_review(self, session, account, monkeypatch):
+        """End to end: extract queues the job, the handler parks it (Linq off)."""
+        from juicebox.messaging.voice_handoff import handle_match_text
+        from juicebox.models import utcnow
+
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        call = self._call(session, account["org_id"], candidate_id=person.id)
+        self._extract(session, call, monkeypatch)
+        (job,) = self._handoff_jobs(session)
+        # The handler waits for the rescore; none will run in this test, so
+        # age the call past its patience window instead.
+        from datetime import timedelta
+
+        call.ended_at = utcnow() - timedelta(hours=1)
+        session.commit()
+        result = handle_match_text(session, job, utcnow())
+        session.flush()
+        assert "parked" in result
         assert call.review_needed is True
         assert "match list promised by text" in call.review_reason
         event = session.scalar(select(Event).where(Event.type == "intake.match_text.parked"))
         assert event is not None
 
-    def test_a_standing_thread_keeps_the_promise_quiet(self, session, account, monkeypatch):
-        from juicebox.messaging.manager import MODE_MANAGING
-        from juicebox.messaging.threads import open_thread
-
-        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        open_thread(
-            session,
-            org_id=account["org_id"],
-            channel="linq",
-            provider="linq",
-            provider_thread_id="chat_1",
-            from_address=CANDIDATE_NUMBER,
-            candidate_id=person.id,
-            mode=MODE_MANAGING,
-        )
-        call = self._call(session, account["org_id"], candidate_id=person.id)
-        self._extract(session, call, monkeypatch)
-        assert "match list promised by text" not in (call.review_reason or "")
-
-    def test_no_opt_in_means_no_flag(self, session, account, monkeypatch):
+    def test_no_opt_in_means_no_followup(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], opt_in=False, candidate_id=person.id)
         self._extract(session, call, monkeypatch)
-        assert "match list promised by text" not in (call.review_reason or "")
+        assert self._handoff_jobs(session) == []
 
-    def test_no_pitch_means_no_flag(self, session, account, monkeypatch):
+    def test_no_pitch_means_no_followup(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], offered=False, candidate_id=person.id)
         self._extract(session, call, monkeypatch)
-        assert "match list promised by text" not in (call.review_reason or "")
+        assert self._handoff_jobs(session) == []
 
 
 def _candidate(session, org_id, *, phones=None, current_company=""):

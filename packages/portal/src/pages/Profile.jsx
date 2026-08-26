@@ -1,6 +1,18 @@
-import { useEffect, useState } from 'react';
+/**
+ * Profile — what the agent knows, and the only part of it the candidate owns.
+ *
+ * The editable set is a strict subset of the recruiter's (PortalProfilePatch
+ * on the server); everything else on this page is read-only on purpose, and
+ * says how to change it. Preferences are shown but not edited here — they are
+ * settled in conversation with the agent, and a form that silently disagreed
+ * with what somebody said out loud would be worse than no form.
+ */
 
-import { Empty, ErrorNote, Screen, Skeleton } from '../components/ui.jsx';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+
+import { IconArrow, IconDoc, IconSignOut } from '../components/icons.jsx';
+import { ErrorNote, Head, Mono, Note, Screen, Skeleton } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -24,7 +36,14 @@ export function ProfilePage() {
     if (profile) setDraft({ ...profile.candidate });
   }, [profile]);
 
-  if (!draft) return <Screen title="Profile"><Skeleton /></Screen>;
+  if (!draft) {
+    return (
+      <Screen>
+        <Head title="Profile" />
+        <Skeleton count={2} height={140} />
+      </Screen>
+    );
+  }
 
   const save = async (event) => {
     event.preventDefault();
@@ -44,144 +63,125 @@ export function ProfilePage() {
   };
 
   const preference = profile.preference;
+  const name = draft.full_name || `${draft.first_name || ''} ${draft.last_name || ''}`.trim();
+  const email = (draft.emails || [])[0] || '';
 
   return (
-    <Screen title="Profile" sub="What your recruiter's agent knows about you.">
-      <ErrorNote error={error} />
-      {saved && <div className="banner info">Saved.</div>}
+    <Screen>
+      <Head title="You" sub="What your agent knows, and what it looks for." />
 
-      <form className="card stack" onSubmit={save}>
-        {EDITABLE.map(([key, label]) => (
-          <div className="field" key={key}>
-            <label htmlFor={key}>{label}</label>
-            <input
-              id={key}
-              value={draft[key] || ''}
-              onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
-            />
+      <ErrorNote error={error} />
+      {saved ? <Note tone="good">Saved.</Note> : null}
+
+      <div className="card" style={{ marginTop: saved ? 'var(--s-3)' : 0 }}>
+        <div className="row">
+          <Mono name={name || email || '?'} size="lg" />
+          <div className="grow">
+            <div className="strong truncate">{name || 'Your profile'}</div>
+            <div className="tiny truncate">{draft.headline || email}</div>
           </div>
-        ))}
+        </div>
+      </div>
+
+      <Link className="app-card" to="/documents" style={{ marginTop: 'var(--s-3)' }}>
+        <span className="mono">
+          <IconDoc style={{ width: 18, height: 18 }} />
+        </span>
+        <span className="grow">
+          <span className="title" style={{ display: 'block' }}>
+            Documents
+          </span>
+          <span className="meta">Your resume and every letter we wrote</span>
+        </span>
+        <IconArrow style={{ width: 17, height: 17, color: 'var(--faint)' }} />
+      </Link>
+
+      <form className="card stack" onSubmit={save} style={{ marginTop: 'var(--s-3)' }}>
+        <div className="card-head">
+          <h2>Your details</h2>
+        </div>
+        <div className="grid-2">
+          {EDITABLE.map(([key, label]) => (
+            <div className="field" key={key}>
+              <label htmlFor={key}>{label}</label>
+              <input
+                id={key}
+                value={draft[key] || ''}
+                onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
+              />
+            </div>
+          ))}
+        </div>
         <button type="submit" className="btn primary wide" disabled={busy}>
-          Save changes
+          {busy ? 'Saving…' : 'Save changes'}
         </button>
       </form>
 
-      {preference && (
-        <div className="card stack" style={{ marginTop: 12 }}>
-          <strong>What you told us you want</strong>
-          {preference.titles.length > 0 && (
-            <div className="chips">
-              {preference.titles.map((title) => (
-                <span className="chip" key={title}>
-                  {title}
-                </span>
-              ))}
-            </div>
-          )}
-          {preference.locations.length > 0 && (
-            <div className="chips">
-              {preference.locations.map((place) => (
-                <span className="chip" key={place}>
-                  {place}
-                </span>
-              ))}
-            </div>
-          )}
-          {preference.timeline && <div className="muted">Timeline: {preference.timeline}</div>}
-          {preference.target_total ? (
-            <div className="muted">
-              Target: {preference.comp_currency} {Math.round(preference.target_total).toLocaleString()}
-            </div>
-          ) : null}
-          <p className="tiny">To change any of this, just text your recruiter&apos;s agent.</p>
-        </div>
-      )}
+      {preference ? (
+        <section className="card" style={{ marginTop: 'var(--s-3)' }}>
+          <div className="card-head">
+            <h2>What you told us you want</h2>
+          </div>
+          <div className="stack tight">
+            {preference.titles.length > 0 ? (
+              <div>
+                <div className="tiny" style={{ marginBottom: 6 }}>
+                  Roles
+                </div>
+                <div className="chips">
+                  {preference.titles.map((title) => (
+                    <span className="chip accent" key={title}>
+                      {title}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
-      <button
-        type="button"
-        className="btn wide"
-        style={{ marginTop: 16 }}
-        onClick={signOut}
-      >
+            {preference.locations.length > 0 ? (
+              <div>
+                <div className="tiny" style={{ marginBottom: 6 }}>
+                  Places
+                </div>
+                <div className="chips">
+                  {preference.locations.map((place) => (
+                    <span className="chip" key={place}>
+                      {place}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {preference.timeline ? (
+              <div className="spread">
+                <span className="tiny">Timeline</span>
+                <span className="strong" style={{ fontSize: 14 }}>
+                  {preference.timeline}
+                </span>
+              </div>
+            ) : null}
+
+            {preference.target_total ? (
+              <div className="spread">
+                <span className="tiny">Target</span>
+                <span className="strong" style={{ fontSize: 14 }}>
+                  {preference.comp_currency}{' '}
+                  {Math.round(preference.target_total).toLocaleString()}
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <p className="tiny" style={{ marginTop: 'var(--s-3)' }}>
+            To change any of this, just message your agent — it updates here.
+          </p>
+        </section>
+      ) : null}
+
+      <button type="button" className="btn wide" style={{ marginTop: 'var(--s-5)' }} onClick={signOut}>
+        <IconSignOut />
         Sign out
       </button>
     </Screen>
   );
-}
-
-export function DocumentsPage() {
-  const [documents, setDocuments] = useState(null);
-  const [error, setError] = useState(null);
-  const [preview, setPreview] = useState('');
-
-  useEffect(() => {
-    api
-      .documents()
-      .then((data) => setDocuments(data.documents || []))
-      .catch((err) => {
-        setError(err);
-        setDocuments([]);
-      });
-  }, []);
-
-  const open = async (documentId) => {
-    try {
-      const { url } = await api.documentUrl(documentId);
-      setPreview(url);
-    } catch (err) {
-      setError(err);
-    }
-  };
-
-  return (
-    <Screen title="Documents" sub="Your resume and cover letters.">
-      <ErrorNote error={error} />
-      {documents === null && <Skeleton />}
-      {documents !== null && documents.length === 0 && (
-        <Empty title="No documents yet">
-          Send your resume to your recruiter&apos;s agent, or apply to a role and one is written
-          for you.
-        </Empty>
-      )}
-
-      <div className="stack">
-        {(documents || []).map((doc) => (
-          <div className="card spread" key={doc.id}>
-            <div>
-              <strong>{labelFor(doc.kind)}</strong>
-              <div className="tiny">
-                {doc.is_default ? 'Default · ' : ''}
-                {Math.max(1, Math.round((doc.size_bytes || 0) / 1024))} KB
-              </div>
-            </div>
-            <button type="button" className="btn" onClick={() => open(doc.id)}>
-              View
-            </button>
-          </div>
-        ))}
-      </div>
-
-      {preview && (
-        <div style={{ marginTop: 16 }}>
-          {/* iOS Safari renders PDFs in an iframe inconsistently, so the
-              new-tab escape hatch sits right next to it rather than being a
-              thing to discover after it fails. */}
-          <div className="spread" style={{ marginBottom: 8 }}>
-            <span className="tiny">Preview</span>
-            <a className="tiny" href={preview} target="_blank" rel="noreferrer">
-              Open in a new tab ↗
-            </a>
-          </div>
-          <iframe className="viewer" src={preview} title="Document preview" />
-        </div>
-      )}
-    </Screen>
-  );
-}
-
-function labelFor(kind) {
-  if (kind === 'cover_letter') return 'Cover letter';
-  if (kind === 'resume_generated') return 'Resume (tailored)';
-  if (kind === 'resume_uploaded') return 'Resume (yours)';
-  return 'Document';
 }

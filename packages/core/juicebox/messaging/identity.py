@@ -170,6 +170,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
+        _ensure_profile_resume(db, thread)
         return thread.candidate_id
 
     email = (thread.contact_email or "").strip().lower()
@@ -207,6 +208,7 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
         _copy_contact(db, thread)
         _copy_linkedin(db, thread)
         _copy_experience(db, thread)
+        _ensure_profile_resume(db, thread)
         return existing
 
     scrape = ((thread.record or {}).get("_linkedin") or {}).get("scrape") or {}
@@ -245,7 +247,30 @@ def link_candidate(db: Session, *, thread: IntakeThread) -> str | None:
     _copy_contact(db, thread)
     _copy_linkedin(db, thread)
     _copy_experience(db, thread)
+    _ensure_profile_resume(db, thread)
     return thread.candidate_id
+
+
+def _ensure_profile_resume(db: Session, thread: IntakeThread) -> None:
+    """A newly linked candidate gets their ATS resume built once.
+
+    This is the backstop for the free-scrape path, where no promotion runs at
+    drop time and nothing else would ever ask for the document. The key has no
+    event suffix on purpose — link_candidate runs on many turns, and one build
+    per candidate is what this site owes; the promote-driven sites carry the
+    regenerations.
+    """
+    if not thread.candidate_id:
+        return
+    from ..jobs import KIND_PROFILE_RESUME, enqueue
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_PROFILE_RESUME,
+        idempotency_key=f"{KIND_PROFILE_RESUME}:{thread.candidate_id}",
+        payload={"candidate_id": thread.candidate_id},
+    )
 
 
 def _copy_contact(db: Session, thread: IntakeThread) -> None:

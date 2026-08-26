@@ -43,6 +43,7 @@ from .jobs import (
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
     KIND_PROFILE_INGEST,
+    KIND_PROFILE_RESUME,
     KIND_REPLY_DRAFT,
     KIND_THREAD_NOTIFY,
     claim,
@@ -717,6 +718,10 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
                 "filled_fields": result.filled_fields,
             }
             enqueue_match_for_candidate(db, candidate, now=now)
+            # Their own upload is the best source the ATS copy will ever have.
+            _enqueue_profile_resume(
+                db, org_id=job.org_id, candidate_id=candidate.id, event=f"doc:{doc.id}"
+            )
             promoted["thread"] = _resume_settles_thread(db, doc=doc, candidate=candidate)
     elif not structured:
         promoted["thread"] = _resume_fails_thread(db, doc=doc, error=error)
@@ -859,6 +864,45 @@ def _handle_intake_attachment(db: Session, job: Job, now) -> dict[str, Any]:
     )
 
 
+def _enqueue_profile_resume(db: Session, *, org_id: str, candidate_id: str, event: str) -> None:
+    """Ask for a refresh of the candidate's profile-level ATS resume.
+
+    The event suffix keeps regeneration honest: each promotion that lands new
+    facts gets its own idempotency key, while a redelivered job reuses the one
+    it already made.
+    """
+    enqueue(
+        db,
+        org_id=org_id,
+        kind=KIND_PROFILE_RESUME,
+        idempotency_key=f"{KIND_PROFILE_RESUME}:{candidate_id}:{event}",
+        payload={"candidate_id": candidate_id},
+    )
+
+
+def _handle_profile_resume(db: Session, job: Job, now) -> dict[str, Any]:
+    """Refresh one candidate's profile-level ATS resume (docgen.profile)."""
+    from .docgen.profile import refresh_profile_resume
+    from .models import Candidate
+
+    candidate_id = job.payload.get("candidate_id") or ""
+    candidate = db.get(Candidate, candidate_id)
+    if candidate is None:
+        return {"skipped": "candidate not found", "candidate_id": candidate_id}
+    if candidate.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+
+    doc, error = refresh_profile_resume(db, candidate)
+    if doc is None:
+        return {"skipped": error, "candidate_id": candidate_id}
+    return {
+        "document_id": doc.id,
+        "status": doc.status,
+        "error": error,
+        "candidate_id": candidate_id,
+    }
+
+
 def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
     """Fetch one LinkedIn profile and promote it onto the CRM.
 
@@ -951,6 +995,9 @@ def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
             thread.candidate_id = promoted.id
 
     enqueue_match_for_candidate(db, promoted, now=now)
+    _enqueue_profile_resume(
+        db, org_id=job.org_id, candidate_id=promoted.id, event=f"ingest:{job.id}"
+    )
 
     if thread_id:
         from .messaging.notify import EVENT_PROFILE_READY, notify_candidate
@@ -1100,6 +1147,13 @@ def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
         profile, paid_error = _paid_profile_fallback(db, thread=thread, url=url)
         if profile is None:
             update_flow_meta(thread, error=(failure or paid_error)[:400], scrape=None)
+        elif thread.candidate_id:
+            # The paid lookup promoted a full history; the candidate's ATS
+            # resume should exist the moment their profile does.
+            _enqueue_profile_resume(
+                db, org_id=thread.org_id, candidate_id=thread.candidate_id,
+                event=f"scrape:{job.id}",
+            )
 
     if profile is not None:
         thread.record = apply_profile_to_record(thread.record, profile)
@@ -1216,6 +1270,7 @@ HANDLERS = {
     KIND_APP_SUBMIT: _handle_app_submit,
     KIND_APP_SUBMIT_VERIFY: _handle_app_submit_verify,
     KIND_PROFILE_INGEST: _handle_profile_ingest,
+    KIND_PROFILE_RESUME: _handle_profile_resume,
     KIND_THREAD_NOTIFY: _handle_thread_notify,
     KIND_LINKEDIN_SCRAPE: _handle_linkedin_scrape,
 }

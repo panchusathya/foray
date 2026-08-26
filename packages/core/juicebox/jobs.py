@@ -87,6 +87,13 @@ KIND_INTAKE_ATTACHMENT = "intake.attachment"
 # enqueues and returns, so a public request path never spends money.
 KIND_PROFILE_INGEST = "profile.ingest"
 
+# Refreshing the candidate's ONE profile-level ATS resume (docgen.profile)
+# after a promotion lands new facts. Enqueued by the events that change what
+# the resume would say — a paid profile fetch, a parsed upload, an identity
+# link — never on ensure_ticks. Failures are recorded on the document row,
+# not raised: the next promote event is the retry.
+KIND_PROFILE_RESUME = "profile.resume"
+
 # One proactive message to one candidate thread (profile ready, cards, a
 # package to review, a status change). Event-keyed idempotency so a rescore
 # firing twice cannot double-text; every cadence gate applies inside the

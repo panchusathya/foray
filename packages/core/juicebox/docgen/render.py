@@ -46,6 +46,65 @@ def _rule() -> HRFlowable:
     return HRFlowable(width="100%", thickness=0.6, color="#999999", spaceAfter=4)
 
 
+# CRM skills are stored lowercase because the search taxonomy normalizes them
+# for matching. That is the right shape for retrieval and the wrong one for a
+# page with somebody's name on it — "aws, llm, pytorch" reads as carelessness
+# an ATS keyword screen does not forgive. Display casing is repaired HERE,
+# render-only, so the stored form never changes: known acronyms uppercase,
+# known brands get their trademark casing, everything else gets a capital
+# first letter. A word that already carries any uppercase (a parsed upload
+# kept the author's own casing) is left exactly as written.
+_ACRONYMS = frozenset(
+    ["ai", "api", "apis", "aws", "ci", "cd", "cfa", "cpa", "cuda", "etl", "gcp", "gpu", "grpc", "html", "css", "ios", "kpi", "llm", "llms", "ml", "nlp", "php", "qa", "rest", "sdk", "sre", "sql", "nosql", "ui", "ux", "vba"]
+)
+_BRANDS = {
+    "pytorch": "PyTorch",
+    "tensorflow": "TensorFlow",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "node.js": "Node.js",
+    "nodejs": "Node.js",
+    "next.js": "Next.js",
+    "github": "GitHub",
+    "gitlab": "GitLab",
+    "postgresql": "PostgreSQL",
+    "postgres": "Postgres",
+    "mysql": "MySQL",
+    "mongodb": "MongoDB",
+    "graphql": "GraphQL",
+    "openai": "OpenAI",
+    "devops": "DevOps",
+    "powerpoint": "PowerPoint",
+    "linkedin": "LinkedIn",
+    "excel": "Excel",
+    "salesforce": "Salesforce",
+    "kubernetes": "Kubernetes",
+    "docker": "Docker",
+    "python": "Python",
+}
+
+
+def display_skill(skill: str) -> str:
+    """One skill, cased for a reader. Never invents; only repairs lowercase."""
+    words = str(skill or "").strip().split()
+    out: list[str] = []
+    for index, word in enumerate(words):
+        low = word.lower()
+        if word != low:
+            # The author already cased it ("iOS", "LaTeX"); their casing wins
+            # over every rule below.
+            out.append(word)
+        elif low in _BRANDS:
+            out.append(_BRANDS[low])
+        elif low in _ACRONYMS:
+            out.append(word.upper())
+        elif index == 0:
+            out.append(word[:1].upper() + word[1:])
+        else:
+            out.append(word)
+    return " ".join(out)
+
+
 def render_resume_pdf(structured: dict) -> bytes:
     """One resume, letter-size, from a ``resume.v1`` dict."""
     contact = structured.get("contact") or {}
@@ -134,7 +193,7 @@ def render_resume_pdf(structured: dict) -> bytes:
     if skills:
         story.append(Paragraph("SKILLS", _HEADING))
         story.append(_rule())
-        story.append(Paragraph(_escape(", ".join(skills)), _BODY))
+        story.append(Paragraph(_escape(", ".join(display_skill(s) for s in skills)), _BODY))
 
     certifications = [
         str(c).strip() for c in (structured.get("certifications") or []) if str(c).strip()
@@ -149,7 +208,7 @@ def render_resume_pdf(structured: dict) -> bytes:
     if languages:
         story.append(Paragraph("LANGUAGES", _HEADING))
         story.append(_rule())
-        story.append(Paragraph(_escape(", ".join(languages)), _BODY))
+        story.append(Paragraph(_escape(", ".join(display_skill(x) for x in languages)), _BODY))
 
     doc.build(story)
     return buffer.getvalue()

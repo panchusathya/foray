@@ -133,14 +133,25 @@ export function DocumentsPage() {
     }
   };
 
+  const download = async (documentId) => {
+    try {
+      // A fresh signed URL per click: the last one may have expired while
+      // the person read the preview.
+      const { url } = await api.documentUrl(documentId);
+      window.location.assign(`${url}&download=true`);
+    } catch (err) {
+      setError(err);
+    }
+  };
+
   return (
     <Screen title="Documents" sub="Your resume and cover letters.">
       <ErrorNote error={error} />
       {documents === null && <Skeleton />}
       {documents !== null && documents.length === 0 && (
         <Empty title="No documents yet">
-          Send your resume to your recruiter&apos;s agent, or apply to a role and one is written
-          for you.
+          Send your resume or LinkedIn to your recruiter&apos;s agent and an ATS-ready resume is
+          written for you; applying to a role adds a tailored one.
         </Empty>
       )}
 
@@ -148,15 +159,24 @@ export function DocumentsPage() {
         {(documents || []).map((doc) => (
           <div className="card spread" key={doc.id}>
             <div>
-              <strong>{labelFor(doc.kind)}</strong>
+              <strong>{labelFor(doc)}</strong>
               <div className="tiny">
                 {doc.is_default ? 'Default · ' : ''}
-                {Math.max(1, Math.round((doc.size_bytes || 0) / 1024))} KB
+                {doc.status === 'failed'
+                  ? 'We hit a snag writing this one — it will retry on its own.'
+                  : `${Math.max(1, Math.round((doc.size_bytes || 0) / 1024))} KB`}
               </div>
             </div>
-            <button type="button" className="btn" onClick={() => open(doc.id)}>
-              View
-            </button>
+            {doc.status !== 'failed' && (
+              <div className="row" style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="btn" onClick={() => open(doc.id)}>
+                  View
+                </button>
+                <button type="button" className="btn" onClick={() => download(doc.id)}>
+                  Download
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -179,9 +199,12 @@ export function DocumentsPage() {
   );
 }
 
-function labelFor(kind) {
-  if (kind === 'cover_letter') return 'Cover letter';
-  if (kind === 'resume_generated') return 'Resume (tailored)';
-  if (kind === 'resume_uploaded') return 'Resume (yours)';
+function labelFor(doc) {
+  if (doc.kind === 'cover_letter') return 'Cover letter';
+  if (doc.kind === 'resume_generated') {
+    // The profile-level copy is written from the CRM record, not for a role.
+    return doc.application_id ? 'Resume (tailored)' : 'Resume (ATS-ready)';
+  }
+  if (doc.kind === 'resume_uploaded') return 'Resume (yours)';
   return 'Document';
 }

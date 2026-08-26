@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from .. import storage
 from ..applications import limits
 from ..applications.bar import passes_bar
+from ..applications.inbox import TRACKER_KINDS
 from ..applications.service import (
     ApplicationError,
     DuplicateApplicationError,
@@ -39,6 +40,8 @@ from ..crm import patch_candidate
 from ..deps import CandidatePrincipal, CommittingRoute, get_candidate_principal, get_db
 from ..models import (
     Application,
+    ApplicationMessage,
+    ApplicationSubmission,
     Candidate,
     CandidateDocument,
     CandidatePreference,
@@ -573,3 +576,174 @@ def document_file(
         media_type=doc.content_type or "application/pdf",
         headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
     )
+
+
+# --- tracker ---------------------------------------------------------------
+#
+# What an employer actually said, rather than the status we inferred from it.
+# The alias made us the addressee of record, so this inbox is the candidate's
+# only view of correspondence that never reached their own mail client -- and
+# the relay is best-effort, so it is also the durable one.
+
+
+def _message_out(row: ApplicationMessage, posting: JobPosting | None) -> dict:
+    return {
+        "id": row.id,
+        "kind": row.kind,
+        "from_name": row.from_name or (row.from_address.partition("@")[2] or row.from_address),
+        "from_address": row.from_address,
+        "subject": row.subject,
+        # A preview, not the body: the list renders hundreds of these and the
+        # body of an ATS mail is mostly boilerplate and tracking pixels.
+        "preview": " ".join((row.body or "").split())[:180],
+        "received_at": row.received_at,
+        "read": row.read_at is not None,
+        "application_id": row.application_id or "",
+        "company": (posting.company if posting else "") or "",
+        "title": (posting.title if posting else "") or "",
+    }
+
+
+@router.get("/tracker/messages")
+def tracker_messages(
+    kind: str = Query(default=""),
+    application_id: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """The candidate's employer inbox, newest first.
+
+    ``counts`` is computed over the whole inbox rather than the filtered page,
+    because it drives the filter chips -- a count that changed when you tapped
+    a chip would be describing the wrong thing.
+    """
+    where = [
+        ApplicationMessage.org_id == principal.org_id,
+        ApplicationMessage.candidate_id == principal.candidate_id,
+    ]
+    if kind:
+        where.append(ApplicationMessage.kind == kind)
+    if application_id:
+        where.append(ApplicationMessage.application_id == application_id)
+
+    rows = db.scalars(
+        select(ApplicationMessage)
+        .where(*where)
+        .order_by(ApplicationMessage.received_at.desc())
+        .limit(limit)
+    ).all()
+
+    postings: dict[str, JobPosting | None] = {}
+    for row in rows:
+        if row.application_id and row.application_id not in postings:
+            application = db.get(Application, row.application_id)
+            postings[row.application_id] = (
+                db.get(JobPosting, application.job_posting_id) if application else None
+            )
+
+    counts: dict[str, int] = {}
+    unread = 0
+    for row in db.scalars(
+        select(ApplicationMessage).where(
+            ApplicationMessage.org_id == principal.org_id,
+            ApplicationMessage.candidate_id == principal.candidate_id,
+        )
+    ).all():
+        counts[row.kind] = counts.get(row.kind, 0) + 1
+        counts["all"] = counts.get("all", 0) + 1
+        if row.read_at is None:
+            unread += 1
+
+    return {
+        "messages": [_message_out(row, postings.get(row.application_id or "")) for row in rows],
+        "counts": counts,
+        "unread": unread,
+        "kinds": list(TRACKER_KINDS),
+    }
+
+
+@router.get("/tracker/messages/{message_id}")
+def tracker_message(
+    message_id: str,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """One message with its body. Reading it marks it read."""
+    row = db.scalar(
+        select(ApplicationMessage).where(
+            ApplicationMessage.id == message_id,
+            ApplicationMessage.org_id == principal.org_id,
+            ApplicationMessage.candidate_id == principal.candidate_id,
+        )
+    )
+    if row is None:
+        raise _NOT_FOUND
+    if row.read_at is None:
+        row.read_at = utcnow()
+        db.flush()
+    application = db.get(Application, row.application_id) if row.application_id else None
+    posting = db.get(JobPosting, application.job_posting_id) if application else None
+    out = _message_out(row, posting)
+    out["body"] = row.body or ""
+    out["alias_address"] = row.alias_address
+    out["relayed"] = row.relayed
+    return out
+
+
+@router.get("/tracker/pipeline")
+def tracker_pipeline(
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Everything in flight, with the last thing the employer said about it.
+
+    In-flight means "we are still waiting on somebody else" -- a withdrawn or
+    rejected pursuit is history, and burying the three live ones under thirty
+    closed ones is how a tracker stops being read.
+    """
+    live = ("prepared", "awaiting_consent", "submitting", "submitted", "acknowledged")
+    applications = db.scalars(
+        select(Application)
+        .where(
+            Application.org_id == principal.org_id,
+            Application.candidate_id == principal.candidate_id,
+            Application.status.in_(live),
+        )
+        .order_by(Application.updated_at.desc())
+    ).all()
+
+    out = []
+    for application in applications:
+        posting = db.get(JobPosting, application.job_posting_id)
+        last = db.scalar(
+            select(ApplicationMessage)
+            .where(ApplicationMessage.application_id == application.id)
+            .order_by(ApplicationMessage.received_at.desc())
+            .limit(1)
+        )
+        attempt = db.scalar(
+            select(ApplicationSubmission)
+            .where(ApplicationSubmission.application_id == application.id)
+            .order_by(ApplicationSubmission.attempt.desc())
+            .limit(1)
+        )
+        out.append(
+            {
+                "id": application.id,
+                "status": application.status,
+                "company": (posting.company if posting else "") or "",
+                "title": (posting.title if posting else "") or "",
+                "submitted_at": application.submitted_at,
+                "submission_url": application.submission_url or "",
+                # `console` is a dry run. Saying "sent" for one would be the
+                # same lie the notification suppression exists to prevent.
+                "was_really_sent": bool(
+                    attempt and attempt.status == "succeeded" and attempt.method != "console"
+                ),
+                "vendor": (attempt.vendor if attempt else "") or "",
+                "attempt_status": (attempt.status if attempt else "") or "",
+                "last_message": _message_out(last, posting) if last is not None else None,
+            }
+        )
+    return {"applications": out}

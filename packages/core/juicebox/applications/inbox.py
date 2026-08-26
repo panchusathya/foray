@@ -1,8 +1,8 @@
 """Mail that arrives at a candidate's application alias.
 
 This is the other half of owning the identity. An employer's ATS writes to
-``anna+<token>@goforay.io``, we receive it, and four different things can be in
-the envelope:
+``anna+<token>@goforay.io``, we receive it, and a handful of different things
+can be in the envelope:
 
 1. **A verification link.** The portal wants a click before the account is
    real. We click it and un-park the submission that was waiting.
@@ -10,8 +10,14 @@ the envelope:
    attempt and let the browser run continue.
 3. **A status message.** A received-your-application acknowledgement, or a
    rejection. Those move the pursuit.
-4. **Anything else** -- a recruiter writing to a person. That is relayed and
+4. **An interview or assessment invitation.** Labelled, so the tracker can
+   filter on it, but deliberately *not* status-moving -- see ``classify``.
+5. **Anything else** -- a recruiter writing to a person. That is relayed and
    nothing is inferred from it.
+
+Every one of them is stored as an ``ApplicationMessage`` before it is relayed.
+The relay hands the mail to the candidate's own inbox and forgets it; the row
+is what the portal tracker reads back.
 
 **It never reaches the recruiter-reply machinery.** ``integrations/sync.py``
 routes alias mail here and returns, because everything downstream of that --
@@ -31,6 +37,8 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from email.utils import parseaddr
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,6 +47,7 @@ from ..config import get_settings
 from ..jobs import KIND_APP_SUBMIT_VERIFY, enqueue
 from ..models import (
     Application,
+    ApplicationMessage,
     ApplicationSubmission,
     Candidate,
     JobPosting,
@@ -55,7 +64,17 @@ KIND_VERIFICATION = "verification"
 KIND_OTP = "otp"
 KIND_ACKNOWLEDGED = "acknowledged"
 KIND_REJECTED = "rejected"
+KIND_INTERVIEW = "interview"
+KIND_ASSESSMENT = "assessment"
 KIND_OTHER = "other"
+
+#: The filters the tracker offers, in the order it shows them.
+TRACKER_KINDS = (
+    KIND_VERIFICATION,
+    KIND_REJECTED,
+    KIND_INTERVIEW,
+    KIND_ASSESSMENT,
+)
 
 #: A link whose text or URL says it verifies something. Kept narrow: clicking
 #: an arbitrary link in mail addressed to us is how an alias becomes a
@@ -81,6 +100,28 @@ _ACK_PHRASES = (
     "your application has been received",
     "application received",
     "we received your submission",
+)
+_INTERVIEW_PHRASES = (
+    "schedule an interview",
+    "schedule a call",
+    "invite you to interview",
+    "invitation to interview",
+    "like to set up a time",
+    "would like to speak with you",
+    "book a time",
+    "phone screen",
+    "next round",
+)
+_ASSESSMENT_PHRASES = (
+    "take-home",
+    "take home assignment",
+    "coding challenge",
+    "online assessment",
+    "complete the assessment",
+    "skills test",
+    "hackerrank",
+    "codesignal",
+    "karat",
 )
 _REJECT_PHRASES = (
     "we will not be moving forward",
@@ -120,6 +161,17 @@ def classify(subject: str, body: str) -> InboundClassification:
     for phrase in _REJECT_PHRASES:
         if phrase in lowered:
             return InboundClassification(KIND_REJECTED, phrase=phrase)
+    # Interview and assessment also come wrapped in "thank you for applying",
+    # and both are the news the candidate is actually waiting for, so they win
+    # over the acknowledgement too. Neither moves the application on its own --
+    # they are labels on a message, and a status the agent infers from a phrase
+    # is exactly the false positive `classify` is written to avoid.
+    for phrase in _INTERVIEW_PHRASES:
+        if phrase in lowered:
+            return InboundClassification(KIND_INTERVIEW, phrase=phrase)
+    for phrase in _ASSESSMENT_PHRASES:
+        if phrase in lowered:
+            return InboundClassification(KIND_ASSESSMENT, phrase=phrase)
     for phrase in _ACK_PHRASES:
         if phrase in lowered:
             return InboundClassification(KIND_ACKNOWLEDGED, phrase=phrase)
@@ -134,6 +186,8 @@ def handle(
     from_address: str,
     subject: str,
     body: str,
+    native_id: str = "",
+    received_at: datetime | None = None,
 ) -> dict:
     """Act on one message addressed to an alias. Returns what it decided.
 
@@ -153,6 +207,21 @@ def handle(
     if candidate.org_id != org_id:
         # The mailbox is shared; an alias belongs to exactly one org.
         return {"routed": False, "reason": "org mismatch"}
+
+    # A sync page is replayed whenever the worker dies holding one, and the
+    # ingest is only free if it is idempotent. Without this, a replay clicks a
+    # verification link a second time and re-moves a status that a human may
+    # already have corrected. Still `routed`: it was our alias, and the caller
+    # must not fall through to the recruiter-reply machinery.
+    if native_id:
+        seen = db.scalar(
+            select(ApplicationMessage.id).where(
+                ApplicationMessage.org_id == org_id,
+                ApplicationMessage.provider_native_id == native_id,
+            )
+        )
+        if seen is not None:
+            return {"routed": True, "reason": "already handled", "candidate_id": candidate.id}
 
     classification = classify(subject, body)
     application = _match_application(db, candidate, from_address=from_address)
@@ -186,6 +255,26 @@ def handle(
             "application_id": outcome.get("application_id", ""),
         },
     )
+    # The message itself, kept. The event above records that something arrived;
+    # this is what lets the tracker show what was said.
+    display_name, bare_from = parseaddr(from_address or "")
+    stored = ApplicationMessage(
+        org_id=org_id,
+        candidate_id=candidate.id,
+        application_id=application.id if application is not None else None,
+        kind=classification.kind,
+        alias_address=matched_address[:320],
+        from_address=(bare_from or from_address or "")[:320],
+        from_name=(display_name or "")[:200],
+        subject=(subject or "")[:500],
+        body=body or "",
+        provider_native_id=(native_id or "")[:200],
+        received_at=received_at or utcnow(),
+    )
+    db.add(stored)
+    db.flush()
+    outcome["message_id"] = stored.id
+
     outcome["relayed"] = relay(
         db,
         candidate=candidate,
@@ -194,6 +283,8 @@ def handle(
         subject=subject,
         body=body,
     )
+    stored.relayed = bool(outcome["relayed"])
+    db.flush()
     return outcome
 
 

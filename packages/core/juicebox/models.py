@@ -2018,6 +2018,74 @@ class ApplicationSubmission(Base, TimestampMixin):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ApplicationMessage(Base, TimestampMixin):
+    """One message an employer sent to a candidate's application alias.
+
+    Kept because the alias made us the addressee of record. Before this, an
+    employer's reply was classified, acted on, relayed to the candidate's own
+    inbox and then gone from our side -- only an event survived, carrying the
+    sender and a truncated subject. That is enough to move a status and not
+    enough to show anybody what was actually said, which makes the tracker a
+    list of state changes rather than a record of a conversation.
+
+    ``kind`` is ``applications/inbox.classify``'s answer, stored rather than
+    recomputed: the classifier will get better, and a message re-read next year
+    should still show the decision that was actually acted on at the time.
+
+    ``application_id`` is nullable on purpose. Mail arrives attributable to a
+    *candidate* by construction -- the alias token is an HMAC of their id -- but
+    matching it to one of several open applications is a guess from the sender's
+    domain. An unmatched message still belongs in their inbox.
+    """
+
+    __tablename__ = "application_messages"
+    __table_args__ = (
+        # The provider's own id, which is what makes a replayed sync page free.
+        # Scoped to the org because two orgs can share one alias mailbox.
+        #
+        # Partial, not a plain UniqueConstraint: SQL compares '' to '' as equal,
+        # so a bare constraint lets the *first* message with no native id block
+        # every later one. Providers always supply an id -- MailboxEvent
+        # requires it -- but a row written by any other path must not be able
+        # to wedge the table.
+        Index(
+            "uq_application_message_native",
+            "org_id",
+            "provider_native_id",
+            unique=True,
+            sqlite_where=text("provider_native_id != ''"),
+            postgresql_where=text("provider_native_id != ''"),
+        ),
+        Index("ix_application_messages_candidate", "candidate_id", "received_at"),
+        Index("ix_application_messages_application", "application_id"),
+        Index("ix_application_messages_org_kind", "org_id", "kind"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("amsg"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    # No index=True: the (candidate_id, received_at) index below already serves
+    # every lookup by candidate, and a second single-column index on the same
+    # leading column is pure write cost.
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"))
+    application_id: Mapped[str | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), nullable=True
+    )
+    #: verification | otp | acknowledged | rejected | interview | assessment | other
+    kind: Mapped[str] = mapped_column(String(32), default="other")
+    #: The alias it arrived at -- anna+<token>@, kept so a support question
+    #: about "which address did this come to" is answerable from the row.
+    alias_address: Mapped[str] = mapped_column(String(320), default="")
+    from_address: Mapped[str] = mapped_column(String(320), default="")
+    from_name: Mapped[str] = mapped_column(String(200), default="")
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    provider_native_id: Mapped[str] = mapped_column(String(200), default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Whether the relay to the candidate's own inbox went out.
+    relayed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
 class AtsBoardCredential(Base, TimestampMixin):
     """An employer's own API key for their job board.
 

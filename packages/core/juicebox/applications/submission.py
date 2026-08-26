@@ -363,6 +363,66 @@ def _notify_sent(db: Session, application: Application, attempt: ApplicationSubm
         event=EVENT_APPLICATION_SENT,
         subject_id=application.id,
     )
+    _email_sent_confirmation(db, application)
+
+
+def _email_sent_confirmation(db: Session, application: Application) -> None:
+    """The same news as the text, from the address that carries the application.
+
+    Two channels on purpose. The text is the fast one; this is the one that is
+    searchable a month later, and it arrives from the alias mailbox, so the
+    confirmation and every employer reply that follows sit in one thread in the
+    candidate's own inbox.
+
+    Never raises: a confirmation that could not be sent must not undo a
+    submission that already reached the employer.
+    """
+    candidate = db.get(Candidate, application.candidate_id)
+    if candidate is None:
+        return
+    real = alias.primary_email(candidate)
+    if not real:
+        return
+    posting = db.get(JobPosting, application.job_posting_id)
+    title = (posting.title if posting else "") or "the role"
+    company = (posting.company if posting else "") or "the company"
+    alias_address = alias.address_for(candidate.id)
+
+    try:
+        from ..outreach.sender import OutboundEmail, sender_for_org
+        from ..portal.links import mint_portal_link
+
+        link = mint_portal_link(
+            db,
+            org_id=application.org_id,
+            candidate_id=candidate.id,
+            path=f"/applications/{application.id}",
+            channel="email",
+        )
+        lines = [
+            f"Your application for {title} at {company} is in.",
+            "",
+            f"It went out from {alias_address}, so replies from {company} arrive there"
+            " and I'll pass them straight on to you.",
+            "",
+            f"What I sent, and where it is: {link}",
+        ]
+        result = sender_for_org(db, application.org_id).send(
+            OutboundEmail(
+                to=real,
+                subject=f"Applied: {title} at {company}",
+                text_body="\n".join(lines),
+                html_body="",
+                from_email=alias_address or "",
+                from_name="Foray",
+            )
+        )
+        if not result.ok:
+            logger.warning(
+                "could not email the sent-confirmation for %s: %s", application.id, result.error
+            )
+    except Exception as exc:  # noqa: BLE001 - never undo a real submission over this
+        logger.warning("could not email the sent-confirmation for %s: %s", application.id, exc)
 
 
 def _seal(verification: dict) -> dict:

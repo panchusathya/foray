@@ -8,6 +8,7 @@ import { ApplicationDetailPage, ApplicationsPage } from './pages/Applications.js
 import { DiscoverPage } from './pages/Discover.jsx';
 import { DocumentsPage } from './pages/Documents.jsx';
 import { HomePage } from './pages/Home.jsx';
+import { InboxPage } from './pages/Inbox.jsx';
 import { NetworkPage } from './pages/Network.jsx';
 import { ProfilePage } from './pages/Profile.jsx';
 import { LoginPage, MagicLinkPage } from './pages/SignIn.jsx';
@@ -22,6 +23,7 @@ function SignedIn({ profile }) {
         <Route path="/discover" element={<DiscoverPage />} />
         <Route path="/applications" element={<ApplicationsPage />} />
         <Route path="/applications/:applicationId" element={<ApplicationDetailPage />} />
+        <Route path="/inbox" element={<InboxPage />} />
         <Route path="/network" element={<NetworkPage />} />
         {/* The tab was called Networking until the People tab existed; old
             links out of texts and emails still point at it. */}

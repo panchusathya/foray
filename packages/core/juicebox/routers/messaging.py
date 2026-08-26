@@ -32,6 +32,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -79,6 +80,8 @@ from ..messaging.threads import (
     record_inbound,
 )
 from ..models import IntakeMessage, IntakeThread, Org, utcnow
+from ..presentation.contactavatar import CONTENT_TYPE as AVATAR_CONTENT_TYPE
+from ..presentation.contactavatar import render_avatar_png
 from ..security import signed_intake_token, verify_intake_token
 
 logger = logging.getLogger(__name__)
@@ -475,6 +478,24 @@ async def upload_resume(
         content_type=content_type,
     )
     return HTMLResponse(_UPLOAD_DONE, status_code=201)
+
+
+@linq_router.get("/contact-card.png")
+def linq_contact_card_image() -> Response:
+    """The photo on our iMessage contact card.
+
+    Public and unauthenticated because Linq fetches it as an ordinary URL when
+    the card is set — there is no principal to check and nothing here that is
+    not already on the marketing site. Immutable rather than merely cacheable:
+    the bytes are drawn from constants, so a URL that answered once answers the
+    same forever, and a card already sitting in somebody's contacts should not
+    change under them.
+    """
+    return Response(
+        content=render_avatar_png(),
+        media_type=AVATAR_CONTENT_TYPE,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @linq_router.post("/webhook")

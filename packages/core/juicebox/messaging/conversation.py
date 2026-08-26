@@ -58,7 +58,7 @@ from ..intake.schema import (
 from ..jobs import KIND_LINKEDIN_SCRAPE, enqueue
 from ..llm.client import get_llm
 from ..models import IntakeMessage, IntakeThread, Org
-from . import cadence, connect_flow, identity, linkedin_flow, prompts
+from . import cadence, connect_flow, contact_card, identity, linkedin_flow, prompts
 from .channels import ChannelError, DeliveryResult, OutboundMessage, get_channel
 from .identity import CONTACT_LINKEDIN
 from .linkedin_flow import (
@@ -634,7 +634,13 @@ def _deliver(
     except ChannelError as exc:
         logger.warning("intake send failed on thread %s: %s", thread.id, exc.detail)
         result = DeliveryResult(status="failed", error=exc.detail[:400])
-    return record_outbound(db, thread=thread, message=outbound, result=result, origin=origin)
+    recorded = record_outbound(db, thread=thread, message=outbound, result=result, origin=origin)
+    if result.status == "sent":
+        # After the message rather than before it, and only on a real send:
+        # Linq refuses to share a contact card into a chat we have never
+        # spoken in, and the row just written is what makes that untrue.
+        contact_card.maybe_share(db, thread=thread)
+    return recorded
 
 
 def react_to_message(

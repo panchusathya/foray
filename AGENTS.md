@@ -117,6 +117,33 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   against the row's own candidate id rather than trusting an address it was
   handed.
 
+## Documents (`packages/core/juicebox/docgen`)
+
+- **`render.py` sets type; it never edits content.** Fitting a resume to one
+  page is done by choosing a density off `_LADDER` — margins, type size,
+  leading and gaps together — and never by dropping a job, a bullet or the
+  summary. A test asserts the fitted page and the fixed-density page contain
+  the same words. A career that will not fit two pages even at the tightest
+  setting is allowed to run long; shortening it is the candidate's call.
+- **A drafted bullet carries the span it came from, or it does not ship.**
+  `bullets.py` fills roles LinkedIn handed over blank using what the candidate
+  said during intake, and `_grounded` discards any bullet whose quote is not
+  in that evidence character for character, or that carries a number the quote
+  does not. The check is on our side of the model and fails closed, which is
+  the only reason drafting is allowed on a document that goes out in somebody
+  else's name. Loosening it needs a better guard, not a lower bar.
+- **Evidence is what the candidate said, not what we know about them.**
+  `candidate_evidence` reads their call transcripts, their inbound messages
+  and the verbatim `highlights` — never our agent's side of a conversation, a
+  recruiter's note or a vendor's profile blurb. The test for this asserts the
+  agent's own question is absent. A bullet has to be something they can stand
+  behind in an interview.
+- **A role nobody has described gets no bullets.** Same answer `answers.py`
+  gives to a form question the inputs do not answer, for the same reason.
+- **`generated_by` follows the content, not the code path.** A resume the
+  deterministic path built but `bullets.py` wrote into is `llm`, including
+  when the tailor afterwards fails or is rejected.
+
 ## Mail providers (`packages/core/juicebox/integrations`)
 
 - **Adding a provider** means implementing `MailProvider` in `providers.py` and

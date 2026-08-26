@@ -5,6 +5,12 @@ Experience and Education children, and the intake preference, the output is a
 complete, truthful resume. The LLM path receives that JSON and may reorder,
 tighten, and cut — the tailor prompt forbids invention, and the adversarial
 test hands it a transport that tries anyway and asserts the guard catches it.
+
+Between the two sits ``docgen/bullets``, which fills in roles LinkedIn handed
+over with no description using what the candidate said about that work during
+intake. It is on the LLM side of the line and guarded the same way: a bullet
+that cannot be traced verbatim to the candidate's own words is discarded, so
+the worst case is the bare resume this module already built.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from ..llm.prompts import (
 )
 from ..models import Candidate, CandidateDocument, CandidatePreference, JobPosting
 from ..search.parser import ParsedQuery
+from .bullets import candidate_evidence, fill_missing_bullets
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +65,19 @@ def build_resume_json(
     base = _deterministic_resume(candidate, preference=preference, posting=posting)
     _graft_linkedin_sections(db, candidate, base)
 
+    # A LinkedIn history is usually employers and dates with nothing written
+    # underneath, because almost nobody fills in the description box. What the
+    # candidate said on their intake call describes that same work, so
+    # ``bullets`` moves it onto the page — discarding anything it cannot trace
+    # back to their own words. It runs BEFORE the tailor so the tailor has
+    # bullets to order against the role, and what it writes is credited to the
+    # model: a drafted bullet is not something the deterministic path produced.
+    base, drafted = fill_missing_bullets(base, evidence=candidate_evidence(db, candidate))
+    bare = "llm" if drafted else "template"
+
     llm = get_llm()
     if not llm.available:
-        return base, "template"
+        return base, bare
     try:
         result = llm.json(
             system=RESUME_TAILOR_SYSTEM,
@@ -73,12 +90,12 @@ def build_resume_json(
         )
     except Exception as exc:  # noqa: BLE001 - the deterministic resume ships instead
         logger.warning("resume tailor failed, using the deterministic resume: %s", exc)
-        return base, "template"
+        return base, bare
 
     tailored = result.data or {}
     if not isinstance(tailored, dict) or not _tailor_is_honest(base, tailored):
         logger.warning("resume tailor rejected: output invented facts or lost shape")
-        return base, "template"
+        return base, bare
     return tailored, "llm"
 
 

@@ -475,6 +475,69 @@ _TITLE_CAPTURES = (
     r"\b([a-z0-9+#/.\- ]{3,60}?)\s+roles?\b",
 )
 
+# Words that end a title rather than belong to one, used to find where a
+# captured phrase actually starts.
+#
+# The last capture above has no left anchor -- it takes whatever precedes
+# "role" -- so "I'm after a senior machine learning engineer role" handed
+# ``normalize_title`` the entire clause and got back ``m after machine learning
+# engineer``. ("m" because the apostrophe is outside the capture class, so the
+# contraction leaves its tail behind.) That is a title no posting carries, on
+# the field ``search.scoring.assess`` penalises hardest, produced by the path
+# that runs when there is no API key -- the install this stack is built for.
+#
+# It stayed invisible because the neighbouring case looks fine: "I want a staff
+# backend engineer role" captures the whole clause too, and only comes out
+# right because ``TITLE_ALIASES`` happens to hold "backend engineer", so
+# ``normalize_title``'s progressive-suffix loop rescues it. Nothing about the
+# capture was working -- the alias table was covering for it, one title at a
+# time -- which is why the fix belongs at the capture and not in a wider noise
+# list.
+#
+# Determiners and seniority markers are deliberately absent: ``normalize_title``
+# already strips those, and cutting them here would deny it the suffix lookup.
+_TITLE_BREAK_WORDS = frozenset(
+    {
+        # Tails a contraction leaves behind, the apostrophe having ended the
+        # capture class.
+        "m", "re", "ve", "ll", "d", "s",
+        # Pronouns and copulas.
+        "i", "we", "you", "they", "he", "she", "it", "me", "my", "our", "your",
+        "am", "is", "are", "was", "were", "be", "been", "being",
+        # Verbs that introduce a want rather than name a title.
+        "want", "wants", "wanted", "looking", "look", "seeking", "seek",
+        "hoping", "hope", "trying", "try", "need", "needs", "prefer",
+        "prefers", "like", "love", "considering", "consider", "interested",
+        "after", "targeting", "eyeing", "chasing", "pursuing", "exploring",
+        "move", "moving", "switch", "switching", "get", "getting", "find",
+        "finding", "have", "has", "had", "would", "could", "should", "will",
+        "can", "really", "just", "maybe", "probably", "open",
+        # Gerunds and auxiliaries that describe the job rather than name it.
+        # "I have been doing platform engineer roles" survives without these
+        # only because the alias table holds "platform engineer" -- the same
+        # luck that hid the bug above.
+        "do", "does", "did", "doing", "done", "work", "works", "worked",
+        "working",
+        # Prepositions and conjunctions.
+        "to", "into", "in", "on", "with", "from", "about", "but", "or", "so",
+        "than", "then", "that", "which", "because", "if", "when", "while",
+        "for", "at",
+    }
+)
+
+
+def _title_phrase(phrase: str) -> str:
+    """The tail of a captured phrase that could plausibly be a title.
+
+    Everything up to and including the last word that cannot belong to a job
+    title is dropped.
+    """
+    words = phrase.split()
+    for index in range(len(words) - 1, -1, -1):
+        if words[index] in _TITLE_BREAK_WORDS:
+            return " ".join(words[index + 1 :])
+    return phrase
+
 
 def _heuristic_extract(transcript: str) -> ExtractionResult:
     # Preferences from what the caller said. The agent's script contains
@@ -654,7 +717,11 @@ def _largest_amount(sentence: str) -> float | None:
 def _heuristic_titles(text: str) -> list[str]:
     found: list[str] = []
     for pattern in _TITLE_CAPTURES:
-        for phrase in re.findall(pattern, text):
+        for captured in re.findall(pattern, text):
+            # Trim first, then look for a role noun: a phrase that loses its
+            # noun to the trim was never a title, and recording nothing is the
+            # direction this module errs in everywhere else.
+            phrase = _title_phrase(captured)
             if not any(noun in phrase for noun in _ROLE_NOUNS):
                 continue
             title = tx.normalize_title(phrase)

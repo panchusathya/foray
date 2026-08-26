@@ -598,6 +598,40 @@ class TestHeuristicExtraction:
         record = extract_intake("Candidate: I'm looking for a backend engineer role.").record
         assert record["spec"]["seniority"] == ["mid"]
 
+    @pytest.mark.parametrize(
+        "said",
+        [
+            "I'm after a senior machine learning engineer role.",
+            "I am after a senior machine learning engineer role.",
+            "I'd like a senior machine learning engineer role.",
+            "I have been looking for a machine learning engineer role.",
+            "I would consider machine learning engineer roles.",
+        ],
+    )
+    def test_the_clause_around_a_title_does_not_become_part_of_it(self, no_llm, said):
+        """The last title capture has no left anchor, so it takes whatever
+        precedes "role". These sentences used to extract ``m after machine
+        learning engineer`` -- "m" because the apostrophe ends the capture
+        class, so a contraction leaves its tail behind -- which matches no
+        posting, on the field ``search.scoring.assess`` penalises hardest.
+
+        It hid because the transcript two tests up ("I'm after a staff backend
+        engineer role") captures its whole clause too and still comes out
+        right, purely because ``TITLE_ALIASES`` holds "backend engineer" for
+        ``normalize_title``'s suffix lookup to find. Alias coverage is not a
+        fix, so this asserts a title the table does not carry.
+        """
+        record = extract_intake(f"Candidate: {said}").record
+        assert record["spec"]["job_titles"] == ["machine learning engineer"]
+
+    def test_a_phrase_that_loses_its_role_noun_records_nothing(self, no_llm):
+        """The trim runs before the role-noun check, so a phrase whose only noun
+        sat on the far side of the break records nothing. "Looking for new
+        roles" names no title, and inventing one out of the clause that happens
+        to mention what they are today is the expensive direction."""
+        record = extract_intake("Candidate: I'm an engineer looking for new roles.").record
+        assert record["spec"]["job_titles"] == []
+
     def test_talking_about_both_records_neither(self, no_llm):
         result = extract_intake(
             "Candidate: I'd do fully remote or hybrid, whichever. Both work for me."

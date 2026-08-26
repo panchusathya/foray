@@ -13,6 +13,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
 import { api, providerLabel } from '../lib/api.js';
+import { malformedInStep } from '../lib/templates.js';
 import { useAsync } from '../lib/useAsync.js';
 
 // Chip catalog mirrors the variable bag in outreach/personalize.py base_context.
@@ -394,6 +395,13 @@ export function SequenceEditorPage() {
   const dirty = stepsDirty || metaDirty;
   dirtyRef.current = dirty;
   const schedule = useMemo(() => schedulePreview(steps), [steps]);
+  // Live rather than on-save: the recruiter is looking at the box they typed it
+  // into. Saving a half-written step stays allowed -- the server is what refuses
+  // to send -- so this warns and never blocks.
+  const broken = useMemo(
+    () => steps.map((step, index) => ({ index, found: malformedInStep(step) })).filter((s) => s.found.length),
+    [steps],
+  );
 
   if (sequence.loading || !meta) return <Loading label="Loading sequence…" />;
   if (sequence.error) return <ErrorBox error={sequence.error} />;
@@ -583,6 +591,30 @@ export function SequenceEditorPage() {
         </div>
       ) : null}
       {notice ? <div className="card small">{notice}</div> : null}
+      {broken.length ? (
+        <div className="card small stack" data-testid="malformed-placeholders">
+          <strong>
+            {broken.length === 1 ? 'A placeholder' : 'Placeholders'} the renderer cannot read
+          </strong>
+          {broken.map(({ index, found }) => (
+            <div key={index}>
+              Step {index + 1}:{' '}
+              {found.map((text, i) => (
+                <span key={text}>
+                  {i ? ', ' : ''}
+                  <code>{text}</code>
+                </span>
+              ))}
+            </div>
+          ))}
+          <span className="muted">
+            A variable name can only use letters, numbers, underscores and dots — a
+            space makes it unreadable, and it would send as those literal braces.
+            Use the chips above (for a name, {'{{ first_name | there }}'}). These
+            steps will not send until they are fixed.
+          </span>
+        </div>
+      ) : null}
 
       <SenderPicker meta={meta} setMeta={setMeta} mailboxes={mailboxes} />
 
@@ -755,6 +787,14 @@ export function SequenceEditorPage() {
             {dirty ? <div className="muted small">Save your changes to preview them.</div> : null}
             {preview ? (
               <>
+                {preview.warnings?.length ? (
+                  <div className="card small" data-testid="preview-warnings">
+                    This step will not send: {preview.warnings.join(', ')}{' '}
+                    {preview.warnings.length === 1 ? 'is' : 'are'} not a placeholder
+                    the renderer can read, so the braces below are what the
+                    candidate would have seen.
+                  </div>
+                ) : null}
                 {preview.ai_status === 'unavailable' ? (
                   <div className="card small" data-testid="ai-unavailable-banner">
                     No AI model is configured, so the [AI: …] parts below show where

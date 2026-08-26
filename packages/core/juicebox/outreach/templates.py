@@ -44,6 +44,15 @@ class MissingDirective(ValueError):
     otherwise an instruction meant for the model could reach a candidate."""
 
 
+class MalformedTemplate(ValueError):
+    """A ``{{`` that starts neither a variable nor a directive. Raised for the
+    same reason as MissingDirective: the renderer substitutes only what it can
+    parse, so anything else survives verbatim into the candidate's inbox --
+    ``{{First name}}`` (a space is not a legal variable character) shipped as
+    literal braces because every guard here keys off the same patterns that
+    failed to match it."""
+
+
 @dataclass(frozen=True)
 class Directive:
     key: str
@@ -98,6 +107,42 @@ def mark_directives(template: str) -> str:
 
 def used_variables(template: str) -> list[str]:
     return sorted({match.group(1) for match in _VAR_RE.finditer(template or "")})
+
+
+def _placeholder_span(template: str, start: int, limit: int = 60) -> str:
+    """The offending text to show a recruiter, from ``{{`` to its ``}}``."""
+    end = template.find("}}", start)
+    if end != -1 and (end + 2 - start) <= limit:
+        return template[start : end + 2]
+    # Unterminated, or so long that quoting it whole would be useless. Show the
+    # rest of its line, and only ellipsise when there was more to show.
+    rest = template[start:].splitlines()[0]
+    if len(rest) <= limit:
+        return rest.rstrip()
+    return rest[:limit].rstrip() + "…"
+
+
+def malformed_placeholders(template: str) -> list[str]:
+    """Every ``{{`` that neither _VAR_RE nor _AI_RE claims, in first-seen order.
+
+    Scanning for the opening braces rather than for whole ``{{...}}`` spans is
+    the point: an unterminated ``{{ first_name`` has no closing braces to match
+    on, and it ships just as literally as a misspelt one. Nothing else here can
+    see these -- missing_variables() and keep_known_variables() both iterate
+    _VAR_RE, so a placeholder that fails to match is invisible to them.
+    """
+    if not template:
+        return []
+    claimed = {match.start() for match in _VAR_RE.finditer(template)}
+    claimed |= {match.start() for match in _AI_RE.finditer(template)}
+    found: list[str] = []
+    for match in re.finditer(r"\{\{", template):
+        if match.start() in claimed:
+            continue
+        span = _placeholder_span(template, match.start())
+        if span not in found:
+            found.append(span)
+    return found
 
 
 def keep_known_variables(template: str, allowed: Iterable[str]) -> str:

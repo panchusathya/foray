@@ -789,6 +789,11 @@ class PreviewResponse(BaseModel):
     # off: no directives in the step · resolved: model wrote them ·
     # unavailable: directives present but no model — body shows [AI: ...] markers.
     ai_status: Literal["off", "resolved", "unavailable"] = "off"
+    # Placeholders the renderer cannot parse, verbatim (e.g. "{{First name}}").
+    # The body above shows them as the candidate would see them — as raw braces
+    # — so the warning is what tells the recruiter that is a bug, not a choice.
+    # Non-empty means this step will refuse to send until it is fixed.
+    warnings: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------

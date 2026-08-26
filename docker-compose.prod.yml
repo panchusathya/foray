@@ -150,6 +150,10 @@ x-app-env: &app_env
   # mailbox sends the outreach. Empty falls back to the outreach identity.
   # The SMTP user must be this address or a verified alias of it — Zoho and
   # most providers reject a From they did not authenticate.
+  # Magic links arrive by text and get read whenever somebody picks up their
+  # phone. The grant is single-use and scoped to one candidate, so the expiry
+  # is not what makes it safe -- a short one just broke the ordinary case.
+  PORTAL_LINK_TTL_SECONDS: ${PORTAL_LINK_TTL_SECONDS:-86400}
   PORTAL_FROM_EMAIL: ${PORTAL_FROM_EMAIL:-}
   # Google sign-in for candidates. Public by nature -- it ships to the browser
   # -- so this is a client id, not a secret. The portal container needs it to

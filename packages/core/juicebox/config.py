@@ -520,8 +520,15 @@ class Settings:
     )
     # A texted link is short-lived and single-use; the session it exchanges
     # into lasts a week. The OTP sits between: ten minutes, five attempts.
+    # A day, not fifteen minutes. These links are delivered by text and read
+    # whenever somebody next picks up their phone -- a quarter-hour window
+    # meant the ordinary case, reading it in the morning, was a dead link.
+    # The security here is that the grant is single-use (`exchange` burns
+    # `consumed_at`), row-tracked by jti and scoped to one candidate in one
+    # org; the short expiry was adding very little on top of that and costing
+    # the primary channel.
     portal_link_ttl_seconds: int = field(
-        default_factory=lambda: _env_int("PORTAL_LINK_TTL_SECONDS", 900)
+        default_factory=lambda: _env_int("PORTAL_LINK_TTL_SECONDS", 86400)
     )
     portal_session_ttl_seconds: int = field(
         default_factory=lambda: _env_int("PORTAL_SESSION_TTL_SECONDS", 7 * 24 * 3600)

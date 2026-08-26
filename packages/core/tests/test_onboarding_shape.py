@@ -11,6 +11,8 @@ answer decides something the candidate can see.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from sqlalchemy import select
 
@@ -338,7 +340,16 @@ class TestApplicationQuestionsAskedAtApplicationTime:
         body = channel.bodies[-1].lower()
         assert "google" in body, "the question has to say what it is for"
         assert "comp" in body
-        assert "why" not in body, "we never ask somebody to justify their enthusiasm"
+        # This used to assert "why" was absent entirely -- we do not ask anybody
+        # to justify their enthusiasm over text. That still holds for the
+        # *answer*, and the loosening was deliberate: leaving the question
+        # unmentioned meant the portal showed an empty "why this company" while
+        # the text asked only about comp, so it read as a question the agent had
+        # missed. It is now named as theirs to write, and must not be phrased as
+        # something to text back.
+        assert "yours to write" in body
+        assert "in the app" in body
+        assert "what should we put for why" not in body
 
     def test_an_answer_we_already_have_is_not_asked_for(
         self, session, account, thread, channel
@@ -443,3 +454,103 @@ class TestADegradedEmbedderIsNotSilent:
             assert body["embeddings_degraded"] is False
         finally:
             embeddings_module._embedder = previous
+
+
+class TestThePortalOnlyBlank:
+    """`why_company` is deliberately blank, and used to be silently blank.
+
+    The package left it empty on purpose -- we do not write somebody's
+    enthusiasm for them -- but the follow-up text listed only the askable
+    blanks. So the portal showed an empty "why this company" while the text
+    asked about comp, and it read as a question the agent had missed rather
+    than one it had left on purpose. Reported from production.
+    """
+
+    class _Posting:
+        company = "Voice Capital"
+        title = "Founding General Partner"
+
+    def _application(self, answers):
+        class _App:
+            form_answers = answers
+
+        return _App()
+
+    #: The real Voice Capital answer set, as production wrote it.
+    REAL: ClassVar[list[dict]] = [
+        {"key": "work_authorization", "answer": "I am a U.S. citizen."},
+        {"key": "salary_expectation", "answer": "", "asked": True},
+        {"key": "notice_period", "answer": "I can start immediately."},
+        {"key": "why_company", "answer": ""},
+    ]
+
+    def test_it_names_the_company_specific_question(self):
+        from juicebox.applications.followups import followup_message
+
+        body = followup_message(self._application(self.REAL), self._Posting())
+        assert "why Voice Capital" in body
+
+    def test_it_says_the_answer_is_theirs_to_write(self):
+        from juicebox.applications.followups import followup_message
+
+        body = followup_message(self._application(self.REAL), self._Posting())
+        assert "yours to write" in body
+
+    def test_it_still_asks_the_askable_blank(self):
+        """Naming the portal-only one must not displace the real question."""
+        from juicebox.applications.followups import followup_message
+
+        body = followup_message(self._application(self.REAL), self._Posting())
+        assert "comp expectations" in body
+
+    def test_a_filled_why_is_not_mentioned(self):
+        from juicebox.applications.followups import followup_message
+
+        answers = [dict(item) for item in self.REAL]
+        answers[-1]["answer"] = "I have followed the fund since inception."
+        body = followup_message(self._application(answers), self._Posting())
+        assert "yours to write" not in body
+
+    def test_the_handed_off_key_is_reported_separately(self):
+        """`asked` counts questions asked. A portal-only blank was named, not
+        asked, so it belongs in its own bucket."""
+        from juicebox.applications import followups
+
+        answers = [dict(item) for item in self.REAL]
+        assert followups.portal_only_blanks(self._application(answers)) == ["why_company"]
+        assert "why_company" not in followups.blank_answers(self._application(answers))
+
+    def test_a_lone_portal_blank_still_produces_a_message(self):
+        """Everything else answered: previously silent, so the candidate never
+        learned the one field waiting on them."""
+        from juicebox.applications.followups import followup_message
+
+        answers = [
+            {"key": "work_authorization", "answer": "US citizen."},
+            {"key": "salary_expectation", "answer": "USD 250,000"},
+            {"key": "notice_period", "answer": "Immediately."},
+            {"key": "why_company", "answer": ""},
+        ]
+        body = followup_message(self._application(answers), self._Posting())
+        assert body
+        assert "why Voice Capital" in body
+        # It is a hand-off, not a question, so it must not claim to be asking.
+        assert "i don't have yet" not in body
+        assert "needs one thing from you" in body
+
+    def test_nothing_owed_is_silent(self):
+        from juicebox.applications.followups import followup_message
+
+        answers = [
+            {"key": "work_authorization", "answer": "US citizen."},
+            {"key": "salary_expectation", "answer": "USD 250,000"},
+            {"key": "notice_period", "answer": "Immediately."},
+            {"key": "why_company", "answer": "Because of the thesis."},
+        ]
+        assert followup_message(self._application(answers), self._Posting()) == ""
+
+    def test_it_falls_back_when_the_company_is_unknown(self):
+        from juicebox.applications.followups import followup_message
+
+        body = followup_message(self._application(self.REAL), None)
+        assert "why the company" in body

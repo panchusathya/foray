@@ -19,9 +19,12 @@ knows, so a candidate who volunteered a number is never asked for it again --
 and the extractor absorbs whatever comes back on the next turn, so the second
 application does not ask a third time.
 
-``why_company`` is never asked. It is blank by design (``answers.py``: we do
-not write somebody's enthusiasm for them), and it is the one the candidate is
-expected to fill in on the portal in their own words.
+``why_company`` is never *answered* for somebody -- it is blank by design
+(``answers.py``: we do not write their enthusiasm for them) and it is theirs to
+fill in on the portal. It is still **named** in the follow-up, which it was
+not: the portal showed an empty "why this company" while the text asked only
+about comp, so it read as a question the agent had missed rather than one it
+had deliberately left.
 """
 
 from __future__ import annotations
@@ -46,6 +49,15 @@ ASKABLE: dict[str, str] = {
 #: Ask order, so the message reads the same way every time.
 ASK_ORDER: tuple[str, ...] = ("salary_expectation", "notice_period", "work_authorization")
 
+#: Blanks we will not fill and will not ask to be answered over text, because
+#: the answer has to be in the candidate's own words. Named in the message
+#: anyway: the portal showed an empty "why this company" while the text asked
+#: only about comp, which reads as the agent having missed one rather than
+#: having left it deliberately.
+PORTAL_ONLY: dict[str, str] = {
+    "why_company": "why {company}",
+}
+
 
 def blank_answers(application: Application) -> list[str]:
     """Answer keys the package could not fill, in ask order."""
@@ -56,10 +68,20 @@ def blank_answers(application: Application) -> list[str]:
     return [key for key in ASK_ORDER if key in ASKABLE and not filled.get(key)]
 
 
+def portal_only_blanks(application: Application) -> list[str]:
+    """Blank keys the candidate has to write themselves, in a stable order."""
+    filled = {
+        str(item.get("key")): str(item.get("answer") or "").strip()
+        for item in (application.form_answers or [])
+    }
+    return [key for key in PORTAL_ONLY if not filled.get(key)]
+
+
 def followup_message(application: Application, posting: JobPosting | None) -> str:
     """One message naming the role and the blanks, or "" when nothing is owed."""
     missing = blank_answers(application)
-    if not missing:
+    mine = portal_only_blanks(application)
+    if not missing and not mine:
         return ""
 
     where = ""
@@ -78,6 +100,20 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
         else "the application form asks a couple of things I don't have yet:"
     )
     lines = [f"- {ASKABLE[key]}" for key in missing]
+    company = ((posting.company if posting else "") or "the company").strip()
+    for key in mine:
+        lines.append(
+            f"- {PORTAL_ONLY[key].format(company=company)} — that one's yours to write, "
+            "i won't put words in your mouth. add it in the app and i'll include it."
+        )
+    if not missing:
+        # Nothing to ask, only something to hand over. A question head would
+        # misdescribe what this message wants.
+        head = (
+            f"{where} needs one thing from you:"
+            if where
+            else "your application needs one thing from you:"
+        )
     return head + "\n\n" + "\n".join(lines)
 
 
@@ -113,7 +149,8 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     that made the agent look like it was not listening.
     """
     missing = blank_answers(application)
-    if not missing:
+    mine = portal_only_blanks(application)
+    if not missing and not mine:
         return {"asked": [], "skipped": "package answered everything"}
 
     # "Have we asked?" is recorded on the answer rows themselves rather than a
@@ -121,7 +158,7 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     # travels with the answer cannot drift from it.
     answers = [dict(item) for item in (application.form_answers or [])]
     already = {str(i.get("key")) for i in answers if i.get("asked")}
-    if set(missing) <= already:
+    if set(missing) | set(mine) <= already:
         return {"asked": [], "skipped": "already asked"}
 
     thread = thread_for(db, application)
@@ -138,11 +175,18 @@ def ask_for_missing(db: Session, application: Application) -> dict:
 
     row = deliver(db, thread=thread, message=OutboundMessage(body=body))
     for item in answers:
-        if str(item.get("key")) in set(missing):
+        if str(item.get("key")) in set(missing) | set(mine):
             item["asked"] = True
     application.form_answers = answers
     db.flush()
-    return {"asked": missing, "sent": 1 if row is not None else 0}
+    # `asked` stays the questions we actually asked. A portal-only blank was
+    # named, not asked, and a caller counting questions should not see it --
+    # but the row still carries `asked` so it is not named twice.
+    return {
+        "asked": missing,
+        "handed_off": mine,
+        "sent": 1 if row is not None else 0,
+    }
 
 
 def refill_from_preference(db: Session, application: Application) -> list[str]:

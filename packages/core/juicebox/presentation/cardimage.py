@@ -68,8 +68,13 @@ INK_DARK = "#17211e"
 
 #: Above this luminance a colour cannot be a ground -- it becomes the accent.
 MAX_GROUND_LUMINANCE = 0.62
-#: WCAG AA for large text. The title is 56px, so AA is the right bar and AAA
-#: would reject brand colours that are genuinely fine.
+#: WCAG AA for **normal** text, which is the bar this needs even though the
+#: title is 56px: the same ink also draws the reasons and the footer, and those
+#: are body sizes. Do not drop this to 3.0 on the grounds that AA-large allows
+#: it -- 3.0 is the large-text threshold and it does not cover most of the
+#: words on the card. Anything that fails here is not rejected, it degrades to
+#: the light-ground variant below, so the cost of the stricter bar is a
+#: differently-coloured card rather than a lost brand.
 MIN_CONTRAST = 4.5
 #: An accent is a square and a hairline, not text. It has to be visible, not
 #: readable, so the bar is far below AA.

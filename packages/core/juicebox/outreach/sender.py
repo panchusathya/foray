@@ -96,13 +96,20 @@ class MemorySender:
 
     def __init__(self) -> None:
         self.outbox: list[OutboundEmail] = []
+        self.attachments: list[list] = []
 
     def send(self, email: OutboundEmail) -> SendResult:
         self.outbox.append(email)
         return SendResult(ok=True, provider_message_id=f"memory-{len(self.outbox)}")
 
+    def send_with_attachments(self, email: OutboundEmail, attachments) -> SendResult:
+        """Same capture, remembering files so tests can assert the resume travelled."""
+        self.attachments.append(list(attachments or []))
+        return self.send(email)
+
     def clear(self) -> None:
         self.outbox.clear()
+        self.attachments.clear()
 
 
 class SmtpSender:
@@ -224,6 +231,26 @@ class ResendSender:
         return payload
 
     def send(self, email: OutboundEmail) -> SendResult:
+        return self._deliver(self._payload(email), to=email.to)
+
+    def send_with_attachments(self, email: OutboundEmail, attachments) -> SendResult:
+        """Same send, with files. Application mail without the resume is a
+        worse outcome than not sending, which is why EmailSubmitter requires
+        this method rather than falling through to a body-only send."""
+        import base64
+
+        payload = self._payload(email)
+        payload["attachments"] = [
+            {
+                "filename": item.filename,
+                "content": base64.b64encode(item.content).decode("ascii"),
+                "content_type": item.content_type or "application/octet-stream",
+            }
+            for item in (attachments or [])
+        ]
+        return self._deliver(payload, to=email.to)
+
+    def _deliver(self, payload: dict, *, to: str) -> SendResult:
         if not self.api_key:
             logger.error("resend send refused: RESEND_API_KEY is unset")
             return SendResult(ok=False, error="RESEND_API_KEY is unset")
@@ -234,14 +261,14 @@ class ResendSender:
         try:
             response = client.post(
                 self.endpoint,
-                json=self._payload(email),
+                json=payload,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
             )
         except Exception as exc:  # noqa: BLE001 - surfaced on the caller's row
-            logger.error("resend send failed for %s: %s", email.to, exc)
+            logger.error("resend send failed for %s: %s", to, exc)
             return SendResult(ok=False, error=str(exc)[:400])
         finally:
             if self._client is None:
@@ -252,7 +279,7 @@ class ResendSender:
             # From the domain does not own. Keeping it is the difference
             # between a fixable error and "the mail did not arrive".
             detail = (response.text or "")[:400]
-            logger.error("resend send failed for %s (%s): %s", email.to, response.status_code, detail)
+            logger.error("resend send failed for %s (%s): %s", to, response.status_code, detail)
             return SendResult(ok=False, error=f"resend {response.status_code}: {detail}")
 
         try:
@@ -261,7 +288,7 @@ class ResendSender:
             data = {}
         native_id = str((data or {}).get("id") or "")
         if not native_id:
-            logger.warning("resend accepted the send to %s but returned no id", email.to)
+            logger.warning("resend accepted the send to %s but returned no id", to)
         return SendResult(
             ok=True,
             provider_message_id=native_id or "resend",

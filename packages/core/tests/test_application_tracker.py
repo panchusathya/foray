@@ -26,7 +26,14 @@ from juicebox.applications.inbox import (
     classify,
     handle,
 )
-from juicebox.models import Application, ApplicationMessage, Candidate, JobPosting, utcnow
+from juicebox.models import (
+    Application,
+    ApplicationMessage,
+    ApplicationSubmission,
+    Candidate,
+    JobPosting,
+    utcnow,
+)
 from juicebox.portal.links import mint_session_token
 from juicebox.repository import upsert_candidates
 
@@ -160,6 +167,9 @@ class TestStoring:
     def test_mail_to_a_stranger_alias_is_not_stored(
         self, session, account, candidate, aliased, no_relay
     ):
+        """The address is ours, so the caller must not fall through to the
+        recruiter-reply path. Nothing is stored because the token does not
+        resolve to anyone."""
         out = handle(
             session,
             org_id=account["org_id"],
@@ -169,7 +179,8 @@ class TestStoring:
             body="b",
             native_id="zm-3",
         )
-        assert out["routed"] is False
+        assert out["routed"] is True
+        assert out["reason"] == "unresolved alias"
         assert session.scalars(select(ApplicationMessage)).all() == []
 
 
@@ -276,6 +287,42 @@ class TestTrackerApi:
         assert len(body["applications"]) == 1
         assert body["applications"][0]["status"] == "submitted"
         # No attempt row, so nothing claims it really went.
+        assert body["applications"][0]["was_really_sent"] is False
+
+    def test_a_memory_dry_run_is_not_really_sent(
+        self, client, session, account, candidate
+    ):
+        posting = JobPosting(
+            org_id=account["org_id"],
+            company="Acme",
+            title="Analyst",
+            source="test",
+            source_id="acme-memory-dry",
+        )
+        session.add(posting)
+        session.flush()
+        application = Application(
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+            status="submitted",
+            submitted_at=utcnow(),
+        )
+        session.add(application)
+        session.flush()
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                method="memory",
+                status="succeeded",
+            )
+        )
+        session.commit()
+
+        body = client.get(
+            "/v1/portal/tracker/pipeline", headers=_headers(account, candidate)
+        ).json()
         assert body["applications"][0]["was_really_sent"] is False
 
 

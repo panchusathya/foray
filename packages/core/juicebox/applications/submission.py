@@ -188,12 +188,42 @@ def succeeded_submission(db: Session, application: Application) -> ApplicationSu
     )
 
 
+def _repair_submitted(db: Session, application: Application) -> None:
+    """Move a pursuit whose attempt already succeeded onto `submitted`.
+
+    The adapter ran; the employer has the package. If the status move then
+    failed, retries would otherwise skip forever with the row still showing
+    `submitting`. Best-effort: a withdrawn application, or one that lost
+    consent, stays where it is.
+    """
+    if application.status in {
+        "submitted",
+        "acknowledged",
+        "interviewing",
+        "offer",
+        "rejected",
+        "withdrawn",
+    }:
+        return
+    try:
+        transition(db, application, to_status="submitted", actor="agent")
+    except TransitionError:
+        logger.exception(
+            "application %s has a succeeded attempt but cannot move to submitted",
+            application.id,
+        )
+
+
 def submit_application(db: Session, application: Application) -> dict[str, Any]:
     """Run one attempt. The worker's half; every exit writes an attempt row."""
     already = succeeded_submission(db, application)
     if already is not None:
         # The unique index would catch a genuine race; this catches the ordinary
-        # case of a redelivered job and keeps it out of the error path.
+        # case of a redelivered job and keeps it out of the error path. If the
+        # attempt row landed but the status move did not (budget, consent, a
+        # crash between the two), repair the application so a succeeded send
+        # does not sit in `submitting` forever.
+        _repair_submitted(db, application)
         return {"skipped": "already submitted", "submission_id": already.id}
 
     candidate = db.get(Candidate, application.candidate_id)
@@ -311,7 +341,18 @@ def _finish(
     if result.ok:
         application.submission_method = attempt.method[:32]
         application.submission_url = attempt.confirmation_ref[:400] or application.submission_url
-        transition(db, application, to_status="submitted", actor="agent")
+        try:
+            transition(db, application, to_status="submitted", actor="agent")
+        except TransitionError:
+            # The employer already has it. Rolling the attempt back would lie
+            # about a send we cannot un-send; a later redelivery repairs via
+            # `_repair_submitted`.
+            logger.exception(
+                "application %s attempt %s succeeded but could not move to submitted",
+                application.id,
+                attempt.id,
+            )
+            return
         _notify_sent(db, application, attempt)
         return
 

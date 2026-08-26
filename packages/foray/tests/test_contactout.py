@@ -195,6 +195,13 @@ class TestStoreResult:
         assert "employer_domain is null" in update[0]
         assert update[1] == "meta.com"
 
+    async def test_a_freemail_employer_domain_is_not_written(self):
+        conn = StubConn()
+        await store_result(
+            conn, 7, "contactout", ProviderResult(emails=[], employer_domain="gmail.com")
+        )
+        assert [args for args in conn.executed if "employer_domain" in args[0]] == []
+
     async def test_nothing_found_writes_nothing(self):
         conn = StubConn()
         assert await store_result(conn, 9, "contactout", ProviderResult()) == 0

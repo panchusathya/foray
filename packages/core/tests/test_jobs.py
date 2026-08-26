@@ -11,7 +11,7 @@ from juicebox.jobs import (
     mark_failed,
     recover_stale_locks,
 )
-from juicebox.models import Job, utcnow
+from juicebox.models import Enrollment, Job, utcnow
 from juicebox.outreach.sequencer import enroll_candidates
 from juicebox.worker import drain, process_batch
 
@@ -103,6 +103,44 @@ class TestWorkerDrain:
         assert len(mailbox.outbox) == 1
         assert mailbox.outbox[0].to == "ada@example.com"
         assert any(j.kind == KIND_OUTREACH_SEND and j.status == "succeeded" for j in session.query(Job))
+
+    def test_a_failed_send_does_not_spend_the_idempotency_key(
+        self, session, outreach_fixture
+    ):
+        from juicebox.outreach.sender import SendResult, set_sender
+        from juicebox.worker import process_job
+
+        class Boom:
+            def send(self, email):
+                return SendResult(ok=False, error="smtp timeout")
+
+        set_sender(Boom())
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        enrollment = session.query(Enrollment).one()
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+        job = enqueue(
+            session,
+            org_id=sequence.org_id,
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key=f"{KIND_OUTREACH_SEND}:{enrollment.id}:{step.id}",
+            payload={
+                "org_id": sequence.org_id,
+                "enrollment_id": enrollment.id,
+                "step_id": step.id,
+            },
+        )
+        job.status = "running"
+        process_job(session, job)
+        session.commit()
+
+        assert job.status == "queued"
+        assert job.attempts == 1
+        assert "smtp timeout" in job.last_error
+        assert enrollment.status == "active"
+        assert enrollment.current_step == 0
 
     def test_process_batch_is_a_no_op_when_the_queue_is_empty(self, session, account):
         assert process_batch(session, worker="test") == 0

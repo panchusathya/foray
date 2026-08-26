@@ -74,6 +74,32 @@ async function upload(path, file) {
   return payload;
 }
 
+async function downloadFile(path, filename) {
+  const token = getToken();
+  const response = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = text;
+    }
+    throw new ApiError(response.status, payload?.detail ?? payload ?? 'Download failed');
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || 'download';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 /**
  * Query string for the Contacts grid. Only keys the caller actually set are
  * sent, so the API's own defaults stay authoritative.
@@ -248,6 +274,11 @@ export const api = {
   },
   applicationCounts: () => request('/v1/applications/count'),
   getApplication: (id) => request(`/v1/applications/${id}`),
+  downloadApplicationDocument: (candidateId, documentId, filename) =>
+    downloadFile(
+      `/v1/candidates/${candidateId}/documents/${documentId}/download`,
+      filename,
+    ),
   transitionApplication: (id, payload) =>
     request(`/v1/applications/${id}/transition`, { method: 'POST', body: payload }),
   buildApplicationPackage: (id) => request(`/v1/applications/${id}/package`, { method: 'POST' }),

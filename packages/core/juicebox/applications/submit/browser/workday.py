@@ -34,7 +34,7 @@ from ....models import AtsAccount
 from ..base import METHOD_BROWSER, SubmissionContext, SubmissionResult
 from . import driver
 from .driver import BrowserUnavailable, FieldSpec, RunLog
-from .forms import WORKDAY_ACCOUNT
+from .forms import WORKDAY_ACCOUNT, WORKDAY_APPLICATION
 
 logger = logging.getLogger(__name__)
 
@@ -287,14 +287,35 @@ class WorkdaySubmitter:
                             artifacts=artifacts,
                             verification={"run": log.as_payload()},
                         )
+                    # Same gate hosted_form uses: a click during an in-flight
+                    # upload is swallowed, and the after-screenshot of the same
+                    # filled form used to be recorded as submitted.
+                    confirmed = driver.confirm_submission(
+                        page,
+                        landmark=WORKDAY_APPLICATION.landmark,
+                        submit=_SUBMIT,
+                        log=log,
+                    )
                     after = driver.snapshot(
                         page,
                         org_id=ctx.org_id,
                         application_id=ctx.application_id,
-                        label="workday-submitted",
+                        label=f"workday-{'submitted' if confirmed else 'unconfirmed'}",
                         log=log,
                     )
                     artifacts += [path for path in [after] if path]
+                    if not confirmed:
+                        return SubmissionResult(
+                            ok=False,
+                            method=self.method,
+                            needs_human=True,
+                            error=(
+                                "clicked submit but the form never confirmed -- "
+                                "the screenshots say what the page did"
+                            ),
+                            artifacts=artifacts,
+                            verification={"run": log.as_payload()},
+                        )
             except BrowserUnavailable as exc:
                 return SubmissionResult(ok=False, method=self.method, error=str(exc))
 

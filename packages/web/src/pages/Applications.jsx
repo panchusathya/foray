@@ -241,11 +241,22 @@ export function ApplicationDetailPage() {
                   {Math.max(1, Math.round((doc.size_bytes ?? 0) / 1024))} KB
                 </span>
               </span>
-              <a
-                href={`/v1/candidates/${application.candidate_id}/documents/${doc.id}/download`}
+              <button
+                type="button"
+                className="tiny"
+                disabled={busy}
+                onClick={() =>
+                  act(() =>
+                    api.downloadApplicationDocument(
+                      application.candidate_id,
+                      doc.id,
+                      doc.filename,
+                    ),
+                  )
+                }
               >
                 Download
-              </a>
+              </button>
             </div>
           ))
         ) : (

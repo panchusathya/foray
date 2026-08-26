@@ -423,6 +423,25 @@ class TestPackageBuild:
         assert answers["why_company"]["provenance"] == "none"
         assert result["answers"] == 4
 
+    def test_rebuilding_a_prepared_package_does_not_fail_the_transition(
+        self, session, account, candidate
+    ):
+        """request_package allows a rebuild from prepared. prepared → prepared
+        is not a legal move, so the worker used to error after rewriting the
+        documents."""
+        posting = _posting(session, account["org_id"])
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+        build_package(session, application)
+        assert application.status == "prepared"
+        again = build_package(session, application)
+        assert application.status == "prepared"
+        assert again["application_id"] == application.id
+
     def test_request_package_collapses_double_clicks(self, session, account, candidate):
         posting = _posting(session, account["org_id"])
         application = create_application(

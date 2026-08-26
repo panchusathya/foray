@@ -15,8 +15,16 @@ import { pushCandidates } from './sinks/apiSink.js';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
-function signatureIsValid(rawBody, provided) {
-  if (!config.webhookSecret) return true; // unsigned mode for local development
+function allowUnsigned() {
+  if (/^(1|true|yes)$/i.test(process.env.INGEST_ALLOW_UNSIGNED || '')) return true;
+  // Local development has neither a secret nor an API key. A live key with
+  // no secret is an open write into Juicebox — refuse rather than treat a
+  // misconfiguration as unsigned mode.
+  return !config.webhookSecret && !config.apiKey;
+}
+
+export function signatureIsValid(rawBody, provided) {
+  if (!config.webhookSecret) return allowUnsigned();
   if (!provided) return false;
   const expected = createHmac('sha256', config.webhookSecret).update(rawBody).digest('hex');
   const a = Buffer.from(expected, 'utf8');

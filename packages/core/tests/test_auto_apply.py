@@ -639,6 +639,30 @@ class TestInboundMail:
         assert outcome["action"] == "moved_to_acknowledged"
         assert application.status == "acknowledged"
 
+    def test_an_acknowledgement_during_submitting_still_lands(
+        self, session, account, candidate, aliased
+    ):
+        """ATS mail often arrives before the browser run records submitted."""
+        from juicebox.applications.inbox import handle
+
+        posting = _posting(session, account["org_id"])
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="candidate")
+        row = ensure(session, candidate)
+
+        outcome = handle(
+            session,
+            org_id=account["org_id"],
+            to_addresses=(row.address,),
+            from_address="no-reply@anthropic.com",
+            subject="We received your application",
+            body="Thank you for applying to Anthropic.",
+        )
+        assert outcome["routed"] is True
+        assert outcome["action"] == "moved_to_acknowledged"
+        assert application.status == "acknowledged"
+        assert application.submitted_at is not None
+
     def test_an_unmatched_sender_moves_nothing(self, session, account, candidate, aliased):
         from juicebox.applications.inbox import handle
 
@@ -826,6 +850,31 @@ class TestAdapters:
             sender.set_sender(None)
         assert result.ok
         assert memory.outbox[0].from_email == "anna+abc@goforay.io"
+        assert memory.attachments and memory.attachments[0]
+        assert memory.attachments[0][0].filename == "ada-resume.pdf"
+
+    def test_the_email_adapter_refuses_a_sender_that_cannot_attach(self):
+        """A body-only send used to report success and mark the application
+        submitted without the resume. Console/memory are dry runs; anything
+        that actually delivers must carry the files or stop."""
+        from juicebox.applications.submit.email import EmailSubmitter
+        from juicebox.outreach import sender
+        from juicebox.outreach.sender import SendResult
+
+        class BodyOnly:
+            name = "resend"
+
+            def send(self, email):
+                return SendResult(ok=True, provider_message_id="re_lie")
+
+        ctx = self._ctx("email", "mailto:careers@acme.com")
+        sender.set_sender(BodyOnly())
+        try:
+            result = EmailSubmitter().submit(ctx)
+        finally:
+            sender.set_sender(None)
+        assert result.needs_human
+        assert "cannot attach" in result.error
 
     def test_the_email_adapter_refuses_with_no_return_address(self):
         from juicebox.applications.submit.email import EmailSubmitter

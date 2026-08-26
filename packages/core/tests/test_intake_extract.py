@@ -178,3 +178,22 @@ class TestTheVoiceBudgetIsSeparate:
         monkeypatch.setattr(mod, "get_llm", lambda: llm)
         mod.extract_intake("Candidate: hi", known="", fast=True)
         assert "timeout" not in llm.seen
+
+
+class TestHeuristicIgnoresTheAgent:
+    def test_the_agents_script_does_not_fill_preferences(self):
+        """Voice used to run regexes over the full transcript. The greeting
+        names the roles we recruit for; that is not an answer."""
+        from juicebox.intake.extract import EXTRACTOR_HEURISTIC, extract_intake
+
+        result = extract_intake(
+            "Agent: Hi, I'm looking for senior backend engineers in New York "
+            "who want fully remote roles.\n"
+            "Candidate: just my name is Priya\n",
+            use_llm=False,
+        )
+        assert result.extractor == EXTRACTOR_HEURISTIC
+        assert result.record["spec"]["job_titles"] == []
+        assert result.record["spec"]["seniority"] == []
+        assert result.record["spec"].get("remote_ok") is None
+        assert result.record["spec"].get("locations") in ([], None)

@@ -275,6 +275,17 @@ def _turns(transcript: str) -> list[tuple[bool, str]]:
     return turns
 
 
+def candidate_speech(transcript: str) -> str:
+    """The caller's turns only.
+
+    Heuristics have no speaker model, so a regex over the full transcript
+    reads job titles and seniority out of the agent's greeting. Identity
+    scanning still uses the full transcript because it keys off the question
+    that prompted the answer.
+    """
+    return "\n".join(text for is_agent, text in _turns(transcript) if not is_agent)
+
+
 def scan_transcript(transcript: str) -> tuple[str, str]:
     """``(name, email)`` the caller gave, from a call transcript.
 

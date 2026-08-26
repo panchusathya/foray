@@ -161,6 +161,10 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
     a position would only introduce a way to get it wrong -- the frame can
     have moved on by the time somebody scrolls back and taps an older card.
     """
+    proposal = db.get(JobProposal, proposal_id)
+    if proposal is None:
+        return {"skipped": "proposal not found", "proposal_id": proposal_id}
+
     presented = list(thread.last_presented or [])
     index = next(
         (i for i, e in enumerate(presented, start=1) if e.get("proposal_id") == proposal_id),
@@ -169,9 +173,6 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
     if index == 0:
         # Reacted to a card from an older batch. The proposal is still the
         # truth; rebuild a one-entry frame so `_apply` has something to read.
-        proposal = db.get(JobProposal, proposal_id)
-        if proposal is None:
-            return {"skipped": "proposal not found", "proposal_id": proposal_id}
         posting = db.get(JobPosting, proposal.job_posting_id)
         thread.last_presented = [
             {
@@ -184,7 +185,13 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
         db.flush()
         index = 1
 
-    last = _last_inbound(db, thread)
+    last = None
+    if proposal.message_id:
+        last = db.get(IntakeMessage, proposal.message_id)
+    if last is None:
+        last = _last_inbound(db, thread)
+    if last is None:
+        return {"skipped": "no consent message", "proposal_id": proposal_id}
     result = _apply(
         db,
         thread=thread,
@@ -201,11 +208,12 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
 
 
 def _last_inbound(db: Session, thread: IntakeThread) -> IntakeMessage:
-    """`_apply` reads `last.id` for the consent trail.
+    """Fallback consent trail when the proposal has no card message.
 
-    A tapback IS the consent, and it is not an IntakeMessage -- so the message
-    it reacted to stands in. That is the right row to point at: it is the card
-    the person actually said yes to.
+    A tapback IS the consent, and it is not an IntakeMessage — so the card
+    it reacted to (`proposal.message_id`) is the right row. This helper is
+    only the fallback for a typed "apply to 2" that arrived without a
+    named proposal, or a card we failed to backfill.
     """
     from .threads import messages_of
 

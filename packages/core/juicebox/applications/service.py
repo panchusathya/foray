@@ -243,7 +243,11 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
         db.flush()
         raise
 
-    transition(db, application, to_status="prepared", actor="agent")
+    # Rebuilds are allowed from prepared (request_package says so). prepared →
+    # prepared is not a legal move, and a no-op transition would park the
+    # worker job forever after the package itself had already been rewritten.
+    if application.status != "prepared":
+        transition(db, application, to_status="prepared", actor="agent")
     return {
         "application_id": application.id,
         "resume_document_id": resume_doc.id,

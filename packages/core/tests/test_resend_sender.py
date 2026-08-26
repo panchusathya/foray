@@ -103,6 +103,22 @@ class TestTheWireFormat:
         _, call = _send(_email(html_body="<p>hi</p>"))
         assert call["json"]["html"] == "<p>hi</p>"
 
+    def test_attachments_travel_as_base64(self):
+        from juicebox.applications.submit.base import Attachment
+
+        client = FakeClient()
+        result = ResendSender("re_key", client=client).send_with_attachments(
+            _email(),
+            [Attachment("resume.pdf", "application/pdf", b"%PDF-1.4")],
+        )
+        assert result.ok is True
+        attached = client.calls[0]["json"]["attachments"]
+        assert attached[0]["filename"] == "resume.pdf"
+        assert attached[0]["content_type"] == "application/pdf"
+        import base64
+
+        assert base64.b64decode(attached[0]["content"]) == b"%PDF-1.4"
+
     def test_the_key_is_a_bearer_token(self):
         _, call = _send(_email())
         assert call["headers"]["Authorization"] == "Bearer re_key"

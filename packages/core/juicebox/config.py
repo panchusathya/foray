@@ -387,6 +387,16 @@ class Settings:
     # The unknown-timezone send window: 8am-9pm intersected across Eastern and
     # Pacific, expressed in Eastern local time. Config rather than constants
     # because texting Alaska or Hawaii would narrow it to 14:00-21:00.
+    # The whole quiet-hours control, on or off. On by default: TCPA restricts
+    # solicitation to 8am-9pm in the recipient's local time and the damages are
+    # statutory per message, so the safe state has to be the default one.
+    #
+    # Off is a deliberate operational choice for a deployment whose only
+    # recipients are the people testing it. Turn it back on before anybody
+    # else's number is in here.
+    quiet_hours_enabled: bool = field(
+        default_factory=lambda: _env_bool("QUIET_HOURS_ENABLED", True)
+    )
     quiet_hours_unknown_start_hour: int = field(
         default_factory=lambda: _env_int("QUIET_HOURS_UNKNOWN_START_HOUR", 11)
     )

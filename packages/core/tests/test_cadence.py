@@ -406,3 +406,82 @@ class TestOriginColumn:
         )
         decision = may_initiate(session, thread=linq_thread, now=HALF_ELEVEN_ET)
         assert decision.allowed
+
+
+class TestQuietHoursSwitch:
+    """`QUIET_HOURS_ENABLED=false` turns the whole control off.
+
+    On by default, because TCPA damages are statutory per message and the safe
+    state has to be the one you get without configuring anything. Off is for a
+    deployment whose only recipients are the people testing it.
+    """
+
+    def _at(self, hour: int):
+        from datetime import UTC, datetime
+
+        # 06:00 UTC is 02:00 Eastern -- outside every window there is.
+        return datetime(2026, 8, 26, hour, 0, tzinfo=UTC)
+
+    def test_the_middle_of_the_night_is_closed_by_default(self, monkeypatch):
+        from juicebox.config import reset_settings_cache
+        from juicebox.messaging import cadence
+
+        monkeypatch.delenv("QUIET_HOURS_ENABLED", raising=False)
+        reset_settings_cache()
+        try:
+            assert cadence.in_send_window(self._at(6)) is False
+            assert cadence.in_send_window(self._at(6), zone_name="America/Los_Angeles") is False
+        finally:
+            reset_settings_cache()
+
+    def test_off_opens_every_hour(self, monkeypatch):
+        from juicebox.config import reset_settings_cache
+        from juicebox.messaging import cadence
+
+        monkeypatch.setenv("QUIET_HOURS_ENABLED", "false")
+        reset_settings_cache()
+        try:
+            for hour in range(24):
+                assert cadence.in_send_window(self._at(hour)) is True
+        finally:
+            reset_settings_cache()
+
+    def test_off_reaches_a_thread_with_a_known_zone(self, monkeypatch):
+        """The case the env hours could not touch: a resolved timezone used the
+        hardcoded constants, so only a real switch turns it off."""
+        from juicebox.config import reset_settings_cache
+        from juicebox.messaging import cadence
+
+        monkeypatch.setenv("QUIET_HOURS_ENABLED", "false")
+        reset_settings_cache()
+        try:
+            assert cadence.in_send_window(self._at(6), zone_name="America/Los_Angeles") is True
+        finally:
+            reset_settings_cache()
+
+    def test_off_means_no_deferral(self, monkeypatch):
+        """A deferred send is re-enqueued at `next_window_open`; with the
+        control off that has to be now, or the message still waits."""
+        from juicebox.config import reset_settings_cache
+        from juicebox.messaging import cadence
+
+        monkeypatch.setenv("QUIET_HOURS_ENABLED", "false")
+        reset_settings_cache()
+        try:
+            now = self._at(6)
+            assert cadence.next_window_open(now) == now
+            assert cadence.next_window_open(now, zone_name="America/Los_Angeles") == now
+        finally:
+            reset_settings_cache()
+
+    def test_on_still_defers_to_the_window(self, monkeypatch):
+        from juicebox.config import reset_settings_cache
+        from juicebox.messaging import cadence
+
+        monkeypatch.setenv("QUIET_HOURS_ENABLED", "true")
+        reset_settings_cache()
+        try:
+            now = self._at(6)
+            assert cadence.next_window_open(now) > now
+        finally:
+            reset_settings_cache()

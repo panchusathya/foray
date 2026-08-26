@@ -38,6 +38,9 @@ from .threads import STATUS_STOPPED
 
 logger = logging.getLogger(__name__)
 
+#: Any zone works for a 24-hour window; UTC avoids a lookup.
+UTC_ZONE = ZoneInfo("UTC")
+
 # The real TCPA window, applied when the recipient's zone is known.
 QUIET_LOCAL_START_HOUR = 8
 QUIET_LOCAL_END_HOUR = 21
@@ -272,8 +275,16 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def _window_bounds(zone_name: str) -> tuple[int, int, ZoneInfo]:
-    """(start_hour, end_hour, zone) for the send window."""
+    """(start_hour, end_hour, zone) for the send window.
+
+    With ``QUIET_HOURS_ENABLED`` off the window is the whole day, which makes
+    ``in_send_window`` always true and ``next_window_open`` always now -- the
+    deferral path stops firing without any caller needing to know. Gated here
+    rather than at each call site so there is one place to look.
+    """
     settings = get_settings()
+    if not settings.quiet_hours_enabled:
+        return 0, 24, UTC_ZONE
     if zone_name:
         try:
             return QUIET_LOCAL_START_HOUR, QUIET_LOCAL_END_HOUR, ZoneInfo(zone_name)

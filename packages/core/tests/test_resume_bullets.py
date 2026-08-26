@@ -21,6 +21,7 @@ import json
 
 from juicebox.docgen.bullets import (
     MAX_BULLETS_PER_ROLE,
+    _flatten,
     candidate_evidence,
     fill_missing_bullets,
 )
@@ -185,6 +186,38 @@ class TestDrafting:
         filled, added = fill_missing_bullets(described, evidence=TRANSCRIPT)
         assert added == 0
         assert filled["experience"][0]["bullets"] == ["What they wrote themselves"]
+
+    def test_a_role_already_drafted_for_is_not_drafted_for_again(self):
+        """One account of a job, reused — not a fresh one per employer."""
+        transport = _transport(
+            _drafted(_role("Rice University", ("Ran the labs.", TEACHING_QUOTE)))
+        )
+        remembered = {"camerbally": ["Rewrote the settlement job."]}
+
+        filled, added = fill_missing_bullets(
+            BARE, evidence=TRANSCRIPT, remembered=remembered
+        )
+        assert added == 2
+        assert filled["experience"][0]["bullets"] == ["Rewrote the settlement job."]
+        assert filled["experience"][1]["bullets"] == ["Ran the labs."]
+        # Camerbally was already written, so it is not among the roles asked
+        # about. (It is still in the evidence, which is the whole transcript.)
+        sent = str(transport.calls[0])
+        asked = sent[sent.index("<roles_with_no_description>") : sent.index("</roles")]
+        assert "Rice University" in asked
+        assert "Camerbally" not in asked
+
+    def test_every_role_remembered_means_no_model_call_at_all(self):
+        transport = _transport(_drafted(_role("Camerbally", ("x", SETTLEMENT_QUOTE))))
+        remembered = {
+            _flatten(job["company"]): ["Something we already wrote."]
+            for job in BARE["experience"]
+        }
+        filled, added = fill_missing_bullets(
+            BARE, evidence=TRANSCRIPT, remembered=remembered
+        )
+        assert (added, transport.calls) == (3, [])
+        assert filled["experience"][2]["bullets"] == ["Something we already wrote."]
 
     def test_nothing_told_to_us_means_no_model_call_at_all(self):
         transport = _transport(_drafted(_role("Camerbally", ("x", SETTLEMENT_QUOTE))))

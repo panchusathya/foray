@@ -140,6 +140,11 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   behind in an interview.
 - **A role nobody has described gets no bullets.** Same answer `answers.py`
   gives to a form question the inputs do not answer, for the same reason.
+- **Draft a role once, then reuse it.** `build_resume_json` runs per
+  application, so `remembered_bullets` seeds the drafter from the profile
+  resume and only still-bare roles are sent to the model. The saving is real
+  but secondary; the point is that twenty employers reading twenty different
+  accounts of one job is a worse failure than the twenty model calls.
 - **`generated_by` follows the content, not the code path.** A resume the
   deterministic path built but `bullets.py` wrote into is `llm`, including
   when the tailor afterwards fails or is rejected.

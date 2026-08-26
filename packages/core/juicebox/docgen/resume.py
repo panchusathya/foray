@@ -31,7 +31,7 @@ from ..llm.prompts import (
 )
 from ..models import Candidate, CandidateDocument, CandidatePreference, JobPosting
 from ..search.parser import ParsedQuery
-from .bullets import candidate_evidence, fill_missing_bullets
+from .bullets import candidate_evidence, fill_missing_bullets, remembered_bullets
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,15 @@ def build_resume_json(
     # back to their own words. It runs BEFORE the tailor so the tailor has
     # bullets to order against the role, and what it writes is credited to the
     # model: a drafted bullet is not something the deterministic path produced.
-    base, drafted = fill_missing_bullets(base, evidence=candidate_evidence(db, candidate))
+    #
+    # This function runs once per application, so the previously drafted
+    # bullets go in first: one account of a job, reused, rather than a fresh
+    # one composed for every employer who reads it.
+    base, drafted = fill_missing_bullets(
+        base,
+        evidence=candidate_evidence(db, candidate),
+        remembered=remembered_bullets(db, candidate),
+    )
     bare = "llm" if drafted else "template"
 
     llm = get_llm()

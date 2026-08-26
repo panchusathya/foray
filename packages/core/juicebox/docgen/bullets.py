@@ -56,6 +56,21 @@ MAX_WORDS_PER_BULLET = 30
 MIN_QUOTE_CHARS = 24
 
 
+def _flatten(text: str) -> str:
+    """Casefolded, whitespace- and punctuation-insensitive, for quote lookup.
+
+    A transcript arrives with the provider's line breaks and smart quotes; a
+    model asked to copy a span back reliably normalises both. Neither is a
+    change of meaning, so neither should fail an honest bullet — while every
+    *word* still has to be there in order.
+
+    ``\\W`` rather than ``[^a-z0-9]``: the latter erases a non-Latin script
+    entirely, which turns every quote from a call held in one into the empty
+    string and silently switches drafting off for those candidates.
+    """
+    return re.sub(r"\W+", " ", str(text or "").casefold()).strip()
+
+
 def candidate_evidence(db: Session, candidate: Candidate) -> str:
     """Everything this candidate has told us about their work, in their words.
 
@@ -110,6 +125,39 @@ def candidate_evidence(db: Session, candidate: Candidate) -> str:
     return "\n\n".join(parts)
 
 
+def remembered_bullets(db: Session, candidate: Candidate) -> dict[str, list[str]]:
+    """Bullets already drafted for this candidate, keyed by employer.
+
+    Consistency first, cost second. ``build_resume_json`` runs once per
+    application, so without this a candidate who applies to twenty roles gets
+    twenty separately drafted — and subtly different — accounts of the same
+    job. Two employers reading two versions of one role is a worse failure
+    than the twenty model calls it also saves.
+
+    The profile resume is the store because it is already the one row per
+    candidate that is kept current, and everything in it passed ``_grounded``
+    when it was written.
+    """
+    # Local import: `docgen.profile` imports this module through
+    # `docgen.resume`, and only the query predicate is wanted here.
+    from .profile import profile_resume_of
+
+    doc = profile_resume_of(db, candidate.id)
+    structured = doc.structured if doc is not None else None
+    if not isinstance(structured, dict):
+        return {}
+
+    out: dict[str, list[str]] = {}
+    for job in structured.get("experience") or []:
+        if not isinstance(job, dict):
+            continue
+        company = _flatten(job.get("company"))
+        bullets = [str(b).strip() for b in (job.get("bullets") or []) if str(b).strip()]
+        if company and bullets:
+            out[company] = bullets
+    return out
+
+
 def _roles_needing_bullets(structured: dict) -> list[dict]:
     """Experience entries with an employer and nothing written underneath."""
     out: list[dict] = []
@@ -140,21 +188,6 @@ def _roles_prompt(roles: list[dict]) -> str:
     )
 
 
-def _flatten(text: str) -> str:
-    """Casefolded, whitespace- and punctuation-insensitive, for quote lookup.
-
-    A transcript arrives with the provider's line breaks and smart quotes; a
-    model asked to copy a span back reliably normalises both. Neither is a
-    change of meaning, so neither should fail an honest bullet — while every
-    *word* still has to be there in order.
-
-    ``\\W`` rather than ``[^a-z0-9]``: the latter erases a non-Latin script
-    entirely, which turns every quote from a call held in one into the empty
-    string and silently switches drafting off for those candidates.
-    """
-    return re.sub(r"\W+", " ", str(text or "").casefold()).strip()
-
-
 _NUMBER = re.compile(r"\d[\d,.]*")
 
 
@@ -176,8 +209,8 @@ def _grounded(text: str, quote: str, flat_evidence: str) -> bool:
     return all(n.rstrip(".,") in quoted_numbers for n in _NUMBER.findall(text))
 
 
-def _apply(structured: dict, drafted: dict, evidence: str) -> tuple[dict, int]:
-    """Write the surviving bullets onto a copy of the resume."""
+def _survivors(drafted: dict, evidence: str) -> dict[str, list[str]]:
+    """The drafted bullets that passed the guard, keyed by employer."""
     flat_evidence = _flatten(evidence)
     by_company: dict[str, list[str]] = {}
     for role in drafted.get("roles") or []:
@@ -194,17 +227,22 @@ def _apply(structured: dict, drafted: dict, evidence: str) -> tuple[dict, int]:
         ]
         if kept:
             by_company.setdefault(company, []).extend(kept)
+    return by_company
 
+
+def _apply(structured: dict, by_company: dict[str, list[str]]) -> tuple[dict, int]:
+    """Write bullets onto a copy of the resume, one employer at a time."""
     if not by_company:
         return structured, 0
 
+    available = {company: list(bullets) for company, bullets in by_company.items()}
     filled = copy.deepcopy(structured)
     added = 0
     for job in _roles_needing_bullets(filled):
         # `pop`, not `get`: a promotion is two bare rows at one employer, and
         # printing the same three bullets under both is worse than leaving the
         # second one bare — which is what this then does.
-        bullets = by_company.pop(_flatten(job.get("company")), None)
+        bullets = available.pop(_flatten(job.get("company")), None)
         if not bullets:
             continue
         job["bullets"] = bullets[:MAX_BULLETS_PER_ROLE]
@@ -212,22 +250,32 @@ def _apply(structured: dict, drafted: dict, evidence: str) -> tuple[dict, int]:
     return filled, added
 
 
-def fill_missing_bullets(structured: dict, *, evidence: str) -> tuple[dict, int]:
+def fill_missing_bullets(
+    structured: dict, *, evidence: str, remembered: dict[str, list[str]] | None = None
+) -> tuple[dict, int]:
     """``(resume, bullets added)``. Returns the input unchanged when it can't.
+
+    ``remembered`` is what was drafted for this candidate previously — see
+    ``remembered_bullets``. It is applied first and a role it fills is not
+    sent to the model again, so a candidate's account of one job is written
+    once and then reused on every application.
 
     Unchanged is the common case and not a failure: no roles are bare, or the
     candidate has told us nothing yet, or there is no model configured. The
     resume that ships is the same truthful one either way.
     """
-    if not str(evidence or "").strip():
+    if not _roles_needing_bullets(structured):
         return structured, 0
+
+    structured, added = _apply(structured, remembered or {})
+
     roles = _roles_needing_bullets(structured)
-    if not roles:
-        return structured, 0
+    if not roles or not str(evidence or "").strip():
+        return structured, added
 
     llm = get_llm()
     if not llm.available:
-        return structured, 0
+        return structured, added
     try:
         result = llm.json(
             system=RESUME_BULLETS_SYSTEM,
@@ -236,13 +284,13 @@ def fill_missing_bullets(structured: dict, *, evidence: str) -> tuple[dict, int]
         )
     except Exception as exc:  # noqa: BLE001 - the bare resume ships instead
         logger.warning("resume bullet drafting failed, leaving the roles bare: %s", exc)
-        return structured, 0
+        return structured, added
 
     drafted = result.data or {}
     if not isinstance(drafted, dict):
-        return structured, 0
-    filled, added = _apply(structured, drafted, evidence)
+        return structured, added
+    filled, drafted_count = _apply(structured, _survivors(drafted, evidence))
     logger.info(
-        "drafted %d grounded bullet(s) across %d bare role(s)", added, len(roles)
+        "drafted %d grounded bullet(s) across %d bare role(s)", drafted_count, len(roles)
     )
-    return filled, added
+    return filled, added + drafted_count

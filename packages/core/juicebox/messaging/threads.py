@@ -287,9 +287,9 @@ def record_outbound(
     was attempted, and the next turn would compose the same question again.
 
     ``origin`` distinguishes an answer (``reply``) from a message nobody asked
-    for (``proactive``) and from protocol traffic (``system``): the nudge and
-    proposal budgets in ``cadence.py`` count proactive rows, so what a budget
-    charges for is exactly what was sent.
+    for (``proactive``), a nudge (``nudge``), and protocol traffic
+    (``system``): the nudge budget in ``cadence.py`` counts nudge rows — and
+    only those — so what the budget charges for is exactly what was sent.
     """
     sent = result.status == "sent"
     row = _insert_with_seq(

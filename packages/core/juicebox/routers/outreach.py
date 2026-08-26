@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import false, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
@@ -542,6 +542,27 @@ def list_reply_drafts(
 webhooks_router = APIRouter(route_class=CommittingRoute, prefix="/v1/webhooks", tags=["outreach"])
 
 
+def _inbound_email_identity(payload: InboundEmail, sender: str) -> tuple[str, str]:
+    """``(provider_native_id, internet_message_id)`` for one webhook delivery.
+
+    ESPs redeliver on any non-2xx and on their own timeouts, so the endpoint
+    must be idempotent. The RFC Message-ID is the mail's real identity; when
+    the parse payload does not carry headers, a hash of the delivery itself
+    still collapses the retry case, which is the case that actually happens.
+    """
+    import hashlib
+
+    rfc_id = (payload.message_id or "").strip()
+    if rfc_id:
+        return rfc_id, rfc_id
+    digest = hashlib.sha256(
+        "\x1f".join(
+            [sender, payload.in_reply_to or "", payload.subject or "", payload.body or ""]
+        ).encode("utf-8", errors="replace")
+    ).hexdigest()
+    return f"esp-{digest}", ""
+
+
 @webhooks_router.post("/inbound-email")
 def inbound_email(
     payload: InboundEmail,
@@ -561,7 +582,38 @@ def inbound_email(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No outbound message matched this reply",
         )
-    verdict = record_reply(db, message=message, subject=payload.subject, body=payload.body)
+
+    native_id, rfc_id = _inbound_email_identity(payload, sender)
+    already = db.scalar(
+        select(Message).where(
+            Message.org_id == principal.org_id,
+            Message.direction == "inbound",
+            or_(
+                Message.provider_native_id == native_id,
+                # The same physical mail can arrive via mailbox sync first;
+                # sync stores the RFC id on internet_message_id.
+                Message.internet_message_id == rfc_id if rfc_id else false(),
+            ),
+        )
+    )
+    if already is not None:
+        # A redelivery, not a new reply: nothing is stored, classified, or
+        # suppressed a second time. Answer 200 so the ESP stops retrying.
+        return {
+            "message_id": message.id,
+            "candidate_id": message.candidate_id,
+            "intent": already.reply_intent or "",
+            "duplicate": True,
+        }
+
+    verdict = record_reply(
+        db,
+        message=message,
+        subject=payload.subject,
+        body=payload.body,
+        provider_native_id=native_id,
+        internet_message_id=rfc_id,
+    )
     return {
         "message_id": message.id,
         "candidate_id": message.candidate_id,

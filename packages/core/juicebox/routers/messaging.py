@@ -65,7 +65,12 @@ from ..messaging.schemas import (
     ChatStartIn,
     WidgetTokenOut,
 )
-from ..messaging.suppression import handle_stop, looks_like_help, looks_like_stop
+from ..messaging.suppression import (
+    address_has_opted_out,
+    handle_stop,
+    looks_like_help,
+    looks_like_stop,
+)
 from ..messaging.threads import (
     apply_status_event,
     find_active_thread,
@@ -213,12 +218,27 @@ def _check_sender_thread_cap(
 def start_session(payload: ChatStartIn, db: Session = Depends(get_db)) -> ChatSessionOut:
     """Open a conversation and send the greeting plus the first question."""
     org = _org_from_widget_token(db, payload.token)
+    visitor = (payload.visitor_id or "").strip()
+    if visitor and address_has_opted_out(db, channel=WEB, from_address=visitor):
+        # They said STOP in an earlier session. Refuse before opening a
+        # thread or writing a consent grant: a fresh session that greets and
+        # starts asking questions is exactly what the opt-out forbade.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This visitor has opted out of messaging",
+        )
     _check_thread_creation_cap(db, org_id=org.id)
+    if visitor:
+        _check_sender_thread_cap(db, org_id=org.id, from_address=visitor, channel=WEB)
     thread = open_thread(
         db,
         org_id=org.id,
         channel=WEB,
         entry_point="web_widget",
+        # The visitor id is the thread's address: it is what a STOP binds to,
+        # and what stopped_thread_exists finds when the same browser comes
+        # back and opens a new session.
+        from_address=visitor,
         # The person opened the widget and started typing. There is no
         # unsolicited message here to have consented to.
         consent_messaging=True,

@@ -460,6 +460,57 @@ class TestOutreachApi:
         ).json()
         assert enrollments[0]["status"] == "replied"
 
+    def test_inbound_webhook_replay_is_idempotent(self, client, loaded_org, mailbox, session):
+        """ESPs redeliver on any non-2xx and on their own timeouts. A replayed
+        delivery must not store a second inbound row or re-run the intent
+        machinery — with or without an RFC Message-ID in the payload."""
+        from sqlalchemy import func, select
+
+        from juicebox.models import Event, Message
+
+        headers = loaded_org["headers"]
+        sequence = self._sequence(client, headers)
+        candidate = client.get("/v1/candidates?q=ada", headers=headers).json()[0]
+        client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate["id"]]},
+            headers=headers,
+        )
+        client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers)
+
+        payload = {
+            "from": "ada@example.com",
+            "subject": "Re: Hi Ada",
+            "body": "This sounds interesting, happy to chat.",
+            "message_id": "<reply-1@mail.example.com>",
+        }
+        first = client.post("/v1/webhooks/inbound-email", json=payload, headers=headers)
+        assert first.status_code == 200
+        assert first.json()["intent"] == "interested"
+
+        replay = client.post("/v1/webhooks/inbound-email", json=payload, headers=headers)
+        assert replay.status_code == 200
+        assert replay.json()["duplicate"] is True
+        assert replay.json()["intent"] == "interested"
+
+        inbound_rows = session.scalar(
+            select(func.count()).select_from(Message).where(Message.direction == "inbound")
+        )
+        assert inbound_rows == 1
+        replied_events = session.scalar(
+            select(func.count()).select_from(Event).where(Event.type == "outreach.replied")
+        )
+        assert replied_events == 1
+
+        # No Message-ID either: the delivery hash still collapses the retry.
+        del payload["message_id"]
+        payload["body"] = "Following up — still interested."
+        assert client.post("/v1/webhooks/inbound-email", json=payload, headers=headers).json().get(
+            "duplicate"
+        ) is None
+        second = client.post("/v1/webhooks/inbound-email", json=payload, headers=headers)
+        assert second.json()["duplicate"] is True
+
     def test_unmatched_reply_returns_404(self, client, loaded_org):
         response = client.post(
             "/v1/webhooks/inbound-email",

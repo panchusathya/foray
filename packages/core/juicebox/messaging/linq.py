@@ -629,6 +629,15 @@ REACTION_EVENTS = frozenset({"reaction.added", "reaction.removed"})
 # `laugh`: acting on an ambiguous tapback would submit an application nobody
 # asked for, and the cost of missing one is that they type "apply to 2".
 POSITIVE_REACTIONS = frozenset({"like", "love"})
+# And the one they mean as "no, not this one". Only `dislike`: a `question`
+# tapback is a question, not a refusal, and nothing else in the set reads
+# unambiguously as no.
+#
+# The asymmetry with POSITIVE_REACTIONS is deliberate and worth keeping. A
+# false positive files an application that cannot be unsent; a false negative
+# drops one role out of a list, which the next batch replaces. So "yes" takes
+# two agreeing spellings and this takes the one that cannot mean anything else.
+NEGATIVE_REACTIONS = frozenset({"dislike"})
 
 
 @dataclass(frozen=True)
@@ -641,11 +650,22 @@ class ReactionEvent:
 
     @property
     def is_positive(self) -> bool:
-        return (
-            self.event_type == "reaction.added"
-            and not self.is_from_me
-            and self.reaction_type in POSITIVE_REACTIONS
-        )
+        return self._is_candidate_signal and self.reaction_type in POSITIVE_REACTIONS
+
+    @property
+    def is_negative(self) -> bool:
+        return self._is_candidate_signal and self.reaction_type in NEGATIVE_REACTIONS
+
+    @property
+    def _is_candidate_signal(self) -> bool:
+        """An intentional tapback from the candidate, not us and not a removal.
+
+        `reaction.removed` is excluded from both: taking a thumb back is not an
+        instruction, it is the absence of one. Reading a removed thumbs-up as a
+        decline -- or a removed thumbs-down as renewed interest -- would invent
+        a decision out of somebody tidying up a mis-tap.
+        """
+        return self.event_type == "reaction.added" and not self.is_from_me
 
 
 def parse_reaction(payload: dict) -> ReactionEvent:

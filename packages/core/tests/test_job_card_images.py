@@ -355,7 +355,9 @@ class TestEndToEnd:
     def test_an_imessage_thread_gets_image_and_text_in_one_bubble(
         self, session, account, uploads
     ):
-        from test_messaging_manager import STRONG, _managed, _posting as _mgr_posting, _say
+        from test_messaging_manager import STRONG, _managed, _say
+        from test_messaging_manager import _posting as _mgr_posting
+
         from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
         from juicebox.models import JobMatch
 
@@ -406,7 +408,9 @@ class TestEndToEnd:
     ):
         """The fallback is not a degraded card, it is the same card without a
         picture. That is what lets the image be best-effort."""
-        from test_messaging_manager import STRONG, _managed, _posting as _mgr_posting, _say
+        from test_messaging_manager import STRONG, _managed, _say
+        from test_messaging_manager import _posting as _mgr_posting
+
         from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
         from juicebox.models import JobMatch
 

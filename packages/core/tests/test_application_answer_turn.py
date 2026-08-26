@@ -197,7 +197,7 @@ class TestTheReportedSequence:
         """The fix for the reply half. It must name the role, and it must not
         offer to go and find more work."""
         thread = _managed_owing_answers(session, thread)
-        application, _ = _asked_application(session, account, thread)
+        _asked_application(session, account, thread)
         # The preference the extractor writes from "200k, no sponsorship needed".
         _extracted(session, thread, comp=200000, work_auth="green card")
 
@@ -239,7 +239,7 @@ class TestTheReportedSequence:
         self, session, account, channel, thread
     ):
         thread = _managed_owing_answers(session, thread)
-        application, _ = _asked_application(session, account, thread)
+        _asked_application(session, account, thread)
         _extracted(session, thread, comp=200000)
 
         _say(session, thread, "200k works", native_id="a-3")
@@ -307,8 +307,6 @@ class TestAnsweringAdvancesTheApplication:
         which is what the reported sequence actually felt like.
         """
         calls: list[str] = []
-
-        from juicebox.messaging import manager as manager_mod
 
         thread = _managed_owing_answers(session, thread)
         application, _ = _asked_application(session, account, thread)

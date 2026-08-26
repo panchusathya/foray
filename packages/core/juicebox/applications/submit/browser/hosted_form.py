@@ -102,11 +102,14 @@ class HostedFormSubmitter:
 
                     # Most boards render the posting with the form collapsed or
                     # on a second URL. Opening it is a navigation, not a send.
-                    if self.spec.open_form and not driver.first_match(page, self.spec.landmark):
-                        driver.click(page, self.spec.open_form, log=log, what="open form")
-                        page.wait_for_timeout(1500)
+                    reached = driver.reach_form(
+                        page,
+                        landmark=self.spec.landmark,
+                        open_form=self.spec.open_form,
+                        log=log,
+                    )
 
-                    if not driver.first_match(page, self.spec.landmark):
+                    if not reached:
                         shot = driver.snapshot(
                             page,
                             org_id=ctx.org_id,

@@ -180,8 +180,20 @@ class Settings:
     rerank_weight: float = field(default_factory=lambda: _env_float("RERANK_WEIGHT", 0.25))
 
     # --- outreach --------------------------------------------------------
-    # console | smtp | memory
+    # console | smtp | memory | mailbox
+    #
+    # `mailbox` sends app-level mail (portal sign-in codes, the alias relay)
+    # through a connected mailbox's own HTTPS API instead of SMTP. It exists
+    # because a host that blocks outbound 25/465/587/2525 -- the default
+    # anti-spam policy on several clouds, including the one this runs on --
+    # makes `smtp` unreachable no matter how correct the credentials are,
+    # while the provider APIs on 443 keep working.
     email_provider: str = field(default_factory=lambda: _env("EMAIL_PROVIDER", "console").lower())
+    #: Which connected mailbox `email_provider=mailbox` sends as. Matched
+    #: against MailboxConnection.address within the sending org.
+    email_mailbox_address: str = field(
+        default_factory=lambda: _env("EMAIL_MAILBOX_ADDRESS", "").strip().lower()
+    )
     smtp_host: str = field(default_factory=lambda: _env("SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: _env_int("SMTP_PORT", 587))
     smtp_user: str = field(default_factory=lambda: _env("SMTP_USER", ""))

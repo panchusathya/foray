@@ -1,4 +1,4 @@
-import { useCallback, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 
 import {
   SWIPE_LEFT,
@@ -10,11 +10,12 @@ import {
   isExhausted,
   upcoming,
 } from '../lib/deck.js';
+import { IconCheck, IconX } from './icons.jsx';
 
 // Pointer events, not touch events: one code path covers finger, trackpad and
-// mouse, and desktop gets the same deck instead of a degraded list. The
-// reducer in lib/deck.js owns every outcome; this component owns only the
-// transform.
+// mouse, so a desktop gets the same deck instead of a degraded list. The
+// reducer in lib/deck.js owns every outcome; this component owns the transform
+// and nothing else.
 
 export function CardDeck({ cards, onSwipe, onExhausted }) {
   const [state, dispatch] = useReducer(deckReducer, cards, initialDeck);
@@ -43,6 +44,20 @@ export function CardDeck({ cards, onSwipe, onExhausted }) {
     },
     [onSwipe, state],
   );
+
+  // Arrow keys drive the deck too. Somebody triaging fifty roles on a laptop
+  // should never have to move their hand to the trackpad.
+  useEffect(() => {
+    const onKey = (event) => {
+      // `closest` only exists on elements — a keydown with no focused element
+      // reports document as its target on some browsers.
+      if (event.target?.closest?.('input, textarea')) return;
+      if (event.key === 'ArrowRight') commit(SWIPE_RIGHT);
+      if (event.key === 'ArrowLeft') commit(SWIPE_LEFT);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [commit]);
 
   const onPointerDown = (event) => {
     if (!card) return;
@@ -87,7 +102,7 @@ export function CardDeck({ cards, onSwipe, onExhausted }) {
               className="deck-card behind"
               aria-hidden="true"
               style={{
-                transform: `translate3d(0, ${(next.length - index) * 8}px, 0) scale(${
+                transform: `translate3d(0, ${(next.length - index) * 9}px, 0) scale(${
                   1 - (next.length - index) * 0.03
                 })`,
               }}
@@ -99,7 +114,10 @@ export function CardDeck({ cards, onSwipe, onExhausted }) {
 
         <article
           className="deck-card"
-          style={{ transform, transition: drag.active ? 'none' : 'transform 220ms cubic-bezier(.2,.8,.3,1)' }}
+          style={{
+            transform,
+            transition: drag.active ? 'none' : 'transform 220ms cubic-bezier(.2,.8,.3,1)',
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -115,14 +133,15 @@ export function CardDeck({ cards, onSwipe, onExhausted }) {
           <div className="company">{card.company}</div>
           <h2>{card.title}</h2>
           <div className="chips">
-            {card.location && <span className="chip">{card.location}</span>}
-            {card.seniority && <span className="chip">{card.seniority}</span>}
-            {card.source_label && <span className="chip">{card.source_label}</span>}
+            {card.location ? <span className="chip">{card.location}</span> : null}
+            {card.seniority ? <span className="chip">{card.seniority}</span> : null}
+            {card.source_label ? <span className="chip accent">{card.source_label}</span> : null}
           </div>
           <div className="reasons">
             {(card.reasons || []).map((reason) => (
               <div key={reason} className="reason">
-                {reason}
+                <IconCheck />
+                <span>{reason}</span>
               </div>
             ))}
           </div>
@@ -132,13 +151,19 @@ export function CardDeck({ cards, onSwipe, onExhausted }) {
       {/* The buttons are not a fallback: they are how this works with a
           keyboard, a screen reader, or a thumb that would rather tap. */}
       <div className="deck-actions">
-        <button type="button" className="btn" onClick={() => commit(SWIPE_LEFT)}>
-          Skip
+        <button type="button" className="swipe skip" onClick={() => commit(SWIPE_LEFT)} aria-label="Skip this role">
+          <IconX />
         </button>
-        <button type="button" className="btn primary" onClick={() => commit(SWIPE_RIGHT)}>
-          Apply
+        <button
+          type="button"
+          className="swipe apply"
+          onClick={() => commit(SWIPE_RIGHT)}
+          aria-label="Apply to this role"
+        >
+          <IconCheck />
         </button>
       </div>
+      <p className="deck-hint">Swipe, tap, or use the arrow keys</p>
     </>
   );
 }

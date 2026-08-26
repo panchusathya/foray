@@ -100,15 +100,32 @@ LEVER = FormSpec(
 
 ASHBY = FormSpec(
     vendor="ashby",
-    landmark=("form._form_hidden", "[class*='ashby-application-form']", "form"),
+    # Ashby renders no <form> element at all -- the application is a React tree
+    # on a client-side /application route. A landmark of "form" therefore never
+    # matched, which `hosted_form` reads as "no application form on this page"
+    # and refuses the run. The landmark has to be a field we know is there.
+    landmark=(
+        "input[name='_systemfield_email']",
+        "input[name='_systemfield_name']",
+        "[class*='ashby-application-form']",
+    ),
     open_form=("button:has-text('Apply for this Job')", "a:has-text('Apply')"),
     fields={
-        # Ashby's board is React-rendered and its inputs are labelled rather
-        # than named, so these lean on the accessible name.
-        "full_name": ("input[aria-label='Name']", "input[name='_systemfield_name']"),
-        "email": ("input[aria-label='Email']", "input[name='_systemfield_email']"),
-        "phone": ("input[aria-label='Phone']", "input[name='_systemfield_phone']"),
-        "resume": ("input[type='file']",),
+        # Ashby's inputs carry `_systemfield_*` names; the accessible name is
+        # null on the current board, so aria-label is the fallback, not the
+        # first guess.
+        "full_name": ("input[name='_systemfield_name']", "input[aria-label='Name']"),
+        "email": ("input[name='_systemfield_email']", "input[aria-label='Email']"),
+        "phone": ("input[name='_systemfield_phone']", "input[aria-label='Phone']"),
+        # The resume input must be addressed by id. Ashby puts an *autofill*
+        # file input above the form: a bare `input[type=file]` matches that one
+        # first, which parses the CV into the page and leaves the actual resume
+        # field empty -- a required-field stall that looks like a wrong answer.
+        "resume": (
+            "#_systemfield_resume",
+            "input[name='_systemfield_resume']",
+            "input[type='file']",
+        ),
         "linkedin": ("input[aria-label*='LinkedIn' i]",),
     },
     required=frozenset({"full_name", "email", "resume"}),

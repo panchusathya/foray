@@ -16,8 +16,9 @@ RUN pip install --upgrade pip && pip install "/app/packages/core[postgres]"
 #
 # Build with `--build-arg INSTALL_PLAYWRIGHT=true` to turn it on. It is not on
 # by default for two reasons: it adds Chromium and its apt dependencies to an
-# image that otherwise needs no apt at all (~400MB, on a host currently at 71%
-# disk), and it is useless without LINKEDIN_SESSION_COOKIE -- LinkedIn serves
+# image that otherwise needs no apt at all (measured on prod: 526MB -> 2.22GB,
+# i.e. +1.7GB, on a host at 71% disk), and it is useless without
+# LINKEDIN_SESSION_COOKIE -- LinkedIn serves
 # an auth wall to a browser that is not logged in, so an installed-but-
 # cookieless scraper fails on every profile and falls through to the paid
 # provider anyway, just more slowly.
@@ -25,7 +26,14 @@ RUN pip install --upgrade pip && pip install "/app/packages/core[postgres]"
 # `enrich.profile_sources` already tries the scrape first and pays only on
 # failure, so turning this on is the only step needed once a cookie exists.
 ARG INSTALL_PLAYWRIGHT=false
-RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then       pip install "playwright>=1.40" &&       playwright install --with-deps chromium;     fi
+# Browsers go to a shared path, not $HOME/.cache. `playwright install` runs as
+# root here, but every service in this image runs as uid 10001 -- so the
+# default cache location puts Chromium in /root/.cache, where the app cannot
+# see it. The image builds clean and the failure only shows up at launch, as
+# "Executable doesn't exist ... run playwright install". This env var is read
+# at install time *and* at launch time, which is what makes the two agree.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then       pip install "playwright>=1.40" &&       playwright install --with-deps chromium &&       chmod -R a+rX /ms-playwright;     fi
 
 # Includes migrations/, which `juicebox migrate` resolves relative to the package.
 COPY packages/core /app/packages/core

@@ -309,6 +309,8 @@ def _handle_inbound_event(
             from_address=event.from_address,
             subject=event.subject,
             body=event.body,
+            native_id=event.native_id,
+            received_at=event.received_at or event.sent_at,
         )
         if routed.get("routed"):
             summary.alias_routed += 1

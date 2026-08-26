@@ -2,6 +2,11 @@
 
 ``console`` is the default so nothing leaves the machine during development;
 ``memory`` is what tests assert against; ``smtp`` is real delivery.
+
+``mailbox`` is real delivery through a connected mailbox's own HTTPS API, for
+hosts that block outbound SMTP. It is the one provider ``get_sender()`` cannot
+build, because choosing the connection needs a session and an org -- see
+``sender_for_org``.
 """
 
 from __future__ import annotations
@@ -178,6 +183,21 @@ def get_sender() -> EmailSender:
             )
         elif provider == "memory":
             _sender = MemorySender()
+        elif provider == "mailbox":
+            # `mailbox` cannot be served here: picking the connection needs a
+            # session and an org, which this function has neither of. Falling
+            # through to console would be the worst of both -- the deployment
+            # is configured for real delivery, and the caller would be handed
+            # a sender that reports every send as a success having only
+            # logged it. `EmailSubmitter` does exactly that and would mark an
+            # application submitted with nothing sent.
+            logger.error(
+                "EMAIL_PROVIDER=mailbox reached get_sender(); this caller needs "
+                "sender_for_org(db, org_id). Refusing rather than sending to the log."
+            )
+            _sender = FailingSender(
+                "EMAIL_PROVIDER=mailbox needs a session; this path must use sender_for_org()"
+            )
         else:
             _sender = ConsoleSender()
     return _sender
@@ -248,6 +268,62 @@ def sender_for_connection(db, connection) -> EmailSender:
     from ..integrations.providers import get_provider
 
     return get_provider(connection.provider).build_sender(db, connection)
+
+
+def sender_for_org(db, org_id: str) -> EmailSender:
+    """The sender for app-level mail: sign-in codes and the alias relay.
+
+    Three senders exist for three different questions, and collapsing them is
+    how mail goes to the wrong person:
+
+    * ``get_sender()`` -- the process-wide provider. No session, so it cannot
+      reach a connected mailbox.
+    * ``resolve_sender()`` -- *outreach*. Rotation, daily caps, a pinned
+      mailbox per enrollment.
+    * this -- transactional mail the app itself owes somebody.
+
+    It deliberately skips the daily cap. A cap is a campaign-volume control,
+    and refusing a sign-in code because an outreach mailbox is busy would lock
+    a candidate out of their own account.
+
+    Falls back to the global provider unless ``mailbox`` mode is on, so a
+    deployment that never sets it keeps exactly the behaviour it had.
+    """
+    settings = get_settings()
+    if settings.email_provider != "mailbox":
+        return get_sender()
+
+    address = settings.email_mailbox_address
+    if not address:
+        logger.error("EMAIL_PROVIDER=mailbox but EMAIL_MAILBOX_ADDRESS is unset")
+        return FailingSender("EMAIL_PROVIDER=mailbox but EMAIL_MAILBOX_ADDRESS is unset")
+
+    from sqlalchemy import select
+
+    from ..models import MailboxConnection
+
+    connection = db.scalars(
+        select(MailboxConnection).where(
+            MailboxConnection.org_id == org_id,
+            MailboxConnection.address == address,
+        )
+    ).first()
+
+    # Every branch below logs. This mail is sent from paths that ignore the
+    # result -- the OTP endpoint answers 202 either way, so that it cannot be
+    # used to enumerate addresses -- and a misconfiguration that only showed up
+    # as "the code never arrived" is exactly the failure this mode exists to
+    # get us out of.
+    if connection is None:
+        logger.error("EMAIL_MAILBOX_ADDRESS=%s is not a connected mailbox in %s", address, org_id)
+        return FailingSender(f"{address} is not a connected mailbox")
+    if connection.status != "active":
+        logger.error("mailbox %s is %s; reconnect it", address, connection.status)
+        return FailingSender(f"mailbox {address} is {connection.status}; reconnect it")
+    if not connection.send_enabled:
+        logger.error("sending is switched off for mailbox %s", address)
+        return FailingSender(f"sending is switched off for mailbox {address}")
+    return sender_for_connection(db, connection)
 
 
 def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:

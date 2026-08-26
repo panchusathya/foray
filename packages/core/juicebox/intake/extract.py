@@ -468,9 +468,36 @@ _ROLE_NOUNS = (
     "architect", "researcher", "lead", "director", "recruiter", "marketer",
     "salesperson", "consultant", "product manager", "pm", "sre", "devops",
 )
+# The same nouns as an alternation, longest first so "product manager" is
+# preferred over the "manager" sitting inside it.
+_ROLE_NOUN_ALT = "|".join(
+    re.escape(noun) for noun in sorted(_ROLE_NOUNS, key=len, reverse=True)
+)
+
 _TITLE_CAPTURES = (
     r"looking for (?:a|an)\s+([a-z0-9+#/.\- ]{3,60}?)\s+(?:role|position|job|gig)",
-    r"(?:want|hoping|trying) to (?:be|become|move into)\s+(?:a|an)?\s*([a-z0-9+#/.\- ]{3,60}?)\b",
+    # "I want to become a machine learning engineer" carries no word after the
+    # title to stop on -- no "role", no "position" -- so this capture ended on
+    # `\b`, and a lazy quantifier reaches the first `\b` available: the end of
+    # the *first* word. The title arrived as "machine", failed the
+    # `_ROLE_NOUNS` check in `_heuristic_titles`, and was dropped. Only
+    # single-word titles ever survived this phrasing; "I want to be a
+    # recruiter" worked and hid the rest.
+    #
+    # Recording nothing is usually the safe direction here, but not on this
+    # field. `job_titles` is required, and an intake without one is a candidate
+    # `jobmatch` cannot score at all -- the failure is silent and total, where
+    # a wrong title at least surfaces to the reviewer every heuristic
+    # extraction already gets.
+    #
+    # So the capture stops where the title itself stops: at its head noun.
+    # `_ROLE_NOUNS` is already this module's answer to "what makes a phrase a
+    # job title", and a phrase without one of them in it was going to be
+    # discarded anyway -- anchoring on them costs no title that used to
+    # survive, and keeps the match from running on into "... engineer at a
+    # startup", which a plain sentence-end boundary would have swallowed whole.
+    rf"(?:want|hoping|trying) to (?:be|become|move into)\s+(?:an?\s+)?"
+    rf"((?:[a-z0-9+#/.\-]+\s+){{0,3}}?(?:{_ROLE_NOUN_ALT})s?)\b",
     r"\b(?:as an?|for an?)\s+([a-z0-9+#/.\- ]{3,60}?)\s+(?:role|position)\b",
     r"\b([a-z0-9+#/.\- ]{3,60}?)\s+roles?\b",
 )

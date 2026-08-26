@@ -130,6 +130,44 @@ def check_inbound_branches_on_caller_known() -> None:
         "{{caller_first_name}}" in INBOUND_PROMPT,
         "inbound prompt must greet a known caller by the name we already have",
     )
+    # The branch condition has to be *interpolated*, not merely named. Retell
+    # substitutes `{{var}}` and nothing else, so prose like "the answer is in
+    # `caller_known`" hands the model the field name and never the value -- and
+    # a model told to branch on something it cannot see picks one. This check
+    # exists because that shipped: for weeks the rendered prompt carried a
+    # single slot, `{{caller_first_name}}`, while eight variables were being
+    # supplied. Every caller got guessed at, and the guess came out "known",
+    # so strangers were greeted as regulars and read a record invented to fit.
+    _must(
+        "{{caller_known}}" in INBOUND_PROMPT,
+        "inbound prompt must interpolate {{caller_known}}, not just name it -- "
+        "a branch condition the model cannot read is a branch it guesses",
+    )
+
+
+def check_every_supplied_variable_reaches_the_model() -> None:
+    """Anything we send must appear as a slot, or we never actually sent it.
+
+    The webhook resolves eight caller variables while the phone is ringing and
+    hands them to Retell. A variable the prompt does not interpolate is work
+    done for nobody: it costs a database read at ring time and arrives nowhere.
+    Worse, the prompt goes on to instruct against it by name -- "tell them
+    anything in `caller_on_file`" -- which reads as an instruction to produce
+    the contents of something invisible.
+
+    `caller_greeting` is the one exception: it is the whole of `begin_message`
+    and deliberately never appears in the prompt body, because the agent speaks
+    it before the first turn rather than reading it mid-call.
+    """
+    supplied = set(DEFAULT_DYNAMIC_VARIABLES) - {"caller_greeting"}
+    interpolated = set(re.findall(r"\{\{(caller_[a-z_]+)\}\}", INBOUND_PROMPT))
+    orphaned = sorted(supplied - interpolated)
+    _must(
+        not orphaned,
+        f"the webhook supplies {orphaned} but the inbound prompt never "
+        "interpolates them -- the model cannot see a variable it is only told "
+        "the name of",
+    )
 
 
 def check_inbound_can_read_the_record_back() -> None:
@@ -222,8 +260,11 @@ def check_every_slot_has_a_default() -> None:
     saying "caller first name" out loud.
     """
     used = set(re.findall(r"\{\{(caller_[a-z_]+)\}\}", INBOUND_PROMPT))
-    # Referenced by name in prose as well as interpolated; both need defaults,
-    # because the prose ones are the branch conditions.
+    # Prose references count too, so a variable discussed by name but not yet
+    # interpolated still needs a default. It should not stay that way --
+    # `check_every_supplied_variable_reaches_the_model` is the check that says
+    # so -- but the default is what keeps an unanswered webhook from putting
+    # literal braces in the agent's mouth either way.
     used |= {name for name in DEFAULT_DYNAMIC_VARIABLES if name in INBOUND}
     missing = sorted(used - set(DEFAULT_DYNAMIC_VARIABLES))
     _must(
@@ -259,6 +300,7 @@ def main() -> int:
     checks = (
         check_inbound_does_not_ask_who_it_is_talking_to,
         check_inbound_branches_on_caller_known,
+        check_every_supplied_variable_reaches_the_model,
         check_inbound_can_read_the_record_back,
         check_nothing_in_the_record_is_held_back_from_its_owner,
         check_the_identify_tool_is_gone,

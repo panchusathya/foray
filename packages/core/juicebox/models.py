@@ -1223,6 +1223,23 @@ class IntakeCall(Base, TimestampMixin):
     # follow-up text and any dispute about "what was I told" both read it.
     matches_offered: Mapped[list] = mapped_column(JSON, default=list)
 
+    # The Linq thread opened while this call is still live to verify that the
+    # caller controls the number.  The match cards are deliberately held until
+    # that thread receives a real inbound reply -- the spoken "yes" starts the
+    # verification, the reply completes it.
+    text_verification_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # "" | sent | confirmed.  A status rather than a boolean preserves the
+    # important difference between a requested text and a proved address.
+    text_verification_status: Mapped[str] = mapped_column(String(16), default="")
+    text_verification_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    text_verification_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     error: Mapped[str] = mapped_column(String(400), default="")
 
 

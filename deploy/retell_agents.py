@@ -136,7 +136,7 @@ never hear about your internal state.
   most valuable one you can ask. Then recap the two or three most important
   facts back to them for confirmation. Then say, in roughly these words, "Give
   me one second -- let me take a quick look at what we have open right now
-  that fits what you described", and call the `preview_matches` tool once.
+  that fits what you described", and call the `preview_matches` tool.
 - Do what `preview_matches`'s `guidance` says. When it gives you `lines`, read
   each one aloud, naturally and completely -- those sentences are the ONLY
   role, company, and pay details you may say on this call, exactly as written.
@@ -145,17 +145,19 @@ never hear about your internal state.
   anything. If it gives no lines, or fails, or does not answer: close the way
   `check_coverage`'s `guidance` told you to, and do not mention roles,
   matches, or a database at all.
-- Then ask, in these words: "Last thing -- can I text you updates at this
-  number?" Only an explicit, unambiguous yes is a yes; hesitation, "I guess",
-  silence, or "email is better" is a no, and you must not re-ask or reframe to
-  get a yes -- a soft yes recorded as consent is worse than a no. Do not add
-  anything about stopping or opting out, and do not read out any keywords --
-  the question is the consent, and reciting the mechanism turns it into a
-  sales line. If they ask how to stop, tell them plainly they can reply STOP
-  to any text. After their answer, confirm the follow-up exactly the way
-  `preview_matches`'s `guidance` told you to -- or, if you had no lines, say a
-  recruiter will follow up. Then thank them and end the call. When you name
-  the number, it is {sms_number_spoken}.
+- After the lines, ask: "What do you think about those?" If they like one or
+  more, ask whether they would like the details by text. Only an explicit,
+  unambiguous yes counts. Then say you are sending a quick verification text
+  from Go4A now and call `start_text_verification` once. Do exactly what its
+  guidance says: ask them to reply "hey" or "hello" to the actual text, then
+  thank them and end the call. Never say the detailed role list was texted yet
+  -- it is sent only after their reply arrives.
+- If they do not like the roles, ask what they would rather see (one question
+  at a time), then call `preview_matches` again. You may refine and preview at
+  most twice after the first preview; if neither round is useful, tell them a
+  recruiter will follow up with a broader search and end the call. Never use a
+  vague yes, silence, or "email is better" as permission to call
+  `start_text_verification`.
 
 If `progress_line` is present, say it, then ask the next question. If it is
 empty, do not invent a count and do not mention how many are left.
@@ -373,13 +375,23 @@ COVERAGE_TOOL_DESCRIPTION = (
 )
 
 PREVIEW_TOOL_DESCRIPTION = (
-    "The roles worth mentioning before you close. Call this exactly once, "
-    "after check_coverage has said wrap_up is true and you have recapped. "
+    "The roles worth mentioning before you close. Call this after "
+    "check_coverage has said wrap_up is true and you have recapped, then call "
+    "it again only if the candidate explains why the preview is not right. "
     "Returns lines (finished sentences to read aloud -- the only role, "
     "company, or pay details you may ever speak, exactly as written), "
-    "more_line (say it after the lines if present), and guidance (how to "
-    "offer the full list by text and what to confirm after the consent "
-    "question). Empty lines means close normally and mention no roles."
+    "more_line (say it after the lines if present), and guidance (how to ask "
+    "for feedback, refine the search, and verify the text handoff). Empty "
+    "lines means close normally and mention no roles."
+)
+
+TEXT_VERIFICATION_TOOL_DESCRIPTION = (
+    "Send a short Go4A text while the candidate is still on the call so they "
+    "can verify this is the right number. Call only after they heard the role "
+    "preview, said they want the details by text, and you told them you are "
+    "sending the verification text. Never call it after a vague answer, "
+    "silence, or a refusal. It returns guidance for asking them to reply "
+    "'hey' or 'hello'; detailed job cards wait for that real reply."
 )
 
 
@@ -489,6 +501,17 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 # during execution on top of that would double up.
                 "speak_during_execution": False,
                 # The whole point: the lines and the close come from the result.
+                "speak_after_execution": True,
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                "type": "custom",
+                "name": "start_text_verification",
+                "description": TEXT_VERIFICATION_TOOL_DESCRIPTION,
+                "url": f"{base}/v1/intake/text-verification",
+                # The agent announces the send before this call. The result's
+                # guidance is what it needs to say next, so no duplicate filler.
+                "speak_during_execution": False,
                 "speak_after_execution": True,
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },

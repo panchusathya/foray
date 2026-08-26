@@ -22,6 +22,8 @@ Three endpoints, all signed with the same scheme:
   said they wanted, plus guidance for offering the full list by text. Lines
   come from the jobs book and the caller's own stated preferences — never the
   candidate's record — so, like coverage, it discloses nothing about a person.
+* ``/v1/intake/text-verification`` — sends one Linq verification message while
+  the caller is still live, after they explicitly request the details by text.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ from ..intake.service import (
 from ..intake.teasers import close_normally, teaser_snapshot
 from ..messaging.identity import AttributionError, attribute_thread
 from ..messaging.threads import messages_of
+from ..messaging.voice_handoff import start_text_verification
 from ..models import (
     CandidatePreference,
     IntakeCall,
@@ -327,6 +330,29 @@ def intake_matches(
     prior = prior_preference_record(db, call.candidate_id)
     known = known_for_call(db, call)
     return teaser_snapshot(db, call=call, transcript=transcript, known=known, prior=prior)
+
+
+@router.post("/text-verification")
+def intake_text_verification(
+    raw: bytes = Depends(raw_body),
+    x_retell_signature: str = Header(default="", alias="X-Retell-Signature"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Send the live-call number-verification text, never the role cards.
+
+    The agent calls this only after the candidate has heard the preview and
+    explicitly asked to receive those details by text. A later inbound Linq
+    reply, not this tool call, unlocks the actual job-card delivery.
+    """
+    provider = _verified(raw, x_retell_signature)
+    event, _args = provider.parse_function_call(loads(raw))
+    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
+    if call is None:
+        return {
+            "sent": False,
+            "guidance": "The verification text could not be sent. Tell them a recruiter will follow up, then end the call.",
+        }
+    return start_text_verification(db, call)
 
 
 def _call_for_org(db: Session, call_id: str, org_id: str) -> IntakeCall:

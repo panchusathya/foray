@@ -18,15 +18,15 @@ longer closes on "a recruiter will be in touch": the agent calls a new
 jobs book against what the caller just said they wanted — the preference term
 only, never a candidate evaluation — and hands back two or three composed
 sentences (company, role, location, the posting's own pay range), a composed
-count of the rest, and how to offer the full list by text. Lines are read
-verbatim; company names, pay figures and counts remain things the agent may
-never invent. The pitch precedes the unchanged TCPA ask; delivery of the full
-list is delivered by `KIND_INTAKE_MATCH_TEXT` → `messaging/voice_handoff.py`:
-into the existing thread when the caller has one, else a **new Linq chat**
-(`POST /v3/chats` via `linq.start_chat`, iMessage-capable numbers only,
-`LINQ_ENABLED`-gated — the one outbound-initiated chat in the system, riding
-the explicit recorded opt-in), and otherwise parked on the review queue
-(`intake.match_text.parked`) so the promise lands on a human. New pieces:
+count of the rest, and feedback guidance. If the caller likes the preview and
+explicitly requests details by text, the live agent sends a **verification**
+message before hangup through a new Linq chat (`POST /v3/chats` via
+`linq.start_chat`, iMessage-capable numbers only, `LINQ_ENABLED`-gated). The
+agent asks the caller to reply “hey” or “hello”; any real inbound reply proves
+the address and only then queues `KIND_INTAKE_MATCH_TEXT` for the full job
+cards. An unwanted preview is refined and re-run (bounded to two retries).
+Failures park on the review queue (`intake.match_text.parked`) so the promise
+lands on a human. New pieces:
 `intake/teasers.py`, `messaging/voice_handoff.py`, `/v1/intake/matches`,
 `linq.start_chat` / `linq.check_imessage`, `intake_calls.matches_offered`,
 settings `INTAKE_TEASERS_ENABLED` / `INTAKE_TEASER_COUNT` /

@@ -85,21 +85,20 @@ roles" — and every part of it keeps the channel evaluation-free:
 
 ## 6. SMS — TCPA consent, captured now, used later
 
-The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
-The wrap-up pitch precedes the question ("I'd love to text you the full
-list...") but never rewords it: one canonical ask, whatever surrounded it, is
-what keeps `sms_opt_in` plus the transcript usable as an evidence record.
+After a role preview, the agent asks whether the caller wants the details by
+text. Only an explicit yes authorises the one immediate verification message:
+*"Hi — it's Vivian with Go4A... Reply 'hey' or 'hello' so I know this is the
+right number."* The tool invocation and recorded transcript are evidence of
+that request; `sms_opt_in` is latched at send time. The requested “hey” is
+for the human experience, but any real non-STOP inbound reply proves control
+of the address.
 
-A caller who opts in after being pitched is texted the list through Linq
-(`messaging/voice_handoff.py`) — the one outbound-initiated chat in the
-system, and it is not cold outreach: the contact was candidate-initiated, the
-consent is explicit and on the recorded call, and the message is the exact
-follow-up the consent named. Guardrails on the send itself: a STOP or
-suppression that arrived *after* the call outranks the call's consent (latest
-signal wins); numbers Linq cannot vouch for as iMessage are not sent to
-(rollout decision, `SMS_ENABLEMENT.md`); and anything that cannot send is
-parked on the review queue (`intake.match_text.parked`) so the promise lands
-on a human instead of evaporating.
+Only that verified reply unlocks the job cards. This makes the outbound-initiate
+Linq path (`messaging/voice_handoff.py`) candidate-directed and mechanically
+bound to the caller's current number, rather than cold outreach. A STOP or
+suppression that arrives after the send still wins; numbers Linq cannot vouch
+for as iMessage are not sent to; and failures park on review
+(`intake.match_text.parked`) for a recruiter.
 
 - Only an explicit, unambiguous yes counts. Hesitation, "I guess", or "email
   is better" is recorded as no. The agent never re-asks or reframes to convert

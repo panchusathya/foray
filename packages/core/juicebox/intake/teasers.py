@@ -78,29 +78,16 @@ GUIDANCE_NOT_READY = (
     "following check_coverage and do not mention roles or a database."
 )
 
-# What to say around the lines. One string per delivery case, chosen in
-# `_delivery_confirmation`; the consent question itself stays in the prompt,
-# verbatim and unchanged, so the TCPA wording never varies by code path. Each
-# case mirrors a route in messaging.voice_handoff.handle_match_text -- the
-# promise and the delivery must not drift apart.
-_YES_THREAD = (
-    "tell them the full list will land in the text thread they already have "
-    "with Foray"
-)
-_YES_LINQ = (
-    "tell them to keep an eye out for a text from Foray with the full list"
-)
-_YES_RECRUITER = "tell them a recruiter will send the full list over shortly"
-
 _PITCH_GUIDANCE = (
     "Read each sentence in lines aloud, naturally and completely -- these are "
     "the only role, company, and pay details you may say, exactly as written, "
     "and they describe a match with what the candidate said they wanted, "
     "never how strong the candidate is. If more_line is present, say it "
-    "after the lines. Then say you would love to text over the full list, and "
-    "ask the text-consent question in the exact words your instructions give "
-    "you. If they say yes, {yes}; if they do not, tell them a recruiter will "
-    "follow up with the full list instead. Then thank them and end the call."
+    "after the lines. Then ask what they think about these opportunities. If "
+    "they do not like them, ask what they would rather see, listen, and call "
+    "preview_matches again with the updated conversation. If they do like them, "
+    "ask whether they would like the details by text. Only after an explicit "
+    "yes, call start_text_verification. Do exactly what its guidance says."
 )
 
 
@@ -178,7 +165,7 @@ def teaser_snapshot(
         "matches": len(ranked),
         "lines": lines,
         "more_line": _more_line(len(ranked) - len(top)),
-        "guidance": _PITCH_GUIDANCE.format(yes=_delivery_confirmation(db, call)),
+        "guidance": _PITCH_GUIDANCE,
     }
 
 
@@ -327,27 +314,3 @@ def _more_line(extra: int) -> str:
     if extra <= 20:
         return f"There are {extra} more in our database that fit what you described."
     return "There are more than twenty others in our database that fit what you described."
-
-
-def _delivery_confirmation(db: Session, call: IntakeCall) -> str:
-    """What the agent may say after a yes, per what can actually send.
-
-    Mirrors the routing in ``messaging.voice_handoff.handle_match_text``: a
-    standing text thread delivers through the matches.ready notification, a
-    new Linq chat covers everyone else Linq can reach, and with neither the
-    honest promise is a recruiter. Deliberately NOT ``sms_enabled``-aware:
-    that flag flips a close sentence for a sender that does not exist yet, and
-    this promise must never outrun the handler.
-    """
-    # Late imports: messaging imports intake, so the reverse must stay lazy.
-    if call.candidate_id:
-        from ..messaging.notify import manager_thread_for
-
-        if manager_thread_for(db, org_id=call.org_id, candidate_id=call.candidate_id):
-            return _YES_THREAD
-    from ..messaging.voice_handoff import can_text_by_linq
-    from .service import counterparty_number
-
-    if can_text_by_linq(db, org_id=call.org_id, phone=counterparty_number(call)):
-        return _YES_LINQ
-    return _YES_RECRUITER

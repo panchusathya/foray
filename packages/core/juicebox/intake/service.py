@@ -403,6 +403,9 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         call.review_needed = True
         call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
+    # A match list is never delivered merely because it was offered. The live
+    # Linq verification reply is the second half of the handoff; if it arrived
+    # before extraction completed, this schedules its already-confirmed send.
     _schedule_match_text(db, call)
     write_field_answers(db, call=call, result=result)
 
@@ -440,14 +443,11 @@ def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
 def _schedule_match_text(db: Session, call: IntakeCall) -> None:
     """Queue delivery of the match list the wrap-up pitch promised.
 
-    Only when both halves of the promise exist on the call row: roles were
-    pitched (``matches_offered``) and the caller explicitly opted into texts
-    (``sms_opt_in``). Routing — an existing thread, a new Linq chat, or a
-    parked review flag when nothing can send — lives in
-    ``messaging.voice_handoff.handle_match_text``, in the worker, where it can
-    wait for the rescore the cards read.
+    Only after the caller has both requested a text and replied to the live
+    verification message. The reply is what proves the currently-held number;
+    it is deliberately stronger than a spoken number or caller ID alone.
     """
-    if not call.sms_opt_in or not (call.matches_offered or []):
+    if call.text_verification_status != "confirmed" or not (call.matches_offered or []):
         return
     # Late import: messaging imports intake, so the reverse must stay lazy.
     from ..messaging.voice_handoff import schedule_match_text

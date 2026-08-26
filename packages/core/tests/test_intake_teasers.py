@@ -367,7 +367,8 @@ class TestMatchesEndpoint:
         assert body["more_line"] == (
             "There is one more in our database that fits what you described."
         )
-        assert "recruiter will send the full list" in body["guidance"]
+        assert "ask what they think about these opportunities" in body["guidance"]
+        assert "start_text_verification" in body["guidance"]
 
         session.expire_all()
         call = session.scalar(select(IntakeCall))
@@ -410,7 +411,7 @@ class TestMatchesEndpoint:
         _posting(session, owned_number.org_id)
         post_webhook(client, signer)
         response = post(client, signer, function_call())
-        assert "text from Foray" in response.json()["guidance"]
+        assert "start_text_verification" in response.json()["guidance"]
 
     def test_the_promise_never_offers_linq_to_an_opted_out_number(
         self, client, session, signer, owned_number, monkeypatch
@@ -431,7 +432,7 @@ class TestMatchesEndpoint:
         _posting(session, owned_number.org_id)
         post_webhook(client, signer)
         response = post(client, signer, function_call())
-        assert "recruiter will send the full list" in response.json()["guidance"]
+        assert "start_text_verification" in response.json()["guidance"]
 
     def test_the_promise_prefers_a_standing_thread(
         self, client, session, signer, owned_number, monkeypatch
@@ -455,7 +456,7 @@ class TestMatchesEndpoint:
         session.commit()
         post_webhook(client, signer)
         response = post(client, signer, function_call())
-        assert "text thread they already have" in response.json()["guidance"]
+        assert "start_text_verification" in response.json()["guidance"]
 
 
 def post_webhook(client, signer):
@@ -467,8 +468,8 @@ def post_webhook(client, signer):
 
 
 # --------------------------------------------------------------------------
-# extraction queues the follow-up; the handler's own tests live in
-# test_voice_handoff.py
+# extraction must not queue cards before the text number is verified; the
+# live verification and post-reply delivery tests live in test_live_text_verification.py
 # --------------------------------------------------------------------------
 
 
@@ -515,36 +516,18 @@ class TestUndeliverablePromise:
             select(Job).where(Job.kind == KIND_INTAKE_MATCH_TEXT)
         ).all()
 
-    def test_extraction_queues_the_followup_once(self, session, account, monkeypatch):
+    def test_extraction_does_not_queue_cards_before_the_reply(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], candidate_id=person.id)
         self._extract(session, call, monkeypatch)
-        jobs = self._handoff_jobs(session)
-        assert len(jobs) == 1
-        assert jobs[0].payload == {"intake_call_id": call.id}
+        assert self._handoff_jobs(session) == []
 
-    def test_an_undeliverable_promise_lands_on_review(self, session, account, monkeypatch):
-        """End to end: extract queues the job, the handler parks it (Linq off)."""
-        from juicebox.messaging.voice_handoff import handle_match_text
-        from juicebox.models import utcnow
-
+    def test_a_spoken_opt_in_alone_does_not_queue_cards(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], candidate_id=person.id)
         self._extract(session, call, monkeypatch)
-        (job,) = self._handoff_jobs(session)
-        # The handler waits for the rescore; none will run in this test, so
-        # age the call past its patience window instead.
-        from datetime import timedelta
-
-        call.ended_at = utcnow() - timedelta(hours=1)
-        session.commit()
-        result = handle_match_text(session, job, utcnow())
-        session.flush()
-        assert "parked" in result
-        assert call.review_needed is True
-        assert "match list promised by text" in call.review_reason
-        event = session.scalar(select(Event).where(Event.type == "intake.match_text.parked"))
-        assert event is not None
+        assert call.text_verification_status == ""
+        assert self._handoff_jobs(session) == []
 
     def test_no_opt_in_means_no_followup(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])

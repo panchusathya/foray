@@ -270,19 +270,28 @@ def check_the_pitch_reads_only_composed_lines() -> None:
         )
 
 
-def check_the_consent_ask_is_still_verbatim() -> None:
-    """The TCPA question must not vary with the pitch.
-
-    The pitch changes what surrounds the question, never the question. One
-    canonical wording is what makes ``sms_opt_in`` plus the transcript an
-    evidence record (INTAKE_COMPLIANCE.md §6), so the exact sentence has to
-    survive every prompt edit.
-    """
-    ask = 'ask, in these words: "last thing -- can i text you updates at this number?"'
+def check_the_live_text_verification_flow_is_pinned() -> None:
+    """Cards must wait for a genuine reply from the number we just texted."""
     for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
         _must(
-            ask in prompt,
-            f"{name} prompt lost the verbatim text-consent question",
+            "start_text_verification" in prompt,
+            f"{name} prompt lost the live text-verification tool",
+        )
+        _must(
+            'reply "hey" or "hello"' in prompt,
+            f"{name} prompt must ask for the verification reply",
+        )
+        _must(
+            "only an explicit, unambiguous yes counts" in prompt,
+            f"{name} prompt must not allow a vague answer to trigger a text",
+        )
+        _must(
+            "never say the detailed role list was texted yet" in prompt,
+            f"{name} prompt must hold cards until the reply arrives",
+        )
+        _must(
+            "`preview_matches` again" in prompt,
+            f"{name} prompt must support refining an unwanted first preview",
         )
 
 
@@ -315,7 +324,7 @@ def main() -> int:
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,
         check_the_pitch_reads_only_composed_lines,
-        check_the_consent_ask_is_still_verbatim,
+        check_the_live_text_verification_flow_is_pinned,
         check_outbound_is_unchanged_in_posture,
     )
     failed = 0

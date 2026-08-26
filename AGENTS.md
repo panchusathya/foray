@@ -527,30 +527,20 @@ just said they wanted, then the offer to text the full list. Non-obvious rules:
   errs high because a bad role pitched with enthusiasm burns the trust the
   pitch exists to build; vetoed postings, dismissed matches, and the caller's
   current employer are never pitched at all.
-- **The consent ask never changes with the pitch.** The pitch primes ("I'd
-  love to text you the full list"), then the canonical TCPA question is asked
-  in the exact words the prompt has always had -- one wording is what keeps
-  the transcript an evidence record, and `check_the_consent_ask_is_still_verbatim`
-  fails the build if a prompt edit forks it.
-- **The promise tracks what can actually send, and delivery is a queued job.**
-  Extraction enqueues `KIND_INTAKE_MATCH_TEXT` when both halves of the promise
-  are on the call row; `messaging/voice_handoff.py` routes it: a standing
-  managing thread gets the `matches.ready` notification (keyed on the call id,
-  not the daily bucket, so a routine rescore that already texted today cannot
-  swallow it), otherwise Linq opens a new chat, otherwise the call parks on
-  review with `TEXT_PROMISE_REASON` (`intake.match_text.parked`) -- a promise
-  made on a recorded call lands on a human rather than evaporating. The
-  mid-call guidance (`_delivery_confirmation`) mirrors that routing exactly
-  and is deliberately not `sms_enabled`-aware: the promise must never outrun
-  the handler. The handoff is **the only caller of `linq.start_chat`** -- the
-  one outbound-first send with a consent story (candidate-initiated call,
-  explicit opt-in, latched flag, transcript as evidence). A new caller of
-  `start_chat` needs its own consent story, not this one's. A STOP that
-  arrived after the call outranks the call's consent; a handle the iMessage
-  capability check cannot vouch for is parked, never fallback-texted; and the
-  handler defers until the rescore lands (bounded by `FRESHNESS_PATIENCE`),
-  because a greeting followed by "nothing clears the bar" silence is worse
-  than a greeting a minute later.
+- **A preview is a conversation, not a forced close.** Ask what they think. A
+  negative answer yields one focused preference question and another preview,
+  capped at two refinements. Do not let a model treat the first two roles as a
+  final recommendation.
+- **The verification text is live; role cards are reply-gated.** After an
+  explicit request for details by text, `start_text_verification` creates the
+  only outbound-first Linq chat and sends a canned Go4A message asking for
+  “hey” or “hello.” `text_verification_status=sent` is not permission to send
+  cards. Only an actual non-STOP Linq reply changes it to `confirmed`; that
+  reply enqueues `KIND_INTAKE_MATCH_TEXT`, which waits for extraction/rescore
+  and then delivers into that exact thread. The direct call-to-thread link on
+  `IntakeCall` is intentional: matching by phone or latest candidate thread
+  would make a fast reply race identity extraction. A STOP, suppression,
+  failed iMessage capability check, or send failure parks review instead.
 - **`matches_offered` is evidence, like the gate snapshot.** What was pitched,
   verbatim with posting ids and scores, on the call row -- the book moves and
   the record gets edited, so "what was this caller told" must not be a

@@ -387,9 +387,10 @@ NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 # recorded call (messaging/voice_handoff.py). Canned like every notification.
 # No time promise ("in a moment") — the match cards behind it ride the notify
 # queue and may defer to the send window.
-VOICE_HANDOFF_GREETING = (
-    "Hi{name} — it's {recruiter} with Foray. Great talking just now. I'll "
-    "send the roles I mentioned, plus the rest of your list, right here."
+VOICE_VERIFICATION_GREETING = (
+    "Hi{name} — it's {recruiter} with Go4A. Great talking just now. Reply "
+    "\"hey\" or \"hello\" so I know this is the right number, and I'll send "
+    "the roles we discussed here."
 )
 
 # Presenting cards relaxes the 320-char single-question budget: a numbered

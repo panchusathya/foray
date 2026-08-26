@@ -598,6 +598,47 @@ class TestHeuristicExtraction:
         record = extract_intake("Candidate: I'm looking for a backend engineer role.").record
         assert record["spec"]["seniority"] == ["mid"]
 
+    @pytest.mark.parametrize(
+        ("said", "expected"),
+        [
+            ("I want to become a machine learning engineer.", "machine learning engineer"),
+            ("I am hoping to move into a product manager position.", "product manager"),
+            ("I want to be a recruiter.", "recruiter"),
+            ("I want to become a staff data scientist.", "data scientist"),
+            ("I'm trying to move into a front-end developer job.", "front-end developer"),
+        ],
+    )
+    def test_a_title_stated_without_the_word_role_is_captured_whole(
+        self, no_llm, said, expected
+    ):
+        """"I want to become a <title>" has no word after the title to stop on,
+        so the capture ended on a word boundary and a lazy quantifier took the
+        first one going: the end of the first word. "machine learning engineer"
+        arrived as "machine", failed the role-noun check and was discarded. Only
+        single-word titles survived, and "I want to be a recruiter" passing is
+        what hid it."""
+        record = extract_intake(f"Candidate: {said}").record
+        assert record["spec"]["job_titles"] == [expected]
+
+    def test_a_title_that_cannot_be_read_leaves_the_required_gate_open(self, no_llm):
+        """The cost of losing a title here is not a worse title, it is none at
+        all. `spec.job_titles` is required, so an empty list keeps the gate open
+        and leaves the candidate unscoreable by jobmatch -- silently, because
+        nothing downstream distinguishes "no title stated" from "title missed"."""
+        result = extract_intake("Candidate: I want to become a machine learning engineer.")
+        assert result.record["spec"]["job_titles"] == ["machine learning engineer"]
+        assert "spec.job_titles" not in result.coverage.required_missing
+
+    def test_the_capture_stops_at_the_title_and_not_at_the_sentence(self, no_llm):
+        """Ending the capture at the sentence rather than the head noun would
+        trade one silent failure for another: "machine learning engineer at a
+        startup" is a title no posting carries, on the field
+        `search.scoring.assess` penalises hardest."""
+        record = extract_intake(
+            "Candidate: I want to become a machine learning engineer at a startup"
+        ).record
+        assert record["spec"]["job_titles"] == ["machine learning engineer"]
+
     def test_talking_about_both_records_neither(self, no_llm):
         result = extract_intake(
             "Candidate: I'd do fully remote or hybrid, whichever. Both work for me."

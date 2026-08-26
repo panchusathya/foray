@@ -274,3 +274,63 @@ Worth confirming against your Linq account before the first real run:
 `GET /v3/webhook-events` for the authoritative event list, and that `/leave` is
 POST — the docs pages disagree, and `leave_chat` is best-effort either way, so a
 wrong verb shows up as us staying in groups rather than as an error.
+
+## Contact card (iMessage identity)
+
+Instead of "Maybe: +1 415…", the candidate sees **Foray** and a one-tap
+banner offering to save us. This is Apple's own name-and-photo sharing, not a
+`.vcf` attachment — nothing arrives as a file, and there is nowhere on the
+card for an email or a website. Those belong on a vCard media part, which is
+a separate piece of work.
+
+Two steps, and configuring a card shares it with nobody.
+
+### 1. Set the card (once, per number)
+
+```bash
+python deploy/linq_setup.py set-contact-card --first-name Foray
+```
+
+`--image-url` defaults to `$BASE_URL/v1/intake/linq/contact-card.png`, which
+the app serves: the Foray mark on `#0A0A11`, drawn at 1024px and sized to fill
+the circle Apple crops it to. Pass `--image-url` to point at something else,
+or run with `BASE_URL` unset for a name-only card. Linq fetches the URL when
+the card is set, so it must be the deployed host — not localhost.
+
+Check it with:
+
+```bash
+python deploy/linq_setup.py contact-card
+```
+
+### 2. Turn on sharing
+
+```bash
+LINQ_CONTACT_CARD_ENABLED=true
+```
+
+Default off. A share against a number with no card is error 2012 on *every*
+outbound, so the switch is what keeps a half-provisioned line quiet.
+
+### When a candidate is asked
+
+`messaging/contact_card.py` offers the card after a successful outbound, and
+only when all of these hold:
+
+| Gate | Why |
+|---|---|
+| They replied to us first | An inbound *after* one of our outbounds. Someone who texted once and went quiet has not earned a name in their contacts. |
+| iMessage, not RCS | Apple feature. RCS renders job-card images but cannot show a contact card, so this splits what `cards.py` treats alike. |
+| `to_address` is `LINQ_FROM_NUMBER` | A recruiter line added later must not inherit the candidate agent's face. |
+| Under 3 attempts, ≥24h apart | Linq documents that a share may not take effect and recommends retrying daily. Three, because a banner that returns forever is nagging. |
+
+State lives on `thread.record["_contact_card"]` (`attempts`, `last_attempt_at`,
+`shared_at`). Every failure path is swallowed — a missing banner must never
+cost a turn.
+
+### Known limits
+
+- Whether Apple actually drew the banner is not observable from our side. The
+  bool we record only says Linq accepted the call.
+- Re-running `set-contact-card` replaces the card; recipients who already
+  saved us keep the old name and photo in their contacts.

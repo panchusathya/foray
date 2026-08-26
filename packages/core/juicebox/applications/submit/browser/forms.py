@@ -181,11 +181,134 @@ WORKDAY_APPLICATION = FormSpec(
     ),
 )
 
+SMARTRECRUITERS = FormSpec(
+    vendor="smartrecruiters",
+    # Unprobed starting point (see the module docstring): written from the
+    # vendor's published markup, to be corrected with `ats-probe` output. The
+    # apply flow is a React app on /oneclick-ui/ reached from the posting's
+    # "I'm interested" control.
+    landmark=(
+        "input[name='firstName']",
+        "form[class*='application']",
+        "[data-test='application-form']",
+    ),
+    open_form=(
+        "a:has-text(\"I'm interested\")",
+        "button:has-text(\"I'm interested\")",
+        "a:has-text('Apply')",
+        "button:has-text('Apply')",
+    ),
+    fields={
+        "first_name": ("input[name='firstName']", "input[id*='first' i]"),
+        "last_name": ("input[name='lastName']", "input[id*='last' i]"),
+        "email": ("input[name='email']", "input[type='email']"),
+        "phone": ("input[name='phoneNumber']", "input[type='tel']"),
+        "resume": ("input[type='file']",),
+    },
+    required=frozenset({"first_name", "last_name", "email", "resume"}),
+    files=frozenset({"resume"}),
+    submit=(
+        "button[type='submit']",
+        "button:has-text('Submit')",
+        "button:has-text('Apply')",
+    ),
+)
+
+WORKABLE = FormSpec(
+    vendor="workable",
+    # Unprobed starting point. Workable's hosted form is one page at
+    # /<tenant>/j/<id>/apply and stamps stable data-ui hooks on its controls.
+    landmark=(
+        "form[data-ui='application-form']",
+        "input[name='firstname']",
+        "[data-ui='application-form']",
+    ),
+    open_form=("a[data-ui='overview-apply-now']", "a:has-text('Apply')"),
+    fields={
+        "first_name": ("input[name='firstname']", "input[id='firstname']"),
+        "last_name": ("input[name='lastname']", "input[id='lastname']"),
+        "email": ("input[name='email']", "input[type='email']"),
+        "phone": ("input[name='phone']", "input[type='tel']"),
+        # Workable renders a drag-drop uploader; the real input hides inside.
+        "resume": ("[data-ui='resume'] input[type='file']", "input[type='file']"),
+        "cover_letter": ("textarea[name='cover_letter']",),
+    },
+    required=frozenset({"first_name", "last_name", "email", "resume"}),
+    files=frozenset({"resume"}),
+    submit=("button[data-ui='apply-button']", "button[type='submit']"),
+)
+
+YC_ACCOUNT = FormSpec(
+    vendor="yc",
+    # Unprobed starting point. Work at a Startup runs on the unified YC
+    # account (account.ycombinator.com); a logged-out Apply lands on its
+    # sign-up form. Same two-leg shape as Workday: register, park on the
+    # verification mail, and browser/yc.py signs in for the application leg.
+    landmark=(
+        "input[name='password']",
+        "input[id='sign-up-password']",
+        "form[action*='sign' i]",
+    ),
+    open_form=(
+        "a:has-text('Sign up')",
+        "a:has-text('Create account')",
+        "a:has-text('Apply')",
+        "button:has-text('Apply')",
+    ),
+    fields={
+        "first_name": ("input[name='first_name']", "input[id*='first' i]"),
+        "last_name": ("input[name='last_name']", "input[id*='last' i]"),
+        "email": ("input[name='email']", "input[type='email']"),
+        "password": ("input[name='password']", "input[type='password']"),
+    },
+    required=frozenset({"email", "password"}),
+    submit=(
+        "button[type='submit']",
+        "button:has-text('Sign up')",
+        "button:has-text('Create account')",
+    ),
+)
+
+YC_APPLICATION = FormSpec(
+    vendor="yc",
+    # The signed-in apply on a WaaS job page: an Apply control opens a note
+    # box ("why you're a good fit") and Send files it with the WaaS profile.
+    # The note is the one free-text field, and it carries the reviewed
+    # why_company draft -- never invented here (docgen/answers owns that).
+    landmark=(
+        "textarea",
+        "button:has-text('Send')",
+    ),
+    open_form=("button:has-text('Apply')", "a:has-text('Apply')"),
+    fields={
+        "comments": ("textarea",),
+    },
+    required=frozenset(),
+    submit=("button:has-text('Send')", "button[type='submit']"),
+)
+
 #: What ``ats-probe`` can check, by vendor. Workday's second form sits behind a
-#: login, so only the account step is probeable without an account.
+#: login, so only the account step is probeable without an account -- and YC's
+#: application leg likewise, so its probeable face is the sign-up form.
 PROBEABLE: dict[str, FormSpec] = {
     "greenhouse": GREENHOUSE,
     "lever": LEVER,
     "ashby": ASHBY,
     "workday": WORKDAY_ACCOUNT,
+    "smartrecruiters": SMARTRECRUITERS,
+    "workable": WORKABLE,
+    "yc": YC_ACCOUNT,
+}
+
+#: Vendors whose *reachable* page is the application form itself, which is
+#: what question discovery (``applications/questions.py``) needs. Workday and
+#: YC gate theirs behind an account, so the page a logged-out browser reaches
+#: is a registration form -- "discovering" questions there would put
+#: "password" in front of the candidate as something the employer asked.
+DISCOVERABLE: dict[str, FormSpec] = {
+    "greenhouse": GREENHOUSE,
+    "lever": LEVER,
+    "ashby": ASHBY,
+    "smartrecruiters": SMARTRECRUITERS,
+    "workable": WORKABLE,
 }

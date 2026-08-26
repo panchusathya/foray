@@ -1100,6 +1100,13 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
     # One message, not two. A queued attempt announces itself when it lands
     # ("I submitted it"); telling somebody their package is ready to review
     # first and then that it is already gone reads as two different products.
+    #
+    # The follow-up questions ride behind the ready message *inside the notify
+    # handler* -- asking here while the notification sat queued is how the
+    # questions used to overtake the message they were about. Only the
+    # auto-submit path still asks from here: it queues no ready message, and
+    # a required blank will park that attempt at needs_human, so the questions
+    # are what un-parks it.
     if submit_job is None:
         notify_candidate(
             db,
@@ -1108,14 +1115,10 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
             event=EVENT_PACKAGE_READY,
             subject_id=application.id,
         )
-    # Whatever the form asks that we still cannot answer, asked now -- with the
-    # role in hand. Onboarding no longer collects comp, notice period or work
-    # auth in the abstract; this is where they are worth a message. After the
-    # package notification on purpose: the candidate sees the role first, then
-    # the two questions it raised.
-    from .applications.followups import ask_for_missing
+    else:
+        from .applications.followups import ask_for_missing
 
-    result["followup"] = ask_for_missing(db, application)
+        result["followup"] = ask_for_missing(db, application)
     return result
 
 

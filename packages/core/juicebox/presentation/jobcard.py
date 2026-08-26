@@ -35,6 +35,50 @@ _SOURCE_LABELS = {
 }
 
 
+def clean_title(title: str, company: str) -> str:
+    """The title with a trailing "at {company}" clause stripped.
+
+    Scraped titles arrive as the listing's whole headline. The projection
+    carries company separately, so a title that repeats it at the tail makes
+    every surface -- the card image draws them on two lines -- read the
+    employer twice. Only a *trailing* clause goes: "Engineer at Wipro at our
+    Houston office" is not a shape that occurs, and mid-title mentions are
+    part of the role's actual name.
+    """
+    title = (title or "").strip()
+    company = (company or "").strip()
+    if not title or not company:
+        return title
+    lowered = title.lower()
+    # Em and en dash separators are deliberate: scraped headlines use
+    # both. noqa RUF001/RUF003 -- the ambiguity is the point.
+    for sep in (" at ", " @ ", " - ", " — ", " – ", " | "):  # noqa: RUF001
+        suffix = f"{sep}{company}".lower()
+        if lowered.endswith(suffix):
+            return title[: len(title) - len(suffix)].rstrip(" ,-|@—–")  # noqa: RUF001
+    return title
+
+
+def role_line(title: str, company: str, *, sep: str = " at ") -> str:
+    """``{title}{sep}{company}``, unless the title already names the company.
+
+    Scraped titles routinely arrive as the whole line -- "Junior Software
+    Developer job in Houston at Wipro Limited" -- and every renderer that
+    appended "at {company}" on top produced "... at Wipro Limited at Wipro
+    Limited". One containment check, shared, instead of each surface
+    rediscovering it.
+    """
+    title = (title or "").strip()
+    company = (company or "").strip()
+    if not company:
+        return title
+    if not title:
+        return company
+    if company.lower() in title.lower():
+        return title
+    return f"{title}{sep}{company}"
+
+
 def jobcard(
     posting: JobPosting,
     match: JobMatch | None = None,
@@ -58,7 +102,7 @@ def jobcard(
         "posting_id": posting.id,
         "match_id": match.id if match is not None else "",
         "company": posting.company or "",
-        "title": posting.title or "",
+        "title": clean_title(posting.title or "", posting.company or ""),
         "location": location,
         "seniority": posting.seniority or "",
         "reasons": reasons,
@@ -97,7 +141,7 @@ def render_card(card: dict[str, Any], *, index: int, total: int) -> str:
     number without sending anybody anywhere. ``url`` stays on the projection
     for the recruiter-side views that do want to open the posting.
     """
-    head = f"{index}/{total}  {card['title']} — {card['company']}"
+    head = f"{index}/{total}  {role_line(card['title'], card['company'], sep=' — ')}"
     lines = [head[:MAX_CARD_LINE_CHARS]]
     if card.get("location"):
         lines.append(card["location"][:MAX_CARD_LINE_CHARS])

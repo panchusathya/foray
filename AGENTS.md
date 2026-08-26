@@ -96,8 +96,17 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   browser run that we were never allowed to record it.
 - **`needs_human` is a terminus, not a retry.** A required field we cannot fill
   from the resume, the preference row or the form answers stops the run. Nothing
-  in this package invents an answer — `docgen/answers.py` leaves `why_company`
-  blank on purpose, and a browser adapter leaves a blank field blank.
+  in this package invents an answer — a browser adapter leaves a blank field
+  blank. What may fill an answer is decided per key in `docgen/answers.py`:
+  a *fact* about the candidate (`work_authorization`, comp, start date) is the
+  stated preference verbatim or blank — the model's phrasing is accepted only
+  with `preference:*` provenance, and `work_authorization` is never offered to
+  the model at all, because the first live package inferred "no sponsorship
+  needed" from a congressional internship, cited it, and passed the old
+  provenance-is-not-none guard. `why_company` is the one *drafted* answer —
+  resume + posting, inference allowed, `needs_review` flagged — because it
+  asserts no checkable fact and the candidate edits it in the portal before
+  any submit attempt fires.
 - **Every attempt gets a row, including the ones that failed.** A retried job
   must not look like a submission that never happened, and the partial unique
   index on a succeeded row is the double-submit guard that survives two workers
@@ -116,6 +125,38 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   mail arrives before any lookup, and `candidate_for` re-verifies the token
   against the row's own candidate id rather than trusting an address it was
   handed.
+
+## Documents (`packages/core/juicebox/docgen`)
+
+- **`render.py` sets type; it never edits content.** Fitting a resume to one
+  page is done by choosing a density off `_LADDER` — margins, type size,
+  leading and gaps together — and never by dropping a job, a bullet or the
+  summary. A test asserts the fitted page and the fixed-density page contain
+  the same words. A career that will not fit two pages even at the tightest
+  setting is allowed to run long; shortening it is the candidate's call.
+- **A drafted bullet carries the span it came from, or it does not ship.**
+  `bullets.py` fills roles LinkedIn handed over blank using what the candidate
+  said during intake, and `_grounded` discards any bullet whose quote is not
+  in that evidence character for character, or that carries a number the quote
+  does not. The check is on our side of the model and fails closed, which is
+  the only reason drafting is allowed on a document that goes out in somebody
+  else's name. Loosening it needs a better guard, not a lower bar.
+- **Evidence is what the candidate said, not what we know about them.**
+  `candidate_evidence` reads their call transcripts, their inbound messages
+  and the verbatim `highlights` — never our agent's side of a conversation, a
+  recruiter's note or a vendor's profile blurb. The test for this asserts the
+  agent's own question is absent. A bullet has to be something they can stand
+  behind in an interview.
+- **A role nobody has described gets no bullets.** Same answer `answers.py`
+  gives to a form question the inputs do not answer, for the same reason.
+- **Draft a role once, then reuse it.** `build_resume_json` runs per
+  application, so `remembered_bullets` seeds the drafter from the profile
+  resume and only still-bare roles are sent to the model. The saving is real
+  but secondary; the point is that twenty employers reading twenty different
+  accounts of one job is a worse failure than the twenty model calls.
+- **`generated_by` follows the content, not the code path.** A resume the
+  deterministic path built but `bullets.py` wrote into is `llm`, including
+  when the tailor afterwards fails or is rejected.
 
 ## Mail providers (`packages/core/juicebox/integrations`)
 
@@ -700,15 +741,31 @@ package owns only what is different about text. Plan and phasing live in
 
 ### Proposing a role in a thread (`messaging/cards.py`, `presentation/cardimage.py`)
 
-- **The text card is the message; the image is added to it.** A role used to go
-  out as a media-only vCard bubble reading `[contact card] Title - Company`,
-  with a tail saying "tap a card for details" -- so everything that made the
-  role worth considering lived inside an attachment, reading it took a tap, and
-  acting on it took a link. Now `render_card` always produces the body and
-  `cards.card_media` adds a rendered PNG where one will render inline. Both
-  halves ride one message, because a tapback resolves to a single message id:
-  split them and half the thumbs-up gestures land on a bubble holding no
-  proposal.
+- **The image IS the card where one exists; the text card is the fallback.**
+  A role used to go out as a media-only vCard bubble reading `[contact card]
+  Title - Company` -- everything that made the role worth considering lived
+  inside an attachment. The vCard's failure mode (an attachment that silently
+  fails to fetch leaves a role with no detail and no way to act) is kept dead
+  by *what* gates the choice: the body is dropped only once the media part is
+  actually in hand -- rendered, uploaded, id returned -- never on the protocol
+  alone. Any failure in the card path means the words go instead, so every
+  bubble carries the role one way or the other. The ordinal ("2 of 3") is
+  baked into the pixels for the same reason the body used to carry it: "apply
+  to 2" has to point at something visible, so the cache is keyed by position
+  as well as posting (`variant="card-2of3"`, solo cards keep `"card"`).
+
+- **A role is only carded when we can actually apply to it.**
+  `manager._sendable_postings` resolves the handful about to be sent and drops
+  any whose vendor fails `registry.can_submit_vendor` -- the card says "👍 and
+  i'll apply for you", and the first live run made that promise three times
+  about boards with no adapter. Two rules inside it: the gate is
+  `can_submit_vendor`, never `submittable` (under `APPLY_SUBMITTER=console`
+  the double accepts every vendor, so `submittable` cannot gate a promise);
+  and resolution runs `stamp_on_miss=False`, because a board 403ing our IP
+  today must not cache "unrecognised" on the row forever. Dropped roles get no
+  proposal row, so they surface again the day their vendor is supported. The
+  eligible list is over-fetched (3x) so a high-scoring unapplicable role
+  yields to the supported one ranked under it instead of shrinking the batch.
 
 - **`last_service` gates the image, and empty is not SMS.** An image over SMS is
   an MMS -- carrier cost, recompression, and some carriers strip it -- so only

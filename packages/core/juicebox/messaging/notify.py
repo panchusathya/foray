@@ -135,8 +135,12 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             if event == EVENT_APPLICATION_SENT
             else prompts.NOTIFY_PACKAGE_READY
         )
+        # clean_title: a scraped headline that already ends "at Wipro Limited"
+        # must not render "... at Wipro Limited at Wipro Limited" here.
+        from ..presentation.jobcard import clean_title
+
         body = template.format(
-            title=posting.title if posting else "the role",
+            title=clean_title(posting.title, posting.company) if posting else "the role",
             company=posting.company if posting else "the company",
             link=link,
         )
@@ -167,6 +171,18 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
         result = {"event": event, "sent": 1 if row is not None else 0}
         if event == EVENT_APPLICATION_SENT:
             result["reacted"] = reacted
+        if event == EVENT_PACKAGE_READY and row is not None:
+            # The follow-up questions ride *behind* the ready message, here,
+            # because ordering them anywhere else does not order them: the
+            # worker used to queue this notification and then ask inline, so
+            # the questions always overtook the message they were about --
+            # "what should we put for comp?" arriving before "your
+            # application is ready" reads as two different products.
+            # ask_for_missing is idempotent per application (asked flags), so
+            # a retried notify job does not re-ask.
+            from ..applications.followups import ask_for_missing
+
+            result["followup"] = ask_for_missing(db, application)
         return result
 
     if event == EVENT_STATUS_CHANGED:

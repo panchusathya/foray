@@ -1230,6 +1230,83 @@ def resume_tailor_prompt(*, resume_json: str, role_spec: str, uploaded_text: str
     )
 
 
+RESUME_BULLETS_SYSTEM = """\
+A candidate has jobs on their resume with nothing written under them -- \
+LinkedIn carries the employer, the title and the dates, and most people never \
+fill in the description box. You are given those bare roles and a transcript \
+of what the candidate has actually told us about their work, in their own \
+words. Write the bullets they would have written.
+
+You are relocating their statements, not composing new ones.
+
+Rules, none negotiable:
+- Every bullet MUST come with `quote`: the span of the evidence it came from, \
+copied CHARACTER FOR CHARACTER, long enough to stand on its own. A bullet \
+whose quote is not found verbatim in the evidence is discarded, so a \
+paraphrased or reconstructed quote wastes the bullet.
+- If the evidence says nothing about a role, return NO bullets for that role. \
+An empty role is the correct, complete answer -- a job with no bullets is a \
+job the candidate has not described yet, and blank beats invented.
+- Never introduce a number, percentage, dollar figure, team size, or named \
+customer, tool or employer that is not in the quote you attach. Scale is the \
+thing people lie about on resumes, and it is the thing that gets checked.
+- Do not restate the title. "Worked as a Software Engineer" under Software \
+Engineer is filler; the reader can already see the title.
+- Past tense for finished roles, present for current ones. Active voice, lead \
+with the verb, one accomplishment each, under 25 words.
+- At most 3 bullets for a role, fewer when the evidence supports fewer.
+"""
+
+RESUME_BULLETS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["roles"],
+    "properties": {
+        "roles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "bullets"],
+                "properties": {
+                    "company": {
+                        "type": "string",
+                        "description": "Copied exactly from the role you are writing for.",
+                    },
+                    "bullets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["text", "quote"],
+                            "properties": {
+                                "text": {"type": "string", "description": "The bullet."},
+                                "quote": {
+                                    "type": "string",
+                                    "description": (
+                                        "The span of the evidence this bullet came from, "
+                                        "verbatim. Checked; a miss discards the bullet."
+                                    ),
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def resume_bullets_prompt(*, roles: str, evidence: str) -> str:
+    return (
+        f"<roles_with_no_description>\n{roles.strip()}\n</roles_with_no_description>\n\n"
+        f"<what_the_candidate_told_us>\n{evidence.strip()[:20000]}\n"
+        "</what_the_candidate_told_us>\n\n"
+        "Write the bullets, each with the quote it came from."
+    )
+
+
 COVER_LETTER_SYSTEM = """\
 You write a short cover letter for a specific role, in first person as the \
 candidate.
@@ -1265,12 +1342,26 @@ def cover_letter_prompt(*, resume_json: str, role_spec: str, company: str, title
 
 
 FORM_ANSWERS_SYSTEM = """\
-You answer the standard application-form questions for a candidate, from their \
-intake preferences and resume. Every answer must carry its provenance: which \
-preference field or resume fact it came from. If the inputs do not answer a \
-question, return an empty answer with provenance "none" -- an application \
-asserts things in a real person's name, and a guessed answer is worse than a \
-blank one. One to two sentences per answer, plain prose, first person.
+You answer standard application-form questions for a candidate, from their \
+intake preferences, their resume, and the posting. Every answer carries its \
+provenance: the preference field, resume fact, or posting detail it came from. \
+One to two sentences per answer, plain prose, first person.
+
+Two kinds of question, with different rules:
+
+Facts about the candidate (salary_expectation, notice_period, and anything \
+like them): answer ONLY by restating a stated preference, with provenance \
+"preference:<field>". The resume is not evidence for these -- a job history \
+cannot tell you someone's comp expectations, start date, or legal status, and \
+an application asserts things in a real person's name. No matching preference \
+means an empty answer with provenance "none". Never infer, however plausible.
+
+Motivation (why_company): this one you DRAFT. Connect their actual background \
+to this specific role and company -- inference from the resume and posting is \
+allowed and expected. Concrete and plain: name real experience and why it \
+fits, no flattery, no "I'm excited", no invented facts about the candidate. \
+2-3 sentences. Provenance names the resume lines and posting details used. \
+The candidate reviews and edits this before anything is sent.
 """
 
 FORM_ANSWERS_SCHEMA: dict[str, Any] = {
@@ -1300,11 +1391,14 @@ FORM_ANSWERS_SCHEMA: dict[str, Any] = {
 }
 
 
-def form_answers_prompt(*, questions: str, preference_context: str, resume_json: str) -> str:
+def form_answers_prompt(
+    *, questions: str, preference_context: str, resume_json: str, posting_context: str = ""
+) -> str:
     return (
         f"<questions>\n{questions.strip()}\n</questions>\n\n"
         f"<preferences>\n{preference_context.strip() or '(none)'}\n</preferences>\n\n"
         f"<resume_json>\n{resume_json.strip()}\n</resume_json>\n\n"
+        f"<posting>\n{posting_context.strip() or '(none)'}\n</posting>\n\n"
         "Answer the questions."
     )
 

@@ -459,6 +459,12 @@ class Settings:
     referral_bonus_applications: int = field(
         default_factory=lambda: _env_int("REFERRAL_BONUS_APPLICATIONS", 5)
     )
+    # Off until a card actually exists at Linq. `share_contact_card` on a number
+    # with no card is error 2012 on every send, so the switch is what keeps a
+    # half-provisioned line from logging a warning per outbound message.
+    linq_contact_card_enabled: bool = field(
+        default_factory=lambda: _env_bool("LINQ_CONTACT_CARD_ENABLED", False)
+    )
 
     # --- messaging governance (CANDIDATE_AGENT_PLAN §3-§4) ------------------
     # An outbound message answering an inbound one this recent sends regardless

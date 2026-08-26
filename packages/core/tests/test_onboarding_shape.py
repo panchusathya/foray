@@ -340,15 +340,11 @@ class TestApplicationQuestionsAskedAtApplicationTime:
         body = channel.bodies[-1].lower()
         assert "google" in body, "the question has to say what it is for"
         assert "comp" in body
-        # This used to assert "why" was absent entirely -- we do not ask anybody
-        # to justify their enthusiasm over text. That still holds for the
-        # *answer*, and the loosening was deliberate: leaving the question
-        # unmentioned meant the portal showed an empty "why this company" while
-        # the text asked only about comp, so it read as a question the agent had
-        # missed. It is now named as theirs to write, and must not be phrased as
-        # something to text back.
-        assert "yours to write" in body
-        assert "in the app" in body
+        # A blank why_company (no model drafted one) is still named and
+        # pointed at the portal -- unmentioned, the empty box reads as a
+        # question the agent missed -- but it is never phrased as something
+        # to text back.
+        assert "write it in the app" in body
         assert "what should we put for why" not in body
 
     def test_an_answer_we_already_have_is_not_asked_for(
@@ -490,11 +486,11 @@ class TestThePortalOnlyBlank:
         body = followup_message(self._application(self.REAL), self._Posting())
         assert "why Voice Capital" in body
 
-    def test_it_says_the_answer_is_theirs_to_write(self):
+    def test_it_hands_a_blank_why_to_the_portal(self):
         from juicebox.applications.followups import followup_message
 
         body = followup_message(self._application(self.REAL), self._Posting())
-        assert "yours to write" in body
+        assert "write it in the app" in body
 
     def test_it_still_asks_the_askable_blank(self):
         """Naming the portal-only one must not displace the real question."""
@@ -509,7 +505,7 @@ class TestThePortalOnlyBlank:
         answers = [dict(item) for item in self.REAL]
         answers[-1]["answer"] = "I have followed the fund since inception."
         body = followup_message(self._application(answers), self._Posting())
-        assert "yours to write" not in body
+        assert "write it in the app" not in body
 
     def test_the_handed_off_key_is_reported_separately(self):
         """`asked` counts questions asked. A portal-only blank was named, not

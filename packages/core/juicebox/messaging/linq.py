@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import select
@@ -40,6 +41,17 @@ class SignatureError(RuntimeError):
 
 class LinqSendError(RuntimeError):
     """Outbound delivery failed."""
+
+
+class ContactCardError(RuntimeError):
+    """A contact-card read or write failed.
+
+    Separate from ``LinqSendError`` because these are provisioning calls, not
+    deliveries: they are made from the ops CLI, where the caller wants the
+    error, and never from a turn, where an exception would cost the
+    conversation. The one call a turn *does* make -- ``share_contact_card`` --
+    returns a bool instead and raises nothing.
+    """
 
 
 # What Linq says it actually delivered over. Canonical spellings, because the
@@ -950,25 +962,155 @@ def send_reaction(
         return False
 
 
+# --- contact card ---------------------------------------------------------
+#
+# iMessage's native identity, not a vCard. The recipient gets the system
+# banner -- "New contact information / Foray / Add" -- instead of a .vcf
+# bubble they have to open and save by hand, which is why there is no
+# attachment anywhere in this section.
+#
+# Two steps, kept separate at Linq's end and therefore here: the card is
+# configured once per number (``set_contact_card``, run from the ops CLI) and
+# then pushed into each chat individually (``share_contact_card``, called from
+# a turn). Configuring one shares it with nobody.
+
+CONTACT_CARD_URL = f"{LINQ_API_BASE}/contact_card"
+
+
+@dataclass(frozen=True)
+class ContactCard:
+    """The name and photo a recipient is offered. No email, no website.
+
+    Apple's prompt carries an identity, not a business card: ``last_name`` and
+    ``image_url`` are the only optional fields and there is nowhere to put an
+    address. Anything richer has to travel as a vCard media part instead --
+    ``OutboundMedia`` already carries one, so that path is open, but it is a
+    different surface and not this one.
+    """
+
+    phone_number: str
+    first_name: str
+    last_name: str = ""
+    image_url: str = ""
+    is_active: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ContactCard:
+        return cls(
+            phone_number=str(data.get("phone_number") or ""),
+            first_name=str(data.get("first_name") or ""),
+            last_name=str(data.get("last_name") or ""),
+            image_url=str(data.get("image_url") or ""),
+            is_active=bool(data.get("is_active")),
+        )
+
+
+def _card_request(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    transport: Transport | None = None,
+) -> dict:
+    """One contact-card call. Raises ``ContactCardError`` on anything but 2xx."""
+    if transport is not None:
+        response = transport(method, url, payload or {})
+        return response if isinstance(response, dict) else {}
+    settings = get_settings()
+    if not settings.linq_api_key:
+        raise ContactCardError("LINQ_API_KEY is not configured")
+    headers = {"Authorization": f"Bearer {settings.linq_api_key}"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    try:
+        http = httpx.request(method, url, headers=headers, json=payload, timeout=30.0)
+        http.raise_for_status()
+        body = http.text.strip()
+        return http.json() if body else {}
+    except httpx.HTTPError as exc:
+        raise ContactCardError(f"{method} contact_card failed: {exc}") from exc
+    except ValueError as exc:
+        raise ContactCardError(f"malformed contact-card response: {exc}") from exc
+
+
+def get_contact_cards(
+    *, phone_number: str = "", transport: Transport | None = None
+) -> tuple[ContactCard, ...]:
+    """The account's cards, optionally filtered to one number.
+
+    Linq answers with a list even when the filter can only match once, so this
+    does too -- collapsing it to an Optional here would hide a second card on
+    a second line, which is exactly the state an operator needs to see.
+    """
+    url = CONTACT_CARD_URL
+    if phone_number:
+        url = f"{url}?{urlencode({'phone_number': phone_number})}"
+    data = _card_request("GET", url, transport=transport)
+    cards = data.get("contact_cards")
+    if not isinstance(cards, list):
+        cards = [data] if data.get("phone_number") else []
+    return tuple(ContactCard.from_dict(card) for card in cards if isinstance(card, dict))
+
+
+def set_contact_card(
+    *,
+    phone_number: str,
+    first_name: str,
+    last_name: str = "",
+    image_url: str = "",
+    transport: Transport | None = None,
+) -> ContactCard:
+    """Create or replace the card for one number. Shares it with nobody."""
+    number = (phone_number or "").strip()
+    first = (first_name or "").strip()
+    if not number:
+        raise ContactCardError("phone_number is required")
+    if not first:
+        raise ContactCardError("first_name is required")
+    payload: dict[str, Any] = {"phone_number": number, "first_name": first}
+    if (last_name or "").strip():
+        payload["last_name"] = last_name.strip()
+    if (image_url or "").strip():
+        payload["image_url"] = image_url.strip()
+    return ContactCard.from_dict(
+        _card_request("POST", CONTACT_CARD_URL, payload=payload, transport=transport)
+    )
+
+
+def share_contact_card(chat_id: str, *, transport: Transport | None = None) -> bool:
+    """Prompt one chat to save our name and photo. Never raises.
+
+    Best-effort in the same class as a typing indicator, and for a sharper
+    reason: Linq documents that a share "may not take effect in every chat",
+    and that the chat has to be iMessage -- so an RCS or SMS thread answers
+    4xx as a matter of course. Neither is worth failing a turn over. The bool
+    says the vendor was reached and did not refuse, which is all we can know;
+    whether Apple actually drew the banner is not observable from here.
+    """
+    return _chat_action("POST", chat_id, "share_contact_card", transport=transport)
+
+
 def _chat_action(
     method: str, chat_id: str, action: str, *, transport: Transport | None = None
-) -> None:
-    """POST/DELETE a side-effect on a chat: typing, read, leave. Never raises.
+) -> bool:
+    """POST/DELETE a side-effect on a chat: typing, read, leave, or a card.
 
-    These are courtesies. A failed one costs an indicator, and a turn that
-    died because a receipt 500'd would cost the conversation.
+    Never raises. These are courtesies. A failed one costs an indicator, and a
+    turn that died because a receipt 500'd would cost the conversation. The
+    return says whether the vendor was reached and did not refuse -- the
+    typing and read callers ignore it, the contact card records it.
     """
     settings = get_settings()
     # An injected transport IS the client, so it does not need our API key --
     # requiring one here made these unreachable in tests, which is how a
     # courtesy call ends up shipped and never exercised.
     if not chat_id or (transport is None and not settings.linq_api_key):
-        return
+        return False
     url = f"{LINQ_API_BASE}/chats/{chat_id}/{action}"
     try:
         if transport is not None:
             transport(method, url, {})
-            return
+            return True
         headers = {"Authorization": f"Bearer {settings.linq_api_key}"}
         if method == "DELETE":
             response = httpx.delete(url, headers=headers, timeout=5.0)
@@ -986,5 +1128,8 @@ def _chat_action(
                 response.status_code,
                 (response.text or "")[:200],
             )
+            return False
+        return True
     except httpx.HTTPError as exc:
         logger.warning("linq %s %s failed: %s", action, method, exc)
+        return False

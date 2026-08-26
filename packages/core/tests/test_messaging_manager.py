@@ -31,7 +31,7 @@ from juicebox.messaging.conversation import ACTION_DEFERRED, ACTION_HELD, run_tu
 from juicebox.messaging.linkedin_flow import FLOW_LINKEDIN_SHORT
 from juicebox.messaging.manager import MODE_INTAKE, MODE_MANAGING
 from juicebox.messaging.threads import STATUS_COMPLETE, open_thread, record_inbound
-from juicebox.models import Application, Job, JobMatch, JobPosting, JobProposal
+from juicebox.models import Application, Job, JobMatch, JobPosting, JobProposal, utcnow
 from juicebox.worker import process_job
 
 #: The card head joins title and company with an em dash. Spelled as an
@@ -103,6 +103,11 @@ def _posting(session, org_id, *, company="Anthropic", title="ML Engineer", suffi
         company_normalized=company.lower(),
         jd_text="Build ML systems at scale.",
         status="open",
+        # Pre-resolved to a supported vendor: the proposal gate only cards
+        # roles an adapter can submit to, and resolving here would hit the
+        # network. The stamp makes resolve_target answer from the row.
+        ats_vendor="greenhouse",
+        ats_resolved_at=utcnow(),
     )
     session.add(posting)
     session.flush()
@@ -608,6 +613,100 @@ class TestDeadPostingsAreNotProposed:
         from juicebox.jobmatch.liveness import is_gone
 
         assert not is_gone("")
+
+
+class TestUnsupportedPostingsAreNotProposed:
+    """The card says "👍 and i'll apply for you" -- so a role with no submit
+    adapter is a promise we cannot keep, and the first live run made it three
+    times (YC before support, DigitalHire, a scraper mirror)."""
+
+    def _match(self, session, org_id, thread, posting, *, score=0.9):
+        session.add(
+            JobMatch(
+                org_id=org_id,
+                job_posting_id=posting.id,
+                candidate_id=thread.candidate_id,
+                score=score,
+                criteria=[STRONG],
+                status="new",
+            )
+        )
+
+    def test_an_unsupported_role_yields_to_the_supported_one_below_it(
+        self, session, account, channel, thread
+    ):
+        """Over-fetch is what makes the filter a re-ranking rather than a
+        shrinking: the best-scoring role has no adapter, and hiding it must
+        surface the supported role ranked under it, not send fewer cards."""
+        thread = _managed(session, thread)
+        org_id = account["org_id"]
+        unsupported = _posting(session, org_id, company="Wipro", title="Junior Dev", suffix="u")
+        unsupported.ats_vendor = "taleo"  # recognised, not submittable
+        supported = _posting(session, org_id, company="Toast", title="Strat Fin", suffix="s")
+        self._match(session, org_id, thread, unsupported, score=0.95)
+        self._match(session, org_id, thread, supported, score=0.85)
+        session.flush()
+
+        _say(session, thread, "find me some roles", native_id="unsup-1")
+
+        burst = "\n".join(channel.bodies)
+        assert "Toast" in burst
+        assert "Wipro" not in burst, "an unapplicable role was promised"
+        # Hidden, not buried: no proposal row means it is not marked answered,
+        # so adapter support arriving later can still surface it.
+        assert (
+            session.scalar(
+                select(JobProposal).where(JobProposal.job_posting_id == unsupported.id)
+            )
+            is None
+        )
+
+    def test_all_unsupported_says_so_instead_of_carding(
+        self, session, account, channel, thread
+    ):
+        thread = _managed(session, thread)
+        org_id = account["org_id"]
+        posting = _posting(session, org_id, company="Wipro", title="Junior Dev", suffix="au")
+        posting.ats_vendor = "taleo"
+        self._match(session, org_id, thread, posting)
+        session.flush()
+
+        _say(session, thread, "find me some roles", native_id="unsup-2")
+
+        burst = "\n".join(channel.bodies).lower()
+        assert "can't submit to for you yet" in burst
+        assert "wipro" not in burst
+
+    def test_a_networked_miss_does_not_poison_the_posting(
+        self, session, account, channel, thread
+    ):
+        """The gate resolves with stamp_on_miss=False: a board 403ing our IP
+        today must not cache "unrecognised" on a posting forever."""
+        from juicebox.applications.ats import detect
+
+        thread = _managed(session, thread)
+        org_id = account["org_id"]
+        posting = _posting(session, org_id, company="Mystery", title="Eng", suffix="np")
+        posting.ats_vendor = ""
+        posting.ats_resolved_at = None
+        posting.source_url = "https://jobs.unknownboard.example/x"
+        self._match(session, org_id, thread, posting)
+        session.flush()
+
+        import juicebox.jobmatch.liveness as liveness
+
+        original_gone = liveness.is_gone
+        original_follow = detect.follow
+        liveness.is_gone = lambda url, **kw: False
+        detect.follow = lambda url, client=None: detect.ApplyTarget()
+        try:
+            _say(session, thread, "find me some roles", native_id="unsup-3")
+        finally:
+            liveness.is_gone = original_gone
+            detect.follow = original_follow
+
+        session.refresh(posting)
+        assert posting.ats_resolved_at is None, "the miss was cached as final"
 
 
 class TestPollSelection:

@@ -1144,7 +1144,19 @@ def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
         # Free first, paid second. The scrape hitting an auth wall says
         # nothing about whether this person exists, so spend a lookup rather
         # than drop the candidate into a question batch they did not need.
-        profile, paid_error = _paid_profile_fallback(db, thread=thread, url=url)
+        #
+        # Guarded exactly like the scrape above, and for a reason found the
+        # hard way: this parses a third party's payload, and an unreadable
+        # date in it used to raise straight through the handler. The job died
+        # before the turn below was enqueued, so the thread went silent -- a
+        # candidate mid-conversation got no reply and no error, and the retry
+        # failed the same way five times.
+        paid_error = ""
+        try:
+            profile, paid_error = _paid_profile_fallback(db, thread=thread, url=url)
+        except Exception as exc:  # a live thread must still answer
+            logger.exception("paid profile lookup crashed for thread %s", thread.id)
+            profile, paid_error = None, str(exc)
         if profile is None:
             update_flow_meta(thread, error=(failure or paid_error)[:400], scrape=None)
         elif thread.candidate_id:

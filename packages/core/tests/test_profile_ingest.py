@@ -93,6 +93,35 @@ class TestMapProfile:
         assert parsed["educations"][0]["school"] == "Stanford University"
         assert parsed["educations"][0]["end_year"] == 2016
 
+    def test_volunteer_roles_are_kept_for_the_generated_resume(self):
+        parsed = map_profile(
+            {
+                "person": {
+                    "fullName": "Ada Okonkwo",
+                    "volunteerExperience": [
+                        {
+                            "organizationName": "Women in ML",
+                            "role": "Mentorship Chair",
+                            "startDate": "2023-01",
+                            "description": "Run the annual mentorship program.",
+                        }
+                    ],
+                }
+            },
+            linkedin_url=ADA_URL,
+        )
+        leadership = parsed["raw"]["leadership"]
+        assert leadership == [
+            {
+                "company": "Women in ML",
+                "title": "Mentorship Chair",
+                "start": "2023-01",
+                "end": "present",
+                "location": "",
+                "bullets": ["Run the annual mentorship program."],
+            }
+        ]
+
 
 class TestPromote:
     def test_reingest_never_wipes_experiences(self, session, account, existing):

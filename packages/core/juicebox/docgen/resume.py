@@ -93,6 +93,23 @@ def _graft_uploaded_sections(db: Session, candidate: Candidate, base: dict) -> N
         .order_by(CandidateDocument.created_at.desc())
     )
     structured = uploaded.structured if uploaded is not None else None
+    # A LinkedIn profile is also a source document. Use its volunteer and
+    # organization entries when the candidate has not supplied a stronger,
+    # self-authored resume to take precedence.
+    if not isinstance(structured, dict) or not structured:
+        profile = db.scalar(
+            select(CandidateDocument)
+            .where(
+                CandidateDocument.candidate_id == candidate.id,
+                CandidateDocument.source == "linkedin_ingest",
+            )
+            .order_by(CandidateDocument.created_at.desc())
+        )
+        profile_structured = profile.structured if profile is not None else None
+        if isinstance(profile_structured, dict):
+            structured = {
+                "leadership": ((profile_structured.get("raw") or {}).get("leadership") or [])
+            }
     if not isinstance(structured, dict) or not structured:
         return
 

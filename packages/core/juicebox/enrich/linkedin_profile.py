@@ -339,6 +339,7 @@ def map_profile(payload: dict[str, Any], *, linkedin_url: str) -> dict[str, Any]
     person = payload.get("person") or {}
     positions = _list(person, "positions", "positionHistory", "experience")
     schools = _list(person, "schools", "educationHistory", "education")
+    leadership = _leadership(person)
 
     experiences = []
     for item in positions:
@@ -397,7 +398,10 @@ def map_profile(payload: dict[str, Any], *, linkedin_url: str) -> dict[str, Any]
         "skills": [str(s) for s in person.get("skills") or [] if str(s).strip()],
         "experiences": experiences,
         "educations": educations,
-        "raw": {"profile_provider": payload},
+        # Keep volunteer and organization entries beside the raw payload. The
+        # CRM deliberately has no child table for them, but the generated
+        # resume reads this provenance artifact and can render the section.
+        "raw": {"profile_provider": payload, "leadership": leadership},
     }
 
 
@@ -409,6 +413,48 @@ def _list(person: dict, *keys: str) -> list:
         if isinstance(value, dict) and isinstance(value.get("items"), list):
             return value["items"]
     return []
+
+
+def _leadership(person: dict) -> list[dict]:
+    """Normalize the common provider names for LinkedIn volunteer roles.
+
+    These are resume facts, not professional employment: keeping them out of
+    ``experiences`` prevents a campus organization from distorting tenure while
+    preserving it in the profile artifact for the resume renderer.
+    """
+    entries = _list(
+        person,
+        "volunteerExperience",
+        "volunteer_experience",
+        "volunteer",
+        "organizations",
+        "organizationExperience",
+    )
+    out: list[dict] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        company = str(
+            item.get("organizationName") or item.get("companyName") or item.get("company") or ""
+        ).strip()
+        title = str(item.get("role") or item.get("title") or item.get("position") or "").strip()
+        if not company and not title:
+            continue
+        date_range = item.get("startEndDate") if isinstance(item.get("startEndDate"), dict) else {}
+        start = _date_str(date_range.get("start") or item.get("startDate"))
+        end = _date_str(date_range.get("end") or item.get("endDate")) or "present"
+        description = str(item.get("description") or item.get("details") or "").strip()
+        out.append(
+            {
+                "company": company,
+                "title": title,
+                "start": start,
+                "end": end,
+                "location": str(item.get("location") or "").strip(),
+                "bullets": [description] if description else [],
+            }
+        )
+    return out
 
 
 def _date_str(value: Any) -> str:

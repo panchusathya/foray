@@ -365,6 +365,8 @@ class LLMClient:
         self._enabled = settings.llm_enabled if enabled is None else enabled
         self._timeout = settings.llm_timeout_seconds
         self._fast_timeout = settings.llm_fast_timeout_seconds
+        # Separate, and shorter: see `llm_voice_timeout_seconds`.
+        self.voice_timeout = settings.llm_voice_timeout_seconds
         self._semaphore = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
         self._max_retries = max(0, settings.llm_max_retries)
         self._initial_delay = max(0.0, settings.llm_retry_initial_delay)
@@ -557,12 +559,19 @@ class LLMClient:
         schema: dict[str, Any],
         effort: str = "low",
         max_tokens: int = 4000,
+        timeout: float | None = None,
     ) -> LLMResult:
         """A JSON call for something a person is waiting on.
 
         The fast model, a short timeout and no retries. LLM_FAST_MODEL unset
         means fast_model is the main model and only the budget changes, so this
         is safe to adopt before anyone configures one.
+
+        ``timeout`` overrides the default budget for callers where "waiting"
+        means something stricter. Pass ``client.voice_timeout`` on anything a
+        caller hears as silence -- one shared number across a text thread and a
+        live phone call is either too slow for the call or too tight for the
+        thread, and it was both.
         """
         return self.json(
             system=system,
@@ -571,7 +580,7 @@ class LLMClient:
             effort=effort,
             max_tokens=max_tokens,
             model=self.fast_model,
-            timeout=self._fast_timeout,
+            timeout=self._fast_timeout if timeout is None else timeout,
             max_retries=0,
         )
 

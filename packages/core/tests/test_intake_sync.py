@@ -295,3 +295,38 @@ class TestTheGateIsSeeded:
 # --------------------------------------------------------------------------
 # identification, and what may be said back
 # --------------------------------------------------------------------------
+
+
+class TestADegradedGateIsFlaggedOnTheCall:
+    """The gate answering from regexes is a fault, and the call it shaped should
+    say so. Without this the fallback is invisible and its rate unknowable."""
+
+    def _failing_llm(self):
+        class FakeLLM:
+            available = True
+            voice_timeout = 3.5
+
+            def json_fast(self, **kwargs):
+                raise RuntimeError("timed out")
+
+            json = json_fast
+
+        return FakeLLM()
+
+    def test_the_call_is_marked_for_review(self, monkeypatch):
+        import juicebox.intake.extract as extract_mod
+        from juicebox.models import IntakeCall
+
+        monkeypatch.setattr(extract_mod, "get_llm", lambda: self._failing_llm())
+        call = IntakeCall(review_needed=False, review_reason="")
+        coverage_snapshot("Candidate: I want a backend role.", call=call, fast=True)
+
+        assert call.review_needed
+        assert "heuristics" in call.review_reason
+
+    def test_a_healthy_extraction_leaves_the_call_alone(self, monkeypatch, no_llm):
+        from juicebox.models import IntakeCall
+
+        call = IntakeCall(review_needed=False, review_reason="")
+        coverage_snapshot("Candidate: I want a backend role.", call=call, fast=False)
+        assert "heuristics" not in (call.review_reason or "")

@@ -155,8 +155,22 @@ class Settings:
     # main 120s budget is right for drafting a whole sequence in a worker and
     # absurd for a request someone is watching, so those get their own ceiling
     # and no retries: degrading to the heuristic text beats a spinner.
+    # The general "someone is waiting" budget: a text thread, an intent
+    # classification, a personalisation pass. 10s rather than the old 20s,
+    # because none of these are worth a third of a minute, but well clear of
+    # the voice budget below -- a person reading a text tolerates a pause that
+    # a person holding a phone to their ear does not.
     llm_fast_timeout_seconds: float = field(
-        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 20.0)
+        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 10.0)
+    )
+    # Live-call budget, and the reason the two are separate. The mid-call
+    # coverage check runs while the caller sits in silence: at 20s they heard
+    # the agent ask "are you with me?" while it was still waiting, and even 10s
+    # is a dead line. The endpoint degrades to heuristics on timeout, so failing
+    # fast costs one slightly worse next question and saves the call. Anything
+    # a caller waits on in real time should use this, not the one above.
+    llm_voice_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_VOICE_TIMEOUT_SECONDS", 3.5)
     )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)

@@ -1230,6 +1230,83 @@ def resume_tailor_prompt(*, resume_json: str, role_spec: str, uploaded_text: str
     )
 
 
+RESUME_BULLETS_SYSTEM = """\
+A candidate has jobs on their resume with nothing written under them -- \
+LinkedIn carries the employer, the title and the dates, and most people never \
+fill in the description box. You are given those bare roles and a transcript \
+of what the candidate has actually told us about their work, in their own \
+words. Write the bullets they would have written.
+
+You are relocating their statements, not composing new ones.
+
+Rules, none negotiable:
+- Every bullet MUST come with `quote`: the span of the evidence it came from, \
+copied CHARACTER FOR CHARACTER, long enough to stand on its own. A bullet \
+whose quote is not found verbatim in the evidence is discarded, so a \
+paraphrased or reconstructed quote wastes the bullet.
+- If the evidence says nothing about a role, return NO bullets for that role. \
+An empty role is the correct, complete answer -- a job with no bullets is a \
+job the candidate has not described yet, and blank beats invented.
+- Never introduce a number, percentage, dollar figure, team size, or named \
+customer, tool or employer that is not in the quote you attach. Scale is the \
+thing people lie about on resumes, and it is the thing that gets checked.
+- Do not restate the title. "Worked as a Software Engineer" under Software \
+Engineer is filler; the reader can already see the title.
+- Past tense for finished roles, present for current ones. Active voice, lead \
+with the verb, one accomplishment each, under 25 words.
+- At most 3 bullets for a role, fewer when the evidence supports fewer.
+"""
+
+RESUME_BULLETS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["roles"],
+    "properties": {
+        "roles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["company", "bullets"],
+                "properties": {
+                    "company": {
+                        "type": "string",
+                        "description": "Copied exactly from the role you are writing for.",
+                    },
+                    "bullets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["text", "quote"],
+                            "properties": {
+                                "text": {"type": "string", "description": "The bullet."},
+                                "quote": {
+                                    "type": "string",
+                                    "description": (
+                                        "The span of the evidence this bullet came from, "
+                                        "verbatim. Checked; a miss discards the bullet."
+                                    ),
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def resume_bullets_prompt(*, roles: str, evidence: str) -> str:
+    return (
+        f"<roles_with_no_description>\n{roles.strip()}\n</roles_with_no_description>\n\n"
+        f"<what_the_candidate_told_us>\n{evidence.strip()[:20000]}\n"
+        "</what_the_candidate_told_us>\n\n"
+        "Write the bullets, each with the quote it came from."
+    )
+
+
 COVER_LETTER_SYSTEM = """\
 You write a short cover letter for a specific role, in first person as the \
 candidate.

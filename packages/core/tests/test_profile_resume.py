@@ -428,3 +428,136 @@ class TestAdaptiveLayout:
         assert "Dean's List" in text
         # Student record: education prints before the internship.
         assert text.index("EDUCATION") < text.index("PROFESSIONAL EXPERIENCE")
+
+
+def _ink(pdf: bytes, page_number: int = 0) -> tuple[float, float]:
+    """``(highest, lowest)`` text baseline on a page, in page points.
+
+    ReportLab draws text inside a translated graphics state, so the text
+    matrix alone is page-relative; composing it with the CTM is what gives a
+    coordinate that can be compared against the paper.
+    """
+    import io
+
+    from pypdf import PdfReader
+
+    page = PdfReader(io.BytesIO(pdf)).pages[page_number]
+    baselines: list[float] = []
+
+    def visit(text, cm, tm, font_dict, font_size):
+        if text.strip():
+            baselines.append(cm[1] * tm[4] + cm[3] * tm[5] + cm[5])
+
+    page.extract_text(visitor_text=visit)
+    assert baselines, f"page {page_number + 1} drew no text"
+    return max(baselines), min(baselines)
+
+
+def _page_count(pdf: bytes) -> int:
+    import io
+
+    from pypdf import PdfReader
+
+    return len(PdfReader(io.BytesIO(pdf)).pages)
+
+
+class TestOnePageFit:
+    """A resume is a one-page document, so the page setting flexes too.
+
+    The complaint this answers, in a candidate's words: "it has nothing on
+    here." A LinkedIn-only history — real jobs, real dates, no descriptions —
+    was drawn at the same density as a fifteen-year career and left four
+    inches of white below the last line, which reads as a broken export rather
+    than a short career. The fix is typographic and only typographic: the same
+    facts, set at whichever density on ``_LADDER`` lands inside the page
+    budget.
+    """
+
+    TODAY = __import__("datetime").date(2026, 8, 25)
+
+    def _career(self, roles: int, bullets: int) -> dict:
+        return {
+            "contact": {"name": "Dana Ruiz", "email": "dana@example.com"},
+            "summary": "",
+            "experience": [
+                {
+                    "company": f"Employer {n}",
+                    "title": "Software Engineer",
+                    "start": f"{2008 + n}-01",
+                    "end": f"{2009 + n}-12",
+                    "location": "New York, United States",
+                    "bullets": [
+                        f"Owned the {word} workstream from design through rollout."
+                        for word in ("platform", "ingest", "billing", "search")[:bullets]
+                    ],
+                }
+                for n in range(roles)
+            ],
+            "education": [{"school": "Rice University", "degree": "BS", "field": "CS"}],
+            "skills": ["python", "react", "postgres"],
+        }
+
+    def _linkedin_only(self) -> dict:
+        """Six real roles, no descriptions — the shape that prompted this."""
+        career = self._career(roles=6, bullets=0)
+        career["experience"][0]["bullets"] = ["Redefining the job application process"]
+        return career
+
+    def test_a_thin_history_is_set_to_fill_the_page(self):
+        from juicebox.docgen.render import _REFERENCE, _draw, render_resume_pdf
+
+        structured = self._linkedin_only()
+        fitted = render_resume_pdf(structured, today=self.TODAY)
+        fixed, _ = _draw(structured, self.TODAY, _REFERENCE, "x")
+
+        # At one fixed density this resume stopped less than halfway down the
+        # paper, leaving over four inches of white above the bottom margin.
+        _, fixed_last_line = _ink(fixed)
+        assert fixed_last_line - _REFERENCE.margin > 4 * 72
+
+        # Fitted, the last line reaches the bottom quarter of the paper — most
+        # of the white is gone, and what is left reads as a margin.
+        _, fitted_last_line = _ink(fitted)
+        assert fitted_last_line < 792 / 4
+        assert fitted_last_line < fixed_last_line / 2
+        assert _page_count(fitted) == 1
+
+    def test_filling_the_page_adds_and_drops_nothing(self):
+        from juicebox.docgen.parse import extract_pdf_text
+        from juicebox.docgen.render import _REFERENCE, _draw, render_resume_pdf
+
+        structured = self._linkedin_only()
+        fitted = extract_pdf_text(render_resume_pdf(structured, today=self.TODAY))
+        fixed = extract_pdf_text(_draw(structured, self.TODAY, _REFERENCE, "x")[0])
+        # Whitespace is exactly what changed, so compare the words themselves.
+        assert fitted.split() == fixed.split()
+
+    def test_a_history_that_would_spill_is_squeezed_back_onto_one_page(self):
+        from juicebox.docgen.render import _REFERENCE, _draw, render_resume_pdf
+
+        structured = self._career(roles=8, bullets=4)
+        assert _draw(structured, self.TODAY, _REFERENCE, "x")[1] == 2
+        assert _page_count(render_resume_pdf(structured, today=self.TODAY)) == 1
+
+    def test_a_career_too_long_for_one_page_keeps_every_job(self):
+        from juicebox.docgen.parse import extract_pdf_text
+        from juicebox.docgen.render import render_resume_pdf
+
+        structured = self._career(roles=15, bullets=4)
+        pdf = render_resume_pdf(structured, today=self.TODAY)
+        assert _page_count(pdf) == 2
+        text = extract_pdf_text(pdf)
+        for job in structured["experience"]:
+            assert job["company"] in text
+
+    def test_a_second_page_is_a_spread_not_a_stub(self):
+        """Two pages means the airiest two-page setting, not the tightest.
+
+        Squeezing a fifteen-role career to 9pt when it needs two pages either
+        way buys nothing and costs legibility; the room belongs to page two.
+        """
+        from juicebox.docgen.render import render_resume_pdf
+
+        pdf = render_resume_pdf(self._career(roles=15, bullets=4), today=self.TODAY)
+        top, bottom = _ink(pdf, page_number=1)
+        assert top - bottom > 300

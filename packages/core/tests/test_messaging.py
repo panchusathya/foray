@@ -1657,7 +1657,17 @@ class TestLinqWebhook:
         jobs = session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all()
         assert len(jobs) == 1
 
-    def test_group_chats_are_ignored(self, client, session, linq_number):
+    def test_group_chats_are_ignored_unless_referrals_are_enabled(
+        self, client, session, linq_number
+    ):
+        """LINQ_GROUP_REFERRALS_ENABLED is off here, as it is by default.
+
+        Group chats are no longer unconditionally dropped -- see
+        ``tests/test_referrals.py`` for what happens when the flag is on. This
+        pins the off state, which is what every deployment gets until somebody
+        turns it on: nothing recorded, nothing sent into a room containing
+        somebody who never texted us.
+        """
         payload = linq_payload(is_group=True)
         response = post_linq(client, payload)
         assert response.status_code == 200

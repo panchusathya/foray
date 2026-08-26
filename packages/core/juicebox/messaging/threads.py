@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 INBOUND = "inbound"
 OUTBOUND = "outbound"
 
+# A group chat's thread. Lives here rather than with the other modes because
+# `find_active_thread` has to exclude it, and that query cannot import upwards.
+# A group is not one person's conversation: it stays active while we are still
+# in the chat, and resuming it for a private message would deliver every later
+# reply into the group.
+MODE_REFERRAL = "referral"
+
 STATUS_ACTIVE = "active"
 STATUS_COMPLETE = "complete"
 STATUS_STOPPED = "stopped"
@@ -144,7 +151,8 @@ def find_active_thread(
 ) -> IntakeThread | None:
     """The open conversation for this sender on this channel *at this org*.
 
-    ``org_id`` is not optional, and that is the whole point. Two agencies each
+    Group threads are excluded outright -- see the query. ``org_id`` is not
+    optional, and that is the whole point. Two agencies each
     claim their own Linq number; a candidate with an active thread at org A who
     texts org B's number missed the provider-thread lookup and landed back in
     A's thread. The message was written under A, the reply was composed from
@@ -160,6 +168,12 @@ def find_active_thread(
             IntakeThread.channel == channel,
             IntakeThread.from_address == from_address,
             IntakeThread.status == STATUS_ACTIVE,
+            # Never a group. A referral thread carries the referrer's own
+            # number and stays active while we are still in the chat, so
+            # without this a private message from them would resume it -- and
+            # its provider_thread_id is the *group*, which means the reply
+            # lands in front of the friend they just introduced.
+            IntakeThread.mode != MODE_REFERRAL,
         )
         .order_by(IntakeThread.last_inbound_at.desc(), IntakeThread.created_at.desc())
         .limit(1)

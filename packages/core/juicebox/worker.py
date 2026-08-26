@@ -484,7 +484,12 @@ def _handle_crm_discovery(db: Session, job: Job, now) -> dict[str, Any]:
     reset_for_rerun(db, org_id=org_id)
 
     for index, connection in enumerate(mailboxes):
-        connection.discovery_state = start_state(since=since, now=now)
+        state = start_state(since=since, now=now)
+        # The sweep stamp rides on the connection as well as on the payload so
+        # a page job left over from an earlier sweep can tell it has been
+        # superseded before it advances this sweep's cursor.
+        state["sweep"] = stamp
+        connection.discovery_state = state
         run_at = now + timedelta(seconds=10 * index)
         enqueue(
             db,
@@ -522,6 +527,15 @@ def _handle_crm_discovery_one(db: Session, job: Job, now) -> dict[str, Any]:
     if not connection.thread_sync_enabled:
         return {"skipped": "thread sync disabled"}
 
+    state = connection.discovery_state or {}
+    sweep = str(job.payload.get("sweep") or "")
+    # The same guard the backfill handler carries, for the same reason. Both
+    # sweeps share one cursor -- it lives on the connection -- so a page from a
+    # run the dispatcher has since restarted would walk the new run's cursor
+    # forward past pages neither of them has read.
+    if sweep and state.get("sweep") and str(state["sweep"]) != sweep:
+        return {"skipped": "superseded by a newer sweep"}
+
     raw_since = job.payload.get("since")
     # Frozen at dispatch: a sweep that takes hours must not have a lower bound
     # that creeps forward underneath it.
@@ -532,7 +546,7 @@ def _handle_crm_discovery_one(db: Session, job: Job, now) -> dict[str, Any]:
         since = window_start(now)
 
     page = int(job.payload.get("page") or 0)
-    cursor = (connection.discovery_state or {}).get("cursor") or ""
+    cursor = state.get("cursor") or ""
     # One whole-table read per job, not per page.
     context = build_context(db, org_id=connection.org_id, now=now)
 
@@ -631,6 +645,7 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
     """
     from .messaging.conversation import ACTION_DEFERRED, run_turn
     from .messaging.linq import maybe_mark_read, maybe_start_typing
+    from .messaging.suppression import is_blocked
     from .models import IntakeThread
 
     thread_id = job.payload.get("thread_id") or ""
@@ -641,8 +656,14 @@ def _handle_intake_turn(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "org_mismatch"}
     # Read, then typing, then the reply: the order a person produces, and
     # without the first the candidate watches "Delivered" while we think.
-    maybe_mark_read(thread)
-    maybe_start_typing(thread)
+    #
+    # Both reach the carrier, so both are contact. Someone who texted STOP and
+    # later taps an old card would otherwise get a read receipt and a
+    # "typing..." bubble from us -- the rails below stop the reply, but these
+    # two run before any of them. `react_to_message` already checks this.
+    if not is_blocked(db, thread=thread):
+        maybe_mark_read(thread)
+        maybe_start_typing(thread)
 
     # A tapback carries no text, so there is no message for `run_turn` to read
     # and no ordinal to resolve. The proposal is named on the job instead.
@@ -1481,17 +1502,64 @@ HANDLERS = {
 }
 
 
+def _record_failure(db: Session, job_id: str, error: str, *, now) -> None:
+    """Throw the failed handler's partial work away, then record the failure.
+
+    The rollback is the whole point, and two separate bugs lived in its
+    absence. A handler whose flush raised (an IntegrityError, say) left the
+    session poisoned, so the very next statement raised PendingRollbackError
+    out of the worker loop and killed the process -- and because nothing had
+    committed, ``attempts`` never incremented, so the job could never park and
+    the supervisor crash-looped on it forever, with every other org's queue
+    stuck behind it. And a handler that stamps "already done" before the step
+    that raised -- profile.ingest writes ``profile_ingest_checked_at`` and then
+    texts the candidate -- had that stamp committed anyway, so the retry
+    skipped as ``recently_checked``: the paid profile was bought and nobody was
+    ever told.
+
+    The job is re-read rather than reused because the rollback expires it; it
+    is guaranteed to still be there because ``process_job`` commits it before
+    the handler runs.
+    """
+    db.rollback()
+    job = db.get(Job, job_id)
+    if job is None:  # deleted underneath us; there is nothing left to record
+        return
+    mark_failed(job, error, now=now)
+    db.commit()
+
+
 def process_job(db: Session, job: Job, *, now=None) -> None:
+    """Run one job and commit it: the work and the status land together.
+
+    One job is the transaction, never a batch. When a whole batch shared one
+    commit, a worker killed on job seventeen rolled the sixteen before it back
+    to ``queued attempts=0`` while their external effects stood -- the mail was
+    already handed to Graph -- so the restart re-sent to every candidate in the
+    lost batch.
+    """
     now = now or utcnow()
-    handler = HANDLERS.get(job.kind)
+    # The row has to be durable before its handler runs: the failure path below
+    # rolls the session back, and an uncommitted job would be discarded along
+    # with the work it failed at, leaving nothing to record the failure on. In
+    # the worker this commit is also what makes the batch's claim durable,
+    # which is the only reason recover_stale_locks has anything to find.
+    db.commit()
+    # Read out before the handler runs. A flush that raised leaves the instance
+    # expired on a transaction that refuses to reload it, so naming job.id in
+    # the log line below would itself raise PendingRollbackError out of the
+    # except block -- the exact failure that block exists to contain.
+    job_id, job_kind = job.id, job.kind
+    handler = HANDLERS.get(job_kind)
     if handler is None:
-        mark_failed(job, f"unknown kind {job.kind}", now=now)
+        mark_failed(job, f"unknown kind {job_kind}", now=now)
+        db.commit()
         return
     try:
         result = handler(db, job, now) or {}
     except Exception as exc:
-        logger.exception("job %s (%s) failed", job.id, job.kind)
-        mark_failed(job, str(exc), now=now)
+        logger.exception("job %s (%s) failed", job_id, job_kind)
+        _record_failure(db, job_id, str(exc), now=now)
         return
     if result.get("defer"):
         settings = get_settings()
@@ -1504,8 +1572,10 @@ def process_job(db: Session, job: Job, *, now=None) -> None:
         job.run_at = result.get("defer_until") or (
             now + timedelta(seconds=max(settings.worker_tick_seconds, 30))
         )
+        db.commit()
         return
     mark_succeeded(job, now=now)
+    db.commit()
 
 
 # A texter is waiting on these, so they get their own small claim ahead of the
@@ -1535,21 +1605,25 @@ def process_batch(
     recover_stale_locks(db, now=now)
     me = worker or worker_id()
 
-    if only is not None:
-        jobs = claim(db, worker_id=me, now=now, kinds=only, limit=INTERACTIVE_BATCH)
-        for job in jobs:
-            process_job(db, job, now=now)
-        if jobs:
-            db.flush()
-        return len(jobs)
+    claims: tuple[tuple[tuple[str, ...] | None, int | None], ...] = (
+        ((only, INTERACTIVE_BATCH),)
+        if only is not None
+        else ((INTERACTIVE_KINDS, INTERACTIVE_BATCH), (None, None))
+    )
 
     done = 0
-    for kinds, limit in ((INTERACTIVE_KINDS, INTERACTIVE_BATCH), (None, None)):
+    for kinds, limit in claims:
         jobs = claim(db, worker_id=me, now=now, kinds=kinds, limit=limit)
+        # The claim -- and any lock recovery above it -- is committed before the
+        # first handler runs, not after the last one. A worker killed mid-batch
+        # has to leave its rows visibly `running` for recover_stale_locks to
+        # requeue; while the batch was one transaction those rows rolled back to
+        # `queued attempts=0` instead, which is what made that function dead
+        # code. Each job then commits itself, so a crash costs at most the one
+        # job in flight.
+        db.commit()
         for job in jobs:
             process_job(db, job, now=now)
-        if jobs:
-            db.flush()
         done += len(jobs)
     return done
 
@@ -1578,11 +1652,21 @@ def run_loop(
     scope = ",".join(only) if only else "all kinds"
     logger.info("worker %s polling every %.1fs (%s)", wid, delay, scope)
     while True:
-        with session_scope() as db:
-            # Only the general worker schedules the recurring ticks. A second
-            # process doing it too would double every sweep.
-            if only is None:
-                ensure_ticks(db)
-            n = process_batch(db, worker=wid, only=only)
+        try:
+            with session_scope() as db:
+                # Only the general worker schedules the recurring ticks. A
+                # second process doing it too would double every sweep.
+                if only is None:
+                    ensure_ticks(db)
+                n = process_batch(db, worker=wid, only=only)
+        except Exception:
+            # A dropped connection, a poisoned session, a bug in a handler's
+            # own cleanup: none of it is a reason to take the process down and
+            # block every org's queue behind a crash-looping supervisor. Every
+            # job that finished is already committed on its own, so backing off
+            # and claiming again is a complete recovery.
+            logger.exception("worker %s: loop iteration failed, backing off", wid)
+            time.sleep(max(delay, 1.0))
+            continue
         if n == 0:
             time.sleep(max(delay, 0.2))

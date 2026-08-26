@@ -2,12 +2,17 @@
 
 One LLM call, cached on a hash of the raw query so repeat searches skip it
 entirely. Falls back to a deterministic heuristic parser (keyword -> archetype,
-regex metros/languages/experience) when no key is set or the model fails, and to
-pure vector search when nothing picks an archetype.
+regex metros/languages/experience) when no key is set, when the model fails, or
+when it misses FORAY_PARSE_TIMEOUT_S, and to pure vector search when nothing
+picks an archetype.
+
+The call itself is synchronous (httpx + tenacity), so on the request path it
+goes through ``_parse_off_loop`` and never runs on the event loop.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -479,9 +484,22 @@ def _llm_schema_prompt() -> str:
     )
 
 
+def _request_path_client() -> Chat:
+    """The parse adapter tuned for a request, not for a batch job.
+
+    One attempt, short timeout. The library default is five attempts with
+    exponential backoff — minutes of wall clock — which is right for the
+    scoring fan-out and wrong here: a parse that misses the budget degrades to
+    heuristic_parse, which is this module's documented fallback anyway, and a
+    heuristic parse now beats a perfect one in four minutes.
+    """
+    return OpenRouterChat(timeout=settings.parse_timeout_s, attempts=1)
+
+
 def llm_parse(query: str, client: Chat | None = None) -> ParsedFilter | None:
+    """Blocking. Callers on the event loop must go through ``_parse_off_loop``."""
     try:
-        completion = OpenRouterChat() if client is None else client
+        completion = _request_path_client() if client is None else client
         text = (
             completion.complete(_llm_schema_prompt(), query, model=settings.parse_model)
             or "{}"
@@ -499,6 +517,31 @@ def llm_parse(query: str, client: Chat | None = None) -> ParsedFilter | None:
         return coerce(obj, query=query)
     except Exception as exc:  # noqa: BLE001 - any failure degrades to heuristic
         log.info("parse.llm_failed", error=str(exc))
+        return None
+
+
+async def _parse_off_loop(query: str, client: Chat | None) -> ParsedFilter | None:
+    """Run the blocking parse in a worker thread, on a deadline.
+
+    ``llm_parse`` -> ``OpenRouterChat.complete`` -> ``httpx.Client`` is
+    synchronous, wrapped in a synchronous tenacity retry. Awaited inline it
+    does not yield: it stops the entire uvicorn worker — every other search,
+    /search/stream, /health, the /internal find-emails batch — for as long as
+    OpenRouter takes, while this request still holds its pooled asyncpg
+    connection.
+
+    ``wait_for`` cannot stop the thread once it is running (the same caveat
+    rerank/runner.py documents), so the deadline is not a cancellation: it is
+    the guarantee that the loop and the connection come back on time. The
+    one-attempt client is what actually bounds the thread.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(llm_parse, query, client),
+            timeout=settings.parse_timeout_s,
+        )
+    except TimeoutError:
+        log.info("parse.llm_timeout", timeout_s=settings.parse_timeout_s)
         return None
 
 
@@ -520,7 +563,8 @@ async def parse_query(
         return parsed, ("cache" if parsed.archetype_id else "vector-fallback")
 
     want_llm = bool(settings.openrouter_api_key) if use_llm is None else use_llm
-    parsed = llm_parse(query, chat) if want_llm else None
+    parsed = await _parse_off_loop(query, chat) if want_llm else None
+    llm_failed = want_llm and parsed is None
     parser_name = "llm"
     if parsed is None:
         parsed = heuristic_parse(query)
@@ -528,11 +572,17 @@ async def parse_query(
     if parsed.archetype_id is None:
         parser_name = "vector-fallback"
 
-    await conn.execute(
-        "insert into query_parse_cache (query_hash, raw_query, parsed) "
-        "values ($1, $2, $3::jsonb) on conflict (query_hash) do nothing",
-        qhash,
-        query,
-        json.dumps(parsed.to_dict()),
-    )
+    if not llm_failed:
+        # A cache row has no TTL and the key is a hash of the query, so caching
+        # the degraded parse would let one 429 (or one deadline miss) pin the
+        # heuristic reading of that query in place forever — the LLM would
+        # never be consulted for it again. A fallback we chose deliberately
+        # (no API key) is a different thing and is cached as before.
+        await conn.execute(
+            "insert into query_parse_cache (query_hash, raw_query, parsed) "
+            "values ($1, $2, $3::jsonb) on conflict (query_hash) do nothing",
+            qhash,
+            query,
+            json.dumps(parsed.to_dict()),
+        )
     return parsed, parser_name

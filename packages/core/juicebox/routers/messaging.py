@@ -322,7 +322,9 @@ def _resolve_or_open_linq_thread(
     )
     if thread is not None:
         return thread
-    thread = find_active_thread(db, channel=LINQ, from_address=from_key)
+    thread = find_active_thread(
+        db, org_id=org_id, channel=LINQ, from_address=from_key
+    )
     if thread is not None:
         if inbound.chat_id and not thread.provider_thread_id:
             thread.provider_thread_id = inbound.chat_id

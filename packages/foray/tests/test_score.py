@@ -172,3 +172,46 @@ def test_heuristic_flags_stale_and_thin():
     )
     assert "stale_activity" in result["flags"]
     assert "thin_evidence" in result["flags"]
+
+
+class TestTheLinkedInCallCeiling:
+    """FORAY_LINKEDIN_SCORE_CAP is documented in config.py as the difference
+    between ~$900 and ~$10 for a full-pool run. It was read by nothing: the
+    archetype gates were holding that line alone."""
+
+    @staticmethod
+    def _plan(github: int, linkedin: int):
+        from foray.score.run import _linkedin_capped
+
+        arch = load_archetypes()["founding_ml"]
+        rows = [{"id": i, "evidence_kind": "github"} for i in range(github)]
+        rows += [{"id": 100 + i, "evidence_kind": "linkedin"} for i in range(linkedin)]
+        return _linkedin_capped, arch, rows
+
+    def test_linkedin_rows_are_trimmed_to_the_cap(self):
+        capped, arch, rows = self._plan(github=2, linkedin=5)
+        plan, dropped = capped([(arch, rows)], 2)
+        [(_arch, kept)] = plan
+        assert dropped == 3
+        assert sum(1 for r in kept if r["evidence_kind"] == "linkedin") == 2
+
+    def test_github_evidence_is_never_trimmed(self):
+        capped, arch, rows = self._plan(github=4, linkedin=3)
+        plan, _dropped = capped([(arch, rows)], 0 + 1)
+        [(_arch, kept)] = plan
+        assert sum(1 for r in kept if r["evidence_kind"] == "github") == 4
+
+    def test_the_budget_is_shared_across_archetypes_not_per_archetype(self):
+        """Per-archetype it would be a 15x cap, which is how the $900 run
+        happens with the ceiling nominally in place."""
+        capped, arch, _rows = self._plan(github=0, linkedin=0)
+        rows = [{"id": i, "evidence_kind": "linkedin"} for i in range(3)]
+        other = load_archetypes()["ml_platform"]
+        plan, dropped = capped([(arch, list(rows)), (other, list(rows))], 4)
+        assert sum(len(r) for _a, r in plan) == 4
+        assert dropped == 2
+
+    def test_a_zero_cap_disables_the_ceiling(self):
+        capped, arch, rows = self._plan(github=1, linkedin=3)
+        plan, dropped = capped([(arch, rows)], 0)
+        assert dropped == 0 and len(plan[0][1]) == 4

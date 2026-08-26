@@ -3,7 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from juicebox.models import Candidate, Enrollment, Message, utcnow
+from juicebox.models import (
+    Candidate,
+    Enrollment,
+    Message,
+    ProjectCandidate,
+    Suppression,
+    utcnow,
+)
 from juicebox.outreach import templates
 from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
@@ -315,6 +322,58 @@ class TestSendNowEndpoint:
         assert rows[0]["current_step"] == 0
 
 
+class TestRunEndpointDryRun:
+    def test_a_preview_serialises_and_leaves_the_enrollment_alone(
+        self, client, loaded_org, mailbox
+    ):
+        """The endpoint serialises Messages that were never flushed, so every
+        column MessageOut requires has to be present without a DB round trip."""
+        headers = loaded_org["headers"]
+        sequence = client.post(
+            "/v1/sequences",
+            json={
+                "name": "Preview",
+                "personalize": False,
+                "steps": [
+                    {
+                        "delay_days": 0,
+                        "subject_template": "Hi {{first_name}}",
+                        "body_template": "Hello {{first_name}}",
+                    },
+                    {"delay_days": 2, "subject_template": "Re", "body_template": "Bump"},
+                ],
+            },
+            headers=headers,
+        ).json()
+        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
+        client.post(
+            f"/v1/sequences/{sequence['id']}/enroll",
+            json={"candidate_ids": [candidate_id]},
+            headers=headers,
+        )
+
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/run?dry_run=true", headers=headers
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["processed"] == 1
+        [preview] = payload["messages"]
+        assert preview["subject"] == "Hi Ada"
+        assert preview["status"] == "queued"
+        assert preview["created_at"]
+
+        assert not mailbox.outbox
+        rows = client.get(
+            f"/v1/sequences/{sequence['id']}/enrollments", headers=headers
+        ).json()
+        assert rows[0]["current_step"] == 0
+        messages = client.get(
+            f"/v1/messages?candidate_id={candidate_id}", headers=headers
+        ).json()
+        assert messages == []
+
+
 class TestStepScheduling:
     """schedule_step_at is pure — no DB, just a step's scheduling fields."""
 
@@ -559,17 +618,92 @@ class TestSequenceRun:
         session.commit()
         assert session.query(Enrollment).count() == 1
 
-    def test_dry_run_sends_nothing(self, session, outreach_fixture, mailbox):
+    def test_a_repeated_id_in_one_payload_does_not_sink_the_batch(
+        self, session, outreach_fixture
+    ):
+        """Two Enrollments for one candidate trip the unique constraint, and the
+        rollback takes everyone else in the request with it."""
         sequence = outreach_fixture["sequence"]
-        enroll_candidates(
-            session, sequence=sequence, candidate_ids=[outreach_fixture["candidates"][0].id]
+        first, second = outreach_fixture["candidates"][0], outreach_fixture["candidates"][1]
+        created = enroll_candidates(
+            session,
+            sequence=sequence,
+            candidate_ids=[first.id, second.id, first.id],
         )
         session.commit()
+        assert len(created) == 2
+        assert session.query(Enrollment).count() == 2
+
+    def test_dry_run_leaves_no_trace_and_the_step_still_sends(
+        self, session, outreach_fixture, mailbox
+    ):
+        """A preview that writes anything skips the step it previewed.
+
+        The run endpoint is committed by CommittingRoute, so a persisted
+        dry-run Message plus the advance it triggers left the enrollment on
+        step 2, the person marked contacted, and step 1 never sent.
+        """
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        session.add(
+            ProjectCandidate(
+                project_id=sequence.project_id, candidate_id=ada.id, stage="sourced"
+            )
+        )
+        [enrollment] = enroll_candidates(
+            session,
+            sequence=sequence,
+            candidate_ids=[ada.id],
+            project_id=sequence.project_id,
+        )
+        session.commit()
+        due_at = enrollment.next_send_at
+
         summary = run_due(session, org_id=sequence.org_id, dry_run=True)
         session.commit()
+
+        # The preview still describes the mail that would have gone out...
         assert summary.processed == 1
+        [preview] = summary.messages
+        assert preview.to_address == "ada@example.com"
+        assert preview.subject and preview.body
+        assert preview.provider_message_id == "dry-run"
+
+        # ...and nothing else happened at all.
         assert not mailbox.outbox
-        assert session.query(Message).one().status == "queued"
+        assert session.query(Message).count() == 0
+        assert enrollment.current_step == 0
+        assert enrollment.status == "active"
+        assert enrollment.next_send_at == due_at
+        assert session.query(ProjectCandidate).one().stage == "sourced"
+        assert enrollment.personalization in (None, {})
+
+        # So step 1 is still there to send for real.
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        assert len(mailbox.outbox) == 1
+        assert enrollment.current_step == 1
+        assert session.query(ProjectCandidate).one().stage == "contacted"
+
+    def test_a_dry_run_of_a_suppressed_candidate_does_not_stop_the_enrollment(
+        self, session, outreach_fixture, mailbox
+    ):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        suppress(session, org_id=sequence.org_id, email="ada@example.com")
+        [enrollment] = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[ada.id]
+        )
+        session.commit()
+
+        summary = run_due(session, org_id=sequence.org_id, dry_run=True)
+        session.commit()
+
+        assert summary.failed == 1
+        assert summary.messages[0].error == "suppressed"
+        assert session.query(Message).count() == 0
+        assert enrollment.status == "active"
+        assert enrollment.stopped_reason == ""
 
     def test_daily_cap_is_enforced(self, session, outreach_fixture, mailbox, monkeypatch):
         monkeypatch.setenv("OUTREACH_DAILY_CAP", "1")
@@ -681,6 +815,137 @@ class TestSuppressions:
         run_due(session, org_id=sequence.org_id)
         session.commit()
         assert not mailbox.outbox
+
+    def test_opt_out_on_a_hand_sent_thread_is_still_suppressed(
+        self, session, outreach_fixture, mailbox
+    ):
+        """Thread-synced mail has no enrollment, and an opt-out is a fact about
+        the person either way -- otherwise enrolling them later mails them."""
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        hand_sent = _thread_synced_outbound(session, org_id=sequence.org_id, candidate=ada)
+        session.commit()
+
+        verdict = record_reply(
+            session,
+            message=hand_sent,
+            subject="Re: Quick note",
+            body="Please take me off your list.",
+        )
+        session.commit()
+
+        assert verdict.intent == "unsubscribe"
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        assert not mailbox.outbox
+
+    def test_bounce_on_a_hand_sent_thread_marks_and_suppresses(
+        self, session, outreach_fixture
+    ):
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        hand_sent = _thread_synced_outbound(session, org_id=sequence.org_id, candidate=ada)
+        session.commit()
+
+        record_reply(
+            session,
+            message=hand_sent,
+            subject="Undeliverable",
+            body="Delivery Status Notification (Failure)",
+        )
+        session.commit()
+
+        assert hand_sent.status == "bounced"
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+
+    def test_leaving_do_not_contact_keeps_a_real_opt_out(
+        self, session, outreach_fixture, mailbox
+    ):
+        """set_crm_status may only clear the suppression it wrote. There is one
+        row per address, so the row it deletes IS the candidate's opt-out."""
+        from juicebox.crm import set_crm_status
+
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        suppress(
+            session,
+            org_id=sequence.org_id,
+            email="ada@example.com",
+            reason="unsubscribe",
+            source="reply",
+        )
+        set_crm_status(session, ada, "do_not_contact")
+        set_crm_status(session, ada, "active")
+        session.commit()
+
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        run_due(session, org_id=sequence.org_id)
+        session.commit()
+        assert not mailbox.outbox
+
+    def test_leaving_do_not_contact_still_clears_its_own_suppression(
+        self, session, outreach_fixture, mailbox
+    ):
+        from juicebox.crm import set_crm_status
+
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        set_crm_status(session, ada, "do_not_contact")
+        session.commit()
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+
+        set_crm_status(session, ada, "active")
+        session.commit()
+        assert not is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+
+    def test_an_opt_out_outranks_a_hand_set_suppression_on_the_same_address(
+        self, session, outreach_fixture
+    ):
+        """Order matters the other way too: suppress() is idempotent per
+        address, so the reply has to upgrade the manual row rather than be
+        dropped -- or leaving do_not_contact deletes it."""
+        from juicebox.crm import set_crm_status
+
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        set_crm_status(session, ada, "do_not_contact")
+        hand_sent = _thread_synced_outbound(session, org_id=sequence.org_id, candidate=ada)
+        session.commit()
+
+        record_reply(session, message=hand_sent, subject="Re", body="Unsubscribe me please.")
+        session.commit()
+        assert session.query(Suppression).one().reason == "unsubscribe"
+
+        set_crm_status(session, ada, "active")
+        session.commit()
+        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
+
+
+def _thread_synced_outbound(session, *, org_id: str, candidate) -> Message:
+    """An email the recruiter sent by hand from Outlook: mailbox sync stores it
+    with ``enrollment_id`` NULL, because no sequence is behind it."""
+    message = Message(
+        org_id=org_id,
+        enrollment_id=None,
+        candidate_id=candidate.id,
+        direction="outbound",
+        source="microsoft",
+        from_address="recruiter@acme-talent.com",
+        to_address=candidate.emails[0],
+        subject="Quick note",
+        body="Are you open to a chat?",
+        status="sent",
+        sent_at=utcnow(),
+    )
+    session.add(message)
+    session.flush()
+    return message
 
 
 class TestReplies:

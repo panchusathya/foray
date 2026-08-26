@@ -29,6 +29,7 @@ from typing import Any
 
 from .... import storage
 from ....config import get_settings
+from ..base import REDACTED
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,9 @@ class FieldSpec:
     value: str = ""
     required: bool = False
     kind: str = "text"  # text | file | select | check
+    #: A credential. The run log records that the field was filled and never
+    #: what went into it -- see ``_recorded``.
+    secret: bool = False
 
 
 @dataclass
@@ -89,6 +93,13 @@ class RunLog:
             "filled": self.filled,
             "missing": self.missing,
         }
+
+
+def _recorded(spec: FieldSpec) -> str:
+    """What goes in ``RunLog.filled`` for a field we just filled."""
+    if spec.kind == "file":
+        return "<file>"
+    return REDACTED if spec.secret else spec.value
 
 
 def available() -> tuple[bool, str]:
@@ -249,7 +260,7 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
             # A radio group is many elements, so `_first` is the wrong shape:
             # the value picks which one, by each option's own label.
             if _check_radio(page, spec, log=log):
-                log.filled[spec.key] = spec.value
+                log.filled[spec.key] = _recorded(spec)
             elif spec.required:
                 missing.append(spec.key)
             continue
@@ -273,7 +284,7 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
             if spec.required:
                 missing.append(spec.key)
             continue
-        log.filled[spec.key] = spec.value if spec.kind != "file" else "<file>"
+        log.filled[spec.key] = _recorded(spec)
         log.step(f"filled {spec.key}")
     log.missing = missing
     return missing
@@ -308,10 +319,10 @@ def _check_radio(page, spec: FieldSpec, *, log: RunLog) -> bool:
                 substring = option
         chosen = exact or substring
         if chosen is None:
-            log.step(f"no radio option matching {spec.value!r} for {spec.key}")
+            log.step(f"no radio option matching {_recorded(spec)!r} for {spec.key}")
             return False
         chosen.check()
-        log.step(f"checked {spec.key} = {spec.value}")
+        log.step(f"checked {spec.key} = {_recorded(spec)}")
         return True
     except Exception as exc:  # noqa: BLE001 - one field, not the run
         log.step(f"could not pick a radio for {spec.key}: {exc}")

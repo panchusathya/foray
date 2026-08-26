@@ -960,6 +960,40 @@ class TestBrowserFieldFilling:
         assert missing == []
         assert found.filled is None
 
+    def test_a_secret_reaches_the_form_and_never_the_run_log(self):
+        """The log is persisted with the attempt, so a value recorded here is a
+        value a database dump reads. "We filled the password box" is the whole
+        of what diagnosis needs."""
+        from juicebox.applications.submit.browser.driver import FieldSpec, RunLog, fill
+
+        box = self._Locator()
+        log = RunLog()
+        fill(
+            self._Page({"#pw": box}),
+            [
+                FieldSpec(
+                    key="password",
+                    selectors=("#pw",),
+                    value="s3cret-generated",
+                    required=True,
+                    secret=True,
+                )
+            ],
+            log=log,
+        )
+        assert box.filled == "s3cret-generated", "the portal still gets the real value"
+        assert log.filled == {"password": "<redacted>"}
+        assert "s3cret-generated" not in json.dumps(log.as_payload())
+
+    def test_the_workday_account_form_declares_its_password_fields_secret(self):
+        """Both of them: the confirm box carried the same plaintext copy."""
+        from juicebox.applications.submit.browser.workday import _account_fields
+
+        specs = {spec.key: spec for spec in _account_fields("anna+abc@goforay.io", "pw")}
+        assert specs["password"].secret
+        assert specs["verify_password"].secret
+        assert not specs["email"].secret
+
 
 class TestSyncKeepsAtsMailOutOfTheReplyPath:
     def test_alias_mail_never_reaches_the_recruiter_machinery(
@@ -1158,6 +1192,38 @@ class TestParkedCredentialsAreNotReadableAtRest:
         assert "password" not in recovered
         assert recovered["stage"] == "account_created"
 
+    def test_sealing_reaches_a_credential_the_run_log_nested(self):
+        """`_seal` popped the top level only, so the copies the browser run log
+        carried at run.filled.password went to the row in clear -- and on the
+        branches with no top-level password there was nothing to encrypt at all,
+        which left the credential existing *only* in plaintext."""
+        from juicebox.applications.submission import _seal
+
+        sealed = _seal(
+            {
+                "run": {
+                    "steps": ["browser opened"],
+                    "filled": {
+                        "email": "anna+abc@goforay.io",
+                        "password": "s3cret-generated",
+                        "verify_password": "s3cret-generated",
+                    },
+                }
+            }
+        )
+        assert "s3cret-generated" not in json.dumps(sealed)
+        # And the rest of the log, which is what makes the attempt diagnosable.
+        assert sealed["run"]["steps"] == ["browser opened"]
+        assert sealed["run"]["filled"]["email"] == "anna+abc@goforay.io"
+
+    def test_sealing_keeps_the_blob_it_just_wrote(self):
+        """`secret_blob` is named like a secret and is the one that must live."""
+        from juicebox.applications.submission import _seal, _unseal
+
+        sealed = _seal({"password": "top-level", "run": {"filled": {"password": "nested"}}})
+        assert _unseal(sealed)["password"] == "top-level"
+        assert "nested" not in json.dumps(sealed)
+
     def test_a_parked_attempt_stores_no_plaintext_secret(
         self, session, account, candidate, aliased
     ):
@@ -1183,6 +1249,39 @@ class TestParkedCredentialsAreNotReadableAtRest:
         row = session.query(ApplicationSubmission).one()
         assert "s3cret-generated" not in json.dumps(row.verification)
         assert row.verification["stage"] == "account_created"
+
+    def test_an_attempt_that_only_nested_the_credential_stores_none_of_it(
+        self, session, account, candidate, aliased
+    ):
+        """The shape of workday's required-fields-missing branch: no top-level
+        password to seal, so the only copy on the row was the run log's."""
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        registry.set_submitter(
+            "greenhouse",
+            MemorySubmitter(
+                result=SubmissionResult(
+                    ok=False,
+                    method="browser",
+                    needs_human=True,
+                    error="could not fill required account fields: terms",
+                    verification={
+                        "steps": ["browser opened"],
+                        "filled": {"password": "s3cret-generated"},
+                        "missing": ["terms"],
+                    },
+                )
+            ),
+        )
+        try:
+            submit_application(session, application)
+        finally:
+            registry.reset_overrides()
+
+        row = session.query(ApplicationSubmission).one()
+        assert "s3cret-generated" not in json.dumps(row.verification)
+        assert row.verification["missing"] == ["terms"]
 
     def test_the_recruiter_api_returns_the_run_log_and_nothing_else(
         self, session, account, candidate, client, aliased
@@ -1428,6 +1527,387 @@ class TestTheGapsThatStrandedApplications:
         # Encrypted, like every other credential this repo holds.
         assert "generated-pw" not in stored.token_blob
         assert decrypt_json(stored.token_blob)["password"] == "generated-pw"
+
+    def test_ageing_out_keeps_the_evidence_the_ticket_is_made_of(
+        self, session, account, candidate, aliased
+    ):
+        """`expire_parked` builds a result carrying only a method and an error,
+        and `_finish` used to assign every field from it unconditionally -- so a
+        parked Workday attempt lost its screenshot, its run log, its tenant and
+        the sealed password for a portal account that still exists on the
+        employer's side, and the needs_human ticket had nothing in it."""
+        from datetime import timedelta
+
+        from juicebox.applications.submission import expire_parked
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="agent")
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="workday",
+                method="browser",
+                status="needs_verification",
+                confirmation_ref="workday gs: awaiting email verification",
+                artifacts=["orgs/o/apps/a/workday-account.png"],
+                verification={
+                    "stage": "account_created",
+                    "tenant": "gs",
+                    "secret_blob": "encrypted-blob-here",
+                    "run": {"steps": ["browser opened"]},
+                },
+                started_at=utcnow() - timedelta(days=3),
+            )
+        )
+        session.flush()
+
+        assert expire_parked(session, org_id=account["org_id"]) == 1
+        row = session.query(ApplicationSubmission).one()
+        assert row.status == "needs_human"
+        assert "verification mail" in row.error
+        # Everything a person needs to close the account by hand survives.
+        assert row.artifacts == ["orgs/o/apps/a/workday-account.png"]
+        assert row.verification["tenant"] == "gs"
+        assert row.verification["secret_blob"] == "encrypted-blob-here"
+        assert "awaiting email verification" in row.confirmation_ref
+
+
+class TestTheAttemptRowIsOnlyWrittenForARealAttempt:
+    """Five refused retries used to spend the whole retry budget."""
+
+    def test_a_refused_budget_writes_no_attempt_row(
+        self, session, account, candidate, memory_mode, aliased, monkeypatch
+    ):
+        """The row went in before the `submitting` move, which can refuse. Each
+        retry then left another `running` row nothing sweeps, `attempts_used`
+        climbed to the cap, and the application was locked out with "this one
+        needs a person" although no adapter ever ran."""
+        from juicebox.applications import limits
+
+        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 0)
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+
+        for _ in range(3):
+            with pytest.raises(TransitionError, match="budget"):
+                submit_application(session, application)
+
+        assert attempts_used(session, application) == 0
+        assert session.query(ApplicationSubmission).count() == 0
+        assert application.status == "prepared"
+
+    def test_the_worker_path_honours_the_configured_cap(
+        self, session, account, candidate, memory_mode, aliased, monkeypatch
+    ):
+        """APPLY_MAX_ATTEMPTS was checked only in `request_submission`, so the
+        queue's own WORKER_MAX_ATTEMPTS -- a larger, unrelated number -- was the
+        real ceiling on browser runs at an employer's form."""
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("APPLY_MAX_ATTEMPTS", "1")
+        reset_settings_cache()
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="agent")
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="greenhouse",
+                method="memory",
+                status="failed",
+            )
+        )
+        session.flush()
+
+        result = submit_application(session, application)
+        assert "needs a person" in result["skipped"]
+        # No second row, and the pursuit is parked where a person will see it
+        # rather than left claiming to be in flight.
+        assert session.query(ApplicationSubmission).count() == 1
+        assert application.status == "prepared"
+        assert "needs a person" in application.status_reason
+        reset_settings_cache()
+
+
+class TestTheBudgetCountsWhatIsAlreadyInFlight:
+    """state.py:98 -- both gates apply on the way in *and* on the way out.
+
+    Counting only `submitted_at` made everything in `submitting` invisible, so
+    an admitted run could be refused at the end of a browser session that had
+    already reached the employer.
+    """
+
+    def test_an_in_flight_application_spends_the_budget(
+        self, session, account, candidate, aliased, monkeypatch
+    ):
+        from juicebox.applications import limits
+
+        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 1)
+        first = _ready(
+            session,
+            account["org_id"],
+            candidate,
+            _posting(session, account["org_id"], company="Acme", suffix="a"),
+        )
+        transition(session, first, to_status="submitting", actor="agent")
+
+        second = _ready(
+            session,
+            account["org_id"],
+            candidate,
+            _posting(session, account["org_id"], company="Beta", suffix="b"),
+        )
+        decision = limits.may_submit(session, application=second)
+        assert not decision
+        assert decision.reason == limits.REASON_SUBMISSION_BUDGET
+
+    def test_a_run_already_admitted_can_still_record_itself(
+        self, session, account, candidate, aliased, monkeypatch
+    ):
+        """The other half: an application must not be refused its own in-flight
+        row on the way out, or a submission the employer already has can never
+        be written down."""
+        from juicebox.applications import limits
+
+        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 1)
+        application = _ready(
+            session,
+            account["org_id"],
+            candidate,
+            _posting(session, account["org_id"], company="Acme", suffix="a"),
+        )
+        transition(session, application, to_status="submitting", actor="agent")
+        assert limits.may_submit(session, application=application)
+        transition(session, application, to_status="submitted", actor="agent")
+        assert application.status == "submitted"
+
+
+class TestWorkdayReusesTheAccountItAlreadyMade:
+    """`AtsAccount` was written and read nowhere, so every role at one tenant
+    minted a new password, typed it into the sign-in page, and reported an
+    account created that no verification mail would ever follow."""
+
+    _URL = "https://gs.wd5.myworkdayjobs.com/en-US/Goldman/job/NY/Eng_JR-0098765"
+
+    def test_the_stored_login_reaches_the_adapter(self, session, account, candidate, aliased):
+        from juicebox.applications.submission import build_context
+        from juicebox.applications.submit.browser.workday import remember_account
+
+        posting = _posting(session, account["org_id"], company="Goldman", url=self._URL, suffix="w")
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        target = detect.target_of(posting)
+        remember_account(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            vendor=target.vendor,
+            tenant=target.tenant,
+            username="anna+abc@goforay.io",
+            password="stored-pw",
+        )
+
+        ctx = build_context(
+            session, application, candidate=candidate, posting=posting, target=target
+        )
+        assert ctx.portal_username == "anna+abc@goforay.io"
+        assert ctx.portal_password == "stored-pw"
+
+    def test_a_greenhouse_run_asks_for_no_portal_account(
+        self, session, account, candidate, aliased
+    ):
+        """Only the vendors that make you register have one to look up."""
+        from juicebox.applications.submission import build_context
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        ctx = build_context(
+            session,
+            application,
+            candidate=candidate,
+            posting=posting,
+            target=detect.target_of(posting),
+        )
+        assert ctx.portal_username == "" and ctx.portal_password == ""
+
+    def test_a_held_account_goes_straight_to_leg_two(self, monkeypatch):
+        from juicebox.applications.submit.browser import workday as workday_mod
+
+        monkeypatch.setattr(workday_mod.driver, "available", lambda: (True, ""))
+        handed: dict = {}
+
+        class _Reusing(workday_mod.WorkdaySubmitter):
+            def resume(self, ctx, verification):
+                handed.update(verification)
+                return SubmissionResult(ok=True, method=self.method, confirmation_ref="done")
+
+        ctx = TestAdapters._ctx("workday", self._URL)
+        ctx.portal_username = "anna+abc@goforay.io"
+        ctx.portal_password = "stored-pw"
+        result = _Reusing().submit(ctx)
+
+        assert result.ok
+        assert handed == {"username": "anna+abc@goforay.io", "password": "stored-pw"}
+        # And nothing parks: there is no second account, so no second
+        # verification mail is coming to un-park it.
+        assert not result.needs_verification
+
+    @staticmethod
+    def _fake_browser(monkeypatch, *, fills: dict[str, str]):
+        """A driver that lands on whatever page ``fills`` describes."""
+        import contextlib
+
+        from juicebox.applications.submit.browser import workday as workday_mod
+
+        class _Page:
+            def goto(self, url, **kwargs):
+                return None
+
+        @contextlib.contextmanager
+        def fake_session(*, log):
+            yield _Page()
+
+        def fake_fill(page, specs, *, log):
+            for spec in specs:
+                if spec.key in fills:
+                    log.filled[spec.key] = fills[spec.key]
+            return [spec.key for spec in specs if spec.required and spec.key not in fills]
+
+        monkeypatch.setattr(workday_mod.driver, "available", lambda: (True, ""))
+        monkeypatch.setattr(workday_mod.driver, "session", fake_session)
+        monkeypatch.setattr(workday_mod.driver, "fill", fake_fill)
+        monkeypatch.setattr(workday_mod.driver, "click", lambda *a, **k: True)
+        monkeypatch.setattr(workday_mod.driver, "snapshot", lambda *a, **k: "")
+        return workday_mod
+
+    def test_a_sign_in_page_is_not_reported_as_an_account_created(self, monkeypatch):
+        """The second role at a tenant lands here. Both inputs exist, so nothing
+        reads as missing -- and the run used to answer `needs_verification`,
+        which left the pursuit showing as being sent right now until it aged
+        out, with no mail ever coming."""
+        workday_mod = self._fake_browser(
+            monkeypatch, fills={"email": "anna+abc@goforay.io", "password": "<redacted>"}
+        )
+        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+
+        assert not result.needs_verification
+        assert result.needs_human
+        assert "sign-in form" in result.error
+
+    def test_the_registration_form_still_parks_for_its_mail(self, monkeypatch):
+        """The confirm-password box is the evidence, and it is only on the
+        registration form."""
+        workday_mod = self._fake_browser(
+            monkeypatch,
+            fills={
+                "email": "anna+abc@goforay.io",
+                "password": "<redacted>",
+                "verify_password": "<redacted>",
+                "terms": "1",
+            },
+        )
+        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+
+        assert result.needs_verification
+        assert result.verification["stage"] == "account_created"
+
+
+class TestEmployerMailIsMatchedToTheRightPursuit:
+    """A vendor's domain is the same domain for every employer on it."""
+
+    _ASHBY = "https://jobs.ashbyhq.com/{tenant}/9f8e7d6c-5b4a-3210-fedc-ba98765432{n}"
+
+    def _at_ashby(self, session, account, candidate, company, n):
+        posting = _posting(
+            session,
+            account["org_id"],
+            company=company,
+            url=self._ASHBY.format(tenant=company.lower(), n=n),
+            suffix=n,
+        )
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitted", actor="candidate")
+        return application
+
+    def test_a_vendor_domain_cannot_choose_between_two_pursuits_behind_it(
+        self, session, account, candidate, aliased
+    ):
+        """Acme's rejection from no-reply@ashbyhq.com matched Beta's apply_url,
+        and the newest row won: Beta closed out, its pipeline stage moved, and
+        the candidate told a company that never rejected them had."""
+        from juicebox.applications.inbox import handle
+
+        acme = self._at_ashby(session, account, candidate, "Acme", "10")
+        beta = self._at_ashby(session, account, candidate, "Beta", "11")
+        row = ensure(session, candidate)
+
+        outcome = handle(
+            session,
+            org_id=account["org_id"],
+            to_addresses=(row.address,),
+            from_address="no-reply@ashbyhq.com",
+            subject="Update on your application",
+            body="We have decided to pursue other candidates.",
+        )
+        assert outcome["application_id"] == ""
+        assert "action" not in outcome
+        assert acme.status == "submitted"
+        assert beta.status == "submitted"
+
+    def test_the_employers_own_domain_still_moves_its_pursuit(
+        self, session, account, candidate, aliased
+    ):
+        from juicebox.applications.inbox import handle
+
+        acme = self._at_ashby(session, account, candidate, "Acme", "10")
+        beta = self._at_ashby(session, account, candidate, "Beta", "11")
+        row = ensure(session, candidate)
+
+        handle(
+            session,
+            org_id=account["org_id"],
+            to_addresses=(row.address,),
+            from_address="no-reply@acme.com",
+            subject="Update on your application",
+            body="We have decided to pursue other candidates.",
+        )
+        assert acme.status == "rejected"
+        assert beta.status == "submitted"
+
+    def test_one_pursuit_at_that_vendor_is_still_unambiguous(
+        self, session, account, candidate, aliased
+    ):
+        """The same rule the single-open-pursuit fallback already uses: a
+        greenhouse pursuit is not a candidate for mail from ashbyhq.com."""
+        from juicebox.applications.inbox import handle
+
+        acme = self._at_ashby(session, account, candidate, "Acme", "10")
+        elsewhere = _posting(session, account["org_id"], company="Stripe", suffix="12")
+        detect.resolve_target(session, elsewhere, allow_network=False)
+        other = _ready(session, account["org_id"], candidate, elsewhere)
+        transition(session, other, to_status="submitted", actor="candidate")
+        row = ensure(session, candidate)
+
+        handle(
+            session,
+            org_id=account["org_id"],
+            to_addresses=(row.address,),
+            from_address="no-reply@ashbyhq.com",
+            subject="Update on your application",
+            body="We have decided to pursue other candidates.",
+        )
+        assert acme.status == "rejected"
+        assert other.status == "submitted"
 
 
 class TestTheFieldMapsAreCoherent:

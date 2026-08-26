@@ -84,10 +84,26 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    origins = [o for o in settings.cors_origins if o]
+    # `allow_origins=["*"]` together with `allow_credentials=True` is the one
+    # combination that must never ship: it tells every origin on the internet
+    # that it may send this API cookies and Authorization headers. An empty
+    # CORS_ORIGINS used to fall straight into it, so the deployment that simply
+    # forgot the variable got the most permissive setting of all. Fall back
+    # closed instead -- credentials come off, and with no origins configured
+    # nothing cross-origin is allowed at all. A visible CORS failure is a
+    # five-minute fix; a silent cross-origin credential hole is not.
+    allow_credentials = bool(origins) and "*" not in origins
+    if not allow_credentials:
+        logger.warning(
+            "CORS_ORIGINS is %s: cross-origin credentials are disabled. "
+            "Set CORS_ORIGINS to the exact front-end origins.",
+            "unset" if not origins else "a wildcard",
+        )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(settings.cors_origins) or ["*"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

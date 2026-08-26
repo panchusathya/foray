@@ -41,6 +41,19 @@ export function JobDetailPage() {
     }
   }
 
+  // Through the page's ErrorBox, not bare: a 409 or a dropped connection on a
+  // shortlist otherwise leaves the row unchanged with nothing said, and the
+  // recruiter believes a candidate is shortlisted who was never written.
+  async function setMatchStatus(matchId, status) {
+    setError(null);
+    try {
+      await jobsApi.patchMatch(matchId, { status });
+      matches.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   if (posting.loading) return <Loading />;
   if (!posting.data) {
     return (
@@ -140,20 +153,14 @@ export function JobDetailPage() {
               <button
                 type="button"
                 className="tiny"
-                onClick={async () => {
-                  await jobsApi.patchMatch(match.id, { status: 'shortlisted' });
-                  matches.reload();
-                }}
+                onClick={() => setMatchStatus(match.id, 'shortlisted')}
               >
                 Shortlist
               </button>
               <button
                 type="button"
                 className="tiny ghost"
-                onClick={async () => {
-                  await jobsApi.patchMatch(match.id, { status: 'dismissed' });
-                  matches.reload();
-                }}
+                onClick={() => setMatchStatus(match.id, 'dismissed')}
               >
                 Dismiss
               </button>

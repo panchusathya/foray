@@ -6,6 +6,7 @@ shortlist is hydrated into ``CandidateDoc``s for scoring and rerank.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import Float, String, bindparam, func, select, text
@@ -20,10 +21,26 @@ from . import fusion
 from .filters import YEARS_MAX_TOLERANCE, YEARS_MIN_TOLERANCE
 from .index import CandidateDoc, SearchPool, candidate_to_doc
 
+# to_tsquery() wants an operator between every lexeme; a bare space is a syntax
+# error, not an implicit AND. Negative keywords are phrases ("in the us"), so a
+# multi-word term went to Postgres verbatim and 500'd the whole search --
+# invisible in development, where SQLite uses the in-process backend.
+_TSQUERY_OPERATORS = re.compile(r"[&|!()<>:*'\"]+")
+
 
 def _as_tsquery(tokens: list[str]) -> str | None:
-    """OR-query over slugified tokens. Empty if nothing usable remains."""
-    parts = [token.replace("'", "") for token in tokens if token]
+    """OR-query over terms. A multi-word term becomes a phrase match.
+
+    ``<->`` rather than ``&`` because the in-process filter tests a negative
+    keyword with ``" term " in haystack`` -- contiguous words, in order. An AND
+    would reject anyone whose profile happens to contain both "us" and "the".
+    """
+    parts: list[str] = []
+    for token in tokens:
+        words = _TSQUERY_OPERATORS.sub("", token or "").split()
+        if not words:
+            continue
+        parts.append(words[0] if len(words) == 1 else "(" + " <-> ".join(words) + ")")
     if not parts:
         return None
     return " | ".join(parts)
@@ -147,9 +164,10 @@ class PostgresIndex:
             "neg_tsquery": _as_tsquery(negative),
         }
 
-        # current_company is stored as the display name; exclusions are already
-        # taxonomy-normalised (lowercased, suffixes stripped). lower(trim(...))
-        # matches "Ramp" / "ramp" the way the in-process filter does.
+        # Both sides taxonomy-normalised, via the derived columns a flush
+        # listener stamps. Comparing normalised exclusions against the raw
+        # display text let "Acme Inc." survive an exclusion of "Acme" -- the
+        # in-process filter normalises both sides and did not.
         sql = (
             text(
                 """
@@ -168,11 +186,11 @@ class PostgresIndex:
                         (
                             p.excl_companies IS NOT NULL
                             AND (
-                                lower(trim(c.current_company)) = ANY(p.excl_companies)
+                                c.current_company_normalized = ANY(p.excl_companies)
                                 OR EXISTS (
                                     SELECT 1 FROM experiences e
                                     WHERE e.candidate_id = c.id
-                                      AND lower(trim(e.company)) = ANY(p.excl_companies)
+                                      AND e.company_normalized = ANY(p.excl_companies)
                                 )
                             )
                         ) AS company_hit,

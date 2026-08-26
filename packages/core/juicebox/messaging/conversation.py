@@ -88,6 +88,7 @@ from .threads import (
     messages_of,
     record_outbound,
     transcript_of,
+    was_handed_off,
     with_send_key,
 )
 from .uploads import mint_upload_link
@@ -146,9 +147,13 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     if is_blocked(db, thread=thread):
         close_thread(db, thread=thread, status=STATUS_STOPPED, reason="do-not-contact")
         return TurnResult(ACTION_BLOCKED, thread, _coverage_for(thread))
-    if thread.status == STATUS_COMPLETE:
-        return TurnResult(ACTION_COMPLETED, thread, _coverage_for(thread))
 
+    # Above the STATUS_COMPLETE return, not below it. An opt-out is honoured
+    # whatever state the thread is in: Linq handles STOP in its own webhook,
+    # but the web widget has no other handler, so a STOP typed into a wrapped-up
+    # conversation used to be discarded outright -- no suppression row, no
+    # stopped thread, no acknowledgement, and the same visitor id greeted again
+    # the next time they opened the widget.
     if last is not None and last.direction == INBOUND and looks_like_stop(last.body):
         handle_stop(db, thread=thread)
         # The single confirmation a carrier expects, and the last thing this
@@ -160,6 +165,9 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
         return TurnResult(
             ACTION_STOPPED, thread, _coverage_for(thread), sent=[s for s in [sent] if s]
         )
+
+    if thread.status == STATUS_COMPLETE:
+        return TurnResult(ACTION_COMPLETED, thread, _coverage_for(thread))
 
     # Rule 2, hoisted above the flow branches so it covers all three. Their
     # turn: holding is the correct outcome, not a failure, and it is checked
@@ -309,10 +317,20 @@ def _reread(db: Session, *, thread: IntakeThread) -> None:
     thread.required_complete = state.required_complete
     thread.fields_missing = [*state.required_missing, *state.enrichment_missing]
     # The extractor's own verdict, widened: an open gate is a reason for a
-    # human to look even when every field that *was* answered looks clean.
-    thread.review_needed = bool(result.review_needed) or not state.required_complete
+    # human to look even when every field that *was* answered looks clean, and
+    # so is a duplicate-identity conflict the extractor cannot see. Assigning
+    # both of these outright is what used to drop a thread off the review queue
+    # one clean turn after `_copy_contact` found an address owned by another
+    # candidate -- the conflict stayed live and nobody was ever shown it.
+    thread.review_needed = (
+        bool(result.review_needed)
+        or not state.required_complete
+        or identity.has_identity_conflict(thread)
+    )
     if result.review_reason:
-        thread.review_reason = result.review_reason[:400]
+        thread.review_reason = identity.join_reasons(
+            thread.review_reason, result.review_reason
+        )
     db.flush()
 
 
@@ -748,7 +766,9 @@ def _run_linkedin_short(
 ) -> TurnResult:
     """Intro → scrape → confirm → one gap-fill batch → wrap up."""
     history = messages_of(db, thread)
-    outbound_sent = any(m.direction == OUTBOUND and m.status == "sent" for m in history)
+    outbound_sent = any(
+        m.direction == OUTBOUND and was_handed_off(m) for m in history
+    )
 
     if last is not None and last.direction == INBOUND:
         identity.absorb(

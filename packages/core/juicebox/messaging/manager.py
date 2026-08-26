@@ -51,6 +51,7 @@ from ..presentation.vcard import vcard_filename
 from . import identity, intents, prompts
 from .channels import LINQ, OutboundMessage
 from .jobcards import mint_jobcard_link
+from .threads import was_handed_off
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,19 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
     message directly, so the proposal is already known and re-deriving it from
     a position would only introduce a way to get it wrong -- the frame can
     have moved on by the time somebody scrolls back and taps an older card.
+
+    The rails live here rather than at the caller because this function is the
+    entry point below ``run_turn``: the worker's tapback branch and the legacy
+    poll path both return before a turn is ever run, so a candidate who texted
+    STOP could scroll up two days later, thumbs-up last week's job card, and
+    get an Application row plus an "on it" text on a number that is on the
+    do-not-contact list. ``_deliver`` only ever consults
+    ``thread.consent_messaging``, and ``handle_stop`` does not clear it.
     """
+    refused = _rails_for_out_of_band_apply(db, thread=thread)
+    if refused is not None:
+        return {**refused, "proposal_id": proposal_id}
+
     proposal = db.get(JobProposal, proposal_id)
     if proposal is None:
         return {"skipped": "proposal not found", "proposal_id": proposal_id}
@@ -205,6 +218,43 @@ def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) ->
         "proposal_id": proposal_id,
         "sent": len(result.sent),
     }
+
+
+def _rails_for_out_of_band_apply(db: Session, *, thread: IntakeThread) -> dict | None:
+    """``run_turn``'s safety gates, for an apply that never reaches ``run_turn``.
+
+    Same order and same outcomes as ``conversation.run_turn``: an already
+    stopped thread, then suppression (which closes the thread, exactly as the
+    turn does, so the opt-out is durable), then quiet hours. The quiet-hours
+    refusal is a deferral rather than a drop -- the worker re-queues on
+    ``defer_until``, so the application still happens, it just does not text
+    somebody at 3am to tell them about it.
+    """
+    from . import cadence
+    from .channels import get_channel
+    from .suppression import is_blocked
+    from .threads import STATUS_STOPPED, close_thread
+
+    if thread.status == STATUS_STOPPED:
+        return {"skipped": "thread stopped", "thread_id": thread.id}
+    if is_blocked(db, thread=thread):
+        close_thread(db, thread=thread, status=STATUS_STOPPED, reason="do-not-contact")
+        return {"skipped": "do-not-contact", "thread_id": thread.id}
+
+    # Consent-gated channels only, and only when consent is on file -- the same
+    # carve-out ``run_turn`` makes. A thread with no consent is refused by
+    # ``_deliver`` whatever the clock says, so deferring it would hide that
+    # refusal behind a timer.
+    if get_channel(thread.channel).requires_consent() and thread.consent_messaging:
+        decision = cadence.may_send_now(db, thread=thread)
+        if not decision.allowed:
+            return {
+                "defer": True,
+                "defer_until": decision.resume_at,
+                "reason": decision.reason,
+                "thread_id": thread.id,
+            }
+    return None
 
 
 def _last_inbound(db: Session, thread: IntakeThread) -> IntakeMessage:
@@ -252,13 +302,9 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
-    if proposal is not None and proposal.status == "proposed":
-        proposal.status = "accepted"
-        proposal.responded_at = utcnow()
-        proposal.responded_message_id = last.id
-
     body = prompts.APPLY_ACK.format(title=posting.title, company=posting.company)
     action = ACTION_APPLIED
+    application = None
     try:
         application = create_application(
             db,
@@ -271,19 +317,50 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
             consenting_message_id=last.id,
             consent_verbatim=(last.body or "")[:400],
         )
-        request_package(db, application)
     except DuplicateApplicationError:
+        # Already pursuing it, so the proposal really was accepted -- just not
+        # by this tap.
+        _accept_proposal(proposal, last)
         body = (
             f"You're already in flight for {posting.title} at {posting.company} — "
             'ask me "status" any time.'
         )
         action = ACTION_ANSWERED
-    except ApplicationError:
+    except ApplicationError as exc:
+        # Deliberately NOT accepted. Marking the proposal accepted ahead of the
+        # attempt left a refused application looking agreed-and-handled: the
+        # posting could never be re-presented, nothing was queued, and there is
+        # no retry path -- so "I'll check back with you" was a promise with
+        # nothing behind it. Left at "proposed", the card is still live and
+        # another tap (or another ask) retries once the budget frees up.
+        logger.info("apply parked on thread %s: %s", thread.id, exc)
         body = prompts.APPLY_PARKED.format(title=posting.title, company=posting.company)
         action = ACTION_ANSWERED
+    else:
+        _accept_proposal(proposal, last)
+
+    if application is not None:
+        try:
+            request_package(db, application)
+        except ApplicationError as exc:
+            # The application exists and the yes is recorded; only the build
+            # did not start. Saying "at your limit" here would name a rule that
+            # did not fire, so the ack stands and a recruiter picks the package
+            # up from the board.
+            logger.warning(
+                "package request failed for application %s: %s", application.id, exc
+            )
 
     row = _deliver(db, thread=thread, message=OutboundMessage(body=body))
     return TurnResult(action, thread, state, sent=[r for r in [row] if r])
+
+
+def _accept_proposal(proposal: JobProposal | None, last: IntakeMessage) -> None:
+    """Record the yes, once the application it authorises actually exists."""
+    if proposal is not None and proposal.status == "proposed":
+        proposal.status = "accepted"
+        proposal.responded_at = utcnow()
+        proposal.responded_message_id = last.id
 
 
 def _detail(db: Session, *, thread: IntakeThread, state, selection: int):
@@ -582,10 +659,17 @@ def present_matches(
     #
     # Proposal first so the vCard URL can include its id; then send; then
     # backfill message_id so a tapback still resolves to this card.
+    #
+    # The ordinal is `len(frame) + 1`, not the loop index: it is what the
+    # candidate will see on this bubble, and it has to be the same number
+    # `_apply` resolves against `last_presented`. Cards are delivered one at a
+    # time, so by the time this one is rendered every earlier failure is
+    # already known.
     rows = []
     frame = []
     now = utcnow()
-    for index, ((match, posting), card) in enumerate(zip(pairs, cards, strict=True), start=1):
+    for (match, posting), card in zip(pairs, cards, strict=True):
+        index = len(frame) + 1
         proposal = JobProposal(
             org_id=thread.org_id,
             candidate_id=candidate_id,
@@ -620,7 +704,23 @@ def present_matches(
                 verbatim=True,
             )
         row = _deliver(db, thread=thread, message=message, origin=origin)
-        proposal.message_id = row.id if row is not None else None
+        if row is None or not was_handed_off(row):
+            # A card nobody received must not bury the posting. `JobProposal`
+            # is unique per (candidate, posting) and `eligible_matches` treats
+            # any row as answered, so a proposal left behind by a carrier 500
+            # means "Nothing new clears the bar right now" for that role
+            # forever, and a later "apply to 1" resolving to a card the
+            # candidate never saw. The failed message row is the evidence the
+            # attempt happened; the proposal is not.
+            logger.warning(
+                "job card for posting %s did not reach thread %s; dropping the proposal",
+                posting.id,
+                thread.id,
+            )
+            db.delete(proposal)
+            db.flush()
+            continue
+        proposal.message_id = row.id
         rows.append(row)
         frame.append(
             {
@@ -630,6 +730,26 @@ def present_matches(
                 "title": posting.title,
             }
         )
+
+    if not frame:
+        # Every card failed. `last_presented` is left exactly as it was: an
+        # empty frame throws away whatever the candidate is still looking at,
+        # and a frame of undelivered cards is how "apply to 1" applies to a
+        # role nobody was shown.
+        if quiet:
+            return None
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(
+                body=(
+                    "i've got roles for you but they didn't send just now — "
+                    "i'll try again shortly."
+                )
+            ),
+            origin=origin,
+        )
+        return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
 
     tail = _deliver(
         db,

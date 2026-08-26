@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from juicebox.jobs import (
     KIND_OUTREACH_SEND,
     claim,
@@ -36,6 +38,112 @@ class TestEnqueue:
         assert first.id == second.id
         assert session.query(Job).count() == 1
         assert second.payload == {"n": 1}
+
+    @pytest.mark.parametrize("status", ["queued", "running", "succeeded"])
+    def test_a_live_or_finished_job_is_handed_back_untouched(
+        self, session, account, status
+    ):
+        """The double-send guarantee: nothing may re-arm one of these."""
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key="send:live",
+        )
+        job.status = status
+        job.attempts = 3
+        session.commit()
+
+        again = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key="send:live",
+        )
+        assert again.id == job.id
+        assert again.status == status
+        assert again.attempts == 3
+
+    def test_a_parked_job_is_requeued_for_a_later_caller(self, session, account):
+        """A half-minute Graph outage must not wedge the enrollment for good.
+
+        Backoff is 2/4/8/16/32s, so all five attempts fit inside one brief
+        blip. The row then parked, its send key is permanent, and every
+        subsequent tick "re-enqueued" the same dead row and reported
+        queued_sends: 1 while the candidate was never written to again.
+        """
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key="send:parked",
+            payload={"attempt": "first"},
+        )
+        job.status = "failed"
+        job.attempts = job.max_attempts
+        job.finished_at = utcnow()
+        job.last_error = "graph timed out"
+        session.commit()
+
+        again = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key="send:parked",
+            payload={"attempt": "second"},
+        )
+        session.commit()
+
+        assert again.id == job.id  # still one row: the key is still unique
+        assert session.query(Job).count() == 1
+        assert again.status == "queued"
+        assert again.attempts == 0
+        assert again.finished_at is None
+        assert again.payload == {"attempt": "second"}
+        # Kept on purpose: it is the only record of why the job parked.
+        assert again.last_error == "graph timed out"
+
+    def test_the_outreach_tick_revives_a_send_it_gave_up_on(
+        self, session, outreach_fixture
+    ):
+        from juicebox.jobs import KIND_OUTREACH_TICK
+        from juicebox.worker import _handle_outreach_tick
+
+        sequence = outreach_fixture["sequence"]
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
+        session.commit()
+        enrollment = session.query(Enrollment).one()
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+
+        send = enqueue(
+            session,
+            org_id=sequence.org_id,
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key=f"{KIND_OUTREACH_SEND}:{enrollment.id}:{step.id}",
+            payload={
+                "org_id": sequence.org_id,
+                "enrollment_id": enrollment.id,
+                "step_id": step.id,
+            },
+        )
+        send.status = "failed"
+        send.attempts = send.max_attempts
+        session.commit()
+
+        tick = enqueue(
+            session,
+            org_id=sequence.org_id,
+            kind=KIND_OUTREACH_TICK,
+            idempotency_key="tick:1",
+            payload={"org_id": sequence.org_id},
+        )
+        result = _handle_outreach_tick(session, tick, utcnow())
+
+        # It reported one queued send before too -- it just wasn't true.
+        assert result["queued_sends"] == 1
+        assert send.status == "queued"
+        assert send.attempts == 0
 
 
 class TestClaim:

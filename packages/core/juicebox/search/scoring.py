@@ -208,15 +208,27 @@ def _score_location(doc: CandidateDoc, parsed: ParsedQuery) -> Criterion | None:
     if not parsed.locations and parsed.remote_ok is None:
         return None
     if not parsed.locations:
-        score = 1.0 if doc.open_to_remote else 0.35
+        # remote_ok=False means "in the office", not "no preference". Scoring the
+        # candidate's flag without reading the request handed a perfect 1.0 to
+        # the remote-only people an onsite search is trying to rule out.
+        wants_remote = bool(parsed.remote_ok)
+        score = 1.0 if doc.open_to_remote is wants_remote else 0.35
+        if wants_remote:
+            evidence = "Flagged open to remote" if doc.open_to_remote else "No remote signal"
+        else:
+            evidence = (
+                "Flagged open to remote; the role is onsite"
+                if doc.open_to_remote
+                else "No remote flag on file"
+            )
         return Criterion(
             name="location",
-            label="Remote friendly",
+            label="Remote friendly" if wants_remote else "Onsite",
             kind="location",
             weight=WEIGHTS["location"],
             status=_status_for(score),
             score=score,
-            evidence="Flagged open to remote" if doc.open_to_remote else "No remote signal",
+            evidence=evidence,
         )
 
     where = ", ".join(doc.location_parts) or "location not stated"
@@ -322,7 +334,11 @@ def _score_education(doc: CandidateDoc, parsed: ParsedQuery) -> Criterion | None
     if not wanted_any:
         return None
     school_hit = [s for s in parsed.schools if any(s in school for school in doc.schools)]
-    degree_hit = [d for d in parsed.degrees if any(d in degree for degree in doc.degrees)]
+    # Canonical tokens on both sides. The query says "ms" and LinkedIn says
+    # "master of science", and a substring test between those two is a miss --
+    # so asking for a master's demoted everyone who holds one.
+    held = {tx.normalize_degree(degree) for degree in doc.degrees}
+    degree_hit = [d for d in parsed.degrees if tx.normalize_degree(d) in held]
     field_hit = [
         f for f in parsed.fields_of_study if any(f in field for field in doc.fields_of_study)
     ]

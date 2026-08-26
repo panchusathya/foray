@@ -368,17 +368,35 @@ def to_html(body: str) -> str:
 
 
 def add_tracking(
-    html_body: str, *, base_url: str, message_id: str, token: str
+    html_body: str,
+    *,
+    base_url: str,
+    message_id: str,
+    token: str,
+    sign_click=None,
 ) -> str:
-    """Rewrite links through the click endpoint and append an open pixel."""
+    """Rewrite links through the click endpoint and append an open pixel.
+
+    ``sign_click(target)`` signs one link's destination into its own token, so
+    the click endpoint can refuse a ``u`` it did not mint. Without it the link
+    carries ``token``, which covers only the message id — and a signature that
+    says nothing about the destination cannot stop the endpoint being used as
+    an open redirect. Optional so a preview can render untracked copy; the
+    send path always passes it.
+
+    The pixel keeps ``token``: ``/t/o`` has no destination to bind.
+    """
     from urllib.parse import quote
 
     def rewrite(match: re.Match[str]) -> str:
         target = match.group(1)
         if f"{base_url}/t/" in target:
             return match.group(0)
+        # Signed over the raw target, which is what the endpoint compares
+        # against after unquoting -- signing the quoted form would never match.
+        k = sign_click(target) if sign_click is not None else token
         return (
-            f'href="{base_url}/t/c/{message_id}?k={token}&u={quote(target, safe="")}"'
+            f'href="{base_url}/t/c/{message_id}?k={k}&u={quote(target, safe="")}"'
         )
 
     tracked = _LINK_RE.sub(rewrite, html_body)

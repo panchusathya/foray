@@ -6,7 +6,8 @@ one process at a time is the contract there.
 
 Enqueue is idempotent on ``(org_id, idempotency_key)``. Send jobs keep that key
 forever so a step cannot be enqueued twice; ticks use a timestamped key so the
-next tick can be scheduled after the current one succeeds.
+next tick can be scheduled after the current one succeeds. The one exception is
+a row that has burned every attempt -- see ``enqueue``.
 """
 
 from __future__ import annotations
@@ -133,6 +134,31 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def _revive(
+    job: Job,
+    *,
+    payload: dict[str, Any] | None,
+    run_at: datetime | None,
+    max_attempts: int | None,
+) -> Job:
+    """Put a parked job back on the queue for a caller that asked again.
+
+    ``last_error`` is deliberately left in place: it is the only record of why
+    the job parked, and the next attempt overwrites it anyway.
+    """
+    job.status = "queued"
+    job.attempts = 0
+    job.run_at = run_at or utcnow()
+    job.locked_at = None
+    job.locked_by = ""
+    job.finished_at = None
+    if payload is not None:
+        job.payload = payload
+    if max_attempts:
+        job.max_attempts = max_attempts
+    return job
+
+
 def enqueue(
     db: Session,
     *,
@@ -148,6 +174,24 @@ def enqueue(
         select(Job).where(Job.org_id == org_id, Job.idempotency_key == idempotency_key)
     )
     if existing is not None:
+        # A permanently failed row is the one status that must not be handed
+        # back as-is. Send keys are permanent and the backoff is 2/4/8/16/32s,
+        # so a half-minute Graph outage burns all five attempts and parks the
+        # job forever -- after which every outreach tick "re-enqueues" the same
+        # dead row and cheerfully reports queued_sends: 1 while the enrollment
+        # never moves again.
+        #
+        # Reviving only `failed` is what keeps the double-send guarantee
+        # intact. queued and running mean an attempt is pending or in flight,
+        # and a second row would be a second send; succeeded means the effect
+        # landed, and re-running it is precisely the double-send the key
+        # exists to prevent. failed means the queue has already given up and
+        # nothing further will happen on this row, so a later caller asking
+        # for the work again is a new request, not a duplicate of a live one.
+        if existing.status == "failed":
+            return _revive(
+                existing, payload=payload, run_at=run_at, max_attempts=max_attempts
+            )
         return existing
 
     settings = get_settings()

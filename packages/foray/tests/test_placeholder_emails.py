@@ -206,6 +206,45 @@ class TestStoreResultIsTheLastGate:
         assert insert[5] == CONFIDENCE["contactout_work"]
 
 
+class TestTheLinkedInImportIsGatedToo:
+    """It was the one email writer with no placeholder gate, and the one whose
+    input most needs it: the addresses come from a regex over `about`,
+    `bio_links` and `educations_details`, so "reach me at
+    firstname.lastname@example.com" arrives shaped like a real address."""
+
+    async def test_a_placeholder_in_an_about_section_is_not_stored(self):
+        from foray.ingest.linkedin_file import store_emails
+
+        conn = StubConn()
+        stats = {"emails": 0, "placeholder_emails": 0}
+        await store_emails(
+            conn, 1, ["firstname.lastname@example.com", "no-reply@acme.com"], "abc123", stats
+        )
+        assert conn.executed == []
+        assert stats == {"emails": 0, "placeholder_emails": 2}
+
+    async def test_a_real_address_still_lands(self):
+        from foray.ingest.linkedin_file import LINKEDIN_EMAIL_CONFIDENCE, store_emails
+
+        conn = StubConn()
+        stats = {"emails": 0, "placeholder_emails": 0}
+        await store_emails(conn, 1, ["jane@acme.com"], "abc123", stats)
+        [insert] = conn.executed
+        assert insert[2] == "jane@acme.com"
+        assert insert[5] == LINKEDIN_EMAIL_CONFIDENCE
+        assert stats["emails"] == 1
+
+    def test_a_regex_scrape_no_longer_outranks_every_real_source(self):
+        """UPSERT_EMAIL only replaces `source` on a STRICT confidence
+        improvement, so the old 80 meant a commit-mined or vendor-supplied
+        address could never displace it."""
+        from foray.ingest.linkedin_file import LINKEDIN_EMAIL_CONFIDENCE
+
+        assert LINKEDIN_EMAIL_CONFIDENCE < 75  # commit
+        assert CONFIDENCE["contactout_personal"] > LINKEDIN_EMAIL_CONFIDENCE
+        assert LINKEDIN_EMAIL_CONFIDENCE > 25  # guess
+
+
 class TestTheCacheIsNotPoisoned:
     def test_provider_unavailable_is_flagged_apart_from_an_ordinary_error(self):
         """The distinction is the whole point: an ordinary error and a quota wall

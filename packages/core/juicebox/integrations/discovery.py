@@ -22,7 +22,7 @@ sync permanently re-read or permanently skip mail.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,6 +53,19 @@ MAX_RECIPIENTS = 10
 
 # How long since the last exchange before a relationship reads as revivable.
 STALE_DAYS = 90
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes; normalise before comparing.
+
+    Only the job that first stages a contact holds the row it wrote. Every
+    later job in the sweep reads it back, so on SQLite -- the default for local
+    dev -- the second job compared an aware ``sent_at`` against a naive column
+    and raised instead of folding the page in.
+    """
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def window_start(now: datetime | None = None) -> datetime:
@@ -219,23 +232,29 @@ def stage_record(
             row.mailbox_ids = sorted([*seen, connection.id])
 
         when = record.sent_at
-        if row.first_seen_at is None or when < row.first_seen_at:
+        first_seen, last_seen = _aware(row.first_seen_at), _aware(row.last_seen_at)
+        if first_seen is None or when < first_seen:
             row.first_seen_at = when
-        if row.last_seen_at is None or when > row.last_seen_at:
+        if last_seen is None or when > last_seen:
             row.last_seen_at = when
 
         if record.thread_id:
             threads = context["threads"].setdefault(address, set())
             if record.thread_id not in threads:
                 threads.add(record.thread_id)
-                row.thread_count = len(threads)
+                # ``+=`` like its siblings, because the set only dedupes within
+                # one job: build_context runs per job and the sweep re-enqueues
+                # itself across many, so assigning len() threw away every
+                # thread an earlier page's job had already counted.
+                row.thread_count += 1
 
         flag = suggestion_for(
             local_part=address.partition("@")[0],
             to_count=row.to_count,
             is_suppressed=address in context["suppressed"],
         )
-        if not flag and row.last_seen_at and row.last_seen_at < context["stale_before"]:
+        seen_at = _aware(row.last_seen_at)
+        if not flag and seen_at and seen_at < context["stale_before"]:
             flag = "revive"
         row.suggested_status = flag
         touched += 1

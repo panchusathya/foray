@@ -113,6 +113,33 @@ class TestSpokenEmail:
     def test_a_malformed_decode_is_dropped(self):
         assert decode_spoken_email("dot dot at dot com") == ""
 
+    @pytest.mark.parametrize(
+        ("said", "expected"),
+        [
+            ("my email is dashawn at gmail dot com", "dashawn@gmail.com"),
+            ("my email is point72 at gmail dot com", "point72@gmail.com"),
+            ("my email is jdotson at gmail dot com", "jdotson@gmail.com"),
+            ("email me at pointer at gmail dot com", "pointer@gmail.com"),
+        ],
+    )
+    def test_a_separator_word_inside_a_word_is_not_a_separator(self, said, expected):
+        """These four came back as "is-awn@", "is.72@", "j.son@" and "at.er@".
+
+        The separator alternation was spliced in with no word boundaries, so any
+        name containing "dash", "dot" or "point" was torn open mid-word and the
+        leading ``\\s*`` reached back and swallowed the word before it. Each
+        wreck still satisfied the address regex, so it was returned rather than
+        rejected -- and became a CRM row, and then mail, under a stranger's
+        mailbox.
+        """
+        assert decode_spoken_email(said) == expected
+
+    def test_a_real_separator_still_separates(self):
+        """The boundaries must not cost us the case that always worked."""
+        assert decode_spoken_email("my email is priya at gmail dot com") == (
+            "priya@gmail.com"
+        )
+
     def test_an_ambiguous_local_part_is_refused_not_guessed(self):
         """"priya raman at gmail dot com" has no separator between the names.
 
@@ -166,6 +193,36 @@ class TestTranscriptScan:
         name, _ = scan_transcript(transcript)
         assert name == "Sure" or name == ""
         assert "backend" not in name.lower()
+
+    @pytest.mark.parametrize(
+        ("answer", "expected"),
+        [
+            ("Sure, it's Dashawn Miller, and my email is d at gmail dot com", "Dashawn Miller"),
+            ("Yes, Priya Raman", "Priya Raman"),
+            ("Of course, Priya Raman", "Priya Raman"),
+            ("Hi, it's Priya", "Priya"),
+            ("Hiro Tanaka", "Hiro Tanaka"),
+        ],
+    )
+    def test_the_filler_before_a_name_is_not_the_name(self, answer, expected):
+        """People acknowledge the question before answering it.
+
+        Only "hi|hey|hello" was stripped, so these were recorded as callers
+        named Sure, Yes and Of course -- and the next call opened "Hi Sure --
+        it's Vivian at Foray."
+        """
+        transcript = f"Agent: Can I take your name?\nCandidate: {answer}\n"
+        assert scan_transcript(transcript)[0] == expected
+
+    @pytest.mark.parametrize(
+        "answer",
+        ["Sure.", "Yes, that's right", "No problem, one moment", "Okay, hold on"],
+    )
+    def test_an_answer_with_no_name_in_it_yields_no_name(self, answer):
+        """Nothing is the right answer: the agent asks again, and an easy
+        question repeated costs less than a wrong name on a client profile."""
+        transcript = f"Agent: Can I take your name?\nCandidate: {answer}\n"
+        assert scan_transcript(transcript)[0] == ""
 
     def test_an_unlabelled_transcript_still_yields_a_cued_address(self):
         assert scan_transcript("my email is priya at gmail dot com")[1] == (
@@ -469,6 +526,50 @@ class TestReviewReasons:
 
         for reason in _IDENTITY_REASONS:
             assert "; " not in reason, reason
+
+    def test_a_mid_call_note_is_not_wiped_when_the_call_ends(
+        self, session, account, monkeypatch
+    ):
+        """``coverage_snapshot`` writes onto this row *while* the call runs.
+
+        Extraction assigned over the top of it, so a three-minute core-mode call
+        that deferred work_authorization, timeline and employment_status ended
+        with no trace of either note as soon as the model came back clean. Those
+        notes are what make "how often does this happen?" a query instead of a
+        guess.
+        """
+        from types import SimpleNamespace
+
+        from intake_fixtures import COMPLETE_PAYLOAD, COMPLETE_TRANSCRIPT
+
+        import juicebox.intake.extract as mod
+
+        class FakeLLM:
+            available = True
+            voice_timeout = 3.5
+
+            def json(self, **kwargs):
+                return SimpleNamespace(data=dict(COMPLETE_PAYLOAD))
+
+            json_fast = json
+
+        monkeypatch.setattr(mod, "get_llm", lambda: FakeLLM())
+        call = a_call(
+            session,
+            account,
+            provider_call_id="call_identity_3",
+            transcript=COMPLETE_TRANSCRIPT,
+            review_needed=True,
+            review_reason=(
+                "extractor unavailable, gate ran on heuristics; "
+                "core-mode trim, deferred fields unasked"
+            ),
+        )
+        extract_call(session, call)
+
+        assert "extractor unavailable, gate ran on heuristics" in call.review_reason
+        assert "core-mode trim, deferred fields unasked" in call.review_reason
+        assert call.review_needed
 
 
 class TestCounterpartyNumber:

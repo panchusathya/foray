@@ -11,6 +11,8 @@ number has no email; those rows are phone-only and ``email`` is null.
 
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -45,6 +47,25 @@ def is_suppressed(db: Session, *, org_id: str, email: str = "", phone: str = "")
     return False
 
 
+def _record_stronger_fact(
+    row: Suppression, *, reason: str, source: str, source_message_id: str
+) -> None:
+    """Let a real opt-out overwrite a hand-set one on the same address.
+
+    ``suppress`` is idempotent per address, so there is only ever one row, and
+    without this a candidate who was already on the list as ``manual`` (a
+    recruiter set do_not_contact) and then replied "unsubscribe" stayed
+    recorded as manual -- which ``unsuppress`` is allowed to clear. Never the
+    other way round: a status flip must not downgrade a bounce.
+    """
+    if reason == "manual" or row.reason != "manual":
+        return
+    row.reason = reason
+    row.source = source
+    if source_message_id:
+        row.source_message_id = source_message_id
+
+
 def suppress(
     db: Session,
     *,
@@ -70,6 +91,9 @@ def suppress(
         if existing is not None:
             if key and not existing.phone:
                 existing.phone = key
+            _record_stronger_fact(
+                existing, reason=reason, source=source, source_message_id=source_message_id
+            )
             return existing
     if key:
         existing = db.scalar(
@@ -78,6 +102,9 @@ def suppress(
         if existing is not None:
             if normalised and not existing.email:
                 existing.email = normalised
+            _record_stronger_fact(
+                existing, reason=reason, source=source, source_message_id=source_message_id
+            )
             return existing
     row = Suppression(
         org_id=org_id,
@@ -104,7 +131,25 @@ def suppress(
     return row
 
 
-def unsuppress(db: Session, *, org_id: str, email: str = "", phone: str = "") -> bool:
+def unsuppress(
+    db: Session,
+    *,
+    org_id: str,
+    email: str = "",
+    phone: str = "",
+    only_reasons: Collection[str] | None = None,
+) -> bool:
+    """Take an address (or number) back off the list.
+
+    ``only_reasons`` narrows what may be removed, and a caller undoing its own
+    bookkeeping must pass it. ``suppress`` is idempotent per address, so an
+    address has exactly one row and that row can perfectly well be somebody's
+    bounce or their reply asking to be left alone: deleting whatever is there
+    is how moving a contact off do_not_contact used to erase a genuine opt-out
+    and make them mailable again. The operator-facing "remove from the list"
+    action passes nothing, because that is a human deliberately overriding the
+    fact.
+    """
     row = None
     normalised = normalize_email(email)
     if normalised:
@@ -120,6 +165,8 @@ def unsuppress(db: Session, *, org_id: str, email: str = "", phone: str = "") ->
                 select(Suppression).where(Suppression.org_id == org_id, Suppression.phone == key)
             )
     if row is None:
+        return False
+    if only_reasons is not None and row.reason not in only_reasons:
         return False
     db.delete(row)
     db.flush()

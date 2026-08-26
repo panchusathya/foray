@@ -11,6 +11,19 @@ exclusivity: if either side matches more than one row, the pair is queued for
 review instead. Name-based tiers only ever queue. Nothing is deleted: the
 loser gets ``merged_into`` and every read path filters it out, so a bad merge
 reverts cleanly.
+
+"Reverts cleanly" is a property of two things that have to hold together:
+
+  * ``apply_merge`` records what it changed in ``candidate_merges.restore``
+    and ``revert_merge`` replays exactly that, instead of reconstructing a
+    guess at the pre-merge state. The guess used to leave the winner carrying
+    the loser's identity and the loser's *purchased* addresses — a personal
+    address bought for one person left on a different one, which is where
+    outreach reads ``primary_email`` from;
+  * a decided pair (rejected or reverted) is invisible to ``find_pairs``. A
+    human's "these are not the same person" is a fact about the pair, not
+    about one run, and without it the next ``--apply`` re-found the pair and
+    re-made the merge that was just rejected.
 """
 
 from __future__ import annotations
@@ -30,10 +43,23 @@ SHARED_LOCAL_PARTS = {
     "hr", "sales", "office", "mail",
 }
 
+# A pair a human has already decided against. Not scoped to the tier: the
+# rejection is about the two people, so a pair rejected on the slug tier must
+# not come back through the business-email one. Without this clause `--revert
+# 42` was undone by the next `--tier … --apply`, which re-found the same 1:1
+# exclusive pair and re-applied the merge the human had just thrown out.
+_NOT_DECIDED_AGAINST = """
+          and not exists (
+              select 1 from candidate_merges m
+              where m.primary_id = g.id and m.merged_id = l.id
+                and m.status in ('rejected', 'reverted')
+          )
+"""
+
 _TIER_SQL = {
     # LinkedIn row's slug == a GitHub row's known linkedin_slug (or its
     # linkedin_url containing the slug), both unmerged.
-    "linkedin_url": """
+    "linkedin_url": f"""
         select g.id as primary_id, l.id as merged_id,
                l.linkedin_slug as evidence_value
         from candidates l
@@ -47,8 +73,9 @@ _TIER_SQL = {
           and l.merged_into is null
           and g.merged_into is null
           and l.linkedin_slug is not null
+          {_NOT_DECIDED_AGAINST}
     """,
-    "business_email": """
+    "business_email": f"""
         select g.id as primary_id, l.id as merged_id, le.email as evidence_value
         from candidates l
         join candidate_emails le on le.candidate_id = l.id
@@ -60,6 +87,7 @@ _TIER_SQL = {
         where l.source = 'linkedin'
           and l.merged_into is null
           and split_part(lower(le.email), '@', 1) <> all($1::text[])
+          {_NOT_DECIDED_AGAINST}
     """,
 }
 
@@ -85,41 +113,58 @@ async def find_pairs(conn, tier: str) -> list[dict]:
 
 async def apply_merge(conn, *, primary_id: int, merged_id: int, tier: str, evidence: dict) -> None:
     """One transaction; reversible. The winner is re-derived, re-embedded and
-    re-scored because its evidence just changed."""
+    re-scored because its evidence just changed.
+
+    Every mutation records what it displaced into the ``restore`` blob, which
+    is the only thing ``revert_merge`` reads. Nothing here is reconstructible
+    afterwards: which rows moved and which were already the winner's is not a
+    question the post-merge database can answer.
+    """
     async with conn.transaction():
-        await conn.execute(
+        before = await conn.fetchrow(
+            "select source, linkedin_url from candidates where id = $1", primary_id
+        )
+        moved_profiles = await conn.fetch(
             """
             update raw_profiles set candidate_id = $1
             where candidate_id = $2 and source = 'linkedin'
               and not exists (select 1 from raw_profiles
                               where candidate_id = $1 and source = 'linkedin')
+            returning candidate_id
             """,
             primary_id,
             merged_id,
         )
-        # Emails follow; the (candidate_id, email) unique key means an address
-        # both rows knew stays on the winner via the loser's row deletion.
-        await conn.execute(
+        # Emails follow, EXCEPT the ones the winner already holds -- those
+        # cannot move (the (candidate_id, email) unique key) and are left on
+        # the loser rather than deleted. Deleting them made revert lossy for no
+        # gain: the loser is merged_into and every read path filters it out, so
+        # a duplicate row sitting there costs nothing, while a deleted one is
+        # gone whatever the human decides later. A soft-delete flag would have
+        # worked too and was rejected: it puts a new "and not deleted" that
+        # every reader of candidate_emails must remember on the path to a send
+        # address, which is a worse failure than a redundant row.
+        moved_emails = await conn.fetch(
             """
-            delete from candidate_emails le
-            where le.candidate_id = $2
-              and exists (select 1 from candidate_emails
-                          where candidate_id = $1 and lower(email) = lower(le.email))
+            update candidate_emails e set candidate_id = $1
+            where e.candidate_id = $2
+              and not exists (select 1 from candidate_emails w
+                              where w.candidate_id = $1 and lower(w.email) = lower(e.email))
+            returning e.id
             """,
             primary_id,
             merged_id,
         )
-        await conn.execute(
-            "update candidate_emails set candidate_id = $1 where candidate_id = $2",
-            primary_id,
-            merged_id,
-        )
+        # linkedin_url only, never linkedin_slug: the slug carries a unique
+        # index and stays the LinkedIn row's identity (its login is
+        # 'li:'||slug, and the importer rewrites it on every re-import), so
+        # copying it here is a constraint violation waiting for the first
+        # winner that has no slug of its own -- which is every pair this tier
+        # finds, because the join can only fire through linkedin_url.
         await conn.execute(
             """
             update candidates
                set source = 'both',
-                   linkedin_slug = coalesce(linkedin_slug,
-                       (select linkedin_slug from candidates where id = $2)),
                    linkedin_url = coalesce(linkedin_url,
                        (select linkedin_url from candidates where id = $2)),
                    embed_blob = null, embedding = null, embedded_at = null
@@ -132,21 +177,39 @@ async def apply_merge(conn, *, primary_id: int, merged_id: int, tier: str, evide
         await conn.execute(
             "update candidates set merged_into = $1 where id = $2", primary_id, merged_id
         )
+        restore = {
+            "primary_source": before["source"],
+            "primary_linkedin_url": before["linkedin_url"],
+            "moved_raw_profile": bool(moved_profiles),
+            "moved_email_ids": [int(r["id"]) for r in moved_emails],
+        }
         await conn.execute(
             """
-            insert into candidate_merges (primary_id, merged_id, tier, status, evidence, decided_at)
-            values ($1, $2, $3, 'applied', $4::jsonb, now())
+            insert into candidate_merges
+                (primary_id, merged_id, tier, status, evidence, restore, decided_at)
+            values ($1, $2, $3, 'applied', $4::jsonb, $5::jsonb, now())
             """,
             primary_id,
             merged_id,
             tier,
             json.dumps(evidence),
+            json.dumps(restore),
         )
 
 
 async def queue_pair(conn, *, primary_id: int, merged_id: int, tier: str, evidence: dict) -> None:
+    """Add a pair to the review queue unless it has already been decided.
+
+    "Already decided" is deliberately tier-blind for the terminal statuses:
+    a pair a human rejected, reverted or applied must not reappear in the
+    queue because a different tier found the same two rows. Only the pending /
+    same-tier duplicate check is tier-scoped, as before. enrich.name_bridge
+    queues through here too, which is the other way a rejected pair used to
+    come back.
+    """
     exists = await conn.fetchval(
-        "select 1 from candidate_merges where primary_id=$1 and merged_id=$2 and tier=$3",
+        "select 1 from candidate_merges where primary_id=$1 and merged_id=$2 "
+        "and (tier=$3 or status in ('applied', 'rejected', 'reverted'))",
         primary_id,
         merged_id,
         tier,
@@ -165,35 +228,84 @@ async def queue_pair(conn, *, primary_id: int, merged_id: int, tier: str, eviden
 
 
 async def revert_merge(conn, merge_id: int) -> bool:
+    """Undo exactly what ``apply_merge`` recorded, and mark the pair decided.
+
+    Everything here is driven by the ``restore`` blob rather than by a
+    predicate over the current state. The predicates it replaces were each
+    wrong in a way that only showed up later:
+
+      * ``source = 'github'`` demoted a winner that had been 'both' before the
+        merge, hiding its own LinkedIn evidence from every source filter;
+      * moving back every ``source = 'linkedin'`` raw_profile / address moved
+        the WINNER'S own rows onto the loser when the merge had not moved
+        anything, and left behind everything the merge HAD moved under any
+        other source -- including ``contactout_personal``, a purchased address
+        that then stayed on a stranger as their ``primary_email`` while the
+        person it was bought for kept a stamped ``contactout_checked_at`` and
+        so was never looked up again.
+    """
     row = await conn.fetchrow(
         "select * from candidate_merges where id = $1 and status = 'applied'", merge_id
     )
     if row is None:
         return False
     primary_id, merged_id = row["primary_id"], row["merged_id"]
+    restore = row["restore"]
+    if isinstance(restore, str):
+        restore = json.loads(restore)
+    restore = restore or {}
+    # Applied before migration 015, so there is no record to replay. Fall back
+    # to the old predicates: they are wrong in the ways described above, but a
+    # row written under the old code cannot be undone better than it was
+    # written, and doing less would strand more.
+    legacy = not restore
     async with conn.transaction():
-        await conn.execute(
-            "update raw_profiles set candidate_id = $2 "
-            "where candidate_id = $1 and source = 'linkedin'",
-            primary_id,
-            merged_id,
-        )
-        await conn.execute(
-            "update candidate_emails set candidate_id = $2 "
-            "where candidate_id = $1 and source = 'linkedin'",
-            primary_id,
-            merged_id,
-        )
+        if legacy or restore.get("moved_raw_profile"):
+            await conn.execute(
+                "update raw_profiles set candidate_id = $2 "
+                "where candidate_id = $1 and source = 'linkedin'",
+                primary_id,
+                merged_id,
+            )
+        email_ids = [int(i) for i in restore.get("moved_email_ids") or []]
+        if email_ids:
+            await conn.execute(
+                "update candidate_emails set candidate_id = $1 where id = any($2::bigint[])",
+                merged_id,
+                email_ids,
+            )
+        elif legacy:
+            await conn.execute(
+                "update candidate_emails set candidate_id = $2 "
+                "where candidate_id = $1 and source = 'linkedin'",
+                primary_id,
+                merged_id,
+            )
         # Both rows carry a blob describing evidence they no longer hold.
-        await conn.execute(
-            """
-            update candidates
-               set source = 'github',
-                   embed_blob = null, embedding = null, embedded_at = null
-             where id = $1
-            """,
-            primary_id,
-        )
+        # ``source`` and ``linkedin_url`` go back to the values the winner had
+        # before the merge -- a null url included, or the pipeline would read
+        # the loser's slug off the winner and re-find the pair. A legacy row
+        # never recorded the url, and clearing one the winner may have owned
+        # all along is worse than leaving it, so only ``source`` is touched.
+        if legacy:
+            await conn.execute(
+                "update candidates set source = 'github', embed_blob = null, "
+                "embedding = null, embedded_at = null where id = $1",
+                primary_id,
+            )
+        else:
+            await conn.execute(
+                """
+                update candidates
+                   set source = $2,
+                       linkedin_url = $3,
+                       embed_blob = null, embedding = null, embedded_at = null
+                 where id = $1
+                """,
+                primary_id,
+                restore.get("primary_source") or "github",
+                restore.get("primary_linkedin_url"),
+            )
         await conn.execute("delete from archetype_scores where candidate_id = any($1::bigint[])",
                            [primary_id, merged_id])
         await conn.execute(

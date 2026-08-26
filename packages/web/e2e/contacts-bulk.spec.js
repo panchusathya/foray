@@ -92,8 +92,9 @@ test.describe('contacts bulk actions', () => {
     await page.getByTestId('bulk-bar').getByRole('combobox').nth(1).selectOption({ index: 1 });
     await page.getByTestId('bulk-enrol').click();
 
-    // Same wording as the sequence editor's enrol panel.
-    await expect.poll(() => asked).toContain('have no email yet');
+    // Same wording as the sequence editor's enrol panel, which says enrolling
+    // them stops permanently rather than that they wait for an address.
+    await expect.poll(() => asked).toContain('have no email');
     // Dismissed, so nothing ran.
     await expect(page.getByTestId('bulk-result')).toHaveCount(0);
     await expect(page.getByTestId('bulk-bar')).toBeVisible();

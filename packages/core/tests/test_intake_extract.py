@@ -1,3 +1,4 @@
+import pytest
 
 
 class TestCompIsNeverInvented:
@@ -178,6 +179,70 @@ class TestTheVoiceBudgetIsSeparate:
         monkeypatch.setattr(mod, "get_llm", lambda: llm)
         mod.extract_intake("Candidate: hi", known="", fast=True)
         assert "timeout" not in llm.seen
+
+
+class TestOptIsAlsoAnEnglishVerb:
+    """"opt" matched bare, so an ordinary sentence became an immigration status.
+
+    Two costs, and the second is the worse one: a recruiter reads a visa status
+    off the profile that nobody stated, and ``coverage`` marks
+    work_authorization satisfied -- so the agent never asks the question whose
+    stated purpose is "can I legally hire them without sponsoring a visa?".
+    Same class as the "unknown" placeholder: a field that looks filled is a
+    question that stops being asked.
+    """
+
+    @pytest.mark.parametrize(
+        "said",
+        [
+            "i would opt for a smaller company",
+            "i decided to opt out of the process",
+            "i'd opt to stay hands-on rather than manage",
+        ],
+    )
+    def test_the_verb_is_not_a_visa(self, said):
+        from juicebox.intake.extract import _AUTH_PATTERNS, _first_match
+
+        assert _first_match(said, _AUTH_PATTERNS) == ""
+
+    @pytest.mark.parametrize(
+        "said",
+        [
+            "i'm on opt at the moment",
+            "i'm on stem opt for another year",
+            "my opt expires in march",
+            "i have an opt ead",
+        ],
+    )
+    def test_the_status_is_still_read(self, said):
+        from juicebox.intake.extract import _AUTH_PATTERNS, _first_match
+
+        assert _first_match(said, _AUTH_PATTERNS) == "opt"
+
+    def test_the_gate_stays_open_on_the_verb(self):
+        """End to end: the question must still be owed."""
+        from juicebox.intake.extract import extract_intake
+
+        result = extract_intake(
+            "Agent: What are you looking for?\n"
+            "Candidate: I would opt for a smaller company, honestly.\n",
+            use_llm=False,
+        )
+        assert result.record["work_authorization"] == ""
+        assert "work_authorization" in result.coverage.required_missing
+
+    def test_a_read_status_is_flagged_for_a_human(self):
+        """OPT is a clock, not a standing authorisation -- like the H-1B read,
+        it is a starting point for a recruiter rather than a settled answer."""
+        from juicebox.intake.extract import extract_intake
+
+        result = extract_intake(
+            "Agent: Do you have the right to work in the US?\n"
+            "Candidate: I'm on STEM OPT for another year.\n",
+            use_llm=False,
+        )
+        assert result.record["work_authorization"] == "opt"
+        assert "work_authorization" in result.low_confidence
 
 
 class TestHeuristicIgnoresTheAgent:

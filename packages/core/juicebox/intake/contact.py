@@ -26,19 +26,50 @@ import re
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
-# "I'm", "my name is", "it's", "this is", "name:" and friends.
+# How an answer opens before the name arrives: a greeting, an acknowledgement
+# of the question, or a politeness formula. Only "hi|hey|hello" used to be
+# stripped, so "Sure, it's Dashawn Miller" was read as a caller called Sure --
+# the wrong-name-on-a-profile failure this module exists to prevent.
+#
+# The ``\b`` is load-bearing: without it the greeting group ate the first two
+# letters of "Hiro Tanaka".
+_NAME_OPENER = (
+    r"hi|hey|hello|good\s+(?:morning|afternoon|evening)"
+    r"|yes|yeah|yep|yup|sure(?:\s+thing)?|of\s+course|certainly|absolutely"
+    r"|definitely|no\s+problem|okay|ok|alright|right|well|um|uh|erm"
+    r"|sorry|thanks|thank\s+you|please"
+)
 _NAME_LEAD = re.compile(
-    r"^\s*(?:hi|hey|hello)?[,\s]*"
+    rf"^\s*(?:(?:{_NAME_OPENER})\b[,\s]*)*"
     r"(?:(?:my\s+name\s+is|i\s*am|i'm|its|it's|this\s+is|name)\s*[:\-]?\s*)?",
     re.IGNORECASE,
 )
 _NAME_TRAILING_PUNCT = re.compile(r"[\s.,;:!?]+$")
 
+# Words that are never part of a name, only of the sentence around one. The
+# lead-in strip above handles an answer that *opens* with filler; this catches
+# what is left when the filler is phrased some other way -- "that's right",
+# "no problem", "one moment" -- each of which passes the shape test otherwise.
+# Deliberately excludes short tokens that are real given names and surnames
+# elsewhere in the world ("an", "no", "oh", "so", "ha"): the cost of the two
+# lists disagreeing is a real person whose name we refuse.
+_NOT_A_NAME = frozenset(
+    """
+    absolutely actually alright and anyway apologies certainly correct course
+    definitely erm exactly for gotcha hello here hey hmm hold i i'm indeed
+    is it it's its just me minute moment my name nope nah of okay ok perfect
+    please problem right sec second sorry sure thank thanks that that's thats
+    the there this to um uh understood wait we well what worries yeah yep yes
+    you your yup
+    """.split()  # noqa: SIM905 - one editable line per topic beats 80 quoted strings
+)
+
 MAX_NAME_WORDS = 4
 MAX_NAME_CHARS = 80
 
 # One batched question gets one batched answer: "Sathya, 2 yrs, 150k". Only the
-# first segment is ever considered for a name -- see ``first_segment``.
+# first segment carrying anything is ever considered for a name -- see
+# ``first_segment``.
 _BATCH_SPLIT = re.compile(r"[,;\n]")
 
 
@@ -68,19 +99,30 @@ def find_name(body: str) -> str:
         return ""
     if not all(any(ch.isalpha() for ch in word) for word in words):
         return ""
+    if any(word.strip(".'\"").lower() in _NOT_A_NAME for word in words):
+        return ""
     return " ".join(words)
 
 
 def first_segment(body: str) -> str:
-    """The text before the first comma, semicolon or newline.
+    """The first segment that carries anything, before the next separator.
 
     The name is always the first thing in a batched answer, so this is where to
     look. Scanning every segment for the first name-shaped thing reads "150k,
     asap" as a candidate called Asap -- answering the other questions and
     skipping this one would put an invented name on a profile that goes in
     front of employers.
+
+    A segment that is *nothing but* filler is skipped rather than returned,
+    because "Sure, it's Dashawn Miller" is how people actually answer and
+    stopping at "Sure" throws the name away. Skipping is not the loose scan
+    above: a filler-only segment carries no answer to any question, so the next
+    segment is still the first thing the caller said.
     """
-    return _BATCH_SPLIT.split(body or "", maxsplit=1)[0]
+    for segment in _BATCH_SPLIT.split(body or ""):
+        if _NAME_LEAD.sub("", segment, count=1).strip(" .!?"):
+            return segment
+    return ""
 
 
 # --------------------------------------------------------------------------
@@ -100,7 +142,17 @@ _SEPARATORS = {
     "underline": "_",
     "plus": "+",
 }
-_SEP_WORD = "|".join(sorted(_SEPARATORS, key=len, reverse=True))
+# Only a separator when it is a spoken word on its own. The alternation is
+# spliced in next to ``\s*``, so without these boundaries any name *containing*
+# one of these substrings is torn apart mid-word and the leading ``\s*`` reaches
+# back over the space to swallow the word before it: "my email is dashawn at
+# gmail dot com" came out as "is-awn@gmail.com", which passes the address regex
+# and so gets stored as a CRM row under a stranger's mailbox.
+_SEP_WORD = (
+    r"(?<![a-z0-9])(?:"
+    + "|".join(sorted(_SEPARATORS, key=len, reverse=True))
+    + r")(?![a-z0-9])"
+)
 
 # The last spoken token has to be a real suffix. Without this, "I worked at IBM
 # dot com" is indistinguishable from an address, and so is the far more common

@@ -74,6 +74,12 @@ ASKS = {
 # writer and the reader cannot drift into two different strings.
 UNATTRIBUTED_REASON = "no contact details, preferences not attached to a candidate"
 
+# Written by _copy_contact when a contact detail on this thread already belongs
+# to a different candidate. Named so `has_identity_conflict` can recognise the
+# segment: a duplicate identity nobody resolves is the one review note a later
+# clean turn must never quietly drop.
+CONFLICT_REASON_PREFIX = "already owned by somebody else: "
+
 
 def find_linkedin(body: str) -> str:
     """Canonical ``https://www.linkedin.com/in/{slug}``, or empty."""
@@ -310,14 +316,37 @@ def _copy_contact(db: Session, thread: IntakeThread) -> None:
         thread.review_needed = True
         thread.review_reason = _join_reasons(
             thread.review_reason,
-            f"already owned by somebody else: {', '.join(merged.conflicts)}",
+            CONFLICT_REASON_PREFIX + ", ".join(merged.conflicts),
         )
         db.flush()
 
 
 def join_reasons(existing: str, addition: str) -> str:
-    parts = [p for p in [(existing or "").strip(), addition] if p]
+    """Append a reason to the joined note, keeping what is already there.
+
+    A repeat is dropped rather than appended: ``conversation._reread`` folds
+    the extractor's verdict in on every single turn, and re-adding the same
+    sentence each time grows the column until the 400-character truncation
+    starts eating the reasons underneath it.
+    """
+    parts = [p for p in (existing or "").split("; ") if p.strip()]
+    addition = (addition or "").strip()
+    if addition and addition not in parts:
+        parts.append(addition)
     return "; ".join(parts)[:400]
+
+
+def has_identity_conflict(thread: IntakeThread) -> bool:
+    """Is there an unresolved duplicate-identity note on this thread?
+
+    Read by ``_reread`` before it recomputes ``review_needed``. The extractor
+    has no idea an address belongs to another candidate, so its verdict must
+    not be allowed to overrule this one.
+    """
+    return any(
+        part.startswith(CONFLICT_REASON_PREFIX)
+        for part in (thread.review_reason or "").split("; ")
+    )
 
 
 def _join_reasons(existing: str, addition: str) -> str:

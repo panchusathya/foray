@@ -127,6 +127,9 @@ export function ImportPage() {
     setSheetNote('');
 
     let text = '';
+    // Tracked locally as well as in state: the draft below is written in this
+    // same tick, and state set here is not readable until the next render.
+    let note = '';
     if (/\.xlsx?m?$/i.test(file.name)) {
       // A workbook is a zip of XML the browser cannot read, so it makes one
       // round trip to be converted. Nothing is stored by that route -- the
@@ -136,14 +139,14 @@ export function ImportPage() {
         const converted = await api.workbookToCsv(file);
         text = converted.delimited ?? '';
         if ((converted.sheets ?? []).length > 1) {
-          setSheetNote(
+          note =
             `Read the sheet “${converted.sheet}”. This workbook also has: `
-              + `${converted.sheets.filter((s) => s !== converted.sheet).join(', ')}.`,
-          );
+            + `${converted.sheets.filter((s) => s !== converted.sheet).join(', ')}.`;
         }
         if (converted.truncated) {
-          setSheetNote((note) => `${note} Only the first rows were read — the sheet is very large.`);
+          note = `${note} Only the first rows were read — the sheet is very large.`;
         }
+        setSheetNote(note);
       } catch (caught) {
         setImportRows([]);
         setColumns({});
@@ -161,19 +164,20 @@ export function ImportPage() {
       }
     }
 
-    load(text, { keep: null });
-    remember(text);
+    const keys = load(text, { keep: null });
+    remember({ text, fileName: file.name, sheetNote: note, chosen: keys });
   }
 
   // One place that turns delimited text into the review table, used by both a
-  // fresh file and a restored draft.
+  // fresh file and a restored draft. Returns the keys it selected, because the
+  // caller has to write them to the draft before React has re-rendered.
   function load(text, { keep }) {
     const { headers, rows } = parseDelimited(text);
     if (!rows.length) {
       setImportRows([]);
       setColumns({});
       setParseError('No rows in that file — is it the right export?');
-      return;
+      return [];
     }
     const detected = detectColumns(headers);
     const built = buildImportRows(rows, detected);
@@ -182,24 +186,30 @@ export function ImportPage() {
     // Pre-select exactly the rows that can be mailed unless we are restoring a
     // selection. Everything else is visible but off, so the default action is
     // never the surprising one.
-    setChosen(
-      new Set(keep ? pruneChosen(keep, built) : built.filter((r) => r.sendable).map((r) => r.key)),
-    );
+    const keys = keep ? pruneChosen(keep, built) : built.filter((r) => r.sendable).map((r) => r.key);
+    setChosen(new Set(keys));
     setShowAll(false);
+    return keys;
   }
 
   // sessionStorage, not state: routing to Sequences unmounts this page, and
   // losing the file on the way back reads as the screen wiping your work.
   // Wrapped because a private window or a full quota throws on write.
-  function remember(text, chosenKeys) {
+  //
+  // Every field is passed in rather than read off state: the only caller runs
+  // in the same tick as the setState calls that produced them, so the closure
+  // still holds the PREVIOUS file's name and selection -- which is how a
+  // 200-row upload came back with nothing ticked and no filename, and how a
+  // second upload came back as file B's text under file A's name.
+  function remember({ text, fileName: name, sheetNote: note, chosen: chosenKeys }) {
     try {
       window.sessionStorage.setItem(
         IMPORT_STATE_KEY,
         JSON.stringify({
-          fileName,
+          fileName: name,
           text,
-          sheetNote,
-          chosen: chosenKeys ?? [...chosen],
+          sheetNote: note,
+          chosen: chosenKeys,
         }),
       );
     } catch {

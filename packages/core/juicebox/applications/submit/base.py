@@ -77,6 +77,14 @@ class SubmissionContext:
     linkedin_url: str = ""
     location: str = ""
 
+    #: The portal login we already hold for this employer's tenant, when there
+    #: is one. Workday and Oracle make you register before you can apply, and
+    #: an adapter that cannot see the account it made last time registers a
+    #: second one -- or, worse, types a brand-new password into a sign-in form.
+    #: Loaded by the service, because an adapter must not reach the database.
+    portal_username: str = ""
+    portal_password: str = ""
+
     resume: Attachment | None = None
     cover_letter: Attachment | None = None
     #: ``[{key, question, answer, provenance, generated_by, edited}]`` from
@@ -104,6 +112,12 @@ class SubmissionContext:
 #: halves. A parked Workday attempt carries the portal password we generated,
 #: and a column readable in a database dump is not where that belongs.
 SECRET_VERIFICATION_KEYS = ("password",)
+
+#: What a credential looks like anywhere it is only being *recorded* -- a
+#: browser run log, a diagnostic payload. Sealing exists for the one copy leg
+#: two genuinely needs; every other copy is a leak with no reader, so it never
+#: gets written in the first place.
+REDACTED = "<redacted>"
 
 
 @dataclass

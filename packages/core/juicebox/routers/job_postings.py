@@ -39,8 +39,22 @@ def _load_posting(db: Session, posting_id: str, org_id: str) -> JobPosting:
     return posting
 
 
-def _fill(posting: JobPosting, payload: JobPostingIn | dict) -> None:
+def _project_or_404(db: Session, project_id: str, org_id: str) -> Project:
+    project = db.scalar(select(Project).where(Project.id == project_id, Project.org_id == org_id))
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+
+def _fill(db: Session, posting: JobPosting, payload: JobPostingIn | dict, org_id: str) -> None:
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload
+    # The FK only asks that the project row exist, so an id belonging to
+    # another org is accepted here and then handed straight back by
+    # create-project as that org's name, JD text and location. Checked at the
+    # one place every write path funnels through — the same check
+    # update_sequence makes before pinning a sequence to a project.
+    if data.get("project_id") is not None:
+        _project_or_404(db, data["project_id"], org_id)
     for key in (
         "title",
         "company",
@@ -76,7 +90,7 @@ def create_posting(
         )
     )
     if existing is not None:
-        _fill(existing, payload)
+        _fill(db, existing, payload, principal.org_id)
         existing.last_seen_at = now
         enqueue_parse(db, existing)
         return JobPostingOut.model_validate(existing)
@@ -89,7 +103,7 @@ def create_posting(
         first_seen_at=now,
         last_seen_at=now,
     )
-    _fill(posting, payload)
+    _fill(db, posting, payload, principal.org_id)
     db.add(posting)
     db.flush()
     enqueue_parse(db, posting)
@@ -131,7 +145,7 @@ def import_postings(
             created += 1
         else:
             updated += 1
-        _fill(posting, item)
+        _fill(db, posting, item, principal.org_id)
         posting.last_seen_at = now
         db.flush()
         enqueue_parse(db, posting)
@@ -214,7 +228,7 @@ def patch_posting(
                 detail=f"status must be one of {sorted(ALLOWED_STATUS)}",
             )
         posting.status = data.pop("status")
-    _fill(posting, data)
+    _fill(db, posting, data, principal.org_id)
     db.flush()
     if any(key in data for key in ("title", "company", "location", "jd_text", "seniority")):
         enqueue_parse(db, posting)
@@ -279,7 +293,15 @@ def create_project_from_posting(
     """Link this posting to a new Project without cloning a second posting."""
     posting = _load_posting(db, posting_id, principal.org_id)
     if posting.project_id:
-        project = db.get(Project, posting.project_id)
+        # Scoped, not db.get: writes are now checked, but a row stamped with a
+        # foreign project id before that check existed must not be echoed back
+        # as this org's project. Such a posting falls through and gets a real
+        # one of its own below.
+        project = db.scalar(
+            select(Project).where(
+                Project.id == posting.project_id, Project.org_id == principal.org_id
+            )
+        )
         if project is not None:
             return ProjectOut.model_validate(project)
     name = (payload.name or posting.title or "Role").strip()

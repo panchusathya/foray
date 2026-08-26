@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..enrich.taxonomy import normalize_location
 from ..models import Candidate, IntakeThread, utcnow
-from .threads import STATUS_ACTIVE, STATUS_STOPPED
+from .threads import HANDED_OFF, STATUS_ACTIVE, STATUS_STOPPED
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +408,11 @@ def _nudge_rows(db: Session, thread: IntakeThread) -> list[datetime]:
         .where(
             IntakeMessage.thread_id == thread.id,
             IntakeMessage.origin == ORIGIN_NUDGE,
-            IntakeMessage.status == "sent",
+            # Handed off, not literally "sent": a delivery receipt rewrites the
+            # column to delivered/read, and matching on "sent" alone made every
+            # nudge the carrier confirmed vanish from its own budget -- so the
+            # gate reopened and the budget could never be spent.
+            IntakeMessage.status.in_(HANDED_OFF),
         )
         .order_by(IntakeMessage.seq)
     ).all()

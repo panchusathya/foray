@@ -86,7 +86,10 @@ def _candidate_context(candidate: Candidate | None) -> str:
 
 
 def _role_context(db, inbound: Message) -> str:
-    enrollment = db.get(Enrollment, inbound.enrollment_id)
+    # Guarded rather than let through: thread-synced mail has no enrollment,
+    # and get() on a null identity is a SQLAlchemy warning today and an error
+    # in a later release.
+    enrollment = db.get(Enrollment, inbound.enrollment_id) if inbound.enrollment_id else None
     if enrollment is None:
         return ""
     parts = []
@@ -143,18 +146,41 @@ def recent_style_examples(db, *, mailbox_id: str, limit: int = 3) -> str:
     return "\n".join(blocks)
 
 
+def _prior_outbound(db, inbound: Message) -> Message | None:
+    """The outbound this reply is answering, as context for the prompt.
+
+    Org-scoped always, and never matched on a null enrollment. Thread-synced
+    mail carries ``enrollment_id`` NULL by design, and filtering on it renders
+    ``enrollment_id IS NULL``, which matches every hand-sent message in the
+    database: another tenant's outreach copy reached the prompt drafting this
+    org's reply, and could be quoted straight into the draft.
+
+    Without an enrollment the thread itself is the identity -- the provider's
+    conversation id, then the person. If neither pins it down the prompt gets
+    no outbound context, which is the honest answer.
+    """
+    query = select(Message).where(
+        Message.org_id == inbound.org_id,
+        Message.direction == "outbound",
+    )
+    if inbound.enrollment_id:
+        query = query.where(Message.enrollment_id == inbound.enrollment_id)
+    elif inbound.conversation_id:
+        query = query.where(Message.conversation_id == inbound.conversation_id)
+    elif inbound.candidate_id:
+        query = query.where(Message.candidate_id == inbound.candidate_id)
+    else:
+        return None
+    return db.scalar(query.order_by(Message.created_at.desc()))
+
+
 def generate_reply_body(
     db, *, inbound: Message, candidate: Candidate | None, mailbox_id: str = ""
 ) -> tuple[str, str]:
     """Return (plain-text body, generated_by)."""
     llm = get_llm()
     if llm.available:
-        outbound = db.scalar(
-            select(Message).where(
-                Message.enrollment_id == inbound.enrollment_id,
-                Message.direction == "outbound",
-            ).order_by(Message.created_at.desc())
-        )
+        outbound = _prior_outbound(db, inbound)
         try:
             result = llm.json(
                 system=REPLY_DRAFT_SYSTEM,

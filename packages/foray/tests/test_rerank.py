@@ -88,6 +88,42 @@ async def test_failure_degrades_then_opens_breaker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_breaker_half_opens_after_the_cooldown(monkeypatch) -> None:
+    """The breaker used to latch. rerank() returns before any inference once it
+    is open, so _record_success -- the only thing that clears it -- could never
+    run: three timeouts during a load spike meant un-reranked results for the
+    life of the container."""
+    monkeypatch.setattr(settings, "rerank_breaker_cooldown_s", 0.05)
+    fake = FakeReranker(raises=RuntimeError("no model"))
+    await rerank("vlm", {1: "doc"}, scorer=fake)
+    await rerank("vlm", {2: "doc"}, scorer=fake)
+    assert (await rerank("vlm", {3: "doc"}, scorer=fake)).reason == "failed"
+    assert fake.calls == 2, "still open: nothing was attempted"
+
+    time.sleep(0.06)
+    fake.raises = None
+    fake.scores = [9.0]
+    probe = await rerank("vlm", {4: "doc"}, scorer=fake)
+    assert probe.reason == "ok" and probe.logits[4] == pytest.approx(9.0)
+    # ...and one success closes it for good, not just for the probe.
+    assert (await rerank("vlm", {5: "doc"}, scorer=fake)).reason == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_probe_reopens_the_breaker(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "rerank_breaker_cooldown_s", 0.05)
+    fake = FakeReranker(raises=RuntimeError("still down"))
+    await rerank("vlm", {1: "doc"}, scorer=fake)
+    await rerank("vlm", {2: "doc"}, scorer=fake)
+    time.sleep(0.06)
+    assert (await rerank("vlm", {3: "doc"}, scorer=fake)).reason == "failed"
+    assert fake.calls == 3, "the probe ran"
+    # Immediately after the failed probe the breaker is shut again.
+    assert (await rerank("vlm", {4: "doc"}, scorer=fake)).reason == "failed"
+    assert fake.calls == 3
+
+
+@pytest.mark.asyncio
 async def test_disabled_short_circuits(monkeypatch) -> None:
     monkeypatch.setattr(settings, "rerank_enabled", False)
     fake = FakeReranker(raises=AssertionError("must not run"))

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
@@ -7,6 +7,7 @@ import { api } from '../../lib/api.js';
 import { formatComp, formatTimeline, intakeApi, messageReceipt } from '../../lib/intake.js';
 import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
+import { useDebounced } from '../../lib/useDebounced.js';
 
 function when(value) {
   return value ? new Date(value).toLocaleString() : '—';
@@ -17,10 +18,24 @@ function AttributeForm({ row, attribute, onDone }) {
   const [picked, setPicked] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  // Debounced, because what this form binds is a call, its transcript and the
+  // compensation stated on it to a person -- so the list has to correspond to
+  // what the box says, not to whichever prefix the network answered last.
+  const search = useDebounced(query, 250);
   const people = useAsync(
-    () => (query.length >= 2 ? api.listCandidates({ q: query, limit: 8 }) : Promise.resolve([])),
-    [query],
+    () => (search.length >= 2 ? api.listCandidates({ q: search, limit: 8 }) : Promise.resolve([])),
+    [search],
   );
+
+  // A selection belongs to the list it was made from. Keeping it across a new
+  // search leaves the radio unchecked while Attribute stays enabled, and the
+  // call is then bound to whoever was highlighted two keystrokes ago.
+  const rows = people.data;
+  useEffect(() => {
+    setPicked((current) =>
+      current && (rows ?? []).some((person) => person.id === current) ? current : '',
+    );
+  }, [rows]);
 
   async function submit(event) {
     event.preventDefault();

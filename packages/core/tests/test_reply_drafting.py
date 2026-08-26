@@ -313,3 +313,116 @@ class TestKillSwitch:
         assert session.query(ReplyDraft).count() == 0
         assert fake.reply_drafts == [], "a stale job must not write into the mailbox"
         assert fake.sent_messages == [], "and must not email the owner either"
+
+
+class TestPromptScoping:
+    """What the model is shown when the reply has no sequence behind it."""
+
+    def _stub_llm(self):
+        from juicebox.llm.client import FakeTransport, LLMClient, set_llm
+
+        transport = FakeTransport(default={"body": "Great — when are you free?"})
+        set_llm(LLMClient(transport=transport, enabled=True))
+        return transport
+
+    def _prompt(self, transport) -> str:
+        return "".join(
+            str(message.get("content", ""))
+            for message in transport.calls[0]["messages"]
+        )
+
+    def _hand_sent(self, session, *, org_id, candidate_id, body, **fields):
+        from juicebox.models import utcnow
+
+        row = Message(
+            org_id=org_id,
+            candidate_id=candidate_id,
+            direction="outbound",
+            source="microsoft",
+            to_address="somebody@example.com",
+            subject="Quick note",
+            body=body,
+            status="sent",
+            sent_at=utcnow(),
+            **fields,
+        )
+        session.add(row)
+        session.flush()
+        return row
+
+    def _inbound_without_enrollment(self, session, *, org_id, candidate_id, **fields):
+        from juicebox.models import utcnow
+
+        row = Message(
+            org_id=org_id,
+            candidate_id=candidate_id,
+            direction="inbound",
+            source="microsoft",
+            from_address="ada@example.com",
+            to_address="recruiter@acme-talent.com",
+            subject="Re: Quick note",
+            body="Sounds interesting, tell me more.",
+            status="received",
+            reply_intent="interested",
+            sent_at=utcnow(),
+            **fields,
+        )
+        session.add(row)
+        session.flush()
+        return row
+
+    def test_another_orgs_outbound_never_reaches_the_prompt(
+        self, session, account, outreach_fixture
+    ):
+        """A thread-synced inbound has enrollment_id NULL, and filtering on it
+        renders ``enrollment_id IS NULL`` -- which matched every hand-sent
+        message in the database, whoever's tenant it belonged to."""
+        from juicebox.models import Candidate, Org
+
+        other = Org(name="Rival Search", slug="rival-search")
+        session.add(other)
+        session.flush()
+        stranger = Candidate(
+            org_id=other.id, full_name="Grace Hopper", source="manual", source_id="rival:1"
+        )
+        session.add(stranger)
+        session.flush()
+        self._hand_sent(
+            session,
+            org_id=other.id,
+            candidate_id=stranger.id,
+            body="RIVAL_CONFIDENTIAL_COPY",
+        )
+
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        inbound = self._inbound_without_enrollment(
+            session, org_id=account["org_id"], candidate_id=ada.id
+        )
+        session.commit()
+
+        transport = self._stub_llm()
+        _, generated_by = generate_reply_body(session, inbound=inbound, candidate=ada)
+
+        assert generated_by == "llm"
+        assert "RIVAL_CONFIDENTIAL_COPY" not in self._prompt(transport)
+
+    def test_our_own_side_of_the_thread_is_still_used(
+        self, session, account, outreach_fixture
+    ):
+        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
+        self._hand_sent(
+            session,
+            org_id=account["org_id"],
+            candidate_id=ada.id,
+            body="OUR_ORIGINAL_PITCH",
+            conversation_id="conv-1",
+        )
+        inbound = self._inbound_without_enrollment(
+            session, org_id=account["org_id"], candidate_id=ada.id, conversation_id="conv-1"
+        )
+        session.commit()
+
+        transport = self._stub_llm()
+        generate_reply_body(session, inbound=inbound, candidate=ada)
+
+        assert "OUR_ORIGINAL_PITCH" in self._prompt(transport)

@@ -9,6 +9,12 @@ shape on 2 vCPU.
 Any failure returns no logits (the caller keeps the un-reranked blend) and a
 reason the envelope can surface: disabled | timeout | queue_full | failed.
 ``below_head`` is decided by the caller via ``needs_rerank`` before we run.
+
+The breaker is time-boxed. It has to be: opening it makes ``rerank`` return
+before any inference is attempted, so nothing can ever record the success that
+closes it again. A transient blip -- three requests hitting the 1200 ms timeout
+during a load spike -- otherwise disabled reranking for the life of the
+process. After the cooldown one call is allowed through to probe.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ _semaphore: asyncio.Semaphore | None = None
 _cache: TtlLru | None = None
 _consecutive_failures = 0
 _breaker_open = False
+_breaker_opened_at = 0.0
 
 
 def _get_executor() -> ThreadPoolExecutor:
@@ -56,9 +63,10 @@ def _get_cache() -> TtlLru:
 
 
 def reset_for_tests() -> None:
-    global _consecutive_failures, _breaker_open, _cache, _semaphore
+    global _consecutive_failures, _breaker_open, _breaker_opened_at, _cache, _semaphore
     _consecutive_failures = 0
     _breaker_open = False
+    _breaker_opened_at = 0.0
     _cache = TtlLru(settings.rerank_cache_entries, float(settings.rerank_cache_ttl_s))
     _semaphore = asyncio.Semaphore(1)
 
@@ -77,11 +85,35 @@ def _record_success() -> None:
 
 
 def _record_failure() -> None:
-    global _consecutive_failures, _breaker_open
+    global _consecutive_failures, _breaker_open, _breaker_opened_at
     _consecutive_failures += 1
     if _consecutive_failures >= settings.rerank_failure_threshold:
         _breaker_open = True
+        _breaker_opened_at = time.monotonic()
         log.warning("rerank.circuit_open", failures=_consecutive_failures)
+
+
+def _breaker_blocks() -> bool:
+    """Whether the breaker refuses this call, half-opening it if it is time.
+
+    The failure counter is deliberately NOT reset here: a probe that fails goes
+    straight back over the threshold in _record_failure, which re-opens the
+    breaker and restarts the cooldown, while a probe that succeeds clears
+    everything. That is the whole state machine -- one flag and one timestamp.
+
+    Concurrent callers can all slip through the same half-open window. The
+    semaphore already admits one inference at a time and the rest degrade with
+    queue_full, so the blast radius of that race is one extra timeout, not a
+    thundering herd.
+    """
+    global _breaker_open
+    if not _breaker_open:
+        return False
+    if time.monotonic() - _breaker_opened_at < settings.rerank_breaker_cooldown_s:
+        return True
+    _breaker_open = False
+    log.info("rerank.circuit_half_open", failures=_consecutive_failures)
+    return False
 
 
 def _default_scorer(pairs: list[tuple[str, str]]) -> list[float]:
@@ -100,7 +132,7 @@ async def rerank(
     model_name = settings.rerank_model
     if not settings.rerank_enabled:
         return RerankOutcome(reason="disabled", model=model_name)
-    if _breaker_open:
+    if _breaker_blocks():
         return RerankOutcome(reason="failed", model=model_name)
 
     ordered_ids = list(ids if ids is not None else documents.keys())

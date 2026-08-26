@@ -114,7 +114,10 @@ def set_crm_status(db: Session, candidate: Candidate, status: str) -> None:
             )
     elif previous == "do_not_contact":
         for address in addresses:
-            unsuppress(db, org_id=candidate.org_id, email=address)
+            # ``only_reasons`` is what makes the promise above true. There is
+            # one Suppression per address, so an unsubscribe that arrived while
+            # the contact sat on do_not_contact IS the row this would delete.
+            unsuppress(db, org_id=candidate.org_id, email=address, only_reasons=("manual",))
 
 
 def patch_candidate(

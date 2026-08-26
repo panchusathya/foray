@@ -20,7 +20,14 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..deps import (
+    OAUTH_STATE_ROLE,
+    CommittingRoute,
+    Principal,
+    get_db,
+    get_principal,
+    require_write,
+)
 from ..integrations.crypto import encrypt_json
 from ..integrations.providers import (
     ProviderError,
@@ -44,7 +51,9 @@ router = APIRouter(
     route_class=CommittingRoute, prefix="/v1/integrations", tags=["integrations"]
 )
 
-_STATE_ROLE = "mailconnect"
+# Lives in deps because get_principal has to know which roles are single-purpose
+# in order to refuse them as bearer tokens; two copies of the string would drift.
+_STATE_ROLE = OAUTH_STATE_ROLE
 _STATE_TTL_SECONDS = 600
 # Env var names per provider, for the "not configured" message. Naming them
 # beats a generic error: the fix is always "set these two".

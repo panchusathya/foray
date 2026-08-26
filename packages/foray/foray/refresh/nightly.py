@@ -15,13 +15,13 @@ import argparse
 import asyncio
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..config import settings
 from ..db import close_pool, get_pool
 from ..log import get_logger
 from ..status import collect
-from .common import RefreshRun
+from .common import RefreshRun, calls_left_this_month, month_spend, scoring_calls_since
 
 log = get_logger("refresh.nightly")
 
@@ -34,6 +34,10 @@ class Phase:
     argv: list[str]
     budget_min: int
     metric: str  # key in status.collect() whose delta = rows_touched
+    # Phases that spend on the LLM record CALLS MADE instead of that delta,
+    # because rows_touched is what the monthly spend cap is computed from and
+    # a rescore changes no counts at all. See common.scoring_calls_since.
+    counts_calls: bool = False
 
 
 def _phases() -> list[Phase]:
@@ -61,17 +65,24 @@ def _phases() -> list[Phase]:
         # predicate covers both new (null hash) and stale rows.
         Phase("score", ["foray.score.run", "--yes",
                         "--max-calls", str(settings.nightly_score_calls),
-                        "--concurrency", str(settings.scoring_concurrency)], 90, "scored_pairs"),
+                        "--concurrency", str(settings.scoring_concurrency)], 90, "scored_pairs",
+              counts_calls=True),
         Phase("active_view", ["foray.refresh.active_view"], 10, "candidates"),
     ]
 
 
-async def _month_spend(conn) -> float:
-    pairs = await conn.fetchval(
-        "select coalesce(sum(rows_touched), 0) from refresh_runs "
-        "where job = 'nightly.score' and started_at > date_trunc('month', now())"
-    )
-    return float(pairs or 0) * settings.scoring_usd_per_call
+def _with_max_calls(phase: Phase, calls: int) -> Phase:
+    """Lower a phase's --max-calls to ``calls``.
+
+    Checking the cap before the phase is not the same as enforcing it: the
+    check passes at $39.99 and the night then spends its whole budget on top.
+    The month's remaining budget is handed to the child as its own ceiling so
+    the overshoot cannot happen.
+    """
+    argv = list(phase.argv)
+    idx = argv.index("--max-calls")
+    argv[idx + 1] = str(calls)
+    return replace(phase, argv=argv)
 
 
 async def _run_phase(conn, phase: Phase, remaining_s: float) -> None:
@@ -80,6 +91,9 @@ async def _run_phase(conn, phase: Phase, remaining_s: float) -> None:
         log.info("nightly.phase_skipped", phase=phase.name, reason="no time left")
         return
     before = await collect(conn)
+    # The database clock, not this process's: rows_touched is compared against
+    # timestamps the server wrote.
+    started_at = await conn.fetchval("select now()")
     async with RefreshRun(conn, f"nightly.{phase.name}") as run:
         # structlog JSON from the child flows straight to the night's log.
         proc = await asyncio.create_subprocess_exec(sys.executable, "-m", *phase.argv)
@@ -94,7 +108,10 @@ async def _run_phase(conn, phase: Phase, remaining_s: float) -> None:
                 code = await proc.wait()
             run.notes = f"deadline {budget // 60}m hit"
         after = await collect(conn)
-        run.rows = max(0, after[phase.metric] - before[phase.metric])
+        if phase.counts_calls:
+            run.rows = await scoring_calls_since(conn, started_at)
+        else:
+            run.rows = max(0, after[phase.metric] - before[phase.metric])
         run.errors = 1 if code else 0
         log.info("nightly.phase_done", phase=phase.name, code=code, rows=run.rows)
 
@@ -109,7 +126,7 @@ async def amain(args: argparse.Namespace) -> int:
         try:
             phases = _phases()
             if args.dry_run:
-                spend = await _month_spend(conn)
+                spend = await month_spend(conn)
                 print(f"nightly plan (month-to-date scoring spend ${spend:.2f} / "
                       f"${settings.monthly_spend_cap_usd:.0f} cap):")
                 for p in phases:
@@ -125,13 +142,16 @@ async def amain(args: argparse.Namespace) -> int:
                     log.info("nightly.phase_skipped", phase="harvest",
                              reason=f"enrich_backlog {counts['enrich_backlog']} too deep")
                     continue
-                # Monthly spend cap: skip scoring if we're over budget.
+                # Monthly spend cap: skip scoring if we're over budget, and
+                # otherwise bound the night by whatever is left of it.
                 if phase.name == "score":
-                    spend = await _month_spend(conn)
-                    if spend >= settings.monthly_spend_cap_usd:
+                    left = await calls_left_this_month(conn)
+                    if left <= 0:
+                        spend = await month_spend(conn)
                         log.info("nightly.phase_skipped", phase="score",
                                  reason=f"month spend ${spend:.2f} >= cap")
                         continue
+                    phase = _with_max_calls(phase, min(settings.nightly_score_calls, left))
                 try:
                     await _run_phase(conn, phase, remaining)
                 except Exception as exc:  # noqa: BLE001 - one phase must not abort the night

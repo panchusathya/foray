@@ -705,7 +705,7 @@ class TestCoverageEndpoint:
         """The two-to-three-minute release, driven by the record rather than a clock."""
         from juicebox.intake import service
 
-        def _complete(transcript, *, known="", fast=True):
+        def _complete(transcript, *, known="", fast=True, **_):
             from juicebox.intake.extract import ExtractionResult
             from juicebox.intake.schema import coverage
 
@@ -735,7 +735,7 @@ class TestCoverageEndpoint:
         from juicebox.intake.schema import deferred_required
         from juicebox.models import IntakeCall
 
-        def _core(transcript, *, known="", fast=True):
+        def _core(transcript, *, known="", fast=True, **_):
             from juicebox.intake.extract import ExtractionResult
             from juicebox.intake.schema import coverage
 
@@ -769,7 +769,7 @@ class TestCoverageEndpoint:
         from juicebox.intake import service
         from juicebox.models import IntakeCall
 
-        def _core(transcript, *, known="", fast=True):
+        def _core(transcript, *, known="", fast=True, **_):
             from juicebox.intake.extract import ExtractionResult
             from juicebox.intake.schema import coverage
 
@@ -796,7 +796,7 @@ class TestCoverageEndpoint:
     def test_no_budget_is_todays_full_gate(self, client, signer, monkeypatch):
         from juicebox.intake import service
 
-        def _core(transcript, *, known="", fast=True):
+        def _core(transcript, *, known="", fast=True, **_):
             from juicebox.intake.extract import ExtractionResult
             from juicebox.intake.schema import coverage
 

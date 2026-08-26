@@ -348,9 +348,15 @@ class TestModelExtraction:
         assert "already_known" in sent
 
     def test_a_model_failure_degrades_instead_of_raising(self, scripted_llm):
+        """Still degrades rather than raising -- but says which kind of
+        heuristic read this is. `EXTRACTOR_HEURISTIC` means nobody configured a
+        model; this means one was configured and did not answer."""
+        from juicebox.intake.extract import EXTRACTOR_HEURISTIC_DEGRADED
+
         scripted_llm([LLMUnavailable("model down")])
         result = extract_intake(COMPLETE_TRANSCRIPT)
-        assert result.extractor == EXTRACTOR_HEURISTIC
+        assert result.extractor == EXTRACTOR_HEURISTIC_DEGRADED
+        assert result.extractor != EXTRACTOR_HEURISTIC
         assert result.review_needed
 
 

@@ -63,4 +63,25 @@ echo "===== 9. candidate_phones: could an inbound caller ever be matched? ====="
 $C exec -T db psql -U juicebox -c "select count(*) as candidate_phone_rows from candidate_phones;"
 
 echo
+echo "===== 10. how often the coverage gate ran on regexes ====="
+# The mid-call extractor degrades to heuristics rather than failing the call,
+# which is correct and was previously invisible: a deployment whose extractor
+# times out on every call looked exactly like a healthy one. Anything above a
+# few percent here means the gate is guessing what to ask next, and no model
+# upgrade is worth judging until it is near zero.
+$C exec -T db psql -U juicebox -c   "select count(*) filter (where review_reason like '%gate ran on heuristics%') as degraded,
+          count(*) as calls_with_transcript,
+          round(100.0 * count(*) filter (where review_reason like '%gate ran on heuristics%')
+                / nullif(count(*), 0), 1) as pct
+     from intake_calls where transcript <> '';"
+$C exec -T db psql -U juicebox -c   "select id, from_number, created_at, review_reason
+     from intake_calls
+    where review_reason like '%gate ran on heuristics%'
+    order by created_at desc limit 10;"
+
+echo
+echo "===== 11. extractor timeouts in the logs (the cause, if 10 is non-zero) ====="
+$C logs api 2>/dev/null | grep -i "llm intake extraction failed" | tail -10   || echo "  none logged"
+
+echo
 echo "===== done ====="

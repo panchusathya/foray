@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..enrich import taxonomy as tx
@@ -59,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 EXTRACTOR_LLM = "llm"
 EXTRACTOR_HEURISTIC = "heuristic"
+# The heuristic path reached because the model call *failed*, not because no
+# model is configured. Both produce identical records, and conflating them is
+# why nobody could answer "how often is the coverage gate running on regexes?"
+# -- a deployment with no API key and a deployment whose extractor times out on
+# every call looked the same from the outside. Anything that counts, reviews or
+# alerts should treat this as a fault; `EXTRACTOR_HEURISTIC` is a choice.
+EXTRACTOR_HEURISTIC_DEGRADED = "heuristic-degraded"
 
 # Mirrors the cap in the prompt and in jobmatch.spec: a candidate with eleven
 # non-negotiables has none.
@@ -101,6 +108,7 @@ def extract_intake(
     known: str = "",
     use_llm: bool | None = None,
     fast: bool = False,
+    live_call: bool = False,
 ) -> ExtractionResult:
     """Extract preferences from ``transcript``, degrading to heuristics.
 
@@ -119,11 +127,32 @@ def extract_intake(
 
     if want_llm and llm.available:
         try:
-            return _llm_extract(transcript, known=known, fast=fast)
+            # A caller in silence gets the stricter budget; a text thread does
+            # not. Resolved here rather than passed in, so callers say what kind
+            # of wait it is and this module owns what that costs.
+            budget = get_llm().voice_timeout if (fast and live_call) else None
+            return _llm_extract(transcript, known=known, fast=fast, timeout=budget)
         except Exception as exc:  # noqa: BLE001 - degrade, never fail an extraction
             logger.warning("llm intake extraction failed, using heuristics: %s", exc)
+            degraded = _heuristic_extract(transcript)
+            # Same record, different provenance. The caller decides what to do
+            # about it; what matters here is that it is no longer silent.
+            return replace(
+                degraded,
+                extractor=EXTRACTOR_HEURISTIC_DEGRADED,
+                review_needed=True,
+                review_reason=_join_reason(
+                    degraded.review_reason,
+                    "extractor unavailable, record read by heuristics",
+                ),
+            )
 
     return _heuristic_extract(transcript)
+
+
+def _join_reason(existing: str, addition: str) -> str:
+    existing = (existing or "").strip()
+    return f"{existing}; {addition}" if existing else addition
 
 
 # --------------------------------------------------------------------------
@@ -176,8 +205,15 @@ def _drop_uncited_comp(record: dict[str, Any], transcript: str) -> None:
     record["target_total"] = None
 
 
-def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> ExtractionResult:
+def _llm_extract(
+    transcript: str, *, known: str, fast: bool = False, timeout: float | None = None
+) -> ExtractionResult:
     llm = get_llm()
+    kwargs: dict[str, Any] = {}
+    if fast and timeout is not None:
+        # Only `json_fast` takes a budget; the careful path runs in a worker
+        # where nobody is waiting and the main timeout is the right one.
+        kwargs["timeout"] = timeout
     call = llm.json_fast if fast else llm.json
     result = call(
         system=INTAKE_EXTRACT_SYSTEM,
@@ -185,6 +221,7 @@ def _llm_extract(transcript: str, *, known: str, fast: bool = False) -> Extracti
         schema=INTAKE_EXTRACT_SCHEMA,
         effort="low",
         max_tokens=8000,
+        **kwargs,
     )
     if not result.data:
         raise LLMUnavailable("intake extractor returned no data")

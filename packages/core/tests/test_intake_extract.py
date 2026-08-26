@@ -91,3 +91,90 @@ class TestCompIsNeverInvented:
         monkeypatch.setattr(mod, "get_llm", lambda: FakeLLM())
         result = mod.extract_intake("I'm looking for 150k base", known="")
         assert result.record["target_base"] == 150000.0
+
+
+class TestDegradedExtractionIsVisible:
+    """A failed extractor and an unconfigured one produced identical records.
+
+    That is why "how often is the coverage gate running on regexes?" had no
+    answer: both looked like `EXTRACTOR_HEURISTIC` from the outside, and the
+    only trace of a timeout was a warning nobody counted.
+    """
+
+    def _llm(self, *, available=True, raises=False):
+        from types import SimpleNamespace
+
+        class FakeLLM:
+            def __init__(self):
+                self.available = available
+                self.voice_timeout = 3.5
+                self.seen = {}
+
+            def json_fast(self, **kwargs):
+                self.seen = kwargs
+                if raises:
+                    raise RuntimeError("timed out")
+                return SimpleNamespace(data={"spec": {"job_titles": ["backend engineer"]}})
+
+            json = json_fast
+
+        return FakeLLM()
+
+    def test_a_failed_extractor_is_not_mistaken_for_a_missing_one(self, monkeypatch):
+        import juicebox.intake.extract as mod
+
+        monkeypatch.setattr(mod, "get_llm", lambda: self._llm(raises=True))
+        result = mod.extract_intake("Candidate: hello", known="", fast=True)
+
+        assert result.extractor == mod.EXTRACTOR_HEURISTIC_DEGRADED
+        assert result.extractor != mod.EXTRACTOR_HEURISTIC
+        assert result.review_needed, "a degraded read must not look clean"
+        assert "heuristics" in result.review_reason
+
+    def test_no_model_configured_is_still_a_plain_heuristic_read(self, monkeypatch):
+        """Not a fault: a deployment with no key is a supported configuration."""
+        import juicebox.intake.extract as mod
+
+        monkeypatch.setattr(mod, "get_llm", lambda: self._llm(available=False))
+        result = mod.extract_intake("Candidate: hello", known="", fast=True)
+        assert result.extractor == mod.EXTRACTOR_HEURISTIC
+
+
+class TestTheVoiceBudgetIsSeparate:
+    """One shared timeout was either too slow for a live call or too tight for a
+    text thread, and it was both."""
+
+    def _llm(self):
+        from types import SimpleNamespace
+
+        class FakeLLM:
+            available = True
+            voice_timeout = 3.5
+
+            def __init__(self):
+                self.seen = {}
+
+            def json_fast(self, **kwargs):
+                self.seen = kwargs
+                return SimpleNamespace(data={"spec": {"job_titles": ["backend engineer"]}})
+
+            json = json_fast
+
+        return FakeLLM()
+
+    def test_a_live_call_gets_the_short_budget(self, monkeypatch):
+        import juicebox.intake.extract as mod
+
+        llm = self._llm()
+        monkeypatch.setattr(mod, "get_llm", lambda: llm)
+        mod.extract_intake("Candidate: hi", known="", fast=True, live_call=True)
+        assert llm.seen.get("timeout") == 3.5
+
+    def test_a_text_thread_keeps_the_general_budget(self, monkeypatch):
+        """No override: `json_fast` applies the longer configured default."""
+        import juicebox.intake.extract as mod
+
+        llm = self._llm()
+        monkeypatch.setattr(mod, "get_llm", lambda: llm)
+        mod.extract_intake("Candidate: hi", known="", fast=True)
+        assert "timeout" not in llm.seen

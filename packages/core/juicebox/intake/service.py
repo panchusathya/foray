@@ -43,7 +43,12 @@ from ..repository import (
     sync_candidate_emails,
     sync_candidate_phones,
 )
-from .extract import ExtractionResult, extract_intake, known_context
+from .extract import (
+    EXTRACTOR_HEURISTIC_DEGRADED,
+    ExtractionResult,
+    extract_intake,
+    known_context,
+)
 from .phones import lookup_key
 from .providers import (
     EVENT_ANALYZED,
@@ -1468,7 +1473,18 @@ def coverage_snapshot(
         apply_budget(call, minutes_available)
         minutes_available = call.minutes_available
     core_only = core_only_for(minutes_available)
-    result = extract_intake(transcript, known=known, fast=fast)
+    # `live_call`: this runs while the caller sits in silence, so it takes the
+    # voice budget rather than the general one. See `llm_voice_timeout_seconds`.
+    result = extract_intake(transcript, known=known, fast=fast, live_call=True)
+    # A degraded extraction still answers the gate -- that is the point of the
+    # fallback -- but it answers it from regexes, and the call it shaped should
+    # not look like one a model read. Flagging it here is what makes "how often
+    # does this happen?" a query instead of a guess.
+    if call is not None and result.extractor == EXTRACTOR_HEURISTIC_DEGRADED:
+        call.review_needed = True
+        call.review_reason = _join_reasons(
+            call.review_reason, "extractor unavailable, gate ran on heuristics"
+        )
     # Merged for the *gate* only. Never written to call.extracted: that record
     # is evidence about this conversation.
     seeded = merge_record(prior, result.record) if prior else result.record

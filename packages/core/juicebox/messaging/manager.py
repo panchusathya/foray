@@ -37,6 +37,7 @@ from ..applications.service import (
 from ..intake.schema import coverage
 from ..models import (
     Application,
+    Candidate,
     IntakeMessage,
     IntakeThread,
     JobMatch,
@@ -46,7 +47,8 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_card
-from . import identity, intents, prompts
+from . import applylink, identity, intents, prompts
+from .cards import card_media
 from .channels import OutboundMessage
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,20 @@ ACTION_APPLIED = "applied"
 ACTION_ANSWERED = "answered"
 
 MAX_CARDS_PER_MESSAGE = 3
+
+# Intents that mean "put that aside, I want something else". Everything outside
+# this set is treated as an answer to a question a pending apply-link request
+# is waiting on -- because an email or a name classifies as nothing in
+# particular, and routing it would reply "Noted, thanks" to somebody who is
+# halfway through applying to a role they chose.
+NAVIGATIONAL_INTENTS = frozenset(
+    {
+        intents.INTENT_JOBS_MORE,
+        intents.INTENT_JOBS_DETAIL,
+        intents.INTENT_STATUS,
+        intents.INTENT_NETWORKING,
+    }
+)
 
 
 def run_manager_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
@@ -120,6 +136,20 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
             db, thread=thread, message=OutboundMessage(body=body, verbatim=verbatim)
         )
         return TurnResult(action, thread, state, sent=[r for r in [row] if r])
+
+    # A link plus apply words is a role we have never proposed, so there is no
+    # ordinal for `_apply` to resolve against.
+    if intent.kind == intents.INTENT_APPLY and intent.url:
+        return _apply_to_link(db, thread=thread, last=last, state=state, url=intent.url)
+    # A request already in flight is answered before the intent router, because
+    # the reply that carries an email or a name classifies as nothing in
+    # particular -- routing it would answer "Noted, thanks" to somebody who is
+    # halfway through applying. NAVIGATIONAL_INTENTS is the escape hatch: an
+    # explicit "show me other roles" is not an answer to our question.
+    if intent.kind not in NAVIGATIONAL_INTENTS and applylink.pending(thread):
+        resumed = _advance_apply_link(db, thread=thread, last=last, state=state, intent=intent)
+        if resumed is not None:
+            return resumed
 
     if intent.kind == intents.INTENT_APPLY:
         return _apply(db, thread=thread, last=last, state=state, selection=intent.selection)
@@ -271,6 +301,179 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
 
     row = _deliver(db, thread=thread, message=OutboundMessage(body=body))
     return TurnResult(action, thread, state, sent=[r for r in [row] if r])
+
+
+# ---------------------------------------------------------------------------
+# a role the candidate found themselves
+# ---------------------------------------------------------------------------
+
+
+def _apply_to_link(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, url: str):
+    """Somebody pasted a job link and asked us to apply to it.
+
+    Read the page, name it back, then close the gate. The confirm is not
+    politeness -- it is the only check that we read the page correctly, and it
+    is why ``read_posting`` refuses to return half a posting.
+    """
+    from .conversation import TurnResult, _deliver
+
+    existing = applylink.pending(thread)
+    if existing.url == url and existing.posting_id:
+        # Same link again. Carry on where we were rather than re-fetching the
+        # page and asking the same question a second time.
+        resumed = _advance_apply_link(db, thread=thread, last=last, state=state, intent=None)
+        if resumed is not None:
+            return resumed
+
+    posting = applylink.ingest(db, org_id=thread.org_id, url=url)
+    if posting is None:
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=prompts.APPLY_LINK_UNREADABLE)
+        )
+        return TurnResult("clarified", thread, state, sent=[r for r in [row] if r])
+
+    applylink.remember(
+        thread,
+        url=url,
+        posting_id=posting.id,
+        status=applylink.STATUS_CONFIRMING,
+        steps=1,
+    )
+    db.flush()
+    row = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(
+            # verbatim: the employer's name and the role title came off their
+            # own page, and a rewrite that changes either makes the confirm a
+            # lie about what we are agreeing to.
+            body=prompts.APPLY_LINK_CONFIRM.format(
+                title=posting.title, company=posting.company
+            ),
+            asked_field=applylink.ASK_CONFIRM,
+            verbatim=True,
+        ),
+    )
+    return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
+
+
+def _advance_apply_link(
+    db: Session, *, thread: IntakeThread, last: IntakeMessage, state, intent
+):
+    """Move a pending request one step, or ``None`` if it has nothing to do.
+
+    ``None`` matters: it hands the turn back to the intent router rather than
+    swallowing it, so a thread with a parked request still answers "what's my
+    status".
+    """
+    from .conversation import TurnResult, _deliver
+
+    request = applylink.pending(thread)
+    if not request or not request.posting_id:
+        return None
+    posting = db.get(JobPosting, request.posting_id)
+    if posting is None:
+        applylink.clear(thread)
+        return None
+
+    if intent is not None and intent.kind == intents.INTENT_DECLINE:
+        # A refusal is about the request, not about roles in general -- it is
+        # the one intent that has to reach here rather than being treated as
+        # navigation. Before the confirm it means "not that role"; after it,
+        # "not right now", which parks rather than discards: they already said
+        # they wanted it, and a resume arriving next week should still work.
+        if request.status == applylink.STATUS_CONFIRMING:
+            applylink.clear(thread)
+        else:
+            applylink.park(thread)
+        db.flush()
+        # None, so the ordinary decline acknowledgement goes out. Two messages
+        # for one "no" is exactly the noise the budget exists to avoid.
+        return None
+
+    if request.status == applylink.STATUS_CONFIRMING:
+        # Anything that is not a refusal, on the turn after "want me to apply
+        # to that one", is a yes. `intents._NEGATIVE` is a closed set for
+        # exactly this reason: "yeah go for it" and "sure" and "please do"
+        # cannot all be enumerated, but the refusals can.
+        applylink.remember(thread, status=applylink.STATUS_GATHERING)
+        request = applylink.pending(thread)
+
+    candidate_id = thread.candidate_id or identity.link_candidate(db, thread=thread)
+    candidate = db.get(Candidate, candidate_id) if candidate_id else None
+    gaps = applylink.missing(db, thread=thread, candidate=candidate)
+
+    if not gaps and candidate is not None:
+        body, action = applylink.submit_request(
+            db,
+            thread=thread,
+            posting=posting,
+            candidate_id=candidate.id,
+            consenting_message_id=last.id if last is not None else None,
+            consent_verbatim=(last.body or "") if last is not None else "",
+        )
+        applylink.clear(thread)
+        row = _deliver(db, thread=thread, message=OutboundMessage(body=body, verbatim=True))
+        return TurnResult(action, thread, state, sent=[r for r in [row] if r])
+
+    return _ask_for_gap(db, thread=thread, state=state, request=request, gaps=gaps)
+
+
+def _ask_for_gap(db: Session, *, thread: IntakeThread, state, request, gaps):
+    """One item, one message -- or park it and stop asking.
+
+    The budget is what stops the nagging. One message too many gets a number
+    blocked and every candidate after that silently receives nothing, so a
+    fourth ask is a worse outcome than a request that waits.
+    """
+    from .conversation import TurnResult, _deliver
+    from .uploads import mint_upload_link
+
+    need = next((item for item in gaps if not applylink.asked_too_often(thread, item)), "")
+    if not need or request.steps >= applylink.MAX_STEPS:
+        already_parked = request.status == applylink.STATUS_PARKED
+        applylink.park(thread)
+        db.flush()
+        if already_parked:
+            # Told them once already. Saying it again is the nagging the budget
+            # exists to prevent, so the turn goes back to the intent router.
+            return None
+        row = _deliver(
+            db,
+            thread=thread,
+            # Not verbatim: `lowercase_outbound` already holds URLs out of the
+            # voice transform, so the signed link survives and the prose keeps
+            # the same voice as every other message on this thread.
+            message=OutboundMessage(
+                body=prompts.APPLY_LINK_PARKED.format(upload_link=mint_upload_link(thread))
+            ),
+        )
+        return TurnResult("parked", thread, state, sent=[r for r in [row] if r])
+
+    bodies = {
+        applylink.NEED_EMAIL: prompts.APPLY_LINK_NEED_EMAIL,
+        applylink.NEED_NAME: prompts.APPLY_LINK_NEED_NAME,
+        applylink.NEED_RESUME: prompts.APPLY_LINK_NEED_RESUME,
+    }
+    body = bodies[need]
+    if need == applylink.NEED_RESUME:
+        body = body.format(upload_link=mint_upload_link(thread))
+    applylink.remember(
+        thread,
+        steps=request.steps + 1,
+        status=(
+            applylink.STATUS_WAITING_RESUME
+            if need == applylink.NEED_RESUME
+            else applylink.STATUS_GATHERING
+        ),
+    )
+    db.flush()
+    row = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, asked_field=applylink.ask_field_for(need)),
+    )
+    return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
 
 def _detail(db: Session, *, thread: IntakeThread, state, selection: int):
@@ -567,7 +770,13 @@ def present_matches(
     # things and what a person can react to individually. A thumbs-up on a
     # bubble is only meaningful if the bubble is one job.
     rows = []
-    for index, card in enumerate(cards, start=1):
+    for index, (card, (_match, posting)) in enumerate(zip(cards, pairs, strict=True), start=1):
+        candidate_facing = {k: v for k, v in card.items() if k != "recruiter_only"}
+        # The image rides along; it never replaces the text. A card that fails
+        # to render, upload or download still has to leave a readable role in
+        # the bubble, and on SMS there is deliberately no image at all --
+        # `card_media` returns empty for both and the body is byte-identical.
+        media = card_media(db, thread=thread, posting=posting, card=candidate_facing)
         # verbatim: the card quotes employers and role titles out of a posting.
         # Those are somebody else's proper nouns, not our lowercase voice.
         rows.append(
@@ -576,11 +785,12 @@ def present_matches(
                 thread=thread,
                 message=OutboundMessage(
                     body=render_card(
-                        {k: v for k, v in card.items() if k != "recruiter_only"},
+                        candidate_facing,
                         index=index,
                         total=len(cards),
                     ),
                     verbatim=True,
+                    media=media,
                 ),
                 origin=origin,
             )
@@ -633,52 +843,6 @@ def present_matches(
     thread.last_presented = frame
     thread.presented_at = now
     db.flush()
-    _offer_poll(db, thread=thread, frame=frame)
     return TurnResult(ACTION_PRESENTED, thread, state, sent=[r for r in rows if r])
 
 
-def _offer_poll(db: Session, *, thread: IntakeThread, frame: list[dict]) -> None:
-    """A native poll, so choosing a job is a tap rather than a sentence.
-
-    Best-effort on purpose. The cards and the "reply with a number" path have
-    already gone out, so a poll that fails to send costs a nicer affordance
-    and nothing else -- it must never take down a turn that has already
-    delivered the roles.
-
-    Option ids are not known yet. They arrive on `poll.sent`, which is where
-    each one is matched back to a proposal by its text; that is why the option
-    text is stored on the frame now.
-    """
-    from .channels import LINQ
-    from .linq import LinqSendError, create_poll
-
-    if thread.channel != LINQ or not thread.provider_thread_id or len(frame) < 2:
-        return
-    for entry in frame:
-        entry["option_text"] = _poll_option_text(entry)
-    thread.last_presented = list(frame)
-    db.flush()
-
-    try:
-        poll_message_id = create_poll(
-            chat_id=thread.provider_thread_id,
-            options=[entry["option_text"] for entry in frame],
-            idempotency_key=f"poll:{thread.id}:{frame[0]['proposal_id']}",
-        )
-    except LinqSendError as exc:
-        logger.warning("poll not sent for thread %s: %s", thread.id, exc)
-        return
-    # No column for the poll id, and none needed: vote events carry chat.id,
-    # which already identifies the thread, and the option ids land on the
-    # frame when poll.sent arrives.
-    logger.info("poll %s offered %d roles on thread %s", poll_message_id, len(frame), thread.id)
-
-
-def _poll_option_text(entry: dict) -> str:
-    """What the option says. Matched back by exact text when poll.sent lands."""
-    title = (entry.get("title") or "Role").strip()
-    company = (entry.get("company") or "").strip()
-    label = f"{title} — {company}" if company else title
-    from .linq import MAX_OPTION_CHARS
-
-    return label[:MAX_OPTION_CHARS]

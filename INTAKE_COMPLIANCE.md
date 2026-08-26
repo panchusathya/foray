@@ -72,6 +72,14 @@ The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
   exchange and its timestamp live in the transcript on the same row: the call
   row is the evidence record.
 - Opt-out is a person replying STOP — never a webhook omitting a field.
+- **A spoken STOP counts.** A candidate on iMessage may answer with a voice
+  memo, and `looks_like_stop` reads a message body — which an audio message
+  does not have until it has been transcribed. `messaging/audio.py` therefore
+  runs the keyword check on the transcript, *before* the turn is queued:
+  suppression row written, one acknowledgement sent, no turn. Anything that
+  shortens that path has to keep the check ahead of the turn, because the
+  failure is invisible — an untranscribed opt-out looks exactly like a message
+  we simply have not answered yet.
 - Consent is for **application updates**. It does not cover marketing, and the
   10DLC campaign registration will be granted on that use case (see
   `deploy/NUMBER_CHECKLIST.md`).

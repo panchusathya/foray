@@ -1,0 +1,171 @@
+"""Getting a rendered job card onto a thread.
+
+Three questions, and each has one answer that matters:
+
+**Should this thread get an image at all?** Only when Linq has told us the
+thread is on iMessage or RCS. An image over SMS is an MMS -- carrier cost,
+compression, and some carriers strip it -- and ``messaging/uploads.py`` already
+records the decision not to push media through a carrier. An unknown protocol
+falls back to text, deliberately: never having been told is not evidence of
+iMessage.
+
+**Has this card been rendered before?** A role proposed to thirty candidates is
+one card. ``JobCardAsset`` holds the PNG and Linq's attachment id, keyed by
+posting and invalidated by ``card_version`` -- so a renderer change reaches a
+posting somebody has already been shown, which a plain cache would not.
+
+**What happens when any of it fails?** The text card goes out on its own,
+exactly as it does today. Nothing in here may take down a turn: a role the
+candidate never hears about is a far worse outcome than a role without a
+picture, which is the same reasoning the poll's best-effort send used to carry.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .. import storage
+from ..enrich import brand as brandmod
+from ..models import JobCardAsset, JobPosting, utcnow
+from ..presentation.cardimage import CARD_VERSION, render_card_png
+from .linq import RICH_SERVICES, LinqSendError, OutboundMedia, upload_attachment
+
+logger = logging.getLogger(__name__)
+
+VARIANT_CARD = "card"
+CONTENT_TYPE = "image/png"
+
+
+def asset_version() -> str:
+    """The cache key. Both halves, because either invalidates a card.
+
+    A renderer change and a palette-rules change both alter the pixels, and one
+    combined string is harder to forget than two columns somebody has to
+    remember to compare separately.
+    """
+    return f"{CARD_VERSION}+{brandmod.BRAND_VERSION}"
+
+
+def wants_image(thread) -> bool:
+    """Whether an image will render on this thread rather than become an MMS."""
+    return (thread.last_service or "") in RICH_SERVICES
+
+
+def card_media(
+    db: Session, *, thread, posting: JobPosting, card: dict[str, Any]
+) -> tuple[OutboundMedia, ...]:
+    """The card image for this posting, as a sendable media part.
+
+    Empty is the ordinary answer, not a failure: an SMS thread, a posting whose
+    page we cannot read, a Linq upload that refused. The caller sends the text
+    card either way.
+
+    No position is passed in on purpose. The ordinal ("2 of 3") lives in the
+    text body, not in the pixels -- baking it into the image would key the cache
+    by position as well as posting and multiply it by the batch size, for a line
+    nobody reads twice.
+    """
+    if not wants_image(thread):
+        return ()
+    try:
+        asset = _asset_for(db, thread=thread, posting=posting, card=card)
+    except Exception as exc:  # noqa: BLE001 - a card is never worth a failed turn
+        logger.warning("job card image unavailable for posting %s: %s", posting.id, exc)
+        return ()
+    if asset is None or not asset.attachment_id:
+        return ()
+    return (
+        OutboundMedia(
+            content_type=CONTENT_TYPE,
+            attachment_id=asset.attachment_id,
+            filename=_filename(posting),
+        ),
+    )
+
+
+def _asset_for(
+    db: Session, *, thread, posting: JobPosting, card: dict[str, Any]
+) -> JobCardAsset | None:
+    version = asset_version()
+    row = db.scalar(
+        select(JobCardAsset).where(
+            JobCardAsset.org_id == thread.org_id,
+            JobCardAsset.job_posting_id == posting.id,
+            JobCardAsset.variant == VARIANT_CARD,
+        )
+    )
+    if (
+        row is not None
+        and row.card_version == version
+        and row.attachment_id
+        and row.storage_path
+    ):
+        return row
+
+    brand = brandmod.resolve(db, posting)
+    logo = b""
+    if brand is not None and brand.logo_path:
+        try:
+            logo = storage.read_bytes(brand.logo_path)
+        except OSError as exc:
+            logger.info("brand logo for %s is missing on disk: %s", brand.domain, exc)
+
+    png = render_card_png(card, brand=brand, logo=logo, index=1, total=1)
+    relpath = storage.card_relpath(
+        org_id=thread.org_id, posting_id=posting.id, variant=VARIANT_CARD
+    )
+    storage.save_bytes(relpath, png)
+
+    try:
+        attachment_id = upload_attachment(
+            filename=_filename(posting), content_type=CONTENT_TYPE, data=png
+        )
+    except LinqSendError as exc:
+        # Recorded without an attachment id so the bytes are not re-rendered on
+        # every send, but the next one still retries the upload. Storing a
+        # half-made id would send a message referencing nothing.
+        _remember(db, row=row, thread=thread, posting=posting, relpath=relpath, version=version)
+        raise exc
+
+    return _remember(
+        db,
+        row=row,
+        thread=thread,
+        posting=posting,
+        relpath=relpath,
+        version=version,
+        attachment_id=attachment_id,
+    )
+
+
+def _remember(
+    db: Session,
+    *,
+    row: JobCardAsset | None,
+    thread,
+    posting: JobPosting,
+    relpath: str,
+    version: str,
+    attachment_id: str = "",
+) -> JobCardAsset:
+    if row is None:
+        row = JobCardAsset(
+            org_id=thread.org_id, job_posting_id=posting.id, variant=VARIANT_CARD
+        )
+        db.add(row)
+    row.storage_path = relpath
+    row.attachment_id = attachment_id
+    row.card_version = version if attachment_id else ""
+    row.rendered_at = utcnow()
+    db.flush()
+    return row
+
+
+def _filename(posting: JobPosting) -> str:
+    company = (posting.company_normalized or posting.company or "role").strip()
+    company = "-".join(company.lower().split()) or "role"
+    return f"{company}-role.png"[:255]

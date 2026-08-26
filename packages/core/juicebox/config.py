@@ -372,6 +372,18 @@ class Settings:
     linq_from_number: str = field(default_factory=lambda: _env("LINQ_FROM_NUMBER", ""))
     linq_enabled: bool = field(default_factory=lambda: _env_bool("LINQ_ENABLED", False))
 
+    # --- inbound voice memos (messaging/transcribe.py) ---------------------
+    # Off by default, like every other spend in this stack. With the flag off
+    # or the key absent, an audio message gets one reply asking the candidate
+    # to type it -- never silence, which is what it got before.
+    intake_transcription_enabled: bool = field(
+        default_factory=lambda: _env_bool("INTAKE_TRANSCRIPTION_ENABLED", False)
+    )
+    assemblyai_api_key: str = field(default_factory=lambda: _env("ASSEMBLYAI_API_KEY", ""))
+    assemblyai_timeout_seconds: int = field(
+        default_factory=lambda: _env_int("ASSEMBLYAI_TIMEOUT_SECONDS", 90)
+    )
+
     # --- messaging governance (CANDIDATE_AGENT_PLAN §3-§4) ------------------
     # An outbound message answering an inbound one this recent sends regardless
     # of the clock: a reply is not a solicitation.

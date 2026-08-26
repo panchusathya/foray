@@ -699,6 +699,165 @@ package owns only what is different about text. Plan and phasing live in
   refactor, which a review queue should not force.
 
 
+## Inbound voice memos (`messaging/transcribe.py`, `messaging/audio.py`)
+
+- **A voice memo rides on the attachment path, not beside it.** Audio *is* an
+  attachment, so it arrives on the same `intake.attachment` job
+  `messaging/attachments.py` owns, and `ingest_inbound_attachments` checks for
+  it *before* the resume loop -- audio never sniffs as a resume, so letting
+  that loop see it first spends a download to learn nothing. A second job kind
+  for audio is the thing not to reintroduce: `attachments` guarantees exactly
+  one conversational consequence per inbound message, and a parallel dispatcher
+  races it and double-replies. (An earlier draft of this feature had exactly
+  that bug -- a webhook-level audio branch that became dead code the moment
+  `if inbound.attachments:` landed above it.)
+- **The opt-out check runs on the transcript, not on the body.**
+  `looks_like_stop` reads `IntakeMessage.body`, and an audio message's body is
+  empty until the worker fills it in -- so somebody who *says* "stop texting
+  me" was never seen by the keyword path at all.
+  `audio.transcribe_attachment` checks the transcript before the caller queues
+  the turn, suppresses, acknowledges once, and stops. Anything that later
+  shortens that path has to keep this check ahead of the turn.
+- **Two exception classes, and the difference is load-bearing.**
+  `TranscriptionUnavailable` means *do not retry* -- no key, a format we do not
+  accept, a provider that read the file and refused it -- and the caller
+  degrades to one reply asking the person to type it. `TranscriptionError`
+  means *try again* and is deliberately allowed out of the handler so the
+  queue's backoff owns the retry. Collapsing them either retries a permanent
+  refusal forever or gives up on a 502, and from the candidate's side both look
+  like being ignored.
+- **A refusal is never silence.** Media-only inbound used to return `ignored`
+  and say nothing, which is how a candidate who recorded twenty seconds of
+  themselves got no answer. With no transcriber configured a voice memo falls
+  through to the ordinary unreadable-attachment reply, which is still an
+  answer.
+- **`is_audio` is a closed list, not `startswith("audio/")`.** `AUDIO_SUFFIXES`
+  is the set Linq itself accepts; `audio/ogg` is a real format it does not
+  take, and recognising it would spend a download on bytes the provider will
+  refuse.
+- **`body_source` is not bookkeeping.** The heuristic extractor is regexes with
+  no notion of speech and an ASR transcript arrives with almost no punctuation,
+  so a reader auditing a record has to be able to tell which one they are
+  looking at.
+- **The audio is not stored, and the retry story lives in `fetch_media`.**
+  Linq's media URL is signed with a short TTL, and `fetch_media` refreshes it
+  once through `GET /v3/attachments/{id}` -- which is why a retryable
+  transcription failure can simply be raised. An earlier draft cached the bytes
+  ourselves to survive the expiry; that is `fetch_media`'s job, and keeping a
+  second copy of somebody's recording for no reader is worse than not having
+  it. A download failure past the refresh is answered, not retried.
+
+## Branded job cards (`presentation/cardimage.py`, `enrich/brand.py`)
+
+- **It is a fourth renderer over one projection, not a new data path.**
+  `presentation/jobcard.py` computes the card; `render_card`, `render_text` and
+  `render_card_png` are three depths over it. The image is handed the
+  already-stripped dict, which is what keeps a score from ever being drawable.
+- **Contrast is computed, never eyeballed.** A brand colour is whatever fell
+  out of a logo, so legibility is a property of data we did not choose.
+  `palette_for` chooses ink against the ground's luminance and every branch
+  ends in a pairing that clears WCAG AA; a pale primary becomes an accent on a
+  light ground rather than a white-on-white card, and nothing usable falls back
+  to Foray's own colours. The test is parameterised over real brand colours for
+  that reason -- one hand-checked example proves nothing about the next
+  employer.
+- **The logo already contains the brand, so there is no vendor.** Clearbit's
+  free API is gone and Brandfetch and logo.dev both want a key; the employer's
+  own posting page carries `hiringOrganization.logo` and renders their mark
+  anyway. Colours are quantised out of that bitmap, ranked by saturation
+  weighted by coverage -- a wordmark is mostly background, so the most *common*
+  pixel in a logo is almost never the brand colour.
+- **An aggregator's logo is never the employer's.** `is_employer_host` blocks
+  LinkedIn, Indeed and every ATS vendor *and their CDNs* (`licdn.com` is a
+  separate host from `linkedin.com`). Scraping the listing page's own favicon
+  is how LinkedIn's blue ends up on a Pepsi card, which is worse than no card.
+- **A miss is cached.** `company_brands` gets a row with `error` set and
+  `fetched_at` stamped, or a company with no discoverable logo is refetched on
+  every single card -- the same rule `AGENTS.md` already records for
+  `<provider>_checked_at`.
+- **`company_brands` has no `org_id`, and that is the one deliberate exception.**
+  It holds publicly-fetched marketing assets keyed by a public domain, nothing
+  in it belongs to a tenant, and an org column would mean fetching pepsi.com's
+  logo once per org.
+- **`brand.resolve` writes `JobPosting.company_domain`.** That column was read
+  by `jobmatch/referrals.py` and `applications/networking.py` and written by
+  nobody, so warm-path matching had been running against a blank.
+- **The image never replaces the text.** `card_media` returns empty for an SMS
+  thread, an unreadable page, or a refused upload, and the body is
+  byte-identical in every case. A role the candidate never hears about is far
+  worse than a role without a picture.
+- **`last_service` empty is not `SMS`.** Never having been told which protocol
+  a thread is on is its own state; both fall back to text, but storing a guess
+  would be wrong half the time and would then look observed.
+- **The cache key is `card_version` + `brand_version`.** Either half changing
+  alters the pixels, and without both a design fix would never reach a posting
+  somebody had already been shown. A failed upload stores the row with a blank
+  version so the bytes are not re-rendered but the next send still retries.
+- **The fonts are vendored and declared as package-data.** Pillow's default
+  bitmap font is not shippable and a system font makes the output depend on the
+  host -- and the failure mode of a missing `package-data` entry is a card that
+  renders fine locally and looks wrong only in production.
+- **The "via Foray" line is not decoration.** The card carries somebody else's
+  logo and colours; that line is what stops it reading as a message *from* that
+  employer. See `CANDIDATE_AGENT_PLAN.md` §12 -- it is the mitigation, and the
+  decision itself is still open.
+- **The poll is gone and is not coming back.** It read as a survey rather than
+  a job, it was iMessage-only, and `poll.sent` was the only event that revealed
+  option ids -- so a vote was resolvable only by matching option text
+  byte-for-byte, which made a formatting change a silent footgun. Tapbacks
+  survive because one bubble is one job and `JobProposal.message_id` needs no
+  join key.
+
+## Applying to a role the candidate found (`messaging/applylink.py`)
+
+- **The gate and the step budget are two different things.** The gate -- name,
+  email, resume -- is a property of the candidate, so it does not expire and
+  answering it once serves every later application. The budget is what stops
+  the nagging: `MAX_STEPS` outbound messages, then the request *parks*. One
+  message too many gets a number blocked and every candidate after that
+  silently receives nothing, so a fourth ask is a worse outcome than a request
+  that waits.
+- **Nothing here submits.** The flow ends at `create_application` +
+  `request_package`, exactly where `manager._apply` ends. `passes_bar` is
+  deliberately not consulted either: the bar decides what *we* propose, and
+  telling somebody their own choice scored too low is not a product.
+- **The name gate is `is_placeholder_name`, not a blank check.**
+  `identity.link_candidate` names a new row after the address it was created
+  from, so "has a name" becomes true the moment an email arrives -- and an
+  application addressed to `priya@example.com` is exactly what this is for.
+- **A page we cannot read confidently produces nothing.** `read_posting`
+  returns a title *and* a company or neither. A row with a title and no
+  employer would address an application to nobody, and the confirm the agent
+  sends is only a real check if both halves came off the page.
+- **The confirm is not politeness.** It is the only check that we read the page
+  correctly, and it is why it costs one of the four steps.
+- **`_advance_apply_link` returning `None` is the escape hatch.** It hands the
+  turn back to the intent router, so a thread with a parked request still
+  answers "what's my status". A pending request is otherwise resolved *before*
+  the router, because a reply carrying an email classifies as nothing in
+  particular and routing it answers "Noted, thanks" to somebody halfway through
+  applying.
+- **`INTENT_DECLINE` has to reach the flow, so it is not in
+  `NAVIGATIONAL_INTENTS`.** Before the confirm a "no" means "not that role" and
+  clears it; after it, "not right now", which parks rather than discards -- they
+  already said they wanted it. Either way the handler returns `None` so the
+  ordinary decline acknowledgement is the only message that goes out.
+- **A resume upload wakes a parked request.** The file arrives through the
+  upload route, not the thread, so no inbound message would otherwise trigger a
+  turn -- the candidate uploads a resume, the page says "got it", and nothing
+  else ever happens. That is the failure this flow was most likely to ship with.
+- **Parking flags the thread, and the flag matters as much as the parking.**
+  `applylink.park` sets `review_needed` and appends `PARKED_REASON`; a request
+  nothing surfaces is a candidate who asked us to apply and silently never
+  heard back. The gap is never marked `declined` -- nobody refused, and
+  recording a refusal that did not happen puts an invented answer into a record
+  matching reads. `PARKED_REASON` must never contain `"; "`, for the reason the
+  identity section already gives, and `clear` removes only our own segment.
+- **`source="candidate_link"` reuses `source_id_for`.** A role a recruiter
+  already imported and a role a candidate pasted are one row, so applying is
+  still one application per posting; and the upsert never overwrites a richer
+  source's title with a scraped one.
+
 ## Phone numbers in the UI (`packages/web/src/lib/phone.js`)
 
 - **One formatter, because E.164 reads badly and guessing reads wrong.** The API

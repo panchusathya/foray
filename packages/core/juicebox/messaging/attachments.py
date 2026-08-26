@@ -21,6 +21,10 @@ downloads the file, sniffs it, and:
   materializes the document (``materialize_pending``). The bytes must be
   taken NOW: Linq's ephemeral tier signs URLs with a 15-minute TTL, and
   "we'll fetch it once you answer" is how the file expires.
+* **Audio** (a voice memo) → transcribed into the message body by
+  ``messaging/audio.py`` and handed to the ordinary turn, so somebody who talks
+  instead of typing is answered rather than ignored. Checked before the resume
+  loop: audio never sniffs as a resume.
 * **Not a resume** (a photo, a video) → if the thread is still waiting on a
   profile, say so and offer the upload link; otherwise hand back to the
   ordinary turn.
@@ -42,7 +46,7 @@ from .. import storage
 from ..docgen.parse import SUFFIX_BY_MIME, sniff_resume_type
 from ..jobs import KIND_DOC_PARSE, KIND_INTAKE_TURN, enqueue
 from ..models import CandidateDocument, IntakeThread
-from . import identity
+from . import audio, identity
 from .linkedin_flow import flow_meta, update_flow_meta
 from .linq import InboundAttachment, fetch_media
 
@@ -125,6 +129,20 @@ def ingest_inbound_attachments(
     pending stash plus a turn, a can't-read-that reply, or a plain turn for
     the message text.
     """
+    # A voice memo, checked before the resume loop. Audio never sniffs as a
+    # resume, so letting that loop see it first would spend a download to learn
+    # nothing -- and routing it here rather than from the webhook is what keeps
+    # "exactly one conversational consequence per inbound message" true.
+    spoken = audio.audio_attachment(attachments)
+    if spoken is not None and audio.available():
+        return _transcribe(
+            db,
+            thread=thread,
+            message_id=message_id,
+            attachment=spoken,
+            media_transport=media_transport,
+        )
+
     resume_data: bytes | None = None
     resume_type = ""
     resume_name = ""
@@ -229,6 +247,43 @@ def materialize_pending(db: Session, *, thread: IntakeThread) -> CandidateDocume
     update_flow_meta(thread, **{PENDING_KEY: {}})
     db.flush()
     return doc
+
+
+def _transcribe(
+    db: Session,
+    *,
+    thread: IntakeThread,
+    message_id: str,
+    attachment: InboundAttachment,
+    media_transport=None,
+) -> dict[str, Any]:
+    """Download a voice memo and turn it into the message's words.
+
+    The download failure is answered rather than retried: ``fetch_media``
+    already refreshes an expired signed URL once, so a failure past that is not
+    something another attempt fixes -- and the candidate is owed an answer
+    either way.
+    """
+    from ..models import IntakeMessage
+
+    try:
+        data = fetch_media(
+            attachment.url,
+            attachment_id=attachment.attachment_id,
+            transport=media_transport,
+        )
+    except Exception as exc:  # noqa: BLE001 - answered, not retried
+        logger.warning("voice memo download failed for thread %s: %s", thread.id, exc)
+        audio.decline(db, thread=thread)
+        return {"replied": "audio_download_failed", "error": str(exc)}
+
+    message = db.get(IntakeMessage, message_id) if message_id else None
+    result = audio.transcribe_attachment(
+        db, thread=thread, message=message, attachment=attachment, data=data
+    )
+    if result.pop("turn", False):
+        _enqueue_turn(db, thread=thread, message_id=message_id)
+    return result
 
 
 def _no_resume(

@@ -1510,6 +1510,12 @@ class IntakeThread(Base, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(64), default="")
     timezone_source: Mapped[str] = mapped_column(String(24), default="")
 
+    # iMessage | RCS | SMS, as last reported by Linq -- on an inbound message
+    # and on our own message.sent. Empty means we have never been told, and
+    # that is not the same as SMS: presentation falls back to text-only for
+    # both, but a guess either way would be wrong half the time.
+    last_service: Mapped[str] = mapped_column(String(16), default="", server_default="")
+
     inbound_count: Mapped[int] = mapped_column(Integer, default=0)
     outbound_count: Mapped[int] = mapped_column(Integer, default=0)
     last_inbound_at: Mapped[datetime | None] = mapped_column(
@@ -1589,7 +1595,76 @@ class IntakeMessage(Base, TimestampMixin):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # "" when the candidate typed it, "transcript" when we heard it. Not
+    # bookkeeping: the heuristic extractor is regexes with no notion of speech
+    # and an ASR transcript arrives with almost no punctuation, so a reader
+    # auditing a record has to be able to tell which one they are looking at.
+    body_source: Mapped[str] = mapped_column(String(16), default="", server_default="")
+
     raw: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CompanyBrand(Base, TimestampMixin):
+    """One company's logo and brand colours, keyed by domain.
+
+    **Deliberately not org-scoped**, which is a break from every other table
+    here and worth the sentence. It holds only publicly-fetched marketing
+    assets keyed by a public domain -- nothing in it belongs to a tenant, no
+    query needs to be scoped to one, and an ``org_id`` would mean fetching
+    pepsi.com's logo once per org that ever proposes a Pepsi role.
+
+    A row exists for a **miss** as well as a hit: ``error`` set with
+    ``fetched_at`` stamped is what stops a company with no discoverable logo
+    being refetched on every card. ``enrich/brand.py`` owns the TTLs, and
+    ``brand_version`` is what invalidates rows when the extraction changes.
+    """
+
+    __tablename__ = "company_brands"
+    __table_args__ = (UniqueConstraint("domain", name="uq_company_brand_domain"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("brand"))
+    domain: Mapped[str] = mapped_column(String(240))
+    #: Path into the blob store, not bytes. Empty on a miss.
+    logo_path: Mapped[str] = mapped_column(String(400), default="")
+    #: ``["#rrggbb", ...]``, strongest first. Quantised out of the logo.
+    palette: Mapped[list] = mapped_column(JSON, default=list)
+    # jsonld | og_image | touch_icon | favicon -- which rung of the ladder
+    # answered, so a bad palette can be traced to where the image came from.
+    source: Mapped[str] = mapped_column(String(24), default="")
+    error: Mapped[str] = mapped_column(String(400), default="")
+    brand_version: Mapped[str] = mapped_column(String(24), default="")
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JobCardAsset(Base, TimestampMixin):
+    """A rendered job-card image, so one posting renders once.
+
+    A role proposed to thirty candidates is one card, and re-rendering plus
+    re-uploading it thirty times is thirty uploads for identical bytes.
+    ``card_version`` is what invalidates the cache when the renderer or the
+    palette changes -- without it a design fix would never reach a posting
+    anybody had already been shown.
+    """
+
+    __tablename__ = "job_card_assets"
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_posting_id", "variant", name="uq_job_card_asset"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("jcard"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    job_posting_id: Mapped[str] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), index=True
+    )
+    #: Which rendering this is. One value today ("card"); the column exists so
+    #: a second size does not need a migration.
+    variant: Mapped[str] = mapped_column(String(24), default="card")
+    storage_path: Mapped[str] = mapped_column(String(400), default="")
+    #: Linq's durable handle for the uploaded bytes. Reused across sends; a
+    #: blank one means the next send uploads.
+    attachment_id: Mapped[str] = mapped_column(String(120), default="")
+    card_version: Mapped[str] = mapped_column(String(40), default="")
+    rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IntakeNumber(Base, TimestampMixin):

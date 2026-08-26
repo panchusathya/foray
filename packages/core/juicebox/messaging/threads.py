@@ -168,6 +168,7 @@ def with_send_key(
         asked_field=message.asked_field,
         send_key=f"{thread.id}:{seq}",
         verbatim=message.verbatim,
+        media=message.media,
     )
 
 

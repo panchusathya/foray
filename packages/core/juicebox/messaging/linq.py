@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +40,49 @@ class SignatureError(RuntimeError):
 
 class LinqSendError(RuntimeError):
     """Outbound delivery failed."""
+
+
+# What Linq says it actually delivered over. Canonical spellings, because the
+# payload's casing is not guaranteed and this string is stored and compared.
+SERVICE_IMESSAGE = "iMessage"
+SERVICE_RCS = "RCS"
+SERVICE_SMS = "SMS"
+# The two that render an inline image without turning it into an MMS.
+RICH_SERVICES = frozenset({SERVICE_IMESSAGE, SERVICE_RCS})
+
+_SERVICES = {
+    "imessage": SERVICE_IMESSAGE,
+    "rcs": SERVICE_RCS,
+    "sms": SERVICE_SMS,
+    "mms": SERVICE_SMS,
+}
+
+# The formats Linq accepts for a voice memo, which is also the set worth
+# transcribing. A content type absent from here is refused with an explanation
+# rather than handed to a provider that will reject it after the download.
+AUDIO_SUFFIXES = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/x-m4a": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/x-caf": ".caf",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/aiff": ".aiff",
+    "audio/x-aiff": ".aiff",
+    "audio/amr": ".amr",
+}
+
+def normalize_service(value: Any) -> str:
+    """``"imessage"`` -> ``"iMessage"``; anything unrecognised -> ``""``.
+
+    Empty is meaningful and must not become a default: "we have never seen a
+    protocol on this thread" is the case that has to fall back to text, and a
+    guess of ``SMS`` or ``iMessage`` would each be wrong half the time.
+    """
+    return _SERVICES.get(str(value or "").strip().lower(), "")
 
 
 @dataclass(frozen=True)
@@ -92,6 +135,13 @@ class InboundLinq:
     is_group: bool
     raw: dict
     attachments: tuple[InboundAttachment, ...] = ()
+    # iMessage | RCS | SMS, or empty when the payload did not say.
+    service: str = ""
+
+    @property
+    def audio(self) -> InboundAttachment | None:
+        """The first audio attachment, which is what a voice memo arrives as."""
+        return next((a for a in self.attachments if is_audio(a.content_type)), None)
 
 
 def _decode_secret(secret: str) -> bytes:
@@ -230,10 +280,12 @@ def parse_inbound(payload: dict) -> InboundLinq:
         provider_native_id = str(nested.get("id") or "").strip()
         parts = nested.get("parts") or []
         from_address = _handle_address(data, "from", "from_handle")
+        service = normalize_service(nested.get("service") or data.get("service"))
     else:
         provider_native_id = str(data.get("id") or "").strip()
         parts = data.get("parts") or []
         from_address = _handle_address(data, "sender_handle", "from", "from_handle")
+        service = normalize_service(data.get("service"))
 
     to_address = ""
     if isinstance(chat, dict):
@@ -251,7 +303,52 @@ def parse_inbound(payload: dict) -> InboundLinq:
         is_group=is_group,
         raw=data,
         attachments=_media_parts(part_list),
+        service=service,
     )
+
+
+@dataclass(frozen=True)
+class OutboundMedia:
+    """A file we are asking Linq to attach to a message we are sending.
+
+    Deliberately not ``InboundAttachment``: that describes a file somebody sent
+    us and always has a URL, while this carries either a pre-uploaded
+    ``attachment_id`` or a public ``url``. One type for both directions is how
+    a field that is required one way quietly becomes optional the other.
+    """
+
+    content_type: str
+    attachment_id: str = ""
+    url: str = ""
+    filename: str = ""
+
+
+def is_audio(content_type: str) -> bool:
+    """Whether this is a voice memo we can transcribe."""
+    return (content_type or "").strip().lower() in AUDIO_SUFFIXES
+
+
+def audio_suffix(content_type: str) -> str:
+    return AUDIO_SUFFIXES.get((content_type or "").strip().lower(), ".m4a")
+
+
+def _outbound_parts(body: str, media: Sequence[OutboundMedia]) -> list[dict[str, Any]]:
+    """Media first, then the text.
+
+    Linq forbids *consecutive text* parts, so one media part plus one text part
+    is fine and two text parts are not -- which is why the body is never split.
+    Media leads because that is the order a phone renders it in: the card, then
+    the sentence about the card.
+    """
+    parts: list[dict[str, Any]] = []
+    for part in media or ():
+        if part.attachment_id:
+            parts.append({"type": "media", "attachment_id": part.attachment_id})
+        elif part.url:
+            parts.append({"type": "media", "url": part.url})
+    if body:
+        parts.append({"type": "text", "value": body})
+    return parts
 
 
 def send_message(
@@ -259,19 +356,24 @@ def send_message(
     chat_id: str,
     body: str,
     idempotency_key: str,
+    media: Sequence[OutboundMedia] = (),
     transport: Transport | None = None,
 ) -> str:
-    """Send one outbound text reply. Returns Linq's message id."""
+    """Send one outbound reply, optionally carrying media. Returns Linq's id."""
     settings = get_settings()
     if not settings.linq_api_key:
         raise LinqSendError("LINQ_API_KEY is not configured")
     if not chat_id:
         raise LinqSendError("chat_id is required")
 
+    parts = _outbound_parts(body, media)
+    if not parts:
+        raise LinqSendError("a message needs a body or a media part")
+
     url = f"{LINQ_API_BASE}/chats/{chat_id}/messages"
     payload = {
         "message": {
-            "parts": [{"type": "text", "value": body}],
+            "parts": parts,
             "idempotency_key": idempotency_key,
         }
     }
@@ -305,45 +407,42 @@ def send_message(
     return message_id
 
 
-POLL_EVENTS = frozenset({"poll.sent", "poll.vote.added", "poll.vote.removed"})
-
-# iMessage renders a poll natively, so picking a job is a tap rather than a
-# sentence somebody has to phrase and we have to parse.
-MAX_POLL_OPTIONS = 10
-MAX_OPTION_CHARS = 100
+#: ``POST /attachments`` answers with a presigned PUT valid for 15 minutes.
+#: Nothing here holds one that long -- the upload follows immediately -- but the
+#: window is why the id is what gets cached and the URL never is.
+ATTACHMENT_UPLOAD_TIMEOUT = 60.0
 
 
-def create_poll(
+def upload_attachment(
     *,
-    chat_id: str,
-    options: list[str],
-    idempotency_key: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
     transport: Transport | None = None,
+    uploader: Callable[[str, dict[str, str], bytes], None] | None = None,
 ) -> str:
-    """Send a poll. Returns Linq's message id for the poll.
+    """Pre-upload bytes to Linq and return the durable ``attachment_id``.
 
-    The API takes no question -- the prompt is a separate text message, which
-    is why the caller sends one first. Two options minimum; a poll with one
-    job in it is a worse "apply?" button than just asking.
+    Two legs: ask for a presigned URL, then PUT to it. Returns the id, which
+    does not expire and is what a later send references.
+
+    **This is the path an outbound image takes, not a public URL of our own.**
+    There is no object store or CDN here and no static mount; the only
+    unauthenticated file route (``routers/portal.py``) signs for sixty seconds,
+    which is nowhere near enough for a vendor-side fetch. Handing Linq the
+    bytes sidesteps the whole question.
     """
-    # Request shape first, configuration second: a call with one option is
-    # wrong however the deployment is configured, and reporting a missing key
-    # for it sends whoever is debugging to the wrong place.
-    if not chat_id:
-        raise LinqSendError("chat_id is required")
-    trimmed = [o.strip()[:MAX_OPTION_CHARS] for o in options if o and o.strip()]
-    if len(trimmed) < 2:
-        raise LinqSendError("a poll needs at least two options")
     settings = get_settings()
-    if not settings.linq_api_key:
+    if not settings.linq_api_key and transport is None:
         raise LinqSendError("LINQ_API_KEY is not configured")
+    if not data:
+        raise LinqSendError("nothing to upload")
 
-    url = f"{LINQ_API_BASE}/chats/{chat_id}/polls"
+    url = f"{LINQ_API_BASE}/attachments"
     payload = {
-        "poll": {
-            "options": [{"text": text} for text in trimmed[:MAX_POLL_OPTIONS]],
-            "idempotency_key": idempotency_key,
-        }
+        "filename": filename or "attachment",
+        "content_type": content_type,
+        "size_bytes": len(data),
     }
     try:
         if transport is not None:
@@ -356,62 +455,42 @@ def create_poll(
                     "Content-Type": "application/json",
                 },
                 json=payload,
-                timeout=30.0,
+                timeout=ATTACHMENT_UPLOAD_TIMEOUT,
             )
             http.raise_for_status()
             response = http.json()
     except httpx.HTTPError as exc:
-        logger.warning("Linq poll send failed: %s", exc)
+        logger.warning("Linq attachment reservation failed: %s", exc)
         raise LinqSendError(str(exc)) from exc
     except ValueError as exc:
-        raise LinqSendError(f"malformed poll response: {exc}") from exc
+        raise LinqSendError(f"malformed attachment response: {exc}") from exc
 
-    message_id = ""
-    if isinstance(response, dict):
-        message_id = str(
-            response.get("id") or (response.get("message") or {}).get("id") or ""
-        ).strip()
-    if not message_id:
-        raise LinqSendError("Linq returned no poll message id")
-    return message_id
+    if not isinstance(response, dict):
+        raise LinqSendError("malformed attachment response")
+    attachment_id = str(response.get("attachment_id") or response.get("id") or "").strip()
+    upload_url = str(response.get("upload_url") or "").strip()
+    headers = response.get("required_headers")
+    headers = {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
+    if not attachment_id or not upload_url:
+        raise LinqSendError("Linq returned no attachment_id/upload_url")
 
+    if uploader is not None:
+        uploader(upload_url, headers, data)
+        return attachment_id
 
-def parse_poll_options(payload: dict) -> tuple[str, list[tuple[str, str]]]:
-    """``poll.sent`` -> (chat_id, [(option_id, text)]).
-
-    This is the only place option ids are ever revealed: a vote event carries
-    an option_id and no text, so without recording this mapping a tap cannot
-    be resolved to a job.
-    """
-    data = payload.get("data") or payload
-    chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
-    chat_id = str(chat.get("id") or data.get("chat_id") or "")
-    poll = data.get("poll") if isinstance(data.get("poll"), dict) else data
-    options = []
-    for option in poll.get("options") or []:
-        if not isinstance(option, dict):
-            continue
-        option_id = str(option.get("option_id") or option.get("id") or "")
-        text = str(option.get("text") or "")
-        if option_id:
-            options.append((option_id, text))
-    return chat_id, options
-
-
-def parse_poll_vote(payload: dict) -> tuple[str, str, bool]:
-    """``poll.vote.added`` -> (chat_id, option_id, is_me).
-
-    ``sender_handle.is_me`` is how a vote of ours is told from theirs -- these
-    events carry no ``is_from_me``, unlike reactions.
-    """
-    data = payload.get("data") or payload
-    handle = data.get("sender_handle") if isinstance(data.get("sender_handle"), dict) else {}
-    chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
-    return (
-        str(chat.get("id") or data.get("chat_id") or ""),
-        str(data.get("option_id") or ""),
-        bool(handle.get("is_me")),
-    )
+    headers.setdefault("Content-Type", content_type)
+    try:
+        put = httpx.put(
+            upload_url, headers=headers, content=data, timeout=ATTACHMENT_UPLOAD_TIMEOUT
+        )
+        put.raise_for_status()
+    except httpx.HTTPError as exc:
+        # The id exists but has no bytes behind it, so it must not be cached --
+        # a send referencing it would fail forever. Raising is what stops the
+        # caller storing it.
+        logger.warning("Linq attachment upload failed: %s", exc)
+        raise LinqSendError(f"attachment upload failed: {exc}") from exc
+    return attachment_id
 
 
 class MediaFetchError(RuntimeError):
@@ -553,6 +632,10 @@ def parse_reaction(payload: dict) -> ReactionEvent:
 class StatusEvent:
     event_type: str
     message_id: str
+    # What Linq actually delivered over. On `message.sent` this is the most
+    # reliable protocol signal there is -- it is the outcome, not a capability
+    # guess -- which is what decides whether the next card carries an image.
+    service: str = ""
     delivered_at: datetime | None = None
     read_at: datetime | None = None
     failed_at: datetime | None = None
@@ -598,6 +681,7 @@ def parse_status_event(payload: dict) -> StatusEvent:
     return StatusEvent(
         event_type=event_type,
         message_id=message_id,
+        service=normalize_service(nested.get("service") or data.get("service")),
         delivered_at=parse_iso_datetime(nested.get("delivered_at") or data.get("delivered_at")),
         read_at=parse_iso_datetime(nested.get("read_at") or data.get("read_at")),
         failed_at=parse_iso_datetime(nested.get("failed_at") or data.get("failed_at")),

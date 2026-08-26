@@ -585,6 +585,7 @@ def _deliver(
         asked_field=message.asked_field,
         send_key=message.send_key,
         verbatim=message.verbatim,
+        media=message.media,
     )
     channel = get_channel(thread.channel)
     if not channel.is_configured():

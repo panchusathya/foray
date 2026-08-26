@@ -32,6 +32,10 @@ _SOURCE_LABELS = {
     "exa": "open market",
     "manual": "added by hand",
     "csv": "imported",
+    # A role the candidate found and sent us. Worth its own label: it is the
+    # one provenance where the bar was never consulted, because they had
+    # already decided the role was worth looking at.
+    "candidate_link": "you found this",
 }
 
 

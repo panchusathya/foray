@@ -84,8 +84,8 @@ def _plain(text: str) -> str:
     """Scraped page titles carry HTML entities: "Asset &amp; Wealth".
 
     Decoded at the boundary rather than at each renderer, because the
-    title reaches a text card, a poll option and a resume, and every one
-    of those would otherwise need to remember."""
+    title reaches a text card, a rendered card image and a resume, and
+    every one of those would otherwise need to remember."""
     return html.unescape(text or "").strip()
 
 

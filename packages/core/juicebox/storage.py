@@ -71,6 +71,28 @@ def artifact_relpath(*, org_id: str, application_id: str, label: str, suffix: st
     return relpath
 
 
+def brand_logo_relpath(*, domain: str) -> str:
+    """``brands/{domain}/logo`` -- one file per company, no org segment.
+
+    Brand assets are not tenant data (see ``enrich/brand.py``), so the path
+    has no org in it. The domain is squeezed through ``_LABEL_SAFE`` rather
+    than trusted: it comes out of a fetched page's JSON-LD, which makes it the
+    one identifier here that is not ours.
+    """
+    cleaned = _LABEL_SAFE.sub("-", (domain or "").strip().lower()).strip("-.") or "unknown"
+    return f"brands/{cleaned}/logo"
+
+
+def card_relpath(*, org_id: str, posting_id: str, variant: str) -> str:
+    """``{org}/cards/{posting}/{variant}.png`` -- a rendered job card.
+
+    Org-scoped even though the posting it renders is public, because the card
+    quotes match reasons computed for one org's candidate and those are not.
+    """
+    cleaned = _LABEL_SAFE.sub("-", (variant or "card").strip().lower()).strip("-") or "card"
+    return f"{org_id}/cards/{posting_id}/{cleaned}.png"
+
+
 def document_abspath(relpath: str) -> Path:
     root = storage_root()
     resolved = (root / relpath).resolve()

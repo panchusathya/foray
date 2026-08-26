@@ -126,6 +126,12 @@ x-app-env: &app_env
   LINQ_WEBHOOK_SECRET: ${LINQ_WEBHOOK_SECRET:-}
   LINQ_FROM_NUMBER: ${LINQ_FROM_NUMBER:-}
   LINQ_ENABLED: ${LINQ_ENABLED:-false}
+  # Inbound voice memos. Both are needed: the flag without the key, or the key
+  # without the flag, leaves the NullTranscriber installed and an audio message
+  # gets one "type it instead" reply.
+  INTAKE_TRANSCRIPTION_ENABLED: ${INTAKE_TRANSCRIPTION_ENABLED:-false}
+  ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+  ASSEMBLYAI_TIMEOUT_SECONDS: ${ASSEMBLYAI_TIMEOUT_SECONDS:-90}
   # Candidate documents (resumes, cover letters). The `filedata` volume is
   # mounted on api AND worker — the worker writes generated PDFs, the api
   # serves uploads and downloads. Back this volume up alongside pgdata: the

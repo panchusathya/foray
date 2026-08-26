@@ -159,22 +159,93 @@ returning auth-wall errors.
 | Stuck at Sent, never Read | SMS fallback, or the recipient has read receipts off — expected |
 | Scrape skipped, extra questions | Missing `LINKEDIN_SESSION_*`, Playwright, or an auth wall |
 | Voice calls wrong number | Linq number registered with `--provider retell` — fix provider column |
+| Voice memo answered "can you type it instead" | `INTAKE_TRANSCRIPTION_ENABLED` or `ASSEMBLYAI_API_KEY` unset, or the format is not in the accepted list |
+| Voice memo gets no reply at all | Worker not running — `intake.attachment` is queued, not inline |
+| Job cards arrive as text only | `intake_threads.last_service` is empty or `SMS`; it is set from the first inbound or `message.sent` |
+| Card has no logo | No `hiringOrganization.logo`, `og:image` or favicon on the posting page, or the host blocked us. Check `company_brands.error` |
+
+## 9. Inbound voice memos (optional)
+
+A candidate on iMessage will reply with a voice memo, and until this existed the
+message was dropped on the floor. Two variables, and **both** are needed:
+
+```bash
+INTAKE_TRANSCRIPTION_ENABLED=true
+ASSEMBLYAI_API_KEY=...
+ASSEMBLYAI_TIMEOUT_SECONDS=90   # optional
+```
+
+The flag without the key, or the key without the flag, leaves the
+`NullTranscriber` installed. That is a supported state, not a broken one: an
+audio message then gets exactly one reply asking the person to type it instead.
+Silence is what the channel used to do, and it reads as being ignored.
+
+How it runs: a voice memo is an attachment, so it takes the same
+`intake.attachment` job a resume does — audio is just recognised one branch
+earlier, before the resume sniffer. The worker downloads it, transcribes it,
+writes the words onto `intake_messages.body` with `body_source='transcript'`,
+and then queues the turn. So the worker has to be running for a voice memo to
+get an answer, the same as any other turn.
+
+**A spoken STOP stops the thread.** `looks_like_stop` reads a message body, and
+an audio message has none until the worker fills one in — so the opt-out check
+runs on the transcript, before the turn is queued. Nothing else in the
+compliance path changed.
+
+Formats accepted: MP3, M4A, AAC, CAF, WAV, AIFF, AMR — the set Linq itself
+takes, checked as a closed list rather than `audio/*`, so a format the vendor
+would refuse never costs a download. Size is capped by `MAX_UPLOAD_BYTES`, the
+same ceiling the upload page uses.
+
+## 10. Branded job cards
+
+Roles now go out as a rendered card image alongside the text, on iMessage and
+RCS only — an image over SMS is an MMS, and `IntakeThread.last_service` (set
+from what Linq reports on inbound and on `message.sent`) is what decides. An
+unknown protocol falls back to text.
+
+No configuration. The logo and palette come from the employer's own posting
+page (`enrich/brand.py`), cached in `company_brands`; no vendor and no key. A
+posting with no discoverable logo gets a neutral Foray-coloured card, which is
+still a real card.
+
+To look at one before shipping a layout change:
+
+```bash
+juicebox job-card --sample --out /tmp/cards
+```
+
+```bash
+juicebox job-card <posting_id> --out /tmp/cards
+```
+
+**The iMessage poll is gone.** It read as a survey rather than a job, it was
+iMessage-only, and its option text was a fragile join key. Tapbacks stay: a
+thumbs-up on a card bubble is still an apply, resolved through
+`JobProposal.message_id`.
 
 ## Out of scope (accepted gaps)
 
 - **Android / SMS fallback** until Linq registration model is confirmed
 - **Conversational opt-out** beyond keyword STOP/HELP
 - **Twilio SMS** until TFV clears — see [`SMS_ENABLEMENT.md`](SMS_ENABLEMENT.md)
-
+- **Outbound voice memos.** `POST /v3/chats/{id}/voicememo` is not implemented.
+  The attachment upload it would need already exists (`linq.upload_attachment`,
+  built for card images), so it is a small addition whenever it is wanted.
 ## Resume attachments
 
 Inbound attachments are handled: the webhook enqueues an `intake.attachment`
 job, the worker downloads each media part from Linq's CDN (with one refresh
 retry through `GET /v3/attachments/{id}` for expired ephemeral-tier URLs) and,
 when a file sniffs as a resume (PDF or DOCX by magic bytes), stores it as the
-thread's `CandidateDocument` and queues the ordinary `docs.parse` → promote →
+thread's `CandidateDocument` and queues the ordinary `docs.parse` -> promote ->
 confirm path. A resume sent before the thread has an email is held at a
 thread-scoped storage path and attached the moment identity capture links a
 candidate. Non-resume media (photos, video) get an honest "can't read that"
 reply with the upload-page link while the profile question is open, and are
 ignored otherwise. OCR on scanned images remains out of scope.
+
+**A voice memo takes the same job, one branch earlier.** Audio never sniffs as
+a resume, so `ingest_inbound_attachments` checks for it before the resume loop
+and routes to transcription instead — one dispatcher, not two, which is what
+keeps "exactly one conversational consequence per inbound message" true.

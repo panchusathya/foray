@@ -32,6 +32,13 @@ dependencies = [
     # would drag in pango/cairo, and headless chromium is a browser.
     "pypdf>=4.0",
     "reportlab>=4.1",
+    # Renders the branded job card (presentation/cardimage.py) and reads a
+    # palette out of a company logo (enrich/brand.py). It arrives anyway as a
+    # reportlab dependency; listed here because we import it directly, and
+    # depending on a transitive dep is how a dependency disappears in somebody
+    # else's upgrade. A manylinux wheel with no apt layer, unlike the
+    # weasyprint and headless-chromium routes rejected above.
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +60,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["juicebox*"]
+
+# The card renderer loads these by path at runtime. Without this they are left
+# out of a built wheel and every card falls back to Pillow's bitmap font --
+# which does not fail, it just quietly looks wrong in production only.
+[tool.setuptools.package-data]
+"juicebox.presentation" = ["fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

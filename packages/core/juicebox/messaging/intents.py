@@ -46,6 +46,10 @@ class Intent:
     kind: str
     # 1-based index into the presented list; 0 = no specific role referenced.
     selection: int = 0
+    # A job link the candidate pasted. Only ever set alongside APPLY, and it is
+    # what tells "apply to 2" (an ordinal into what we showed) from "apply to
+    # this" (a role we have never seen). Empty for every other intent.
+    url: str = ""
 
 
 _ORDINALS = {
@@ -125,7 +129,15 @@ def classify(body: str, *, presented: list[dict[str, Any]]) -> Intent:
     selection = resolve_reference(body, presented)
 
     if any(word in text for word in _APPLY_WORDS):
-        return Intent(INTENT_APPLY, selection)
+        # A link plus apply words is a role we have never seen, so there is no
+        # ordinal to resolve. A link *without* apply words is not an
+        # application -- somebody sharing a posting to ask about it is the
+        # commoner case, and the same ambiguity-resolves-to-nothing rule
+        # `resolve_reference` follows applies: acting on the wrong reading
+        # costs an application.
+        from .applylink import link_in
+
+        return Intent(INTENT_APPLY, selection, url=link_in(body))
     if any(word in text for word in _STATUS_WORDS):
         return Intent(INTENT_STATUS)
     if any(word in text for word in _NETWORK_WORDS):

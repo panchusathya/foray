@@ -423,8 +423,8 @@ class TestScrapedTitlesAreReadable:
     """Page titles arrive HTML-escaped: "Asset &amp; Wealth Management".
 
     Decoded at ingest rather than in each renderer -- the title reaches a text
-    card, a poll option and a generated resume, and every one of those would
-    otherwise have to remember to do it.
+    card, a rendered card image and a generated resume, and every one of those
+    would otherwise have to remember to do it.
     """
 
     def test_entities_are_decoded_in_discovery_rows(self):

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from ..config import get_settings
-from .linq import LinqSendError, send_message, stop_typing
+from .linq import LinqSendError, OutboundMedia, send_message, stop_typing
 
 WEB = "web"
 LINQ = "linq"
@@ -59,6 +59,11 @@ class OutboundMessage:
     # "ml engineer at anthropic" makes a proper noun look like a typo and the
     # card harder to skim. Prose stays lowercase; other people's names do not.
     verbatim: bool = False
+    # Attachments to send alongside the text, as already-uploaded Linq
+    # attachment ids or public URLs. A channel that cannot carry media ignores
+    # them and still delivers the body: the text has to stand on its own,
+    # because an image that fails to render must not take the message with it.
+    media: tuple[OutboundMedia, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,6 +170,7 @@ class LinqChannel:
                 chat_id=provider_thread_id,
                 body=message.body,
                 idempotency_key=message.send_key or message.asked_field or message.body[:255],
+                media=message.media,
             )
         except LinqSendError as exc:
             raise ChannelError(str(exc)) from exc

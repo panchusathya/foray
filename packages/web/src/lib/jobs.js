@@ -70,6 +70,10 @@ export const JOB_SOURCE_LABELS = {
   project: 'Mandate',
   manual: 'Manual',
   csv: 'CSV',
+  // A role a candidate pasted into their thread and asked us to apply to. The
+  // recruiter wording differs from the candidate-facing one on purpose: the
+  // card says "you found this", and a recruiter needs to know *who* did.
+  candidate_link: 'Candidate link',
 };
 
 export function sourceLabel(source) {

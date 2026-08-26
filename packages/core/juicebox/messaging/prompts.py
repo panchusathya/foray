@@ -281,6 +281,15 @@ HELP_REPLY = (
     "for help, contact the recruiter who shared this number."
 )
 
+# The one reply a voice memo we cannot read gets. Never silence: an audio
+# message used to be dropped on the floor, which reads as being ignored, and
+# somebody who has just recorded twenty seconds of themselves notices.
+#
+# It does not say why. "our transcription provider is not configured" is our
+# problem, not theirs, and naming a vendor in a candidate's thread tells them
+# nothing they can act on.
+AUDIO_UNREADABLE = "i couldn't play that one — can you type it instead?"
+
 
 # ---------------------------------------------------------------------------
 # the recruiting-manager modes (CANDIDATE_AGENT_PLAN + the candidate agent)
@@ -377,6 +386,43 @@ APPLY_ACK = (
 APPLY_PARKED = (
     "I've noted you want {title} at {company}. You're at this week's "
     "application limit, so I'll queue it and check back with you."
+)
+
+APPLY_ALREADY_IN_FLIGHT = (
+    "You're already in flight for {title} at {company} — ask me \"status\" any time."
+)
+
+
+# --- a role the candidate found themselves (messaging/applylink.py) ---------
+
+# The confirm. One message, and it names both halves back, because the whole
+# point of reading the page was to be able to check we read it right.
+APPLY_LINK_CONFIRM = (
+    "{title} at {company} — want me to put an application in for that one?"
+)
+
+# A page we could not read. Deliberately not a guess: a wrong employer on an
+# application cannot be taken back, and asking costs one message.
+APPLY_LINK_UNREADABLE = (
+    "I couldn't open that link. Tell me the company and the role and I'll take "
+    "it from there."
+)
+
+APPLY_LINK_NEED_EMAIL = (
+    "Happy to. What's the best email to put on the application?"
+)
+
+APPLY_LINK_NEED_NAME = "And what name should go on it?"
+
+APPLY_LINK_NEED_RESUME = (
+    "Last thing — I need your resume to build the application: {upload_link}"
+)
+
+# The budget ran out. It parks rather than failing, and says so once: the
+# request is not lost, and the person is not asked a fourth time.
+APPLY_LINK_PARKED = (
+    "I'll hold onto that role. Send your resume whenever you're ready and I'll "
+    "pick it straight back up: {upload_link}"
 )
 
 # Proactive notifications: canned, never model-written. Nothing to reply to

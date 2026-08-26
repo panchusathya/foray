@@ -7,6 +7,8 @@
     juicebox search "senior ML engineers in SF" --org <org_id>
     juicebox run-outreach --org <org_id> [--dry-run]
     juicebox run-agents --org <org_id>
+    juicebox job-card <posting_id> [--candidate <id>] [--out <dir>]
+    juicebox job-card --sample [--out <dir>]
     juicebox work [--once]
     juicebox backfill-jobs [--org]
     juicebox reembed --org <org_id>
@@ -228,6 +230,104 @@ def cmd_ats_probe(args: argparse.Namespace) -> int:
         if not report.usable:
             failed += 1
     return 1 if failed else 0
+
+
+def _placeholder_mark(colour: str) -> bytes:
+    """A stand-in logo for `job-card --sample`. Never used for a real card."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (256, 256), (255, 255, 255, 0))
+    ImageDraw.Draw(image).ellipse((32, 32, 224, 224), fill=colour or "#4cc38a")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def cmd_job_card(args: argparse.Namespace) -> int:
+    """Render one posting's card to a PNG so a person can look at it.
+
+    The maintenance tool for the card the way ``ats-probe`` is for the browser
+    tier. A card is generated art over data we did not choose -- an employer's
+    logo, a palette quantised out of it -- so "does this look right" is a
+    question only an eye answers, and a test asserting contrast ratios cannot.
+
+    ``--sample`` needs no database and no posting: it renders the branded, pale
+    and neutral variants side by side, which is what to look at after touching
+    the layout.
+    """
+    from .presentation.cardimage import palette_for, render_card_png
+
+    out = Path(args.out or ".")
+    out.mkdir(parents=True, exist_ok=True)
+
+    if args.sample:
+        from .enrich.brand import Brand
+
+        card = {
+            "company": "Pepsico",
+            "title": "Director, Strategic Finance",
+            "location": "Purchase, NY (remote ok)",
+            "seniority": "Director",
+            "source_label": "open market",
+            "reasons": [
+                "12 years in CPG finance, 6 leading a team",
+                "Ran the FP&A rebuild they are hiring for",
+            ],
+        }
+        variants = [
+            ("branded", Brand(domain="pepsico.com", primary="#004b93", accent="#e32934")),
+            ("pale", Brand(domain="snap.com", primary="#fffc00")),
+            ("neutral", None),
+        ]
+        for name, brand in variants:
+            path = out / f"card-{name}.png"
+            # A placeholder mark, because the logo tile shifts the identity row
+            # -- a sample without one shows a layout no real card has.
+            path.write_bytes(
+                render_card_png(
+                    card,
+                    brand=brand,
+                    logo=_placeholder_mark(brand.primary if brand else "#4cc38a"),
+                    index=2,
+                    total=3,
+                )
+            )
+            palette = palette_for(brand)
+            print(f"{path}  ground={palette.ground} ink={palette.ink} accent={palette.accent}")
+        return 0
+
+    from . import storage
+    from .enrich import brand as brandmod
+    from .models import JobMatch, JobPosting
+    from .presentation.jobcard import jobcard
+
+    with session_scope() as db:
+        posting = db.get(JobPosting, args.posting_id)
+        if posting is None:
+            print(f"no posting {args.posting_id}")
+            return 1
+        match = None
+        if args.candidate:
+            match = db.scalar(
+                select(JobMatch).where(
+                    JobMatch.job_posting_id == posting.id,
+                    JobMatch.candidate_id == args.candidate,
+                )
+            )
+        card = {k: v for k, v in jobcard(posting, match).items() if k != "recruiter_only"}
+        brand = brandmod.resolve(db, posting, refresh=args.refresh_brand)
+        logo = b""
+        if brand is not None and brand.logo_path:
+            logo = storage.read_bytes(brand.logo_path)
+        path = out / f"card-{posting.id}.png"
+        path.write_bytes(render_card_png(card, brand=brand, logo=logo))
+        palette = palette_for(brand)
+        print(f"{path}")
+        print(f"  brand={brand.domain if brand else '(none)'} source={brand.source if brand else '-'}")
+        print(f"  ground={palette.ground} ink={palette.ink} accent={palette.accent}")
+    return 0
 
 
 def cmd_run_agents(args: argparse.Namespace) -> int:
@@ -587,6 +687,18 @@ def build_parser() -> argparse.ArgumentParser:
     ats_probe.add_argument("urls", nargs="+")
     ats_probe.add_argument("--org", default="")
     ats_probe.set_defaults(func=cmd_ats_probe)
+
+    job_card = sub.add_parser(
+        "job-card", help="render a posting's card image to a PNG so a person can look at it"
+    )
+    job_card.add_argument("posting_id", nargs="?", default="")
+    job_card.add_argument("--candidate", default="", help="include this candidate's match reasons")
+    job_card.add_argument("--out", default="", help="directory to write into (default: cwd)")
+    job_card.add_argument("--refresh-brand", action="store_true", help="refetch the logo")
+    job_card.add_argument(
+        "--sample", action="store_true", help="render the three variants; no database needed"
+    )
+    job_card.set_defaults(func=cmd_job_card)
 
     intake_number = sub.add_parser(
         "intake-number", help="register a voice intake phone number against an org"

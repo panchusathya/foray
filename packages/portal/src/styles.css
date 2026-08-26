@@ -469,7 +469,9 @@ button.card {
   border: 1px solid var(--border);
 }
 
-.segmented button {
+.segmented button,
+.segmented a {
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -483,9 +485,11 @@ button.card {
   min-height: 34px;
 }
 
-.segmented button svg { width: 15px; height: 15px; }
+.segmented button svg,
+.segmented a svg { width: 15px; height: 15px; }
 
-.segmented button.on {
+.segmented button.on,
+.segmented a.on {
   background: var(--surface);
   color: var(--accent-ink);
   box-shadow: var(--shadow-1);
@@ -1391,7 +1395,7 @@ button.card {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--text);
 }
 
 .msg-subject {
@@ -1403,7 +1407,7 @@ button.card {
 
 /* Unread is weight, not colour: colour here would compete with the kind tags,
    which are the thing actually worth distinguishing. */
-.msg-subject.unread { font-weight: 650; color: var(--ink); }
+.msg-subject.unread { font-weight: 650; color: var(--text); }
 
 .msg-preview {
   display: block;
@@ -1439,9 +1443,9 @@ button.card {
 }
 
 .tag.verification { background: var(--accent-soft); color: var(--accent-ink); }
-.tag.interview { background: var(--good-tint, var(--accent-soft)); color: var(--good, var(--accent-ink)); }
+.tag.interview { background: var(--good-soft); color: var(--good); }
 .tag.assessment { background: var(--gold-tint); color: var(--gold-deep); }
-.tag.rejected { background: var(--bad-tint, var(--surface-2)); color: var(--bad, var(--muted)); }
+.tag.rejected { background: var(--bad-soft); color: var(--bad); }
 
 /* The body arrives as plain text from an ATS, so it keeps its own wrapping
    rather than being re-flowed into a paragraph that loses every list. */
@@ -1451,15 +1455,15 @@ button.card {
   font: inherit;
   font-size: 13.5px;
   line-height: 1.55;
-  color: var(--ink);
+  color: var(--text);
   margin: 12px 0;
 }
 
 .chip.info { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); }
-.chip.good { background: var(--good-tint, var(--accent-soft)); border-color: transparent; color: var(--good, var(--accent-ink)); }
+.chip.good { background: var(--good-soft); border-color: transparent; color: var(--good); }
 .chip.warn { background: var(--gold-tint); border-color: transparent; color: var(--gold-deep); }
-.chip.bad { background: var(--bad-tint, var(--surface-2)); border-color: transparent; color: var(--bad, var(--muted)); }
-.chip.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.chip.bad { background: var(--bad-soft); border-color: transparent; color: var(--bad); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .chip .n { font-variant-numeric: tabular-nums; opacity: 0.7; }
 
 /* Two controls in one header: what you are looking at, then how. */
@@ -1472,6 +1476,6 @@ button.card {
   padding: 1px 5px;
   border-radius: 5px;
   background: var(--surface-2);
-  color: var(--ink);
+  color: var(--text);
   word-break: break-all;
 }

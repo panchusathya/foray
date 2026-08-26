@@ -12,6 +12,24 @@ Phase 5 below is delivered by slice 3. Open decision 2 is closed: the agent
 is **Vivian**, AI disclosure retained, firm name Foray. SMS is not built
 here; that belongs to `feat/messaging-intake`.
 
+**End-of-call match teasers shipped (2026-08-26).** A finished intake no
+longer closes on "a recruiter will be in touch": the agent calls a new
+`preview_matches` tool once the gate closes, and the server ranks the open
+jobs book against what the caller just said they wanted — the preference term
+only, never a candidate evaluation — and hands back two or three composed
+sentences (company, role, location, the posting's own pay range), a composed
+count of the rest, and how to offer the full list by text. Lines are read
+verbatim; company names, pay figures and counts remain things the agent may
+never invent. The pitch precedes the unchanged TCPA ask; delivery of the full
+list rides the existing `matches.ready` notification when the caller has a
+text thread, and otherwise parks on the review queue
+(`intake.match_text.parked`) so the promise lands on a human. New pieces:
+`intake/teasers.py`, `/v1/intake/matches`, `intake_calls.matches_offered`,
+settings `INTAKE_TEASERS_ENABLED` / `INTAKE_TEASER_COUNT` /
+`INTAKE_TEASER_MIN_SCORE`, `tests/test_intake_teasers.py`, and two new prompt
+guards in `deploy/tests/check_agent_prompts.py`. Compliance reasoning in
+`INTAKE_COMPLIANCE.md` §5.
+
 **Phase 0 (recon) complete.** Findings below changed five things in the original plan.
 
 **Phase 1 complete.** Provider is **Retell**. Schema, models, migration and

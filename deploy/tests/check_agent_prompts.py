@@ -237,6 +237,55 @@ def check_every_slot_has_a_default() -> None:
     )
 
 
+def check_the_pitch_reads_only_composed_lines() -> None:
+    """The wrap-up pitch must stay a read-back, never an improvisation.
+
+    ``preview_matches`` hands the agent finished sentences precisely so a
+    company name, a pay figure, or a count of roles can never be invented on a
+    recorded call. The prompt has to keep saying so, in both agents, or the
+    model will helpfully embellish -- and it must keep framing the lines as a
+    match with what the candidate ASKED FOR, because a fit judgement of the
+    candidate is the thing the intake channel must never emit.
+    """
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            "preview_matches" in prompt,
+            f"{name} prompt no longer calls preview_matches at wrap-up",
+        )
+        _must(
+            "exactly as written" in prompt,
+            f"{name} prompt must require the pitch lines be read as written",
+        )
+        _must(
+            "never as a judgement of the candidate" in prompt
+            or "never how good the candidate is" in prompt
+            or "never as a judgement" in prompt,
+            f"{name} prompt must frame the pitch as preference fit, not a verdict "
+            "on the candidate",
+        )
+        _must(
+            "close the way `check_coverage`'s `guidance` told you to" in prompt,
+            f"{name} prompt must keep the no-lines fallback: close normally and "
+            "mention no roles",
+        )
+
+
+def check_the_consent_ask_is_still_verbatim() -> None:
+    """The TCPA question must not vary with the pitch.
+
+    The pitch changes what surrounds the question, never the question. One
+    canonical wording is what makes ``sms_opt_in`` plus the transcript an
+    evidence record (INTAKE_COMPLIANCE.md §6), so the exact sentence has to
+    survive every prompt edit.
+    """
+    ask = 'ask, in these words: "last thing -- can i text you updates at this number?"'
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            ask in prompt,
+            f"{name} prompt lost the verbatim text-consent question",
+        )
+
+
 def check_outbound_is_unchanged_in_posture() -> None:
     """The outbound call is the other case, and must not be over-corrected.
 
@@ -265,6 +314,8 @@ def main() -> int:
         check_unknown_callers_still_get_a_clean_first_intake,
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,
+        check_the_pitch_reads_only_composed_lines,
+        check_the_consent_ask_is_still_verbatim,
         check_outbound_is_unchanged_in_posture,
     )
     failed = 0

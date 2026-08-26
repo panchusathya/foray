@@ -347,6 +347,18 @@ class Settings:
             "INTAKE_SMS_NUMBER_SPOKEN", "six two eight, three eight six, five four five four"
         )
     )
+    # The end-of-call pitch: whether preview_matches returns lines at all, how
+    # many roles get a spoken sentence, and the preference-fit floor under
+    # which a role is not worth the candidate's attention. The floor errs high
+    # on purpose -- a weak match pitched with enthusiasm burns the trust the
+    # pitch exists to build, and the full list goes out by text anyway.
+    intake_teasers_enabled: bool = field(
+        default_factory=lambda: _env_bool("INTAKE_TEASERS_ENABLED", True)
+    )
+    intake_teaser_count: int = field(default_factory=lambda: _env_int("INTAKE_TEASER_COUNT", 2))
+    intake_teaser_min_score: float = field(
+        default_factory=lambda: _env_float("INTAKE_TEASER_MIN_SCORE", 0.5)
+    )
     # Flips one spoken close sentence. The SMS sender itself lives on
     # feat/messaging-intake; this flag must not promise a text that cannot send.
     sms_enabled: bool = field(default_factory=lambda: _env_bool("SMS_ENABLED", False))

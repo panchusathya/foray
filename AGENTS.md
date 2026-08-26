@@ -498,6 +498,52 @@ the rules that stand now are:
   sitting in silence while it answers, and it degrades to a usable answer rather
   than erroring -- an error here is heard as the agent going quiet.
 
+### The wrap-up pitch (`intake/teasers.py`, `/v1/intake/matches`)
+
+A finished intake closes with two or three open roles that fit what the caller
+just said they wanted, then the offer to text the full list. Non-obvious rules:
+
+- **The agent reads sentences; it never composes them.** `lines`, `more_line`
+  and the follow-up promise are built server-side, and the prompt's hard rules
+  say the only company names, pay figures, and role counts the agent may ever
+  speak are the ones inside those strings. `check_agent_prompts.py` pins this.
+  Adding a "mention the role naturally" instruction to the prompt instead of a
+  composed line is the regression to watch for.
+- **Selection is the preference term alone, on purpose.** Postings are ranked
+  with `jobmatch.preference.preference_term` against a *transient*
+  `CandidatePreference` built from the live transcript -- never `score_pair`'s
+  candidate-fact blend. Two reasons: the intake channel must emit no
+  evaluation of the person (`INTAKE_COMPLIANCE.md` §5), and a first-time
+  caller has no `JobMatch` rows mid-call -- the rescore is a queued worker
+  job, so anything reading the book here would race a queue it cannot see.
+- **What may be named is the posting's provenance, decided in code.**
+  `NAMEABLE_SOURCES` is the policy: open-market sources say the company,
+  `project` mandates become "one of our client companies", so the prompt's
+  "never name a client" survives the feature that names companies. Pay is
+  spoken only as the posting's `parsed_spec` states it, and never converted
+  across currencies -- the same refusal the comp veto makes, for the same
+  reason a wrong figure is worse than none.
+- **A weak match is dropped, not ranked low.** `intake_teaser_min_score`
+  errs high because a bad role pitched with enthusiasm burns the trust the
+  pitch exists to build; vetoed postings, dismissed matches, and the caller's
+  current employer are never pitched at all.
+- **The consent ask never changes with the pitch.** The pitch primes ("I'd
+  love to text you the full list"), then the canonical TCPA question is asked
+  in the exact words the prompt has always had -- one wording is what keeps
+  the transcript an evidence record, and `check_the_consent_ask_is_still_verbatim`
+  fails the build if a prompt edit forks it.
+- **The promise tracks what can actually send.** Guidance offers "keep an eye
+  out for a text" only when a standing text thread exists (the rescore's
+  `matches.ready` notification delivers there) or `sms_enabled` is true;
+  otherwise it promises a recruiter. An opted-in caller who was pitched and
+  cannot be texted lands on the review queue with
+  `TEXT_PROMISE_REASON` (`intake.match_text.parked`) -- the promise was made
+  on a recorded call, so it must land on a human rather than evaporate.
+- **`matches_offered` is evidence, like the gate snapshot.** What was pitched,
+  verbatim with posting ids and scores, on the call row -- the book moves and
+  the record gets edited, so "what was this caller told" must not be a
+  recomputation.
+
 ### Cheap models cannot be trusted with easy-looking work
 
 The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`

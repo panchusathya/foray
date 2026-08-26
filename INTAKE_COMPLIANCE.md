@@ -60,9 +60,38 @@ Act classifies employment-screening AI as high-risk. Keep the intake channel
 evaluation-free, and give the matching engine its own review before it drives
 decisions rather than suggestions.
 
+**The wrap-up pitch stays on the right side of that boundary, by
+construction.** `preview_matches` (`intake/teasers.py`) names open roles at
+the end of a finished intake — a deliberate product change from "never mention
+roles" — and every part of it keeps the channel evaluation-free:
+
+- Selection ranks postings by the *preference* term only: the caller's own
+  stated titles, locations, comp floor and exclusions, against posting facts.
+  No candidate-fact scoring is computed for it, and no score, rank, or fit
+  judgment of the person is spoken. What the caller hears is "this matches
+  what you said you wanted" — a statement about the role, not about them.
+- Every speakable sentence is composed server-side and read verbatim. The
+  prompt forbids the agent to name a company, quote pay, or count roles on
+  its own, and forbids grading the candidate even around composed lines
+  (`check_agent_prompts.py` pins both).
+- Pay is quoted only as the posting itself publishes it — pay transparency,
+  never a promise — and only in the posting's own currency. Companies are
+  named only on open-market postings; a `project` mandate stays unnamed, so
+  "never name a client" still holds. "Never promise a role, an interview, or
+  an introduction" still binds.
+- What was pitched is stored verbatim on the call row
+  (`intake_calls.matches_offered`), so "what was this caller told" is always
+  answerable from the evidence record.
+
 ## 6. SMS — TCPA consent, captured now, used later
 
 The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
+The wrap-up pitch precedes the question ("I'd love to text you the full
+list...") but never rewords it: one canonical ask, whatever surrounded it, is
+what keeps `sms_opt_in` plus the transcript usable as an evidence record. A
+caller who opts in after being pitched, whom no channel can yet text, is
+parked on the review queue (`intake.match_text.parked`) so the promise lands
+on a human instead of evaporating.
 
 - Only an explicit, unambiguous yes counts. Hesitation, "I guess", or "email
   is better" is recorded as no. The agent never re-asks or reframes to convert

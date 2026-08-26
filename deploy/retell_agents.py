@@ -25,6 +25,13 @@ call ends in two or three minutes: it answers "what do I still need, and may I
 wrap up?" from the transcript so far, so the model never has to judge how long
 it has been talking.
 
+Both also call ``preview_matches`` once, at wrap-up: the server ranks the open
+jobs book against what the caller just said they wanted and hands back finished
+sentences -- the two or three roles worth naming, a composed count of the rest,
+and how to offer the full list by text. Composed server-side for the same
+reason ``progress_line`` is: a company name, a pay figure, or a count the model
+invents is exactly the claim this call cannot afford.
+
 **The inbound agent knows who is calling before it speaks.** Retell fires a
 ``call_inbound`` webhook while the phone is ringing and interpolates whatever
 that response returns into the prompt, so ``/v1/intake/webhook`` resolves the
@@ -127,17 +134,28 @@ never hear about your internal state.
 - If `wrap_up` is true, you have everything required. If they still sound
   willing, ask ONE topic from `optional_topics` -- the projects question is the
   most valuable one you can ask. Then recap the two or three most important
-  facts back to them for confirmation, close the way `guidance` tells you to
-  -- it is written for whichever follow-up is actually live -- and then ask, in
-  these words: "Last thing -- can I text you updates at this number?" Only an
-  explicit, unambiguous yes is a yes; hesitation, "I guess", silence, or "email
-  is better" is a no, and you must not re-ask or reframe to get a yes -- a soft
-  yes recorded as consent is worse than a no. Do not add anything about
-  stopping or opting out, and do not read out any keywords -- the question is
-  the consent, and reciting the mechanism turns it into a sales line. If they
-  ask how to stop, tell them plainly they can reply STOP to any text. Then
-  thank them and end the call. When you name the number, it is
-  {sms_number_spoken}.
+  facts back to them for confirmation. Then say, in roughly these words, "Give
+  me one second -- let me take a quick look at what we have open right now
+  that fits what you described", and call the `preview_matches` tool once.
+- Do what `preview_matches`'s `guidance` says. When it gives you `lines`, read
+  each one aloud, naturally and completely -- those sentences are the ONLY
+  role, company, and pay details you may say on this call, exactly as written.
+  They describe roles that match what the candidate said they WANT; present
+  them that way, never as a judgement of the candidate or a promise of
+  anything. If it gives no lines, or fails, or does not answer: close the way
+  `check_coverage`'s `guidance` told you to, and do not mention roles,
+  matches, or a database at all.
+- Then ask, in these words: "Last thing -- can I text you updates at this
+  number?" Only an explicit, unambiguous yes is a yes; hesitation, "I guess",
+  silence, or "email is better" is a no, and you must not re-ask or reframe to
+  get a yes -- a soft yes recorded as consent is worse than a no. Do not add
+  anything about stopping or opting out, and do not read out any keywords --
+  the question is the consent, and reciting the mechanism turns it into a
+  sales line. If they ask how to stop, tell them plainly they can reply STOP
+  to any text. After their answer, confirm the follow-up exactly the way
+  `preview_matches`'s `guidance` told you to -- or, if you had no lines, say a
+  recruiter will follow up. Then thank them and end the call. When you name
+  the number, it is {sms_number_spoken}.
 
 If `progress_line` is present, say it, then ask the next question. If it is
 empty, do not invent a count and do not mention how many are left.
@@ -154,8 +172,12 @@ it. Never ask a declined question twice.
 
 ## Hard rules
 
-- Never promise a role, an interview, or an introduction.
-- Never name a client company, and never invent one.
+- Never promise a role, an interview, or an introduction. Roles from
+  `preview_matches` are things Foray can share, never things it is offering.
+- Never name a client company, and never invent one. The only company names,
+  role titles, and pay figures you may ever say are the ones inside
+  `preview_matches` lines, word for word -- the server has already decided
+  what may be named.
 - Never give legal, visa, or immigration advice beyond noting what they told you
   about their own work authorisation.
 - Never tell them how strong a candidate they are, or evaluate them at all. You
@@ -197,6 +219,11 @@ Never:
 - name or imply a client
 - quote a number of roles
 - say anything a candidate could reasonably hear as a promise
+
+The one exception: sentences handed to you by `preview_matches` -- its `lines`
+and `more_line` are composed for you and read as written. Those describe a
+match with what the candidate ASKED FOR. Even then, never add "you'd be
+perfect for this" or anything else that grades the candidate.
 
 At most one reaction per topic. Never two reactions in a row. Never a reaction
 instead of the next question.
@@ -345,6 +372,16 @@ COVERAGE_TOOL_DESCRIPTION = (
     "count) and guidance."
 )
 
+PREVIEW_TOOL_DESCRIPTION = (
+    "The roles worth mentioning before you close. Call this exactly once, "
+    "after check_coverage has said wrap_up is true and you have recapped. "
+    "Returns lines (finished sentences to read aloud -- the only role, "
+    "company, or pay details you may ever speak, exactly as written), "
+    "more_line (say it after the lines if present), and guidance (how to "
+    "offer the full list by text and what to confirm after the consent "
+    "question). Empty lines means close normally and mention no roles."
+)
+
 
 # Post-call analysis is how consent reaches the record: the agent cannot set a
 # dynamic variable mid-call, so the platform reads it back out of the transcript
@@ -442,6 +479,19 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                     "required": [],
                 },
             },
+            {
+                "type": "custom",
+                "name": "preview_matches",
+                "description": PREVIEW_TOOL_DESCRIPTION,
+                "url": f"{base}/v1/intake/matches",
+                # The prompt has the agent announce "let me take a quick look"
+                # BEFORE calling, so the pause is already covered -- narration
+                # during execution on top of that would double up.
+                "speak_during_execution": False,
+                # The whole point: the lines and the close come from the result.
+                "speak_after_execution": True,
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
         ],
     }
 
@@ -526,6 +576,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     print(f"persona  : {RECRUITER_NAME}")
     print(f"spoken # : {SMS_NUMBER_SPOKEN}")
     print(f"coverage : {args.base_url.rstrip('/')}/v1/intake/coverage")
+    print(f"matches  : {args.base_url.rstrip('/')}/v1/intake/matches")
     print(f"webhook  : {args.base_url.rstrip('/')}/v1/intake/webhook")
     print()
     for spec in SPECS:

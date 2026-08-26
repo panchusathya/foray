@@ -1218,6 +1218,11 @@ class IntakeCall(Base, TimestampMixin):
     # a listed key is unasked-on-purpose, not forgotten.
     deferred_fields: Mapped[list] = mapped_column(JSON, default=list)
 
+    # The roles pitched at wrap-up: [{posting_id, line, score}], exactly as
+    # spoken. Evidence about the call, like the gate snapshot above -- the
+    # follow-up text and any dispute about "what was I told" both read it.
+    matches_offered: Mapped[list] = mapped_column(JSON, default=list)
+
     error: Mapped[str] = mapped_column(String(400), default="")
 
 

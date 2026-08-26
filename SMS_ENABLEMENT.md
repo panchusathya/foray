@@ -63,5 +63,10 @@ Re-enable the SMS branch checklist in [`MESSAGING_INTAKE_PLAN.md`](MESSAGING_INT
   — not in every greeting, and not in the voice wrap-up, which is not an SMS.
   Getting this wrong throttles a shared sender for every tenant on it, so treat
   it as a blocker on enablement rather than a copy tweak afterwards.
+- **Clear the parked match-list promises.** Voice callers who were pitched
+  roles and opted in, but had no text channel, sit on the review queue with
+  `intake.match_text.parked` (`intake/teasers.py`). Flipping `SMS_ENABLED=true`
+  changes only what the agent *promises* going forward — the backlog of
+  already-made promises still needs sending, manually or by a backfill.
 
 Until then, follow [`LINQ_SETUP.md`](LINQ_SETUP.md) for the working text intake path.

@@ -653,6 +653,14 @@ class Settings:
     # it: `http://user:pass@gate.provider.com:7777`. Empty means direct, which
     # is the state every deployment starts in.
     apply_proxy_url: str = field(default_factory=lambda: _env("APPLY_PROXY_URL", ""))
+    # A managed anti-detect browser's CDP endpoint (Bright Data Scraping
+    # Browser): `wss://brd-customer-...-zone-...:pass@brd.superproxy.io:9222`.
+    # When set it REPLACES the local Chromium and APPLY_PROXY_URL both -- the
+    # remote browser brings its own residential exit, fingerprint and CAPTCHA
+    # solving, which is what a determined anti-bot (Ashby flagged our own
+    # proxied Chromium as spam) actually needs. Empty means drive local
+    # Chromium, the state every deployment starts in.
+    apply_browser_cdp_url: str = field(default_factory=lambda: _env("APPLY_BROWSER_CDP_URL", ""))
     # A real browser's UA. A residential IP serving the default headless string
     # is still obviously a bot, so the two travel together. This is the always-on
     # baseline, not an opt-in: an *empty* env value falls back to it rather than

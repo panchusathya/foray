@@ -239,6 +239,10 @@ x-app-env: &app_env
   # Residential proxy for the apply browser -- employer anti-bot flags
   # this datacentre's IP. `http://user:pass@gate:port`. Empty = direct.
   APPLY_PROXY_URL: ${APPLY_PROXY_URL:-}
+  # Managed anti-detect browser (Bright Data Scraping Browser) CDP endpoint.
+  # Set it and the browser tier drives that instead of local Chromium; it
+  # brings its own residential exit + fingerprint + CAPTCHA. Empty = local.
+  APPLY_BROWSER_CDP_URL: ${APPLY_BROWSER_CDP_URL:-}
   APPLY_BROWSER_USER_AGENT: ${APPLY_BROWSER_USER_AGENT:-}
   APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}
   # No ATS API key here on purpose: those are issued per employer, not per

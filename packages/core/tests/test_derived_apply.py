@@ -174,6 +174,26 @@ class TestDeriveSpec:
         assert spec is not None
         assert spec.fields["resume"] == ("#real-resume",)
 
+    def test_an_eeoc_signature_box_is_never_an_identity_field(self):
+        """Found live on JazzHR: the EEOC disability signature's label reads
+        as a name field, and the first probe mapped full_name onto
+        #resumator-eeoc_disability_signature-value -- auto-signing a legal
+        self-identification. The label lies; the id does not."""
+        controls = [
+            *_controls(),
+            {
+                "label": "Name",
+                "selector": "#resumator-eeoc_disability_signature-value",
+                "fieldType": "text",
+                "required": False,
+            },
+        ]
+        spec = derive_spec(controls, _BUTTONS)
+        assert spec is not None
+        assert all("eeoc" not in sel for sels in spec.fields.values() for sel in sels)
+        # The plain name field still maps -- the guard reads selectors, not labels.
+        assert spec.fields["full_name"] == ('input[name="name"]',)
+
     def test_a_field_with_no_selector_is_dropped(self):
         """driver.fill cannot address what enumeration could not name, and a
         spec whose email dropped is no spec at all."""

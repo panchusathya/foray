@@ -67,6 +67,16 @@ _IDENTITY_KEYS: tuple[tuple[str, str], ...] = (
 )
 
 _RESUME_LABEL = re.compile(r"resum|curriculum|\bcv\b", re.IGNORECASE)
+
+#: Selectors that mark a control as the candidate's own statement whatever its
+#: label says. Found live: JazzHR's EEOC section labels its disability
+#: signature box in a way that reads as a name field, and the first probe
+#: mapped full_name onto #resumator-eeoc_disability_signature-value -- which
+#: would have auto-signed a legal self-identification. The label lies; the
+#: id does not.
+_ATTESTATION_SELECTOR = re.compile(
+    r"eeoc|disab|veteran|gender|race|ethnic|self.?id|signature", re.IGNORECASE
+)
 _COVER_LABEL = re.compile(r"cover\s*letter", re.IGNORECASE)
 
 #: Button text that opens a collapsed or second-URL form.
@@ -248,6 +258,8 @@ def derive_spec(
         selector = str(control.get("selector") or "")
         label = str(control.get("label") or "")
         if control is resume or not selector:
+            continue
+        if _ATTESTATION_SELECTOR.search(selector):
             continue
         kind, _ = classify(label)
         if kind != "identity":

@@ -165,6 +165,110 @@ class SmtpSender:
         return SendResult(ok=True, provider_message_id=message.get("Message-ID", "") or "smtp")
 
 
+class ResendSender:
+    """Transactional mail over HTTPS, from any address on a verified domain.
+
+    Exists because the two things the alias relay needs are the two things the
+    Zoho API refuses. Verified against live Zoho:
+
+    * a sub-addressed ``From`` -- ``500 "Given FromAddress not exists!"``. Zoho
+      will only send as an address configured on the account, and
+      ``anna+<token>@`` is not one, so the per-application identity the whole
+      alias design rests on could not survive the send.
+    * ``Reply-To`` -- ``500 "You need to verify the ReplyTo address"``, which no
+      employer address will ever be.
+
+    It is also HTTPS on 443, which is the only way out of this host: outbound
+    25, 465, 587 and 2525 are all silently dropped by the provider, so SmtpSender
+    cannot deliver from production however correct its credentials are.
+
+    Resend returns its own id and not the RFC ``Message-ID``, so
+    ``internet_message_id`` stays empty. Nothing depends on it: inbound
+    attribution keys off the alias sub-address, and threading at the employer's
+    end is carried by the ``In-Reply-To`` we set from *their* message.
+    """
+
+    name = "resend"
+    endpoint = "https://api.resend.com/emails"
+
+    def __init__(self, api_key: str, *, client=None, timeout: float = 20.0) -> None:
+        self.api_key = api_key
+        self.timeout = timeout
+        self._client = client
+
+    def _payload(self, email: OutboundEmail) -> dict:
+        headers = dict(email.headers or {})
+        # The RFC hints travel as headers here; Resend has no first-class field
+        # for them and passes unknown headers through untouched.
+        if email.in_reply_to:
+            headers.setdefault("In-Reply-To", email.in_reply_to)
+        if email.references:
+            headers.setdefault("References", email.references)
+
+        # Reply-To is a top-level field, not a header, and sending it in both
+        # places produces two Reply-To lines on the wire.
+        reply_to = headers.pop("Reply-To", "") or headers.pop("reply-to", "")
+
+        payload = {
+            "from": email.from_header,
+            "to": [email.to],
+            "subject": email.subject,
+            "text": email.text_body,
+        }
+        if email.html_body:
+            payload["html"] = email.html_body
+        if reply_to:
+            payload["reply_to"] = reply_to
+        if headers:
+            payload["headers"] = headers
+        return payload
+
+    def send(self, email: OutboundEmail) -> SendResult:
+        if not self.api_key:
+            logger.error("resend send refused: RESEND_API_KEY is unset")
+            return SendResult(ok=False, error="RESEND_API_KEY is unset")
+
+        import httpx
+
+        client = self._client or httpx.Client(timeout=self.timeout)
+        try:
+            response = client.post(
+                self.endpoint,
+                json=self._payload(email),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced on the caller's row
+            logger.error("resend send failed for %s: %s", email.to, exc)
+            return SendResult(ok=False, error=str(exc)[:400])
+        finally:
+            if self._client is None:
+                client.close()
+
+        if response.status_code >= 400:
+            # The body carries Resend's own reason -- an unverified domain, a
+            # From the domain does not own. Keeping it is the difference
+            # between a fixable error and "the mail did not arrive".
+            detail = (response.text or "")[:400]
+            logger.error("resend send failed for %s (%s): %s", email.to, response.status_code, detail)
+            return SendResult(ok=False, error=f"resend {response.status_code}: {detail}")
+
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        native_id = str((data or {}).get("id") or "")
+        if not native_id:
+            logger.warning("resend accepted the send to %s but returned no id", email.to)
+        return SendResult(
+            ok=True,
+            provider_message_id=native_id or "resend",
+            provider_native_id=native_id,
+        )
+
+
 _sender: EmailSender | None = None
 
 
@@ -183,6 +287,10 @@ def get_sender() -> EmailSender:
             )
         elif provider == "memory":
             _sender = MemorySender()
+        elif provider == "resend":
+            # Unlike `mailbox`, this one needs no session: the identity is an
+            # address on a verified domain, not a row in the database.
+            _sender = ResendSender(settings.resend_api_key)
         elif provider == "mailbox":
             # `mailbox` cannot be served here: picking the connection needs a
             # session and an org, which this function has neither of. Falling

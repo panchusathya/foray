@@ -195,3 +195,30 @@ def alias_token(candidate_id: str) -> str:
 
 def verify_alias_token(candidate_id: str, token: str) -> bool:
     return hmac.compare_digest(alias_token(candidate_id), (token or "").strip().lower())
+
+
+def application_alias_token(application_id: str) -> str:
+    """The sub-address token for one *application's* alias.
+
+    Same derivation as ``alias_token`` and a different purpose string, so a
+    candidate token and an application token can never be swapped for one
+    another even though both are 18 alphanumeric characters in the same
+    position of the same address.
+
+    Per application rather than per candidate because attribution is the whole
+    point of owning the address. A candidate-scoped alias tells us who a reply
+    is about and leaves *which pursuit* to
+    ``applications/inbox._match_application``, which matches the sender's
+    domain against the posting and correctly declines when two applications sit
+    behind one ATS vendor's domain. This makes the answer exact.
+    """
+    secret = get_settings().secret_key
+    signed = _b64e(_sign(f"alias:app:{application_id}".encode(), secret))
+    cleaned = "".join(ch for ch in signed if ch.isalnum()).lower()
+    return cleaned[:ALIAS_TOKEN_CHARS]
+
+
+def verify_application_alias_token(application_id: str, token: str) -> bool:
+    return hmac.compare_digest(
+        application_alias_token(application_id), (token or "").strip().lower()
+    )

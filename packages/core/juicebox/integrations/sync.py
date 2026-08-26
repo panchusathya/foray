@@ -311,6 +311,8 @@ def _handle_inbound_event(
             body=event.body,
             native_id=event.native_id,
             received_at=event.received_at or event.sent_at,
+            reply_to=event.reply_to,
+            rfc_message_id=event.rfc_message_id,
         )
         if routed.get("routed"):
             summary.alias_routed += 1

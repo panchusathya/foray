@@ -1,10 +1,15 @@
 """The address an employer sees.
 
-One mailbox we own, sub-addressed per candidate:
-``anna+<token>@goforay.io``. The token is an HMAC of the candidate id
-(``security.alias_token``), so an inbound message can be attributed before any
-database lookup and a local part cannot be guessed into someone's application
-inbox.
+One mailbox we own, sub-addressed per application:
+``anna+<token>@goforay.io``. The token is an HMAC of the application id
+(``security.application_alias_token``), so an inbound message can be attributed
+before any database lookup and a local part cannot be guessed into someone's
+application inbox.
+
+Older rows are scoped to the *candidate* instead, from before the alias was
+minted per application. Employers are already writing to those, so they keep
+resolving forever: ``resolve`` reads ``CandidateAlias.scope`` to decide which
+HMAC has to agree.
 
 **Why own the identity at all.** Every ATS that makes you register gates on a
 click in an email, and a lot of them then send a one-time code. Reading the
@@ -18,8 +23,9 @@ rather than by permission.
 addressee of record on every application. The employer can see the domain, so
 we never claim otherwise. One shared mailbox is one sending reputation for
 every candidate on it. And a candidate who hits Reply in their own client
-answers the recruiter from their own address, which orphans the thread -- the
-portal is where a reply belongs, not a nag to come back to a web inbox.
+answers from their own address, which the employer has no record of -- so the
+relay pins ``Reply-To`` back to the alias and the portal is where a reply
+belongs.
 
 With ``APPLY_ALIAS_ADDRESS`` unset no alias is issued and the candidate's own
 address goes on the application. That is honest and it is also the state in
@@ -37,7 +43,12 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import Candidate, CandidateAlias, utcnow
-from ..security import alias_token, verify_alias_token
+from ..security import (
+    alias_token,
+    application_alias_token,
+    verify_alias_token,
+    verify_application_alias_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +95,44 @@ def parse(address: str) -> str:
     if not separator or head != local:
         return ""
     return token
+
+
+def resolve(db: Session, address: str) -> tuple[Candidate | None, str]:
+    """``(candidate, application_id)`` for an alias address.
+
+    The row is the discriminator, not the address. A candidate-scoped token and
+    an application-scoped one are both eighteen alphanumeric characters in the
+    same position and are deliberately indistinguishable by inspection, so the
+    stored ``scope`` says which id the local part is an HMAC of and therefore
+    which verifier has to agree.
+
+    Verified rather than trusted either way: the address is attacker-supplied,
+    and a row lookup on its own would make any stored alias addressable by
+    anyone who learned it.
+    """
+    token = parse(address)
+    if not token:
+        return None, ""
+    row = db.scalar(
+        select(CandidateAlias).where(
+            CandidateAlias.local_part == token, CandidateAlias.status == "active"
+        )
+    )
+    if row is None:
+        return None, ""
+
+    if row.scope == "application":
+        if not row.application_id or not verify_application_alias_token(
+            row.application_id, token
+        ):
+            logger.warning("alias %s does not verify against application %s", address, row.application_id)
+            return None, ""
+        return db.get(Candidate, row.candidate_id), row.application_id or ""
+
+    if not verify_alias_token(row.candidate_id, token):
+        logger.warning("alias %s does not verify against candidate %s", address, row.candidate_id)
+        return None, ""
+    return db.get(Candidate, row.candidate_id), ""
 
 
 def candidate_for(db: Session, address: str) -> Candidate | None:
@@ -147,15 +196,68 @@ def revoke(db: Session, candidate_id: str) -> None:
     db.flush()
 
 
-def sending_identity(db: Session, candidate: Candidate) -> tuple[str, str]:
-    """``(from_address, reply_to_address)`` for one candidate's applications.
+def address_for_application(application_id: str) -> str:
+    """The alias for one application, or empty when aliasing is off."""
+    local, domain = mailbox()
+    if not local:
+        return ""
+    return f"{local}{SEPARATOR}{application_alias_token(application_id)}@{domain}"
+
+
+def ensure_for_application(db: Session, application) -> CandidateAlias | None:
+    """The application's alias row, issued on first use. ``None`` when off.
+
+    Reuses whatever this application already has, including a legacy
+    candidate-scoped row from before aliases were minted per application --
+    reissuing would change the address an employer is already writing to.
+    """
+    address = address_for_application(application.id)
+    if not address:
+        return None
+    existing = db.scalar(
+        select(CandidateAlias).where(CandidateAlias.application_id == application.id)
+    )
+    if existing is None:
+        existing = db.scalar(
+            select(CandidateAlias).where(
+                CandidateAlias.candidate_id == application.candidate_id,
+                CandidateAlias.scope == "candidate",
+            )
+        )
+    if existing is not None:
+        if existing.status != "active":
+            existing.status = "active"
+            existing.revoked_at = None
+            db.flush()
+        return existing
+
+    row = CandidateAlias(
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        application_id=application.id,
+        scope="application",
+        address=address,
+        local_part=application_alias_token(application.id),
+    )
+    db.add(row)
+    db.flush()
+    logger.info("issued application alias %s for application %s", address, application.id)
+    return row
+
+
+def sending_identity(db: Session, candidate: Candidate, application=None) -> tuple[str, str]:
+    """``(from_address, reply_to_address)`` for one application.
 
     With aliasing on, the employer sees the alias and the candidate's real
     address is only ever a relay destination. With it off, the candidate's own
     address is both, and no verification loop can be cleared for them.
+
+    ``application`` is optional only so a caller without one still gets the
+    candidate-scoped behaviour; every real submission has one, and passing it
+    is what makes an employer's reply identify the pursuit exactly.
     """
     real = primary_email(candidate)
-    row = ensure(db, candidate)
+    row = ensure_for_application(db, application) if application is not None else ensure(db, candidate)
     if row is None:
         return real, real
     return row.address, real

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from .. import storage
 from ..applications import limits
 from ..applications.bar import passes_bar
-from ..applications.inbox import TRACKER_KINDS
+from ..applications.inbox import TRACKER_KINDS, repliable_address
 from ..applications.service import (
     ApplicationError,
     DuplicateApplicationError,
@@ -51,6 +51,7 @@ from ..models import (
     record_event,
     utcnow,
 )
+from ..outreach.sender import OutboundEmail, sender_for_org
 from ..portal.schemas import (
     PortalApplicationOut,
     PortalDocumentOut,
@@ -610,6 +611,10 @@ def _message_out(row: ApplicationMessage, posting: JobPosting | None) -> dict:
         "application_id": row.application_id or "",
         "company": (posting.company if posting else "") or "",
         "title": (posting.title if posting else "") or "",
+        "direction": row.direction,
+        # Empty means there is nobody behind this one -- a verification robot.
+        # The UI shows that rather than a reply box that would bounce.
+        "reply_to": repliable_address(row),
     }
 
 
@@ -756,3 +761,114 @@ def tracker_pipeline(
             }
         )
     return {"applications": out}
+
+
+class TrackerReplyIn(BaseModel):
+    body: str = ""
+
+
+@router.post("/tracker/messages/{message_id}/reply", status_code=201)
+def tracker_reply(
+    message_id: str,
+    payload: TrackerReplyIn,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Answer an employer as the address the application was filed under.
+
+    The candidate's own address never appears. They applied as
+    ``anna+<token>@``, so the employer has no record of anything else, and a
+    reply from their personal inbox arrives as a stranger on a thread they
+    cannot match. Sending as the alias also means the employer's answer comes
+    back to us, which is what keeps the tracker from going dark the moment a
+    real conversation starts.
+    """
+    text = (payload.body or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Write something first."
+        )
+
+    row = db.scalar(
+        select(ApplicationMessage).where(
+            ApplicationMessage.id == message_id,
+            ApplicationMessage.org_id == principal.org_id,
+            ApplicationMessage.candidate_id == principal.candidate_id,
+        )
+    )
+    if row is None:
+        raise _NOT_FOUND
+
+    target = repliable_address(row)
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This one came from a no-reply address, so there is nobody to answer.",
+        )
+
+    alias_address = row.alias_address or ""
+    if not alias_address:
+        # Pre-alias mail. Sending from anywhere else would reach them as a
+        # stranger, which is worse than telling the truth here.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This message predates your managed address, so we cannot answer as you.",
+        )
+
+    subject = row.subject or "(no subject)"
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
+    candidate = db.get(Candidate, principal.candidate_id)
+    result = sender_for_org(db, principal.org_id).send(
+        OutboundEmail(
+            to=target,
+            subject=subject,
+            text_body=text,
+            html_body="",
+            from_email=alias_address,
+            from_name=(candidate.full_name if candidate else "") or "Applications via Foray",
+            # Back to the alias, so their answer is attributable to this
+            # application rather than landing on the bare mailbox.
+            headers={"Reply-To": alias_address},
+            in_reply_to=row.rfc_message_id or "",
+            references=row.rfc_message_id or "",
+        )
+    )
+    if not result.ok:
+        logger.warning("portal reply failed for %s: %s", message_id, result.error)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="We could not send that just now. Try again in a moment.",
+        )
+
+    sent = ApplicationMessage(
+        org_id=principal.org_id,
+        candidate_id=principal.candidate_id,
+        application_id=row.application_id,
+        direction="outbound",
+        kind="reply",
+        alias_address=alias_address,
+        from_address=alias_address,
+        from_name=(candidate.full_name if candidate else "") or "",
+        subject=subject,
+        body=text,
+        provider_native_id=result.provider_native_id or "",
+        received_at=utcnow(),
+        read_at=utcnow(),
+    )
+    db.add(sent)
+    db.flush()
+
+    record_event(
+        db,
+        org_id=principal.org_id,
+        type="application.reply_sent",
+        subject_type="application",
+        subject_id=row.application_id or row.candidate_id,
+        payload={"message_id": sent.id, "to": target, "in_reply_to": row.id},
+    )
+
+    application = db.get(Application, row.application_id) if row.application_id else None
+    posting = db.get(JobPosting, application.job_posting_id) if application else None
+    return _message_out(sent, posting)

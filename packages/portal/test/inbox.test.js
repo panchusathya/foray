@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { chipsFor, kindLabel, order, senderInitials, senderLabel } from '../src/lib/inbox.js';
+import {
+  canReply,
+  chipsFor,
+  kindLabel,
+  order,
+  senderInitials,
+  senderLabel,
+} from '../src/lib/inbox.js';
 
 describe('chipsFor', () => {
   it('always offers All, even on an empty inbox', () => {
@@ -102,5 +109,20 @@ describe('order', () => {
   it('tolerates a missing date rather than throwing', () => {
     const rows = order([{ id: 'a' }, { id: 'b', received_at: '2026-08-20T00:00:00Z' }]);
     assert.equal(rows[0].id, 'b');
+  });
+});
+
+describe('canReply', () => {
+  it('is true when the server found somebody', () => {
+    assert.equal(canReply({ reply_to: 'dana@parasail.ai' }), true);
+  });
+
+  it('is false for a no-reply robot', () => {
+    // The server applies the no-reply rules; the UI just does not offer a box.
+    assert.equal(canReply({ reply_to: '' }), false);
+  });
+
+  it('is false when the field is absent entirely', () => {
+    assert.equal(canReply({}), false);
   });
 });

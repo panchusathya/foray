@@ -321,3 +321,183 @@ class TestTheWall:
 
     def test_no_session_is_a_401(self, client, session, account, candidate):
         assert client.get("/v1/portal/tracker/messages").status_code == 401
+
+
+class TestRepliableAddress:
+    """ATS mail is sent from a robot; the address that routes back is Reply-To."""
+
+    def _msg(self, **kwargs):
+        return ApplicationMessage(org_id="o", candidate_id="c", **kwargs)
+
+    def test_reply_to_beats_the_robot_it_came_from(self):
+        from juicebox.applications.inbox import repliable_address
+
+        row = self._msg(from_address="no-reply@ashbyhq.com", reply_to_address="dana@parasail.ai")
+        assert repliable_address(row) == "dana@parasail.ai"
+
+    def test_from_is_used_when_a_human_wrote_directly(self):
+        from juicebox.applications.inbox import repliable_address
+
+        assert repliable_address(self._msg(from_address="dana@parasail.ai")) == "dana@parasail.ai"
+
+    def test_a_no_reply_everywhere_means_nobody(self):
+        """Workday verification mail. A reply box here would just bounce."""
+        from juicebox.applications.inbox import repliable_address
+
+        row = self._msg(from_address="no-reply@myworkday.com", reply_to_address="noreply@acme.com")
+        assert repliable_address(row) == ""
+
+    def test_it_unwraps_a_display_name(self):
+        from juicebox.applications.inbox import repliable_address
+
+        row = self._msg(from_address="Dana Whitfield <dana@parasail.ai>")
+        assert repliable_address(row) == "dana@parasail.ai"
+
+    def test_a_noreply_domain_with_a_human_local_part_is_fine(self):
+        """The marker is on the local part; noreply.co is a real domain."""
+        from juicebox.applications.inbox import repliable_address
+
+        assert repliable_address(self._msg(from_address="dana@noreply.co")) == "dana@noreply.co"
+
+
+class TestReplying:
+    def _seed(self, session, account, candidate, **kwargs):
+        row = _message(
+            session,
+            account,
+            candidate,
+            alias_address="anna+tok@goforay.io",
+            reply_to_address=kwargs.pop("reply_to_address", "dana@parasail.ai"),
+            rfc_message_id=kwargs.pop("rfc_message_id", "<orig@ashbyhq.com>"),
+            subject=kwargs.pop("subject", "Next steps"),
+            **kwargs,
+        )
+        session.commit()
+        return row
+
+    def test_a_reply_goes_out_as_the_alias(self, client, session, account, candidate, monkeypatch):
+        from juicebox.outreach import sender as sender_mod
+        from juicebox.routers import portal as portal_mod
+
+        outbox = sender_mod.MemorySender()
+        monkeypatch.setattr(portal_mod, "sender_for_org", lambda db, org_id: outbox)
+
+        row = self._seed(session, account, candidate)
+        response = client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "Tuesday works."},
+        )
+        assert response.status_code == 201
+
+        sent = outbox.outbox[-1]
+        assert sent.to == "dana@parasail.ai"
+        # Never the candidate's own address: the employer has no record of it.
+        assert sent.from_email == "anna+tok@goforay.io"
+        assert sent.headers["Reply-To"] == "anna+tok@goforay.io"
+        assert sent.in_reply_to == "<orig@ashbyhq.com>"
+        assert sent.subject == "Re: Next steps"
+
+    def test_it_does_not_double_the_re_prefix(self, client, session, account, candidate, monkeypatch):
+        from juicebox.outreach import sender as sender_mod
+        from juicebox.routers import portal as portal_mod
+
+        outbox = sender_mod.MemorySender()
+        monkeypatch.setattr(portal_mod, "sender_for_org", lambda db, org_id: outbox)
+
+        row = self._seed(session, account, candidate, subject="Re: Next steps")
+        client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "ok"},
+        )
+        assert outbox.outbox[-1].subject == "Re: Next steps"
+
+    def test_the_reply_is_stored_as_part_of_the_thread(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        from juicebox.outreach import sender as sender_mod
+        from juicebox.routers import portal as portal_mod
+
+        monkeypatch.setattr(
+            portal_mod, "sender_for_org", lambda db, org_id: sender_mod.MemorySender()
+        )
+        row = self._seed(session, account, candidate)
+        client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "Tuesday works."},
+        )
+        stored = session.scalars(
+            select(ApplicationMessage).where(ApplicationMessage.direction == "outbound")
+        ).all()
+        assert len(stored) == 1
+        assert stored[0].body == "Tuesday works."
+        assert stored[0].read_at is not None, "your own reply is not unread mail"
+
+    def test_a_no_reply_message_refuses(self, client, session, account, candidate):
+        row = self._seed(
+            session,
+            account,
+            candidate,
+            from_address="no-reply@myworkday.com",
+            reply_to_address="",
+        )
+        response = client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "hello"},
+        )
+        assert response.status_code == 409
+        assert "no-reply" in response.json()["detail"]
+
+    def test_an_empty_body_refuses(self, client, session, account, candidate):
+        row = self._seed(session, account, candidate)
+        response = client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "   "},
+        )
+        assert response.status_code == 422
+
+    def test_a_send_failure_is_not_reported_as_sent(
+        self, client, session, account, candidate, monkeypatch
+    ):
+        from juicebox.outreach import sender as sender_mod
+        from juicebox.routers import portal as portal_mod
+
+        monkeypatch.setattr(
+            portal_mod,
+            "sender_for_org",
+            lambda db, org_id: sender_mod.FailingSender("resend 403"),
+        )
+        row = self._seed(session, account, candidate)
+        response = client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "hello"},
+        )
+        assert response.status_code == 502
+        assert session.scalars(
+            select(ApplicationMessage).where(ApplicationMessage.direction == "outbound")
+        ).all() == []
+
+    def test_another_candidates_message_cannot_be_replied_to(
+        self, client, session, account, candidate
+    ):
+        other = Candidate(
+            org_id=account["org_id"],
+            full_name="Someone Else",
+            source="manual",
+            source_id="other-reply",
+        )
+        session.add(other)
+        session.flush()
+        row = _message(session, account, candidate, candidate_id=other.id)
+        session.commit()
+        response = client.post(
+            f"/v1/portal/tracker/messages/{row.id}/reply",
+            headers=_headers(account, candidate),
+            json={"body": "hello"},
+        )
+        assert response.status_code == 404

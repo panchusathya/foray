@@ -40,6 +40,11 @@ _MIN_INTERVAL_SECONDS = 4.0
 
 NAV_TIMEOUT_MS = 45_000
 ACTION_TIMEOUT_MS = 15_000
+# A managed anti-detect browser (Bright Data Scraping Browser) is slower than a
+# local Chromium: it may be solving a CAPTCHA or waiting out a challenge behind
+# a single goto. Give the remote path room the local path does not need.
+CDP_CONNECT_TIMEOUT_MS = 60_000
+CDP_NAV_TIMEOUT_MS = 120_000
 
 
 class BrowserUnavailable(RuntimeError):
@@ -169,34 +174,57 @@ def session(*, log: RunLog):
         import secrets
 
         session_token = secrets.token_hex(6)
+        cdp_url = settings.apply_browser_cdp_url.strip()
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=settings.apply_browser_headless,
-                proxy=_proxy_config(settings.apply_proxy_url, session_token=session_token),
-                # Two flags that most cheaply separate "real Chrome" from
-                # "automation" for a fingerprinter: the AutomationControlled
-                # blink feature is what sets navigator.webdriver, and the
-                # default headless UA names "HeadlessChrome" outright.
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            if cdp_url:
+                # Bright Data Scraping Browser: a real, managed browser on their
+                # side that owns the fingerprint, proxy, CAPTCHA and rotation.
+                # We drive it over CDP and add none of our own stealth -- a UA
+                # override or a webdriver-delete would only make the fingerprint
+                # it was built to present inconsistent, which is the tell.
+                browser = playwright.chromium.connect_over_cdp(
+                    cdp_url, timeout=CDP_CONNECT_TIMEOUT_MS
+                )
+            else:
+                browser = playwright.chromium.launch(
+                    headless=settings.apply_browser_headless,
+                    proxy=_proxy_config(settings.apply_proxy_url, session_token=session_token),
+                    # Two flags that most cheaply separate "real Chrome" from
+                    # "automation" for a fingerprinter: the AutomationControlled
+                    # blink feature is what sets navigator.webdriver, and the
+                    # default headless UA names "HeadlessChrome" outright.
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
             try:
-                context = browser.new_context(
-                    viewport={"width": 1440, "height": 900},
-                    accept_downloads=False,
-                    user_agent=settings.apply_browser_user_agent or None,
-                    locale="en-US",
-                    timezone_id="America/Los_Angeles",
-                )
-                # navigator.webdriver stays true even with the launch flag on
-                # some Chromium builds; this removes it before any page script
-                # on the employer's form can read it.
-                context.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                )
-                context.set_default_timeout(ACTION_TIMEOUT_MS)
-                context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-                page = context.new_page()
-                log.step("browser opened" + (" via proxy" if settings.apply_proxy_url else ""))
+                if cdp_url:
+                    # The managed browser ships a context already; reuse it so
+                    # the fingerprint stays the one it was built with, and drive
+                    # its existing page rather than opening a second.
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    context.set_default_timeout(ACTION_TIMEOUT_MS)
+                    context.set_default_navigation_timeout(CDP_NAV_TIMEOUT_MS)
+                    page = context.pages[0] if context.pages else context.new_page()
+                    log.step("browser opened (scraping browser)")
+                else:
+                    context = browser.new_context(
+                        viewport={"width": 1440, "height": 900},
+                        accept_downloads=False,
+                        user_agent=settings.apply_browser_user_agent or None,
+                        locale="en-US",
+                        timezone_id="America/Los_Angeles",
+                    )
+                    # navigator.webdriver stays true even with the launch flag on
+                    # some Chromium builds; this removes it before any page script
+                    # on the employer's form can read it.
+                    context.add_init_script(
+                        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                    )
+                    context.set_default_timeout(ACTION_TIMEOUT_MS)
+                    context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+                    page = context.new_page()
+                    log.step(
+                        "browser opened" + (" via proxy" if settings.apply_proxy_url else "")
+                    )
                 yield page
             finally:
                 with contextlib.suppress(Exception):

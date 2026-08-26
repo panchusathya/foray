@@ -166,12 +166,17 @@ def _deterministic_resume(
             "phone": phones[0] if phones else "",
             "location": location,
             "linkedin_url": candidate.linkedin_url or "",
+            "github_url": candidate.github_url or "",
+            "website_url": candidate.website_url or "",
         },
         "summary": summary,
         "experience": experience,
         "education": education,
         "skills": skills,
         "certifications": [],
+        # Candidate has no languages column; an uploaded resume's languages
+        # live on its CandidateDocument.structured. Empty is honest here.
+        "languages": [],
     }
 
 

@@ -65,7 +65,7 @@ def render_resume_pdf(structured: dict) -> bytes:
         story.append(Paragraph(_escape(contact["name"]), _NAME))
     contact_bits = [
         _escape(contact.get(key))
-        for key in ("email", "phone", "location", "linkedin_url")
+        for key in ("email", "phone", "location", "linkedin_url", "github_url", "website_url")
         if contact.get(key)
     ]
     if contact_bits:
@@ -144,6 +144,12 @@ def render_resume_pdf(structured: dict) -> bytes:
         story.append(_rule())
         for cert in certifications:
             story.append(Paragraph(_escape(cert), _BODY))
+
+    languages = [str(x).strip() for x in (structured.get("languages") or []) if str(x).strip()]
+    if languages:
+        story.append(Paragraph("LANGUAGES", _HEADING))
+        story.append(_rule())
+        story.append(Paragraph(_escape(", ".join(languages)), _BODY))
 
     doc.build(story)
     return buffer.getvalue()

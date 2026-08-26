@@ -165,4 +165,16 @@ returning auth-wall errors.
 - **Android / SMS fallback** until Linq registration model is confirmed
 - **Conversational opt-out** beyond keyword STOP/HELP
 - **Twilio SMS** until TFV clears — see [`SMS_ENABLEMENT.md`](SMS_ENABLEMENT.md)
-- **Resume / PDF attachments** on the first inbound (media-only messages are ignored)
+
+## Resume attachments
+
+Inbound attachments are handled: the webhook enqueues an `intake.attachment`
+job, the worker downloads each media part from Linq's CDN (with one refresh
+retry through `GET /v3/attachments/{id}` for expired ephemeral-tier URLs) and,
+when a file sniffs as a resume (PDF or DOCX by magic bytes), stores it as the
+thread's `CandidateDocument` and queues the ordinary `docs.parse` → promote →
+confirm path. A resume sent before the thread has an email is held at a
+thread-scoped storage path and attached the moment identity capture links a
+candidate. Non-resume media (photos, video) get an honest "can't read that"
+reply with the upload-page link while the profile question is open, and are
+ignored otherwise. OCR on scanned images remains out of scope.

@@ -183,11 +183,17 @@ class TestAResumeIsAWayIn:
         # visible outside this session before the link can resolve.
         session.commit()
         body = channel.bodies[-1]
+        # iMessage carries files, so the Linq ask is attach-or-URL with no
+        # upload link — a URL in the ask is one more tap than the answer
+        # needs. The link reappears only in the failure fallbacks.
         assert "resume" in body.lower()
+        assert "linkedin" in body.lower()
+        assert "http" not in body
 
-        link = body.split("http", 1)[1]
-        path = "http" + link.strip()
-        page = client.get(path[path.index("/v1/") :])
+        from juicebox.messaging.uploads import mint_upload_link
+
+        link = mint_upload_link(thread)
+        page = client.get(link[link.index("/v1/") :])
         assert page.status_code == 200, page.text
         assert "Send your resume" in page.text
 

@@ -307,6 +307,26 @@ ASK_LINKEDIN = (
     "your resume here: {upload_link}"
 )
 
+# The Linq (iMessage) variant: files travel in the thread itself, so no
+# upload link — a URL in the ask is one more tap than the answer needs. The
+# link reappears only in the fallback copy below, when the direct route fails.
+ASK_RESUME_OR_LINKEDIN = (
+    "Best way to get you set up: send your resume right here (PDF or Word), "
+    "or your LinkedIn URL."
+)
+
+# Both fallbacks keep the thread moving with the two routes that still work:
+# a different file via the upload page, or the LinkedIn URL.
+ATTACHMENT_UNREADABLE = (
+    "I can't read that kind of file, sorry — a PDF or Word doc works. "
+    "You can also send your LinkedIn URL, or upload here: {upload_link}"
+)
+
+ATTACHMENT_FAILED = (
+    "That file didn't come through, sorry. Mind uploading it here instead: "
+    "{upload_link} — or just send your LinkedIn URL."
+)
+
 PROFILE_INGEST_ACK = (
     "Got it — pulling your profile together now. A couple of quick questions "
     "while that runs."

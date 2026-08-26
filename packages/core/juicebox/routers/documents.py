@@ -4,8 +4,9 @@ Three rules the tests pin:
 
 * **The cap is enforced while reading**, in chunks — a 200 MB body is refused
   at the boundary, never buffered and weighed afterwards.
-* **Type is verified by magic bytes**, not the client's Content-Type header. A
-  PDF starts with ``%PDF-``; a header is a claim.
+* **Type is verified by magic bytes**, not the client's Content-Type header
+  (``docgen.parse.sniff_resume_type``) — a header is a claim. PDF and DOCX
+  are the accepted resume types.
 * **Downloads never build paths from client input.** The row's
   ``storage_path`` was server-built from ids; the route only ever looks up an
   org-scoped row and streams what it names.
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 from .. import storage
 from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..docgen.parse import SUFFIX_BY_MIME, sniff_resume_type
 from ..jobs import KIND_DOC_PARSE, enqueue
 from ..models import Candidate, CandidateDocument
 from ..schemas import CandidateDocumentOut
@@ -36,7 +38,6 @@ router = APIRouter(
 )
 
 _CHUNK = 1024 * 1024
-_PDF_MAGIC = b"%PDF-"
 
 UPLOAD_KINDS = {"resume_uploaded", "other"}
 
@@ -98,18 +99,21 @@ async def upload_document(
         )
     candidate = _load_candidate(db, candidate_id, principal.org_id)
     data = await _read_capped(file)
-    if not data.startswith(_PDF_MAGIC):
+    content_type = sniff_resume_type(data)
+    if not content_type:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Only PDF files are accepted (content did not read as a PDF)",
+            detail="Only PDF or Word (.docx) files are accepted "
+            "(content did not read as either)",
         )
+    suffix = SUFFIX_BY_MIME[content_type]
 
     doc = CandidateDocument(
         org_id=principal.org_id,
         candidate_id=candidate.id,
         kind=kind,
-        filename=(file.filename or "upload.pdf")[:255],
-        content_type="application/pdf",
+        filename=(file.filename or f"upload{suffix}")[:255],
+        content_type=content_type,
         status="uploaded",
         source="upload",
         created_by=principal.user_id,
@@ -131,7 +135,7 @@ async def upload_document(
     db.flush()
 
     relpath = storage.document_relpath(
-        org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id
+        org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id, suffix=suffix
     )
     size, digest = storage.save_bytes(relpath, data)
     doc.storage_path = relpath

@@ -43,6 +43,46 @@ class LinqSendError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class InboundAttachment:
+    """One media part of an inbound message: a file the sender attached.
+
+    ``url`` points at Linq's CDN. On the persistent tier it is long-lived; on
+    the ephemeral tier it is a signed URL with a ~15-minute TTL, refreshable
+    through ``GET /v3/attachments/{attachment_id}`` — which is why the id is
+    carried alongside it.
+    """
+
+    url: str
+    content_type: str = ""
+    filename: str = ""
+    size: int = 0
+    attachment_id: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "url": self.url,
+            "content_type": self.content_type,
+            "filename": self.filename,
+            "size": self.size,
+            "attachment_id": self.attachment_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> InboundAttachment:
+        try:
+            size = int(data.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        return cls(
+            url=str(data.get("url") or ""),
+            content_type=str(data.get("content_type") or ""),
+            filename=str(data.get("filename") or ""),
+            size=size,
+            attachment_id=str(data.get("attachment_id") or ""),
+        )
+
+
+@dataclass(frozen=True)
 class InboundLinq:
     provider_native_id: str
     chat_id: str
@@ -51,6 +91,7 @@ class InboundLinq:
     body: str
     is_group: bool
     raw: dict
+    attachments: tuple[InboundAttachment, ...] = ()
 
 
 def _decode_secret(secret: str) -> bytes:
@@ -118,6 +159,43 @@ def _join_text_parts(parts: list) -> str:
     return "\n".join(chunks)
 
 
+def _media_parts(parts: list) -> tuple[InboundAttachment, ...]:
+    """The files attached to a message, in the order they were sent.
+
+    Key names are read defensively (``url``/``value``, ``filename``/``name``)
+    for the same reason ``_handle_address`` is: two envelope vintages are
+    pinned, and a rename in a third must degrade to a missing field, not a
+    lost file.
+    """
+    found: list[InboundAttachment] = []
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") not in ("media", "attachment", "file"):
+            continue
+        url = str(part.get("url") or part.get("value") or "").strip()
+        if not url:
+            continue
+        try:
+            size = int(part.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        found.append(
+            InboundAttachment(
+                url=url,
+                content_type=str(
+                    part.get("content_type") or part.get("mime_type") or ""
+                ).strip(),
+                filename=str(part.get("filename") or part.get("name") or "").strip(),
+                size=size,
+                attachment_id=str(
+                    part.get("attachment_id") or part.get("id") or ""
+                ).strip(),
+            )
+        )
+    return tuple(found)
+
+
 def _handle_address(data: dict, *keys: str) -> str:
     for key in keys:
         value = data.get(key)
@@ -163,15 +241,16 @@ def parse_inbound(payload: dict) -> InboundLinq:
     if not to_address:
         to_address = _handle_address(data, "recipient_handle", "to")
 
-    body = _join_text_parts(parts if isinstance(parts, list) else [])
+    part_list = parts if isinstance(parts, list) else []
     return InboundLinq(
         provider_native_id=provider_native_id,
         chat_id=chat_id,
         from_address=from_address,
         to_address=to_address,
-        body=body,
+        body=_join_text_parts(part_list),
         is_group=is_group,
         raw=data,
+        attachments=_media_parts(part_list),
     )
 
 
@@ -333,6 +412,76 @@ def parse_poll_vote(payload: dict) -> tuple[str, str, bool]:
         str(data.get("option_id") or ""),
         bool(handle.get("is_me")),
     )
+
+
+class MediaFetchError(RuntimeError):
+    """Downloading an attachment failed, after any refresh retry."""
+
+
+#: Test seam: ``url -> (status_code, content)``. Mirrors ``Transport`` for
+#: JSON calls; media needs bytes, so it is its own callable.
+MediaTransport = Callable[[str], tuple[int, bytes]]
+
+
+def fetch_media(
+    url: str,
+    *,
+    attachment_id: str = "",
+    transport: MediaTransport | None = None,
+) -> bytes:
+    """Download one attachment, capped at the upload limit.
+
+    A failed GET is retried once through ``GET /v3/attachments/{id}`` when the
+    id is known — the ephemeral tier signs URLs with a short TTL, and a worker
+    that picks the job up late holds an expired link, not a lost file.
+    """
+    if not url:
+        raise MediaFetchError("no attachment url")
+    status, content = _media_get(url, transport=transport)
+    if status >= 400 and attachment_id:
+        fresh = _refresh_media_url(attachment_id)
+        if fresh and fresh != url:
+            status, content = _media_get(fresh, transport=transport)
+    if status >= 400:
+        raise MediaFetchError(f"attachment download returned {status}")
+    cap = get_settings().max_upload_bytes
+    if len(content) > cap:
+        raise MediaFetchError(f"attachment exceeds the {cap // (1024 * 1024)} MB limit")
+    return content
+
+
+def _media_get(url: str, *, transport: MediaTransport | None = None) -> tuple[int, bytes]:
+    if transport is not None:
+        return transport(url)
+    try:
+        response = httpx.get(url, timeout=30.0, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        raise MediaFetchError(str(exc)) from exc
+    return response.status_code, response.content
+
+
+def _refresh_media_url(attachment_id: str) -> str:
+    """A fresh signed URL for an expired one. Empty string when unavailable."""
+    settings = get_settings()
+    if not settings.linq_api_key:
+        return ""
+    try:
+        response = httpx.get(
+            f"{LINQ_API_BASE}/attachments/{attachment_id}",
+            headers={"Authorization": f"Bearer {settings.linq_api_key}"},
+            timeout=15.0,
+        )
+        if response.status_code >= 400:
+            return ""
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("attachment url refresh failed for %s: %s", attachment_id, exc)
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    nested = data.get("attachment") if isinstance(data.get("attachment"), dict) else data
+    inner = nested.get("data") if isinstance(nested.get("data"), dict) else nested
+    return str(inner.get("url") or "").strip()
 
 
 def resolve_linq_org_id(db: Session, *, to_address: str) -> str | None:

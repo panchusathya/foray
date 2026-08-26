@@ -1056,18 +1056,39 @@ def intake_extract_prompt(*, transcript: str, known: str = "") -> str:
 _RESUME_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["contact", "summary", "experience", "education", "skills", "certifications"],
+    "required": [
+        "contact",
+        "summary",
+        "experience",
+        "education",
+        "skills",
+        "certifications",
+        "languages",
+    ],
     "properties": {
         "contact": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["name", "email", "phone", "location", "linkedin_url"],
+            "required": [
+                "name",
+                "email",
+                "phone",
+                "location",
+                "linkedin_url",
+                "github_url",
+                "website_url",
+            ],
             "properties": {
                 "name": {"type": "string"},
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
                 "location": {"type": "string"},
                 "linkedin_url": {"type": "string"},
+                "github_url": {"type": "string"},
+                "website_url": {
+                    "type": "string",
+                    "description": "Portfolio or personal site; not LinkedIn or GitHub.",
+                },
             },
         },
         "summary": {"type": "string", "description": "3-4 plain sentences, no buzzwords."},
@@ -1109,11 +1130,16 @@ _RESUME_JSON_SCHEMA: dict[str, Any] = {
         },
         "skills": {"type": "array", "items": {"type": "string"}},
         "certifications": {"type": "array", "items": {"type": "string"}},
+        "languages": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Spoken languages as stated, e.g. 'Spanish (fluent)'.",
+        },
     },
 }
 
 RESUME_PARSE_SYSTEM = """\
-You read the plain text extracted from an uploaded resume PDF and return it as \
+You read the plain text extracted from an uploaded resume and return it as \
 structured JSON. Transcription, not improvement: keep the person's own wording \
 in bullets, fix nothing but whitespace, and leave a field empty rather than \
 guess. Dates only as written -- never infer a month that is not there. Skip \

@@ -27,6 +27,7 @@ from .jobs import (
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
     KIND_DOC_PARSE,
+    KIND_INTAKE_ATTACHMENT,
     KIND_INTAKE_EXTRACT,
     KIND_INTAKE_TURN,
     KIND_JOBS_DISCOVER_ONE,
@@ -667,7 +668,7 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
     retrying it would extract the same nothing.
     """
     from . import storage
-    from .docgen.parse import extract_pdf_text, parse_resume_text
+    from .docgen.parse import extract_text, parse_resume_text
     from .docgen.resume import RESUME_SCHEMA_VERSION
     from .models import CandidateDocument
 
@@ -682,7 +683,7 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
 
     if not doc.text_extracted:
         data = storage.read_bytes(doc.storage_path)
-        doc.text_extracted = extract_pdf_text(data)
+        doc.text_extracted = extract_text(data)
 
     structured, error = parse_resume_text(doc.text_extracted)
     doc.structured = structured
@@ -717,6 +718,8 @@ def _handle_doc_parse(db: Session, job: Job, now) -> dict[str, Any]:
             }
             enqueue_match_for_candidate(db, candidate, now=now)
             promoted["thread"] = _resume_settles_thread(db, doc=doc, candidate=candidate)
+    elif not structured:
+        promoted["thread"] = _resume_fails_thread(db, doc=doc, error=error)
 
     return {
         "document_id": doc.id,
@@ -782,6 +785,78 @@ def _resume_settles_thread(db: Session, *, doc, candidate) -> dict[str, Any]:
         payload={"thread_id": thread.id},
     )
     return {"thread_id": thread.id, "advanced": True}
+
+
+def _resume_fails_thread(db: Session, *, doc, error: str) -> dict[str, Any]:
+    """A resume that would not parse still answers the thread — with a no.
+
+    Without this the conversation holds forever: the settle path only runs on
+    a successful parse, so a scanned PDF (or a parse with no model configured)
+    left the person waiting on a question they had already answered with a
+    file. Writing the error into the flow meta is exactly what a failed scrape
+    does, and lands in the same place: the gap-fill questions, asked honestly.
+    """
+    from .messaging.linkedin_flow import update_flow_meta
+    from .messaging.threads import record_inbound
+    from .models import IntakeThread
+
+    thread = db.get(IntakeThread, doc.thread_id) if doc.thread_id else None
+    if thread is None or thread.org_id != doc.org_id or thread.status == "stopped":
+        return {"skipped": "no thread"}
+
+    record_inbound(
+        db,
+        thread=thread,
+        body=f"[sent a resume we could not read: {doc.filename or 'resume.pdf'}]",
+        provider_native_id=f"resume:{doc.id}",
+    )
+    update_flow_meta(thread, error=error or "resume parse failed", source="resume")
+    db.flush()
+
+    enqueue(
+        db,
+        org_id=thread.org_id,
+        kind=KIND_INTAKE_TURN,
+        idempotency_key=f"{KIND_INTAKE_TURN}:{thread.id}:after-resume:{doc.id}",
+        payload={"thread_id": thread.id},
+    )
+    return {"thread_id": thread.id, "advanced": False, "error": error}
+
+
+def _handle_intake_attachment(db: Session, job: Job, now) -> dict[str, Any]:
+    """Download one inbound message's attachments; keep the resume if one is.
+
+    All the judgment lives in ``messaging.attachments`` — this handler only
+    loads the thread and hands over, like every other thin handler here.
+    """
+    from .messaging.attachments import ingest_inbound_attachments
+    from .messaging.linq import InboundAttachment
+    from .models import IntakeThread
+
+    thread_id = job.payload.get("thread_id") or ""
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None:
+        return {"skipped": "thread not found", "thread_id": thread_id}
+    if thread.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    if thread.status == "stopped":
+        return {"skipped": "thread stopped"}
+
+    attachments = [
+        InboundAttachment.from_dict(item)
+        for item in job.payload.get("attachments") or []
+        if isinstance(item, dict)
+    ]
+    if not attachments:
+        return {"skipped": "no attachments"}
+
+    return ingest_inbound_attachments(
+        db,
+        thread=thread,
+        message_id=str(job.payload.get("message_id") or ""),
+        attachments=attachments,
+        had_text=bool(job.payload.get("had_text")),
+    )
 
 
 def _handle_profile_ingest(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1135,6 +1210,7 @@ HANDLERS = {
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
     KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
+    KIND_INTAKE_ATTACHMENT: _handle_intake_attachment,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
     KIND_APP_SUBMIT: _handle_app_submit,

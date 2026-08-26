@@ -76,6 +76,12 @@ KIND_INTAKE_EXTRACT = "intake.extract"
 # by an upload landing; never on ensure_ticks.
 KIND_DOC_PARSE = "docs.parse"
 
+# Downloading the files attached to one inbound message and, when one is a
+# resume, storing it for docs.parse. A job rather than webhook work for the
+# same reason turns are: the download is slow and the vendor is waiting.
+# Idempotent on the inbound message id. Never on ensure_ticks.
+KIND_INTAKE_ATTACHMENT = "intake.attachment"
+
 # Fetching one LinkedIn profile through the paid provider and promoting it
 # onto the CRM. Worker-only by design: the webhook that receives a URL
 # enqueues and returns, so a public request path never spends money.

@@ -42,7 +42,7 @@ from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..intake.phones import lookup_key
 from ..intake.service import resolve_candidate_id
-from ..jobs import KIND_INTAKE_TURN, enqueue
+from ..jobs import KIND_INTAKE_ATTACHMENT, KIND_INTAKE_TURN, enqueue
 from ..messaging import consent, prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
@@ -358,10 +358,10 @@ _UPLOAD_PAGE = """<!doctype html>
 </style>
 <main>
   <h1>Send your resume</h1>
-  <p>PDF only, up to 10&nbsp;MB. It goes straight to your recruiter&#8217;s intake
-     &mdash; you can head back to the conversation after.</p>
+  <p>PDF or Word (.docx), up to 10&nbsp;MB. It goes straight to your
+     recruiter&#8217;s intake &mdash; you can head back to the conversation after.</p>
   <form method="post" enctype="multipart/form-data" action="?token={token}">
-    <input type="file" name="file" accept="application/pdf" required>
+    <input type="file" name="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
     <button type="submit">Upload</button>
   </form>
 </main>
@@ -414,20 +414,19 @@ async def upload_resume(
     token: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
-    """Store the PDF against the thread's candidate and queue the parse.
+    """Store the resume against the thread's candidate and queue the parse.
 
-    Requires the thread to be linkable (name + email captured) -- the agent
-    only sends this link after onboarding collects both, and a public
+    Requires the thread to be linkable (an email or LinkedIn captured) -- the
+    agent only sends this link after onboarding collects one, and a public
     endpoint that created candidate rows from nothing would let anyone fill
     the CRM by tapping a forwarded link.
     """
     from fastapi.responses import HTMLResponse
 
-    from .. import storage
-    from ..jobs import KIND_DOC_PARSE
+    from ..docgen.parse import sniff_resume_type
     from ..messaging import identity
-    from ..models import CandidateDocument
-    from .documents import _PDF_MAGIC, _read_capped
+    from ..messaging.attachments import store_thread_resume
+    from .documents import _read_capped
 
     thread = _upload_thread(db, thread_id, token)
 
@@ -439,49 +438,20 @@ async def upload_resume(
         )
 
     data = await _read_capped(file)
-    if not data.startswith(_PDF_MAGIC):
+    content_type = sniff_resume_type(data)
+    if not content_type:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Only PDF files are accepted",
+            detail="Only PDF or Word (.docx) files are accepted",
         )
 
-    doc = CandidateDocument(
-        org_id=thread.org_id,
-        candidate_id=candidate_id,
-        kind="resume_uploaded",
-        filename=(file.filename or "resume.pdf")[:255],
-        content_type="application/pdf",
-        status="uploaded",
-        source="upload",
-        thread_id=thread.id,
-    )
-    db.execute(
-        CandidateDocument.__table__.update()
-        .where(
-            CandidateDocument.candidate_id == candidate_id,
-            CandidateDocument.kind == "resume_uploaded",
-            CandidateDocument.is_default.is_(True),
-        )
-        .values(is_default=False)
-    )
-    doc.is_default = True
-    db.add(doc)
-    db.flush()
-
-    relpath = storage.document_relpath(
-        org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id
-    )
-    size, digest = storage.save_bytes(relpath, data)
-    doc.storage_path = relpath
-    doc.size_bytes = size
-    doc.sha256 = digest
-
-    enqueue(
+    store_thread_resume(
         db,
-        org_id=thread.org_id,
-        kind=KIND_DOC_PARSE,
-        idempotency_key=f"{KIND_DOC_PARSE}:{doc.id}",
-        payload={"document_id": doc.id},
+        thread=thread,
+        candidate_id=candidate_id,
+        data=data,
+        filename=file.filename or "",
+        content_type=content_type,
     )
     return HTMLResponse(_UPLOAD_DONE, status_code=201)
 
@@ -604,6 +574,24 @@ def linq_webhook(
     if looks_like_help(inbound.body):
         deliver(db, thread=thread, message=OutboundMessage(body=prompts.HELP_REPLY))
         return {"status": "accepted", "help": True, "message_id": message.id}
+
+    if inbound.attachments:
+        # The attachment job owns this message's whole consequence — it runs
+        # the turn itself when no resume comes of the download. Enqueueing a
+        # turn here too would race it and double-reply.
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_INTAKE_ATTACHMENT,
+            idempotency_key=f"{KIND_INTAKE_ATTACHMENT}:{message.id}",
+            payload={
+                "thread_id": thread.id,
+                "message_id": message.id,
+                "attachments": [a.to_dict() for a in inbound.attachments],
+                "had_text": bool(inbound.body.strip()),
+            },
+        )
+        return {"status": "accepted", "attachments": True, "message_id": message.id}
 
     if not inbound.body.strip():
         return {"status": "accepted", "ignored": True, "message_id": message.id}

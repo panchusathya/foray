@@ -726,6 +726,12 @@ def _run_linkedin_short(
             # "find me roles" -- silently has nobody to work with.
             batched=thread.last_field_asked == BATCH_GAP_FILL,
         )
+        # A resume that arrived before the thread had an identity is waiting
+        # in flow meta; the absorb above may have just captured the email that
+        # lets it attach. No-op on every other turn.
+        from .attachments import materialize_pending
+
+        materialize_pending(db, thread=thread)
 
     if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
         return _linkedin_intro(db, thread=thread)
@@ -743,13 +749,20 @@ def _run_linkedin_short(
     # criterion there is. The upload page and its parse already existed; the
     # onboarding flow simply never offered them.
     if not thread.contact_linkedin and not _profile_document(db, thread):
+        # iMessage carries files, so on Linq the resume ask is "attach it
+        # right here"; the upload page stays the route for web chat, which
+        # cannot, and reappears on Linq only as the fallback when a download
+        # or a parse fails.
+        from .channels import LINQ
+
+        if thread.channel == LINQ:
+            body = prompts.ASK_RESUME_OR_LINKEDIN
+        else:
+            body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
         sent = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(
-                body=prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread)),
-                asked_field=CONTACT_LINKEDIN,
-            ),
+            message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
         )
         return TurnResult(
             ACTION_ASKED,
@@ -863,8 +876,13 @@ def _linkedin_after_scrape(
             sent=[s for s in [sent] if s],
             extractor=thread.extractor,
         )
-    # Scrape failed — skip confirm and go straight to the leftover questions.
-    preface = scrape_failed_message()
+    # Scrape (or resume parse) failed — skip confirm and go straight to the
+    # leftover questions. The copy names what actually failed: "couldn't pull
+    # your linkedin" to somebody who sent a file is the agent not listening.
+    if meta.get("source") == "resume":
+        preface = linkedin_flow.resume_failed_message()
+    else:
+        preface = scrape_failed_message()
     return _linkedin_gap_fill(db, thread=thread, last=last, preface=preface)
 
 

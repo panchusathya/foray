@@ -32,7 +32,12 @@ from intake_fixtures import COMPLETE_PAYLOAD
 from sqlalchemy import select
 
 from juicebox.intake.schema import REQUIRED_KEYS, coverage, empty_record
-from juicebox.jobs import KIND_INTAKE_TURN, KIND_JOBS_MATCH_ONE, enqueue
+from juicebox.jobs import (
+    KIND_INTAKE_ATTACHMENT,
+    KIND_INTAKE_TURN,
+    KIND_JOBS_MATCH_ONE,
+    enqueue,
+)
 from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 from juicebox.messaging import prompts
 from juicebox.messaging.channels import (
@@ -1583,14 +1588,20 @@ class TestLinqWebhook:
         assert response.json()["reason"] == "group_chat"
         assert session.scalars(select(IntakeThread)).all() == []
 
-    def test_a_media_only_message_does_not_enqueue_a_turn(self, client, session, linq_number):
+    def test_a_media_only_message_enqueues_the_attachment_job(self, client, session, linq_number):
+        """Not a turn — the attachment job owns the message's whole
+        consequence, so a turn enqueued here too would race it and reply
+        twice. And not ignored, which is what this message used to be."""
         payload = linq_payload(
             message={"id": "media-only-1", "parts": [{"type": "media", "url": "https://x/y.jpg"}]}
         )
         response = post_linq(client, payload)
         assert response.status_code == 200
-        assert response.json()["ignored"] is True
+        assert response.json()["attachments"] is True
         assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
+        job = session.scalars(select(Job).where(Job.kind == KIND_INTAKE_ATTACHMENT)).one()
+        assert job.payload["attachments"][0]["url"] == "https://x/y.jpg"
+        assert job.payload["had_text"] is False
 
     def test_stop_suppresses_the_phone(self, client, session, linq_number, fake_channel):
         set_channel(LINQ, fake_channel)

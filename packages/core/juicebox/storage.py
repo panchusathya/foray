@@ -38,6 +38,15 @@ def document_relpath(*, org_id: str, candidate_id: str, document_id: str, suffix
     return f"{org_id}/{candidate_id}/{document_id}{suffix}"
 
 
+def pending_attachment_relpath(
+    *, org_id: str, thread_id: str, message_id: str, suffix: str = ".pdf"
+) -> str:
+    """``{org}/threads/{thread}/{message}.pdf`` — a resume held for a thread
+    that cannot own a document yet (no candidate to attach it to). Moved to a
+    ``document_relpath`` home when the identity arrives, deleted after."""
+    return f"{org_id}/threads/{thread_id}/{message_id}{suffix}"
+
+
 #: Only these characters survive into an artifact label. The label names a
 #: step in a browser run ("before-submit"), so it is ours, but a path segment
 #: built from anything but ids gets checked rather than trusted.

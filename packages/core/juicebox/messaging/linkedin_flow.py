@@ -111,7 +111,7 @@ def profile_from_resume(candidate, structured: dict[str, Any] | None) -> LinkedI
     years = float(getattr(candidate, "years_experience", 0.0) or 0.0)
     title = str(current.get("title") or getattr(candidate, "current_title", "") or "").strip()
     return LinkedInProfile(
-        url=str(contact.get("linkedin") or getattr(candidate, "linkedin_url", "") or ""),
+        url=str(contact.get("linkedin_url") or getattr(candidate, "linkedin_url", "") or ""),
         full_name=str(contact.get("name") or getattr(candidate, "full_name", "") or ""),
         headline=str(structured.get("summary") or "")[:300],
         current_title=title,
@@ -350,6 +350,13 @@ def _target_phrase(title: str, location: str) -> str:
 def scrape_failed_message() -> str:
     return (
         "couldn't pull your linkedin just now — no worries. "
+        "mind answering a couple of quick questions so we can still match you?"
+    )
+
+
+def resume_failed_message() -> str:
+    return (
+        "couldn't read that resume, sorry — no worries. "
         "mind answering a couple of quick questions so we can still match you?"
     )
 

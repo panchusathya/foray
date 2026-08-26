@@ -279,11 +279,14 @@ Three things to decide before writing it:
 - **Where the bytes live.** There is no blob store in this repo today. Local
   filesystem behind the API is enough for the first version and is one config
   value away from S3; picking neither is what stalls this.
-- **How a resume actually arrives.** Not MMS. Carrier MMS size limits make a
+- **How a resume actually arrives.** Not carrier MMS. MMS size limits make a
   PDF-over-text unreliable in a way that presents as the product losing
   documents. Text a **signed upload link** instead — `security.signed_intake_token`
   and the `routers/track.py` pattern already do exactly this shape of
-  unauthenticated, scoped, expiring access.
+  unauthenticated, scoped, expiring access. *(Since revised for Linq: iMessage
+  attachments have no MMS limits and arrive as CDN URLs on the webhook, so the
+  message channel now ingests them directly — `messaging/attachments.py` — and
+  the upload link remains the web-chat route and the failure fallback.)*
 - **Whether a resume may overwrite `Candidate.summary` and `.skills`.**
   It must not do so silently: those two fields feed the retrieval haystack
   (`search/index.py:142`), so a resume parse would quietly change what

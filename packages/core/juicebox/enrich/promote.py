@@ -96,6 +96,8 @@ def payload_from_resume_v1(
         "full_name": name,
         "summary": str(structured.get("summary") or ""),
         "linkedin_url": str(contact.get("linkedin_url") or ""),
+        "github_url": str(contact.get("github_url") or ""),
+        "website_url": str(contact.get("website_url") or ""),
         "skills": [str(s) for s in structured.get("skills") or [] if str(s).strip()],
         "experiences": experiences,
         "educations": educations,

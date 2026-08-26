@@ -425,7 +425,7 @@ class Settings:
     # name and refers to itself by another, so
     # test_the_persona_matches_the_deploy_script keeps the copy honest.
     intake_recruiter_name: str = field(
-        default_factory=lambda: _env("INTAKE_RECRUITER_NAME", "Vivian")
+        default_factory=lambda: _env("INTAKE_RECRUITER_NAME", "Foray")
     )
     # Digit-grouped: TTS reads "+16283865454" as noise, and the whole point is
     # that the candidate recognises the sender.

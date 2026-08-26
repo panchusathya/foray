@@ -113,7 +113,11 @@ class TestLinkedinShortFlow:
         prose = body.replace("STOP", "").replace("HELP", "")
         assert prose == prose.lower() or "http" in body
         assert "email" in body
-        assert "vivian" in body
+        # The persona name comes from settings, so this asserts whatever the
+        # agent is currently called rather than pinning one spelling.
+        from juicebox.messaging.prompts import recruiter_name
+
+        assert recruiter_name().lower() in body
         # The two disclosures that survive: who we are, and that this is an AI.
         # The opt-out recital that used to be the third is gone --
         # INTAKE_COMPLIANCE.md section 6a has the reasoning and the exposure,

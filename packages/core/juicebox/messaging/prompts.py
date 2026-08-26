@@ -163,7 +163,7 @@ def lowercase_outbound(text: str) -> str:
 
 
 def recruiter_name() -> str:
-    return (get_settings().intake_recruiter_name or "Vivian").strip() or "Vivian"
+    return (get_settings().intake_recruiter_name or "Foray").strip() or "Foray"
 
 
 # The greeting carries exactly two disclosures: who we are, and that this is an

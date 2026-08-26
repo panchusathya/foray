@@ -137,7 +137,7 @@ class Settings:
         default_factory=lambda: _env("JUICEBOX_LLM_PROVIDER", "auto").lower()
     )
     openrouter_model: str = field(
-        default_factory=lambda: _env("OPENROUTER_MODEL", "z-ai/glm-5.2:free")
+        default_factory=lambda: _env("OPENROUTER_MODEL", "z-ai/glm-5.3-flash")
     )
     # Deliberately empty by default: the per-provider default is chosen at
     # runtime, because hardcoding an Anthropic slug here would follow the

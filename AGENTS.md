@@ -580,7 +580,7 @@ the rules that stand now are:
 ### Cheap models cannot be trusted with easy-looking work
 
 The deployment runs cheap open-source models through OpenRouter
-(`z-ai/glm-5.2:free` for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
+(`z-ai/glm-5.3-flash` for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
 intake extractor, five runs each, that generalise past this subsystem:
 
 - **Bucketing is not a model's job.** On "two weeks if the right thing came up",

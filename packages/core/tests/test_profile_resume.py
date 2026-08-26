@@ -269,16 +269,41 @@ class TestAdaptiveLayout:
         )
         assert _education_first(structured, self.TODAY) is False
 
-    def test_the_reference_layout_is_left_aligned_and_uses_times(self):
-        from reportlab.lib.enums import TA_LEFT
+    def test_the_header_is_centered_while_content_stays_left_aligned(self):
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
         from juicebox.docgen.render import _BODY, _CONTACT, _NAME
 
-        assert _NAME.alignment == TA_LEFT
-        assert _CONTACT.alignment == TA_LEFT
+        assert _NAME.alignment == TA_CENTER
+        assert _CONTACT.alignment == TA_CENTER
+        assert _BODY.alignment == TA_LEFT
         assert _NAME.fontName == "Times-Bold"
         assert _CONTACT.fontName == "Times-Roman"
         assert _BODY.fontName == "Times-Roman"
+
+    def test_email_and_linkedin_are_real_pdf_links(self):
+        import io
+
+        from pypdf import PdfReader
+
+        from juicebox.docgen.render import render_resume_pdf
+
+        data = render_resume_pdf(
+            {
+                "contact": {
+                    "name": "Priya Raman",
+                    "email": "priya@example.com",
+                    "linkedin_url": "linkedin.com/in/priya-raman",
+                }
+            }
+        )
+        page = PdfReader(io.BytesIO(data)).pages[0]
+        uris = {
+            str(annotation.get_object()["/A"]["/URI"])
+            for annotation in page.get("/Annots", [])
+        }
+        assert "mailto:priya@example.com" in uris
+        assert "https://linkedin.com/in/priya-raman" in uris
 
     def test_two_column_rows_fit_the_same_frame_as_section_rules(self):
         from reportlab.platypus import Paragraph

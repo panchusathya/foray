@@ -5,8 +5,8 @@ no system packages. One clean template on purpose — the differentiator is the
 content pipeline, not a theme gallery, and every escaping bug lives in the
 one place ``_escape`` is.
 
-The layout follows the classic finance/consulting resume: left-aligned name
-and contact line, ruled section headings, two-column entry rows (organization
+The layout follows the classic finance/consulting resume: centered name and
+contact line, left-aligned ruled sections, two-column entry rows (organization
 bold left, location bold right; title italic left, dates italic right), and
 a single SKILLS & INTERESTS block of labeled lines. Section ORDER flexes
 with the person: professional experience leads, unless the record reads as a
@@ -22,8 +22,9 @@ import io
 import re
 from datetime import date
 from xml.sax.saxutils import escape as _xml_escape
+from xml.sax.saxutils import quoteattr
 
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
@@ -47,7 +48,7 @@ _FRAME_PADDING = 12
 _CONTENT_WIDTH = LETTER[0] - 2 * _MARGIN - _FRAME_PADDING
 
 _NAME = ParagraphStyle(
-    "name", fontName="Times-Bold", fontSize=16, leading=19, alignment=TA_LEFT
+    "name", fontName="Times-Bold", fontSize=16, leading=19, alignment=TA_CENTER
 )
 _CONTACT = ParagraphStyle(
     "contact",
@@ -55,7 +56,7 @@ _CONTACT = ParagraphStyle(
     fontSize=9,
     leading=11,
     textColor="#000000",
-    alignment=TA_LEFT,
+    alignment=TA_CENTER,
 )
 _HEADING = ParagraphStyle(
     "heading", fontName="Times-Bold", fontSize=10, leading=13, spaceBefore=9, spaceAfter=2
@@ -79,6 +80,16 @@ _BULLET = ParagraphStyle("bullet", parent=_BODY, leftIndent=0)
 
 def _escape(value: object) -> str:
     return _xml_escape(str(value or "").strip())
+
+
+def _pdf_link(label: object, href: str) -> str:
+    """Clickable, visibly linked text for ReportLab Paragraph markup."""
+    return f'<link href={quoteattr(href)} color="#0000EE"><u>{_escape(label)}</u></link>'
+
+
+def _web_href(value: object) -> str:
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, flags=re.IGNORECASE) else f"https://{text}"
 
 
 def _rule() -> HRFlowable:
@@ -316,11 +327,20 @@ def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
 
     if contact.get("name"):
         story.append(Paragraph(_escape(contact["name"]).upper(), _NAME))
-    contact_bits = [
-        _escape(contact.get(key))
-        for key in ("phone", "email", "location", "linkedin_url", "github_url", "website_url")
-        if contact.get(key)
-    ]
+    contact_bits: list[str] = []
+    if contact.get("phone"):
+        contact_bits.append(_escape(contact["phone"]))
+    if contact.get("email"):
+        email = str(contact["email"]).strip()
+        contact_bits.append(_pdf_link(email, f"mailto:{email}"))
+    if contact.get("location"):
+        contact_bits.append(_escape(contact["location"]))
+    if contact.get("linkedin_url"):
+        linkedin = str(contact["linkedin_url"]).strip()
+        contact_bits.append(_pdf_link(linkedin, _web_href(linkedin)))
+    for key in ("github_url", "website_url"):
+        if contact.get(key):
+            contact_bits.append(_escape(contact[key]))
     if contact_bits:
         story.append(Paragraph(" | ".join(contact_bits), _CONTACT))
     story.append(Spacer(1, 4))

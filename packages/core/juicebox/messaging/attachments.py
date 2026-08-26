@@ -60,11 +60,14 @@ def store_thread_resume(
     data: bytes,
     filename: str,
     content_type: str = "",
+    source: str = "upload",
 ) -> CandidateDocument:
     """One stored, default, parse-queued resume document for this thread.
 
-    Shared by the upload page and the attachment path so the default-flip,
-    the id-built storage path and the parse enqueue cannot drift apart.
+    Shared by the upload page, the attachment path and the connector index so
+    the default-flip, the id-built storage path and the parse enqueue cannot
+    drift apart. ``source`` records which of the three it was; the kind stays
+    ``resume_uploaded`` so every reader keeps working.
     """
     content_type = content_type or sniff_resume_type(data)
     suffix = SUFFIX_BY_MIME.get(content_type, ".pdf")
@@ -75,7 +78,7 @@ def store_thread_resume(
         filename=(filename or f"resume{suffix}")[:255],
         content_type=content_type,
         status="uploaded",
-        source="upload",
+        source=source,
         thread_id=thread.id,
     )
     db.execute(

@@ -58,7 +58,7 @@ from ..intake.schema import (
 from ..jobs import KIND_LINKEDIN_SCRAPE, enqueue
 from ..llm.client import get_llm
 from ..models import IntakeMessage, IntakeThread, Org
-from . import cadence, identity, linkedin_flow, prompts
+from . import cadence, connect_flow, identity, linkedin_flow, prompts
 from .channels import ChannelError, DeliveryResult, OutboundMessage, get_channel
 from .identity import CONTACT_LINKEDIN
 from .linkedin_flow import (
@@ -769,6 +769,15 @@ def _run_linkedin_short(
 
     assert last is not None
 
+    # An index of a connected app is still running. The same "wait for it"
+    # state a scrape or a parsing resume is, and it must be checked BEFORE the
+    # profile ask below: a connection carries no LinkedIn URL and no document,
+    # so without this hold the next inbound re-sends an ask the tap already
+    # answered. The index job's completion (or its catch-everything failure
+    # path) enqueues the turn that speaks next.
+    if connect_flow.connect_pending(db, thread):
+        return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+
     # A URL or a resume; either one is a way to read somebody. The resume is
     # the better of the two and has been all along -- it carries dated roles,
     # skills and a summary, where a profile scrape carries a headline. The
@@ -776,29 +785,46 @@ def _run_linkedin_short(
     # so a candidate onboarded from a header misses every skill and keyword
     # criterion there is. The upload page and its parse already existed; the
     # onboarding flow simply never offered them.
-    if not thread.contact_linkedin and not _profile_document(db, thread):
-        # iMessage carries files, so on Linq the resume ask is "attach it
-        # right here"; the upload page stays the route for web chat, which
-        # cannot, and reappears on Linq only as the fallback when a download
-        # or a parse fails.
-        from .channels import LINQ
+    #
+    # ``not _scrape_settled``: a connector index can settle the profile step
+    # with neither a URL nor a document on the thread, and re-asking somebody
+    # whose data we already read is the agent not reading its own notes.
+    if (
+        not thread.contact_linkedin
+        and not _profile_document(db, thread)
+        and not _scrape_settled(thread)
+    ):
+        # Connect-your-apps replaces the ask when it can be offered: the same
+        # message still carries the LinkedIn/resume alternative, so the offer
+        # costs zero extra turns and declining needs no parsing — whatever
+        # arrives next lands in a path that already existed. One offer per
+        # thread, ever; after that this branch falls through to gap-fill via
+        # the settlement routing rather than re-pitching or re-asking.
+        if connect_flow.should_offer(db, thread):
+            return _connect_offer(db, thread=thread)
+        if thread.last_field_asked != connect_flow.BATCH_CONNECT:
+            # iMessage carries files, so on Linq the resume ask is "attach it
+            # right here"; the upload page stays the route for web chat, which
+            # cannot, and reappears on Linq only as the fallback when a
+            # download or a parse fails.
+            from .channels import LINQ
 
-        if thread.channel == LINQ:
-            body = prompts.ASK_RESUME_OR_LINKEDIN
-        else:
-            body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
-        sent = _deliver(
-            db,
-            thread=thread,
-            message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
-        )
-        return TurnResult(
-            ACTION_ASKED,
-            thread,
-            _coverage_for(thread),
-            asked_field=CONTACT_LINKEDIN,
-            sent=[s for s in [sent] if s],
-        )
+            if thread.channel == LINQ:
+                body = prompts.ASK_RESUME_OR_LINKEDIN
+            else:
+                body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
+            sent = _deliver(
+                db,
+                thread=thread,
+                message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
+            )
+            return TurnResult(
+                ACTION_ASKED,
+                thread,
+                _coverage_for(thread),
+                asked_field=CONTACT_LINKEDIN,
+                sent=[s for s in [sent] if s],
+            )
 
     # A resume that has landed but not finished parsing is the same "wait for
     # it" state a scrape is, and a resume that HAS parsed settles the profile
@@ -820,7 +846,10 @@ def _run_linkedin_short(
             thread.contact_name = name[:240]
 
     asked = thread.last_field_asked or ""
-    if asked in ("", CONTACT_LINKEDIN, identity.CONTACT_EMAIL):
+    # BATCH_CONNECT routes with the profile asks: a settled index answers the
+    # connect offer the same way a scrape answers the URL ask, and without it
+    # a successful connect would fall to _wrap_up and skip its confirm.
+    if asked in ("", CONTACT_LINKEDIN, identity.CONTACT_EMAIL, connect_flow.BATCH_CONNECT):
         return _linkedin_after_scrape(db, thread=thread, last=last)
     if asked == BATCH_CONFIRM:
         return _linkedin_after_confirm(db, thread=thread, last=last)
@@ -870,6 +899,30 @@ def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
     )
 
 
+def _connect_offer(db: Session, *, thread: IntakeThread) -> TurnResult:
+    """The combined profile ask: connect an app, or send LinkedIn/resume.
+
+    Canned and batched (two routes cannot fit the single-question budget), so
+    it goes out as written — the same rule the confirm and gap-fill messages
+    follow. Marked offered before sending: a delivery retry must not turn one
+    pitch into two.
+    """
+    connect_flow.mark_offered(thread)
+    body = connect_flow.offer_message(thread)
+    sent = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, asked_field=connect_flow.BATCH_CONNECT),
+    )
+    return TurnResult(
+        ACTION_ASKED,
+        thread,
+        _coverage_for(thread),
+        asked_field=connect_flow.BATCH_CONNECT,
+        sent=[s for s in [sent] if s],
+    )
+
+
 def _enqueue_linkedin_scrape(db: Session, thread: IntakeThread) -> None:
     meta = flow_meta(thread)
     if meta.get("phase") == PHASE_SCRAPING and not _scrape_settled(thread):
@@ -904,11 +957,18 @@ def _linkedin_after_scrape(
             sent=[s for s in [sent] if s],
             extractor=thread.extractor,
         )
-    # Scrape (or resume parse) failed — skip confirm and go straight to the
-    # leftover questions. The copy names what actually failed: "couldn't pull
-    # your linkedin" to somebody who sent a file is the agent not listening.
-    if meta.get("source") == "resume":
+    # Scrape (or resume parse, or connector index) failed — skip confirm and
+    # go straight to the leftover questions. The copy names what actually
+    # happened: "couldn't pull your linkedin" to somebody who sent a file is
+    # the agent not listening, and an apology to somebody who simply passed
+    # on the connect offer is answering an error nobody hit.
+    source = str(meta.get("source") or "")
+    if source == "resume":
         preface = linkedin_flow.resume_failed_message()
+    elif source.startswith("connector"):
+        preface = connect_flow.connect_failed_message()
+    elif thread.last_field_asked == connect_flow.BATCH_CONNECT and not meta.get("error"):
+        preface = connect_flow.declined_preface()
     else:
         preface = scrape_failed_message()
     return _linkedin_gap_fill(db, thread=thread, last=last, preface=preface)

@@ -65,6 +65,13 @@ KIND_INTAKE_TURN = "intake.thread.turn"
 # thread, then re-enqueues a turn to send the confirm message.
 KIND_LINKEDIN_SCRAPE = "intake.linkedin.scrape"
 
+# One targeted index of a candidate-connected app (Gmail / Outlook / GitHub):
+# find the resume, derive the profile, write the thread's scrape slot, resume
+# the conversation. Enqueued by the OAuth callback with a fresh run id per
+# connect — never on ensure_ticks, because a candidate grant is indexed when
+# they connect it, not on a loop.
+KIND_CONNECTOR_INDEX = "intake.connector.index"
+
 # Reading a finished intake call into a preference record. A job rather than
 # inline work in the webhook: the provider times out at 10s and retries three
 # times, so an extraction on the request path turns one slow model call into
@@ -206,7 +213,7 @@ def recover_stale_locks(db: Session, *, now: datetime | None = None) -> int:
 # inside a claim is not enough on its own: a batch is processed serially, so a
 # turn queued behind nineteen mailbox syncs waits for all nineteen. The worker
 # claims these separately for that reason.
-INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE)
+INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE, KIND_CONNECTOR_INDEX)
 
 
 def claim(

@@ -23,6 +23,7 @@ from .jobs import (
     KIND_APP_PACKAGE,
     KIND_APP_SUBMIT,
     KIND_APP_SUBMIT_VERIFY,
+    KIND_CONNECTOR_INDEX,
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
@@ -1192,6 +1193,189 @@ def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
     return {"thread_id": thread.id, "scraped": bool((thread.record or {}).get("_linkedin", {}).get("scrape"))}
 
 
+def _handle_connector_index(db: Session, job: Job, now) -> dict[str, Any]:
+    """One targeted index of a connected app, then resume the conversation.
+
+    Guarded like ``_handle_linkedin_scrape`` and for the same hard-won reason:
+    this parses third-party payloads mid-conversation, and an exception that
+    escapes before the thread is answered leaves a person waiting on a reply
+    that will never come. Every branch below therefore ends in exactly one
+    conversational consequence — a stored resume (whose parse settles the
+    thread), or a synthetic inbound plus a turn.
+    """
+    from .connectors import extract as connector_extract
+    from .connectors import get_connector
+    from .messaging import identity
+    from .messaging.attachments import store_thread_resume
+    from .messaging.linkedin_flow import update_flow_meta
+    from .messaging.linq import maybe_start_typing
+    from .messaging.threads import record_inbound
+    from .models import CandidateConnection, IntakeThread
+
+    connection = db.get(CandidateConnection, job.payload.get("connection_id") or "")
+    if connection is None:
+        return {"skipped": "connection not found"}
+    if connection.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    thread = db.get(IntakeThread, connection.thread_id)
+    if thread is None or thread.org_id != connection.org_id:
+        return {"skipped": "thread not found"}
+    if connection.status != "active":
+        return {"skipped": f"connection {connection.status}"}
+    if thread.status == "stopped":
+        # Indexing somebody who opted out between tapping connect and this
+        # job running would be reading their mailbox after they said stop.
+        connection.index_state = {**(connection.index_state or {}), "status": "failed",
+                                  "error": "thread stopped"}
+        db.flush()
+        return {"skipped": "thread stopped"}
+
+    run = str(job.payload.get("run") or "")
+    connection.index_state = {
+        **(connection.index_state or {}),
+        "status": "running",
+        "run": run,
+        "started_at": now.isoformat(),
+    }
+    db.flush()
+    maybe_start_typing(thread)
+
+    from .messaging.manager import MODE_MANAGING
+
+    label = connection.provider
+    state: dict[str, Any] = dict(connection.index_state or {})
+    stored_doc_id = ""
+    failure = ""
+    try:
+        connector = get_connector(connection.provider)
+        label = connector.label
+
+        hits = connector.list_resume_hits(db, connection)
+        state["resume_hits"] = len(hits)
+        picked = connector_extract.pick_resume(db, connector, connection, hits)
+
+        if picked is not None:
+            data, hit = picked
+            candidate_id = thread.candidate_id or identity.link_candidate(db, thread=thread)
+            if candidate_id:
+                doc = store_thread_resume(
+                    db,
+                    thread=thread,
+                    candidate_id=candidate_id,
+                    data=data,
+                    filename=hit.filename,
+                    source="connector",
+                )
+                stored_doc_id = doc.id
+                state["resume_doc_id"] = doc.id
+                connection.candidate_id = candidate_id
+            else:
+                # A grant with no email is possible (GitHub-only), so the
+                # bytes wait exactly the way an early iMessage attachment
+                # does: stashed on the thread, attached by the turn that
+                # captures an address.
+                from . import storage
+                from .docgen.parse import SUFFIX_BY_MIME, sniff_resume_type
+                from .messaging.attachments import PENDING_KEY
+
+                suffix = SUFFIX_BY_MIME.get(sniff_resume_type(data), ".pdf")
+                relpath = storage.pending_attachment_relpath(
+                    org_id=thread.org_id,
+                    thread_id=thread.id,
+                    message_id=f"connect-{run or connection.id}",
+                    suffix=suffix,
+                )
+                storage.save_bytes(relpath, data)
+                update_flow_meta(
+                    thread,
+                    **{PENDING_KEY: {"relpath": relpath, "filename": hit.filename,
+                                     "content_type": hit.content_type}},
+                )
+                state["resume_pending"] = True
+
+        if not stored_doc_id:
+            profile = connector.fetch_profile(db, connection)
+            to_linked = connector_extract.to_linkedin_profile(profile)
+            # A managing thread is past its confirm step; the record still
+            # gains what merge_record allows, but the confirm slot is not
+            # rewritten under an established conversation.
+            if thread.mode != MODE_MANAGING:
+                from .messaging.linkedin_flow import apply_profile_to_record
+
+                thread.record = apply_profile_to_record(thread.record, to_linked)
+                if not (thread.contact_name or "").strip() and to_linked.full_name:
+                    thread.contact_name = to_linked.full_name[:240]
+                update_flow_meta(
+                    thread,
+                    scrape=connector_extract.scrape_payload(
+                        profile, provider=connection.provider
+                    ),
+                    error="",
+                    source=f"connector:{connection.provider}",
+                )
+            if profile.skills and thread.candidate_id:
+                from .models import Candidate
+
+                candidate = db.get(Candidate, thread.candidate_id)
+                if candidate is not None:
+                    connector_extract.apply_skills_to_candidate(candidate, profile.skills)
+
+        if connection.provider == "google":
+            # One count, no content — see connectors.google.job_search_signal.
+            try:
+                from .connectors.google import job_search_signal
+
+                state["signals"] = job_search_signal(connector, db, connection)
+            except Exception:  # noqa: BLE001 - a signal is never worth a failure
+                logger.debug("job-search signal fetch failed for %s", connection.id)
+    except Exception as exc:
+        logger.exception("connector index failed for thread %s", thread.id)
+        failure = str(exc)
+        if thread.mode != MODE_MANAGING and not (
+            (thread.record or {}).get("_linkedin", {}).get("scrape")
+        ):
+            update_flow_meta(
+                thread, error=failure[:400], source=f"connector:{connection.provider}"
+            )
+
+    state["status"] = "failed" if failure else "done"
+    state["finished_at"] = utcnow().isoformat()
+    if failure:
+        state["error"] = failure[:400]
+    connection.index_state = state
+    connection.last_indexed_at = utcnow()
+    db.flush()
+
+    # The stored-resume branch's consequence is its parse settling the thread
+    # (_resume_settles_thread records the inbound and enqueues the turn); a
+    # second trigger here would double-reply. Every other branch answers now.
+    if not stored_doc_id:
+        _, created = record_inbound(
+            db,
+            thread=thread,
+            body=f"[connected {label}]",
+            provider_native_id=f"connect:{connection.id}:{run or 'first'}",
+        )
+        if created:
+            enqueue(
+                db,
+                org_id=thread.org_id,
+                kind=KIND_INTAKE_TURN,
+                idempotency_key=(
+                    f"{KIND_INTAKE_TURN}:{thread.id}:after-connect:{connection.id}:"
+                    f"{run or 'first'}"
+                ),
+                payload={"thread_id": thread.id},
+            )
+
+    return {
+        "connection_id": connection.id,
+        "provider": connection.provider,
+        "resume_doc_id": stored_doc_id,
+        "failed": bool(failure),
+    }
+
+
 def _handle_intake_extract(db: Session, job: Job, now) -> dict[str, Any]:
     from .intake.service import extract_call
     from .models import IntakeCall
@@ -1285,6 +1469,7 @@ HANDLERS = {
     KIND_PROFILE_RESUME: _handle_profile_resume,
     KIND_THREAD_NOTIFY: _handle_thread_notify,
     KIND_LINKEDIN_SCRAPE: _handle_linkedin_scrape,
+    KIND_CONNECTOR_INDEX: _handle_connector_index,
 }
 
 

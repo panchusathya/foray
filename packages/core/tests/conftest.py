@@ -129,6 +129,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
 
     from juicebox import db as db_module
     from juicebox.config import reset_settings_cache
+    from juicebox.connectors import reset_connectors
     from juicebox.enrich.linkedin_scrape import reset_scraper
     from juicebox.intake.providers import set_voice_provider
     from juicebox.integrations.foray import reset_foray, set_foray
@@ -154,6 +155,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_sender_factories()
     reset_providers()
     reset_channels()
+    reset_connectors()
     reset_scraper()
     reset_foray()
     set_voice_provider(None)
@@ -186,6 +188,8 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     reset_providers()
     # A test that injected a FakeChannel must not leak it into the next one.
     reset_channels()
+    # A test that injected a FakeConnector must not leak it forward either.
+    reset_connectors()
     reset_scraper()
     # Likewise a stubbed Foray client: leaking one would let a later test
     # think enrichment is configured when the deployment has no token.

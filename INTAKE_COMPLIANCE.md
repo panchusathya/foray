@@ -145,3 +145,42 @@ of a pointer to it.
 
 A caller who is clearly a minor gets no intake: message taken, recruiter
 follows up, call ends.
+
+## 9. Connected apps (Gmail / Outlook / GitHub)
+
+Onboarding may offer "connect one of your apps" instead of asking for a
+LinkedIn URL or resume. The posture is targeted extraction, not indexing, and
+it is enforced structurally, not editorially:
+
+- **Scopes requested**, and nothing wider: Google `gmail.readonly` (plus
+  openid/email/profile), Microsoft `Mail.Read` + `User.Read` (a separate app
+  registration from the recruiter mailbox one — never `Mail.Send`), GitHub
+  `read:user`. Candidate connector credentials are distinct env vars from
+  every other OAuth client in the deployment.
+- **Queries run** are a fixed list in code (`connectors/google.py`
+  `RESUME_QUERIES`, the two-folder walk in `connectors/microsoft.py`):
+  attachment-bearing mail, their own sent items first. Adding a query is a
+  privacy-posture change and must update this section.
+- **What is stored**: one resume file (a `CandidateDocument`, the same row an
+  upload produces), derived profile facts in the thread record, and counts in
+  `candidate_connections.index_state`. The connector DTOs have no field for a
+  subject, body or snippet, and a test pins that absence — the same rule
+  `discovered_contacts` follows. Mail bodies are never read for extraction;
+  losing attachments' bytes are sniffed and discarded.
+- **Consent**: recorded at the OAuth callback as a `ConsentRecord`
+  (`scope="app_connect.<provider>"`) carrying the connect page's disclosure
+  verbatim, versioned (`connect-v1`). Disconnect stamps `revoked_at`, wipes
+  our token copy, and revokes upstream where the provider supports it
+  (Google, GitHub; Microsoft exposes no endpoint — the page says our copy is
+  deleted, which is the true claim).
+- **Tokens** are Fernet-encrypted at rest (`integrations/crypto.py`), indexed
+  once at connect time, and re-read only on an explicit re-index. There is no
+  sync loop over candidate mailboxes.
+- **No EEO inference** from anything a connector returns, same as §4; no
+  candidate-facing scores, same as §5.
+
+**Ops gate, not a code gate:** Google's `gmail.readonly` is a restricted
+scope. Past Testing mode (≤100 test users) it requires app verification plus
+an annual CASA Tier 2 assessment — weeks-to-months of lead time. The pilot
+runs in Testing mode; Outlook and GitHub can ship to production first, since
+`is_configured()` per provider decides what the conversation offers.

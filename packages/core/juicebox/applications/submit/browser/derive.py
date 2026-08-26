@@ -71,6 +71,10 @@ _COVER_LABEL = re.compile(r"cover\s*letter", re.IGNORECASE)
 
 #: Button text that opens a collapsed or second-URL form.
 _OPEN_TEXT = re.compile(r"apply|i'?m interested", re.IGNORECASE)
+#: What may actually be FOLLOWED as an opener: anchored, because the loose
+#: match reads marketing copy as a control -- mindpal.co's "Check if your
+#: resume is ATS-ready before applying" was chosen and clicked live.
+_OPENER_TEXT = re.compile(r"^\s*(apply\b|i'?m interested)", re.IGNORECASE)
 #: Button text that sends it. "apply" is deliberately absent: on a page whose
 #: form is already open, a leftover Apply control is navigation, not a send.
 _SUBMIT_TEXT = re.compile(r"submit|send", re.IGNORECASE)
@@ -137,6 +141,10 @@ _BUTTONS_JS = """
       selector,
       tag: el.tagName.toLowerCase(),
       type: (el.getAttribute('type') || '').toLowerCase(),
+      // An anchor's destination: the open-form control is a target=_blank
+      // link more often than a same-page toggle, and a click on one opens a
+      // tab the enumeration never reads. The href lets the caller follow it.
+      href: el.tagName === 'A' ? (el.href || '') : '',
     });
   }
   return out;
@@ -192,12 +200,18 @@ def _submit_selectors(buttons: list[dict]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(typed + worded + apply_only))
 
 
+def _openers(buttons: list[dict]) -> list[dict]:
+    """Controls that plausibly open the form, most deliberate first.
+
+    Anchored on purpose: the loose ``_OPEN_TEXT`` is fine for *ordering*
+    submit candidates, but following a control means trusting it, and
+    "…before applying" marketing copy must not qualify.
+    """
+    return [b for b in buttons if _OPENER_TEXT.search(str(b.get("text") or ""))]
+
+
 def _open_selectors(buttons: list[dict]) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            b["selector"] for b in buttons if _OPEN_TEXT.search(str(b.get("text") or ""))
-        )
-    )
+    return tuple(dict.fromkeys(b["selector"] for b in _openers(buttons)))
 
 
 def derive_spec(
@@ -296,16 +310,30 @@ def inspect_form(
     opened: tuple[str, ...] = ()
     with driver.session(log=log) as page:
         page.goto(url, wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
         controls = page.evaluate(_ENUMERATE_JS)
         buttons = page.evaluate(_BUTTONS_JS)
         if _resume_control(controls) is None:
-            openers = _open_selectors(buttons)
-            if openers and driver.click(page, openers, log=log, what="open form"):
+            openers = _openers(buttons)
+            href = next(
+                (str(b.get("href") or "") for b in openers if b.get("href")), ""
+            )
+            selectors = tuple(dict.fromkeys(b["selector"] for b in openers))
+            if href.startswith(("http://", "https://")):
+                # The open-form control is a link -- and live it is routinely
+                # target=_blank (DigitalHire), so a click opens a tab this
+                # page object never reads. Following the href is the same
+                # navigation the click promised, on the page we are watching.
+                log.step(f"following apply link {href[:120]}")
+                page.goto(href, wait_until="domcontentloaded")
+                opened = selectors[:1]
+            elif selectors and driver.click(page, selectors, log=log, what="open form"):
+                opened = selectors
+            if opened:
                 # The form is a React tree more often than not, and its
-                # controls do not exist at click time -- the post-click sleep
-                # lesson from the first probe runs.
+                # controls do not exist at navigation time -- the post-click
+                # sleep lesson from the first probe runs.
                 page.wait_for_timeout(2500)
-                opened = openers
                 controls = page.evaluate(_ENUMERATE_JS)
                 buttons = page.evaluate(_BUTTONS_JS)
     spec = derive_spec(controls, buttons, open_form=opened, vendor=vendor or DERIVED_VENDOR)

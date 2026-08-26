@@ -199,6 +199,29 @@ class TestDeriveSpec:
         assert FormSpec.from_dict({formspec.UNUSABLE_KEY: "x"}) is None
 
 
+class TestOpeners:
+    """Findings from the first live probe session (DigitalHire, Mindpal)."""
+
+    def test_marketing_copy_is_not_an_opener(self):
+        """mindpal.co's "Check if your resume is ATS-ready before applying"
+        matched the loose regex and was clicked live. Following a control
+        means trusting it; only text that STARTS as an apply control
+        qualifies."""
+        from juicebox.applications.submit.browser.derive import _openers
+
+        buttons = [
+            {"text": "Check if your resume is ATS-ready before applying",
+             "selector": "a:has-text('Check')", "href": "https://x/tips"},
+            {"text": "Apply to Job", "selector": "a:has-text('Apply to Job')",
+             "href": "https://x/apply"},
+            {"text": "I'm interested", "selector": "button:has-text('I')", "href": ""},
+        ]
+        assert [b["text"] for b in _openers(buttons)] == [
+            "Apply to Job",
+            "I'm interested",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # routing: registry and submitter_for
 # ---------------------------------------------------------------------------

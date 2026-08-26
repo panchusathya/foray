@@ -228,6 +228,15 @@ _ENUMERATE_JS = """
     if (placeholder && placeholder.trim()) {
       return `${tag}[placeholder="${CSS.escape(placeholder.trim())}"]`;
     }
+    // A drag-drop uploader's real input routinely has no attribute at all
+    // (seen live on mindpal.co). When it is the page's ONLY file input, the
+    // bare type selector is unambiguous -- and when it is not, returning ''
+    // stays correct: a guess between two file inputs is the Ashby autofill
+    // trap with extra steps.
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'file' && document.querySelectorAll("input[type='file']").length === 1) {
+      return "input[type='file']";
+    }
     return '';
   };
 

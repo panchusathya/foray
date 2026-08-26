@@ -110,6 +110,18 @@ x-app-env: &app_env
   ZOHO_CLIENT_ID: ${ZOHO_CLIENT_ID:-}
   ZOHO_CLIENT_SECRET: ${ZOHO_CLIENT_SECRET:-}
   ZOHO_REDIRECT_URI: ${ZOHO_REDIRECT_URI:-}
+  # Candidate connect-your-apps OAuth (read-only, thread-scoped grants).
+  # Deliberately separate credentials from the recruiter mailbox apps above.
+  GOOGLE_CONNECT_CLIENT_ID: ${GOOGLE_CONNECT_CLIENT_ID:-}
+  GOOGLE_CONNECT_CLIENT_SECRET: ${GOOGLE_CONNECT_CLIENT_SECRET:-}
+  GOOGLE_CONNECT_REDIRECT_URI: ${GOOGLE_CONNECT_REDIRECT_URI:-}
+  MS_CANDIDATE_CLIENT_ID: ${MS_CANDIDATE_CLIENT_ID:-}
+  MS_CANDIDATE_CLIENT_SECRET: ${MS_CANDIDATE_CLIENT_SECRET:-}
+  MS_CANDIDATE_TENANT_ID: ${MS_CANDIDATE_TENANT_ID:-common}
+  MS_CANDIDATE_REDIRECT_URI: ${MS_CANDIDATE_REDIRECT_URI:-}
+  GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+  GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+  GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-}
   ZOHO_ACCOUNTS_DOMAIN: ${ZOHO_ACCOUNTS_DOMAIN:-https://accounts.zoho.com}
   # Same secret as x-foray-env above; the api container is the only caller of
   # Foray's paid routes, and reaches it by service name on the private network.

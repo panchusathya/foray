@@ -315,6 +315,22 @@ ASK_RESUME_OR_LINKEDIN = (
     "or your LinkedIn URL."
 )
 
+# The connect-your-apps variants of the two asks above. One message, both
+# routes: the connect link AND the send-it-yourself alternative, so somebody
+# who would rather paste a URL loses nothing and nobody gets a second pitch.
+# Sent as batched (they exceed the single-question budget on purpose).
+CONNECT_OFFER_LINQ = (
+    "Fastest way to get set up: connect your {apps} and I'll find your resume "
+    "and details myself — {connect_link}\n\n"
+    "Or just send your resume right here (PDF or Word), or your LinkedIn URL."
+)
+
+CONNECT_OFFER_WEB = (
+    "Fastest way to get set up: connect your {apps} and I'll find your resume "
+    "and details myself — {connect_link}\n\n"
+    "Or send your LinkedIn URL, or upload your resume here: {upload_link}"
+)
+
 # Both fallbacks keep the thread moving with the two routes that still work:
 # a different file via the upload page, or the LinkedIn URL.
 ATTACHMENT_UNREADABLE = (

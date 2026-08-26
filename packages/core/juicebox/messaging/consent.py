@@ -24,11 +24,16 @@ logger = logging.getLogger(__name__)
 
 SCOPE_MESSAGING = "messaging"
 SCOPE_APPLICATION_UPDATES = "application_updates"
+# One grant per connected app; the provider is suffixed onto the scope
+# ("app_connect.google") so connecting Gmail and later GitHub are two facts,
+# and revoking one does not misdescribe the other.
+SCOPE_APP_CONNECT = "app_connect"
 
 SOURCE_WEB_WIDGET = "web_widget"
 SOURCE_INBOUND_TEXT = "inbound_text"
 SOURCE_VOICE_WRAP_UP = "voice_wrap_up"
 SOURCE_PORTAL = "portal"
+SOURCE_CONNECT_PAGE = "connect_page"
 
 # Versioned disclosure texts. Bump the version whenever the wording changes so
 # old rows keep describing what was actually shown at the time.
@@ -67,6 +72,80 @@ DISCLOSURE_VOICE_SMS = (
     "not re-ask or reframe. STOP is honoured on any later message."
 )
 DISCLOSURE_VOICE_SMS_VERSION = "voice-wrapup-v2"
+
+# Shown verbatim on the connect page (routers/connect.py renders exactly this
+# string) before any OAuth button. The claims in it are enforced structurally:
+# the connector DTOs have no body fields and the queries are a fixed list, so
+# the sentence stays true by construction rather than by review.
+DISCLOSURE_CONNECT = (
+    "Connect an app and we'll look for your resume and pull basic profile "
+    "info to match you to roles. We don't read, index or store your emails — "
+    "only the resume file and the profile facts. You can disconnect any time "
+    "from this page."
+)
+DISCLOSURE_CONNECT_VERSION = "connect-v1"
+
+
+def record_connect_consent(db: Session, *, thread, provider: str) -> ConsentRecord:
+    """One grant per (thread, provider), fresh again after a revocation.
+
+    ``record_consent`` is idempotent per (thread, scope) and returns whatever
+    row exists — including a revoked one. A reconnect after a disconnect is a
+    new grant and deserves a new row, so this looks for an *unrevoked* grant
+    first and appends otherwise; rows stay append-only either way.
+    """
+    scope = f"{SCOPE_APP_CONNECT}.{provider}"
+    existing = db.scalar(
+        select(ConsentRecord).where(
+            ConsentRecord.thread_id == thread.id,
+            ConsentRecord.scope == scope,
+            ConsentRecord.revoked_at.is_(None),
+        )
+    )
+    if existing is not None:
+        return existing
+    row = ConsentRecord(
+        org_id=thread.org_id,
+        candidate_id=thread.candidate_id,
+        thread_id=thread.id,
+        channel="web",
+        scope=scope,
+        source=SOURCE_CONNECT_PAGE,
+        disclosure_text=DISCLOSURE_CONNECT,
+        disclosure_version=DISCLOSURE_CONNECT_VERSION,
+        granted=True,
+    )
+    db.add(row)
+    db.flush()
+    record_event(
+        db,
+        org_id=thread.org_id,
+        type="consent.recorded",
+        subject_type="consent_record",
+        subject_id=row.id,
+        payload={"channel": "web", "scope": scope, "source": SOURCE_CONNECT_PAGE},
+    )
+    return row
+
+
+def revoke_connect_consent(db: Session, *, thread_id: str, provider: str) -> int:
+    """Stamp the grant(s) for one provider on one thread as revoked."""
+    scope = f"{SCOPE_APP_CONNECT}.{provider}"
+    rows = list(
+        db.scalars(
+            select(ConsentRecord).where(
+                ConsentRecord.thread_id == thread_id,
+                ConsentRecord.scope == scope,
+                ConsentRecord.revoked_at.is_(None),
+            )
+        ).all()
+    )
+    now = utcnow()
+    for row in rows:
+        row.revoked_at = now
+    if rows:
+        db.flush()
+    return len(rows)
 
 
 def record_consent(

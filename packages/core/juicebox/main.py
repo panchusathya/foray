@@ -20,6 +20,7 @@ from .routers import (
     applications,
     auth,
     candidates,
+    connect,
     crm,
     documents,
     imports,
@@ -121,6 +122,10 @@ def create_app() -> FastAPI:
     app.include_router(messaging.chat_router)
     app.include_router(messaging.linq_router)
     app.include_router(messaging.upload_router)
+    # Same trust model as the upload page: a texted, thread-bound HMAC link.
+    # The OAuth callback inside is unauthenticated by necessity and carries
+    # its own signed state.
+    app.include_router(connect.router)
     # The candidate portal: auth is public (link exchange, OTP), the rest is
     # candidate-principal only. The portal's own nginx exposes just this
     # prefix, so from apply.goforay.io nothing else here exists.

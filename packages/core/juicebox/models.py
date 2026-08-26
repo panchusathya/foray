@@ -1636,6 +1636,67 @@ class IntakeNumber(Base, TimestampMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class CandidateConnection(Base, TimestampMixin):
+    """One app a candidate connected from a text thread (Gmail, Outlook,
+    GitHub), holding the encrypted grant and the outcome of its one index.
+
+    Anchored on ``thread_id``, not ``candidate_id``: the thread predates the
+    candidate (same reasoning as ``CandidateDocument.thread_id`` and
+    ``ConsentRecord.thread_id``), and only ``identity.link_candidate`` ever
+    creates one. Deliberately not a ``MailboxConnection``: that table is a
+    recruiter's send-capable, continuously synced mailbox; this is a
+    candidate's read-only grant, indexed once at connect time and re-indexed
+    only on request. No sync loop reads this table.
+
+    ``index_state`` carries counts and status only — never filenames beyond
+    the one stored document, never subjects, never bodies. The structural
+    no-content rule the connector DTOs enforce holds here too, and a test
+    pins the absence of any such column.
+    """
+
+    __tablename__ = "candidate_connections"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "provider", name="uq_candidate_connection_thread_provider"),
+        Index("ix_candidate_connections_org", "org_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ccon"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="CASCADE"), index=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    consent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("consent_records.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # google | microsoft | github | fake. A plain string, like every other
+    # provider column here, so a new connector needs no migration.
+    provider: Mapped[str] = mapped_column(String(40), default="")
+    # The provider-verified identity: an email for mail, a login for GitHub.
+    address: Mapped[str] = mapped_column(String(255), default="")
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    provider_account_id: Mapped[str] = mapped_column(String(120), default="")
+    scopes: Mapped[str] = mapped_column(String(400), default="")
+    # Encrypted (integrations/crypto.py). Empty once revoked.
+    token_blob: Mapped[str] = mapped_column(Text, default="")
+
+    # active | error | revoked
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    error: Mapped[str] = mapped_column(Text, default="")
+    # {status: queued|running|done|failed, run, resume_doc_id, resume_hits,
+    #  signals: {...}, started_at, finished_at, error} — counts, ids and
+    #  timestamps only. Lives here rather than the job payload for the same
+    #  reason MailboxConnection.discovery_state does: the job row is not
+    #  where progress can be shown from.
+    index_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_indexed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class ConsentRecord(Base, TimestampMixin):
     """Consent provenance: who agreed to what, where, and what they were shown.
 

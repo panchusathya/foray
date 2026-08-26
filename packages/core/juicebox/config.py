@@ -249,6 +249,52 @@ class Settings:
         default_factory=lambda: _env("ZOHO_ACCOUNTS_DOMAIN", "https://accounts.zoho.com")
     )
 
+    # --- candidate connectors (Gmail / Outlook / GitHub) --------------------
+    # Candidate-side OAuth apps, deliberately distinct credentials from the
+    # recruiter-side integrations above and the portal sign-in below: a
+    # candidate grant is read-only and thread-scoped, and sharing a client id
+    # with a send-capable app widens what a leaked secret can do. Empty client
+    # id = that connector is not offered, link and all.
+    google_connect_client_id: str = field(
+        default_factory=lambda: _env("GOOGLE_CONNECT_CLIENT_ID", "")
+    )
+    google_connect_client_secret: str = field(
+        default_factory=lambda: _env("GOOGLE_CONNECT_CLIENT_SECRET", "")
+    )
+    google_connect_redirect_uri: str = field(
+        default_factory=lambda: _env("GOOGLE_CONNECT_REDIRECT_URI", "")
+    )
+    # Its own Azure app registration with personal accounts allowed; the
+    # recruiter-side app is single-tenant/work-only and must stay that way.
+    # Tenant defaults to "common" because candidates hold outlook.com accounts.
+    ms_candidate_client_id: str = field(
+        default_factory=lambda: _env("MS_CANDIDATE_CLIENT_ID", "")
+    )
+    ms_candidate_client_secret: str = field(
+        default_factory=lambda: _env("MS_CANDIDATE_CLIENT_SECRET", "")
+    )
+    ms_candidate_tenant_id: str = field(
+        default_factory=lambda: _env("MS_CANDIDATE_TENANT_ID", "common")
+    )
+    ms_candidate_redirect_uri: str = field(
+        default_factory=lambda: _env("MS_CANDIDATE_REDIRECT_URI", "")
+    )
+    # An OAuth *web app*, unrelated to the GITHUB_TOKEN PAT sourcing uses.
+    github_oauth_client_id: str = field(
+        default_factory=lambda: _env("GITHUB_OAUTH_CLIENT_ID", "")
+    )
+    github_oauth_client_secret: str = field(
+        default_factory=lambda: _env("GITHUB_OAUTH_CLIENT_SECRET", "")
+    )
+    github_oauth_redirect_uri: str = field(
+        default_factory=lambda: _env("GITHUB_OAUTH_REDIRECT_URI", "")
+    )
+    # Dev-only: register the scripted FakeConnector so the connect flow can be
+    # demoed with no OAuth apps at all. Never set in production.
+    fake_connector_enabled: bool = field(
+        default_factory=lambda: _env_bool("JUICEBOX_FAKE_CONNECTOR", False)
+    )
+
     # --- mailbox sync (any provider) ---------------------------------------
     # How often the worker polls each connected inbox for replies.
     mailbox_sync_seconds: int = field(

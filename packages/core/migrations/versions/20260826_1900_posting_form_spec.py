@@ -13,7 +13,7 @@ NULL means never checked. A transient failure writes nothing at all, and
 IP today does not cache "no form here" forever.
 
 Revision ID: a7d3f92c48e1
-Revises: e2f8b4a17c93
+Revises: f3c9a2e64d17
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a7d3f92c48e1"
-down_revision: str | None = "e2f8b4a17c93"
+down_revision: str | None = "f3c9a2e64d17"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -104,6 +104,13 @@ export const api = {
       body: { contact_candidate_id: contactCandidateId },
     }),
 
+  // The employer inbox. `kind` filters the list; the counts it returns always
+  // describe the whole inbox, so the chips do not move when you tap one.
+  trackerMessages: (kind = '') =>
+    request(`/tracker/messages${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+  trackerMessage: (id) => request(`/tracker/messages/${id}`),
+  trackerPipeline: () => request('/tracker/pipeline'),
+
   documents: () => request('/documents'),
   documentUrl: (id) => request(`/documents/${id}/download-url`, { method: 'POST' }),
 };

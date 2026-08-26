@@ -50,6 +50,7 @@ import {
   trackFor,
 } from '../lib/applications.js';
 import { basisLabel } from '../lib/network.js';
+import { TrackerTabs } from './Inbox.jsx';
 import { useApplications } from '../lib/store.jsx';
 
 const VIEW_KEY = 'juicebox.portal.tracker-view';
@@ -96,7 +97,9 @@ export function ApplicationsPage() {
         title="Applications"
         sub="Everything in flight, and what it needs from you."
         action={
-          <div className="segmented" role="group" aria-label="View">
+          <div className="head-actions">
+            <TrackerTabs current="pipeline" />
+            <div className="segmented" role="group" aria-label="View">
             <button
               type="button"
               className={view === 'board' ? 'on' : ''}
@@ -115,6 +118,7 @@ export function ApplicationsPage() {
               <IconList />
               List
             </button>
+            </div>
           </div>
         }
       />

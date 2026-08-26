@@ -225,18 +225,35 @@ class HostedFormSubmitter:
                             artifacts=artifacts,
                             verification={"run": log.as_payload()},
                         )
-                    # The confirmation screen is the only evidence we have that
-                    # the employer accepted it, so it is captured before the
-                    # browser closes and the attempt is recorded.
-                    page.wait_for_timeout(3000)
+                    # "We clicked" is not "they accepted". The first live run
+                    # recorded a success whose after-screenshot was the same
+                    # filled form: the click landed while the resume upload was
+                    # still in flight and the vendor swallowed it. Positive
+                    # evidence -- a thank-you, or the form going away -- is now
+                    # what separates submitted from needs_human.
+                    confirmed = driver.confirm_submission(
+                        page, landmark=self.spec.landmark, submit=self.spec.submit, log=log
+                    )
                     after = driver.snapshot(
                         page,
                         org_id=ctx.org_id,
                         application_id=ctx.application_id,
-                        label=f"{self.vendor}-submitted",
+                        label=f"{self.vendor}-{'submitted' if confirmed else 'unconfirmed'}",
                         log=log,
                     )
                     artifacts += [p for p in [after] if p]
+                    if not confirmed:
+                        return SubmissionResult(
+                            ok=False,
+                            method=self.method,
+                            needs_human=True,
+                            error=(
+                                "clicked submit but the form never confirmed -- "
+                                "the screenshots say what the page did"
+                            ),
+                            artifacts=artifacts,
+                            verification={"run": log.as_payload()},
+                        )
             except BrowserUnavailable as exc:
                 return SubmissionResult(ok=False, method=self.method, error=str(exc))
 

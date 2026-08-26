@@ -302,6 +302,70 @@ def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
     return True
 
 
+#: Text that means the application went through, lowercased. Generic across
+#: vendors on purpose: every board says some version of thank-you.
+_SUCCESS_MARKERS = (
+    "thank you for applying",
+    "application submitted",
+    "application received",
+    "successfully submitted",
+    "we've received your application",
+    "we have received your application",
+    "your application has been submitted",
+)
+
+
+def _success_visible(page) -> bool:
+    try:
+        text = (page.inner_text("body") or "").lower()
+    except Exception:  # noqa: BLE001 - a mid-navigation read is not evidence
+        return False
+    return any(marker in text for marker in _SUCCESS_MARKERS)
+
+
+def confirm_submission(
+    page,
+    *,
+    landmark: tuple[str, ...],
+    submit: tuple[str, ...],
+    log: RunLog,
+    timeout_ms: int = 20000,
+) -> bool:
+    """Positive evidence the form was accepted, or False.
+
+    "We clicked" is not "they accepted". The first live run proved it: the
+    click landed 300ms after the resume was attached, the upload was still in
+    flight, Ashby swallowed the click, and the page at +3s was the same filled
+    form -- which the old code recorded as a successful submission.
+
+    Evidence is either a thank-you message or the form itself going away. If
+    the form is still standing halfway through the window, the submit is
+    clicked once more: a click a vendor ignored mid-upload and a click that
+    worked leave distinguishable pages, so the retry cannot double-submit --
+    a form that already went is not there to click.
+    """
+    waited = 0
+    poll = 500
+    retried = False
+    while waited < timeout_ms:
+        if _success_visible(page):
+            log.step("confirmation text visible")
+            return True
+        if not first_match(page, landmark):
+            log.step("form gone after submit")
+            return True
+        if not retried and waited >= timeout_ms // 2:
+            # Still standing at half time: the first click most likely landed
+            # during the resume upload. One more, never a third.
+            retried = True
+            log.step("form still present; clicking submit once more")
+            click(page, submit, log=log, what="submit (retry)")
+        page.wait_for_timeout(poll)
+        waited += poll
+    log.step("no confirmation within the window")
+    return False
+
+
 def snapshot(page, *, org_id: str, application_id: str, label: str, log: RunLog) -> str:
     """Screenshot into the document store; returns its storage-relative path."""
     relpath = storage.artifact_relpath(

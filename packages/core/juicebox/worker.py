@@ -30,6 +30,7 @@ from .jobs import (
     KIND_DOC_PARSE,
     KIND_INTAKE_ATTACHMENT,
     KIND_INTAKE_EXTRACT,
+    KIND_INTAKE_REFERRAL,
     KIND_INTAKE_TURN,
     KIND_JOBS_DISCOVER_ONE,
     KIND_JOBS_MATCH,
@@ -894,6 +895,29 @@ def _handle_intake_attachment(db: Session, job: Job, now) -> dict[str, Any]:
     )
 
 
+def _handle_intake_referral(db: Session, job: Job, now) -> dict[str, Any]:
+    """Answer one iMessage group chat, record who was referred, then leave.
+
+    All the judgment lives in ``messaging.referrals`` — this handler only loads
+    the thread and hands over. No turn is ever run on a group thread: the
+    intake agent asks one person about their own preferences, and there is more
+    than one person in the room.
+    """
+    from .messaging.referrals import handle_group
+    from .models import IntakeThread
+
+    thread_id = job.payload.get("thread_id") or ""
+    thread = db.get(IntakeThread, thread_id)
+    if thread is None:
+        return {"skipped": "thread not found", "thread_id": thread_id}
+    if thread.org_id != job.org_id:
+        return {"skipped": "org_mismatch"}
+    if thread.status == "stopped":
+        return {"skipped": "thread stopped"}
+
+    return handle_group(db, thread=thread)
+
+
 def _enqueue_profile_resume(db: Session, *, org_id: str, candidate_id: str, event: str) -> None:
     """Ask for a refresh of the candidate's profile-level ATS resume.
 
@@ -1499,6 +1523,7 @@ HANDLERS = {
     KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_INTAKE_ATTACHMENT: _handle_intake_attachment,
+    KIND_INTAKE_REFERRAL: _handle_intake_referral,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
     KIND_APP_SUBMIT: _handle_app_submit,

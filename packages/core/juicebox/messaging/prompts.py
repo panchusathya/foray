@@ -429,6 +429,72 @@ NOTIFY_APPLICATION_SENT = (
 
 NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 
+# ---------------------------------------------------------------------------
+# group-chat referrals (messaging/referrals.py)
+# ---------------------------------------------------------------------------
+#
+# The one message we send into a group chat, and the only message most of
+# these people will ever get from us. Three jobs, in this order: identify
+# ourselves as an AI, tell the newcomer how to reach us in their *own* thread,
+# and say what the intro is worth. Then we leave.
+#
+# It carries the AI disclosure even though a greeting normally owns that,
+# because for the referred friend this *is* the greeting -- it is the first
+# thing they have ever received from us, in a chat they did not open. The
+# opt-out recital stays absent for the reason INTAKE_COMPLIANCE.md section 6a
+# gives, and STOP still works here like anywhere else.
+#
+# No link, deliberately. Linq refuses links in a first outbound, a group can
+# silently be on SMS where a link is a spam signal, and a bare number is
+# something the newcomer can act on with one tap.
+REFERRAL_GROUP_THANKS = (
+    "hey — i'm {recruiter}, an ai that helps people apply to jobs. thanks for "
+    "the intro. if you're the one being introduced: text me directly at "
+    "{number} and i'll take it from there. that's what earns whoever made the "
+    "intro {bonus} free applications. once you've messaged me i'll step out of "
+    "this chat, so nothing of yours ends up in here."
+)
+
+# Same chat, nobody new in it: everyone here is already someone we talk to, or
+# Linq could not tell us who is in the room. Still answered rather than
+# ignored -- being added to a group and saying nothing reads as broken -- but
+# it promises nothing, because there is no referral to pay for.
+REFERRAL_GROUP_KNOWN_ONLY = (
+    "hey — i'm {recruiter}, an ai that helps people apply to jobs. thanks for "
+    "the add. i keep things to one-on-one chats, so text me directly at "
+    "{number} whenever you need me. stepping out of this one."
+)
+
+# Somebody keeps talking in the group after we have answered. Sent once, then
+# we go quiet: the number has now been given twice and a third repetition is
+# just us talking over people. Says the only thing worth saying -- this is not
+# the room for it -- and does not re-pitch the referral.
+REFERRAL_GROUP_REDIRECT = (
+    "text me separately at {number} — happy to help one-on-one. i'll stay out "
+    "of the way in here."
+)
+
+# The last thing we say in a group, as we leave. The heads-up was given in the
+# first message; this is what stops us simply vanishing, since the thing that
+# triggered it -- the newcomer texting us privately -- is invisible from in
+# here. Deliberately says nothing about who messaged or what about: the group
+# may contain people with no business knowing either.
+REFERRAL_GROUP_SIGN_OFF = (
+    "all set — stepping out of here now. text me any time at {number}."
+)
+
+# The answer, plus at most one redirect. A third message into a group nobody
+# asked us to join is us not taking the hint.
+MAX_GROUP_REPLIES = 2
+
+# What the referrer gets, once their friend has actually texted in. "banked",
+# not "available": the bonus is recorded and not yet spendable, and copy that
+# said otherwise would be found out by the first person who tried to use it.
+NOTIFY_REFERRAL_CONFIRMED = (
+    "your intro came through — they just texted me. that's {bonus} free "
+    "applications banked for you."
+)
+
 # Presenting cards relaxes the 320-char single-question budget: a numbered
 # block of three roles is legitimately longer. Still hard-capped, and still
 # exactly one question (the footer's "reply with a number").

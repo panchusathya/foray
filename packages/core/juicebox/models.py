@@ -2396,6 +2396,77 @@ class PortalOtp(Base, TimestampMixin):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Referral(Base, TimestampMixin):
+    """One person vouching for another, and what it earned them.
+
+    Created from an iMessage group chat: a candidate puts our line and a friend
+    in a group, and every other active handle in that chat becomes a row here.
+    ``pending`` until the friend texts us **themselves** -- we never open that
+    conversation, so the friend's own first message is both the confirmation
+    and the consent, and a referral that never converts simply stays pending.
+
+    ``referee_address`` carries the unique constraint rather than a candidate
+    id, because at creation time the friend has no candidate row and may never
+    get one. It is the whole anti-farming story: adding the same number to ten
+    groups is worth one referral, enforced by the database rather than by a
+    check a future call site can forget.
+
+    A rejected row is kept, with a ``reason``. A referral that silently
+    vanished is what makes people stop trusting the incentive, and "why did my
+    friend not count" has to be answerable.
+    """
+
+    __tablename__ = "referrals"
+    __table_args__ = (
+        # One number can be referred once, ever, per org. Not scoped to the
+        # referrer on purpose -- two people racing to refer the same friend is
+        # exactly the case this has to settle, and it settles it first-writer.
+        UniqueConstraint("org_id", "referee_address", name="uq_referral_referee"),
+        # How a friend's first inbound finds the referral waiting for it.
+        Index("ix_referrals_pending", "org_id", "status", "referee_address"),
+        # What earned_bonus sums, and what a referrer's own thread reports.
+        Index("ix_referrals_referrer", "org_id", "referrer_candidate_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("ref"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+
+    # Nullable for the reason IntakeThread.candidate_id is: a referrer part-way
+    # through onboarding has no candidate row yet, and the referral must be
+    # recorded before we decide whether to make one.
+    referrer_candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True
+    )
+    # The durable identity on both sides: a phone key from `intake.phones`, or
+    # an Apple ID email, which is why these are 255 and not 64. An iMessage
+    # sender is not always a number -- IntakeThread.from_address widened for
+    # the same reason, and a truncated handle is a referral that can never be
+    # matched to the person who earns it.
+    referrer_address: Mapped[str] = mapped_column(String(255), default="")
+    referee_address: Mapped[str] = mapped_column(String(255), default="")
+
+    group_chat_id: Mapped[str] = mapped_column(String(200), default="")
+    group_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+    # The friend's own conversation, stamped on confirmation. Null while
+    # pending: it does not exist until they text us.
+    referee_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # pending | confirmed | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    # Stamped at creation from settings, never read back out of settings. What
+    # the referrer was promised in writing is what the row owes them.
+    bonus_applications: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why a row is rejected: already_a_candidate | self_referral | suppressed.
+    reason: Mapped[str] = mapped_column(String(60), default="")
+
+
 # --------------------------------------------------------------------------
 # derived columns, guaranteed at the ORM layer
 # --------------------------------------------------------------------------

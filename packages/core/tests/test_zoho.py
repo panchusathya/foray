@@ -767,3 +767,66 @@ class TestWiredIntoTheApp:
         assert [c.address for c in eligible_mailboxes(session, org_id=account["org_id"])] == [
             "tushar@goforay.io"
         ]
+
+
+class TestEscapedRecipients:
+    """Zoho HTML-escapes the angle brackets in recipient fields.
+
+    `toAddress` arrives as `&lt;anna+token@goforay.io&gt;`. Every parser looks
+    for `<` and `>` to find the address inside a display-name value, so without
+    unescaping the brackets are never found, `&lt;` stays glued to the local
+    part and `&gt;` to the domain, and the address matches nothing.
+
+    This made every message sent to an application alias unroutable in
+    production while all of these tests passed against clean addresses — which
+    is exactly why the escaped form is now in the fixtures.
+    """
+
+    def test_a_plain_escaped_recipient(self):
+        from juicebox.integrations.zoho import _addresses
+
+        raw = "&lt;anna+h7uwa0ejlpjiseb8d9@goforay.io&gt;"
+        assert _addresses(raw) == ["anna+h7uwa0ejlpjiseb8d9@goforay.io"]
+
+    def test_an_escaped_recipient_with_a_display_name(self):
+        from juicebox.integrations.zoho import _addresses
+
+        raw = "Anna &lt;anna+tok@goforay.io&gt;"
+        assert _addresses(raw) == ["anna+tok@goforay.io"]
+
+    def test_several_escaped_recipients(self):
+        from juicebox.integrations.zoho import _addresses
+
+        raw = "&lt;a@x.com&gt;,&lt;b@y.com&gt;"
+        assert _addresses(raw) == ["a@x.com", "b@y.com"]
+
+    def test_unescaped_input_still_works(self):
+        """Zoho is not consistent across views, so both shapes must parse."""
+        from juicebox.integrations.zoho import _addresses
+
+        assert _addresses("<anna+tok@goforay.io>") == ["anna+tok@goforay.io"]
+        assert _addresses("anna+tok@goforay.io") == ["anna+tok@goforay.io"]
+
+    def test_the_display_name_parser_unescapes_too(self):
+        from juicebox.integrations.zoho import _named_addresses
+
+        raw = "Dana Whitfield &lt;dana@parasail.ai&gt;"
+        assert _named_addresses(raw) == [("dana@parasail.ai", "Dana Whitfield")]
+
+    def test_an_escaped_alias_survives_all_the_way_to_a_token(self, monkeypatch):
+        """The end the bug actually broke: an alias that parses to nothing is
+        mail nobody can attribute, and it fails silently."""
+        from juicebox.applications import alias
+        from juicebox.config import reset_settings_cache
+        from juicebox.integrations.zoho import _addresses
+
+        monkeypatch.setenv("APPLY_ALIAS_ADDRESS", "anna@goforay.io")
+        reset_settings_cache()
+        try:
+            escaped = "&lt;anna+h7uwa0ejlpjiseb8d9@goforay.io&gt;"
+            # What production actually did before the fix.
+            assert alias.parse(escaped) == ""
+            # And what it does now.
+            assert alias.parse(_addresses(escaped)[0]) == "h7uwa0ejlpjiseb8d9"
+        finally:
+            reset_settings_cache()

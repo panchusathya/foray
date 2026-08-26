@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { IconBuilding, IconTracker } from '../components/icons.jsx';
-import { Empty, ErrorNote, Head, Mono, Screen, Sheet, Skeleton } from '../components/ui.jsx';
+import { Empty, ErrorNote, Head, Screen, Sheet, Skeleton } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { ago } from '../lib/applications.js';
 import { chipsFor, kindLabel, order, senderInitials, senderLabel } from '../lib/inbox.js';
@@ -169,8 +169,11 @@ export function InboxPage() {
               <pre className="msg-body">{open.body}</pre>
               {open.alias_address ? (
                 <p className="em">
-                  Sent to <Mono name={open.alias_address} size="sm" /> — the address on your
-                  application.
+                  {/* The literal address, not a monogram: the whole point is
+                      that a person can read it and answer from their own
+                      client if they would rather. */}
+                  Sent to <code className="addr">{open.alias_address}</code> — the address on
+                  your application.
                   {open.relayed ? ' A copy went to your own inbox.' : ''}
                 </p>
               ) : null}

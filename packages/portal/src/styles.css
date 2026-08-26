@@ -1464,3 +1464,14 @@ button.card {
 
 /* Two controls in one header: what you are looking at, then how. */
 .head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* An address you can read and retype, not a monogram. */
+.addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--ink);
+  word-break: break-all;
+}

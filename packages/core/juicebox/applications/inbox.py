@@ -45,7 +45,7 @@ from ..models import (
     record_event,
     utcnow,
 )
-from ..outreach.sender import OutboundEmail, get_sender
+from ..outreach.sender import OutboundEmail, sender_for_org
 from . import alias
 from .state import TransitionError, transition
 
@@ -347,7 +347,7 @@ def relay(
         "This arrived at the address used for your application. "
         f"Reply from your Foray inbox so the employer sees the same sender ({alias_address})."
     )
-    result = get_sender().send(
+    result = sender_for_org(db, candidate.org_id).send(
         OutboundEmail(
             to=real,
             subject=subject or "(no subject)",

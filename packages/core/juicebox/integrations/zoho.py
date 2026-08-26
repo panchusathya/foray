@@ -439,6 +439,19 @@ class ZohoSender:
     From is forced to the mailbox itself. Zoho would let a verified alias
     through, but the whole point of connecting a mailbox is that outreach goes
     out as that identity -- matching GraphSender, which cannot spoof at all.
+
+    A sub-address of this same mailbox (``anna+token@`` for a connection on
+    ``anna@``) is not another identity and would be safe to allow -- but Zoho
+    will not send it either. Verified against live Zoho: ``fromAddress`` must
+    be an address actually configured on the account, and a plus sub-address
+    is not one::
+
+        500 {"moreInfo": "Given FromAddress not exists!"}
+
+    So the alias relay's From is flattened to the bare mailbox when it goes
+    out this way. That costs the *outbound* leg its per-candidate attribution;
+    inbound is unaffected, where the employer writes to ``anna+token@`` and
+    ``applications/alias.py`` reads the token off the envelope as designed.
     """
 
     name = "zoho"
@@ -447,17 +460,36 @@ class ZohoSender:
         self.connection = connection
         self.client = client or ZohoClient(db, connection)
 
+    def _from_address(self, email) -> str:
+        """Always the mailbox itself. See the class docstring for why."""
+        wanted = (getattr(email, "from_email", "") or "").strip().lower()
+        own = (self.connection.address or "").strip().lower()
+        if wanted and wanted != own:
+            logger.info("zoho send: ignoring From %s, sending as %s", wanted, own)
+        return self.connection.address
+
     def send(self, email):
         from ..outreach.sender import SendResult
 
         body = {
-            "fromAddress": self.connection.address,
+            "fromAddress": self._from_address(email),
             "toAddress": email.to,
             "subject": email.subject,
             "content": email.html_body or email.text_body,
             "mailFormat": "html",
             "encoding": "UTF-8",
         }
+        # Reply-To is deliberately NOT forwarded. Zoho accepts the field and
+        # then refuses the whole send unless the address is verified on this
+        # account:
+        #
+        #   500 "You need to verify the ReplyTo address to send emails using
+        #        this account."
+        #
+        # The alias relay pins Reply-To to the *employer's* address, which will
+        # never be verified on our mailbox, so passing it through would fail
+        # every relayed message rather than degrade it. The relay's footer
+        # already tells the candidate where to answer.
         # Threading hints, when we have a parent to thread off. Zoho documents
         # these on the draft API; the send API's handling is unverified, so a
         # provider that ignores them still delivers a fresh message rather than

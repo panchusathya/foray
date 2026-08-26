@@ -671,7 +671,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging() -> None:
+    """Give the CLI the same handler `main.py` gives the API.
+
+    Without this the worker is silent. `logging.basicConfig` only ran in
+    `main.py`, which uvicorn imports and the CLI does not -- so every
+    `logger.info` in the worker process went to a root logger with no handler
+    and was dropped. In production that means the queue loop, `[console-apply]`,
+    the alias-mail router and every "sending as" line write to nothing, and the
+    only visible symptom is a container with empty logs.
+
+    LOG_LEVEL overrides for a noisy debugging session.
+    """
+    import logging
+    import os
+
+    if logging.getLogger().handlers:
+        return
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_logging()
     args = build_parser().parse_args(argv)
     return args.func(args)
 

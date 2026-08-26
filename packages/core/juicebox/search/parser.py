@@ -86,7 +86,10 @@ class ParsedQuery:
             target_companies=_dedupe(tx.normalize_company(c) for c in self.target_companies),
             excluded_companies=_dedupe(tx.normalize_company(c) for c in self.excluded_companies),
             schools=_dedupe(tx.slugify_text(s) for s in self.schools),
-            degrees=_dedupe(tx.slugify_text(d) for d in self.degrees),
+            # Canonical tokens, not raw slugs: the document side is whatever
+            # LinkedIn wrote, and an LLM answering "Master's degree" has to
+            # land on the same token as a recruiter typing "MS".
+            degrees=_dedupe(tx.normalize_degree(d) for d in self.degrees),
             fields_of_study=_dedupe(tx.slugify_text(f) for f in self.fields_of_study),
             keywords=_dedupe(tx.slugify_text(k) for k in self.keywords),
             negative_keywords=_dedupe(tx.slugify_text(k) for k in self.negative_keywords),
@@ -262,10 +265,23 @@ _YEARS_RANGE_RE = re.compile(r"(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*\+?\s*(?:y
 _YEARS_MIN_RE = re.compile(
     r"(?:at least|min(?:imum)?(?: of)?|over|more than|\bgt\b)?\s*(\d{1,2})\s*\+?\s*(?:yrs?|years?)"
 )
-_YEARS_MAX_RE = re.compile(r"(?:under|less than|at most|max(?:imum)?(?: of)?)\s*(\d{1,2})\s*(?:yrs?|years?)")
+# Every phrasing of a ceiling the compensation half already knows (_CEILING_ONLY).
+# Anything missing here does not simply go unread: _YEARS_MIN_RE's prefix is
+# optional, so an uncovered ceiling matched the bare number and was claimed as
+# the FLOOR -- "no more than 5 years" hard-rejected everyone under five and kept
+# the 25-year veterans.
+_YEARS_MAX_RE = re.compile(
+    r"(?:under|below|less than|fewer than|no more than|not more than|at most"
+    r"|up to|as much as|max(?:imum)?(?: of)?|not exceeding|capped at)"
+    r"\s*(\d{1,2})\s*(?:yrs?|years?)"
+)
 _LOCATION_RE = re.compile(r"\b(?:in|near|around|based in|located in|from)\s+([a-z][a-z .'-]{2,40})")
 _COMPANY_RE = re.compile(r"\b(?:ex-|from|worked at|currently at|at)\s+([A-Z][\w&.\-]*(?:\s+[A-Z][\w&.\-]*)?)")
 _NEGATION_RE = re.compile(r"\b(?:not|no|exclude|excluding|without)\s+([a-z][a-z0-9+#./ -]{2,30})")
+# "no more than 5 years" is a bound _find_years has already read. Letting its
+# capture through made "more" a negative keyword, and apply_filters rejects
+# outright on those -- one query deleted every profile containing the word.
+_QUANTITY_NEGATION_RE = re.compile(r"\d|\b(?:more|less|fewer|than|over|under|up)\b")
 
 _DEGREE_TOKENS = {
     "phd": "phd", "ph d": "phd", "doctorate": "phd",
@@ -291,6 +307,10 @@ _RECRUITING_STOPWORDS = {
     "managers", "designer", "designers", "scientist", "scientists",
     "know", "knows", "knowing", "familiar", "using", "use", "used", "built",
     "build", "building", "shipped", "ship", "based", "currently",
+    # Comparators from a bound the years/comp passes already consumed. "no more
+    # than 5 years" was scoring people on whether their prose says "more".
+    "more", "less", "fewer", "than", "least", "most", "over", "under", "up",
+    "exclude", "excluding", "without", "degree", "degrees",
 }
 
 
@@ -344,16 +364,30 @@ def _is_negated(slug: str, term: str) -> bool:
     return any(cue in preceding[-4:] for cue in _NEGATION_CUES)
 
 
-def _find_locations(query: str, slug: str) -> list[str]:
+def _find_locations(query: str, slug: str) -> tuple[list[str], set[str]]:
+    """Canonical places, plus the surface words the recruiter actually typed.
+
+    The surface set matters because "NYC" canonicalises to "new york": seeding
+    the keyword blocklist from the canonical form alone left "nyc" as a scored
+    keyword, so every genuine New Yorker who spells the city out took a miss.
+    """
     found: list[str] = []
+    surfaces: set[str] = set()
     padded = f" {slug} "
     for name in list(tx.METRO_MEMBERS) + list(tx.LOCATION_ALIASES):
-        if f" {name} " in padded and not _is_negated(slug, name):
+        if f" {name} " not in padded:
+            continue
+        # Recorded even when negated: "not in London" already became a negative
+        # keyword, and scoring people on the word "london" on top of that is the
+        # same double-count.
+        surfaces.update(name.split())
+        if not _is_negated(slug, name):
             canonical = tx.normalize_location(name)
             if canonical not in found:
                 found.append(canonical)
     for match in _LOCATION_RE.finditer(query.lower()):
-        candidate = tx.normalize_location(match.group(1).strip(" .'-"))
+        raw = match.group(1).strip(" .'-")
+        candidate = tx.normalize_location(raw)
         # Guard against "in python" style false positives.
         if (
             candidate
@@ -363,7 +397,8 @@ def _find_locations(query: str, slug: str) -> list[str]:
             and (candidate in tx.METRO_MEMBERS or candidate in tx.LOCATION_ALIASES.values())
         ):
             found.append(candidate)
-    return found
+            surfaces.update(tx.slugify_text(raw).split())
+    return found, surfaces
 
 
 def _find_years(slug: str) -> tuple[float | None, float | None]:
@@ -375,7 +410,14 @@ def _find_years(slug: str) -> tuple[float | None, float | None]:
     max_years = float(max_match.group(1)) if max_match else None
     min_match = _YEARS_MIN_RE.search(slug)
     min_years = float(min_match.group(1)) if min_match else None
-    if max_years is not None and min_years is not None and min_years == max_years:
+    # A ceiling phrase also satisfies the floor pattern, whose prefix is
+    # optional -- both read the same digits. The ceiling owns the number it sits
+    # on, or "no more than 5 years" comes out as a five-year floor.
+    if (
+        max_match
+        and min_match
+        and (min_match.span(1) == max_match.span(1) or min_years == max_years)
+    ):
         min_years = None
     return min_years, max_years
 
@@ -392,25 +434,38 @@ def heuristic_parse(query: str) -> ParsedQuery:
     negatives: list[str] = []
     for match in _NEGATION_RE.finditer(slug):
         term = match.group(1).strip()
-        if term:
-            negatives.append(term.split()[0] if len(term.split()) > 3 else term)
+        if not term or _QUANTITY_NEGATION_RE.search(term):
+            continue
+        words = term.split()
+        # Keep the capture whole. Taking its first word turned whatever followed
+        # the "no" into the exclusion, and a negative keyword is an outright
+        # rejection -- a lone stopword empties the corpus. A long phrase that
+        # matches nothing costs a recruiter nothing.
+        if len(words) == 1 and (words[0] in STOPWORDS or words[0] in _RECRUITING_STOPWORDS):
+            continue
+        negatives.append(term)
 
     remote = True if any(f" {token} " in padded for token in _REMOTE_TOKENS) else None
 
-    industries = [
-        industry
-        for industry in {tx.normalize_industry(i) for i in tx.INDUSTRY_ALIASES.values()}
-        | set(tx.INDUSTRY_ALIASES)
-        if f" {industry} " in padded
-    ]
-    industries = _dedupe(tx.normalize_industry(i) for i in industries)
+    # The scan covers alias keys AND canonical values, which is how the
+    # two-letter value behind "artificial intelligence" got tested on its own:
+    # "AI engineers" demanded an AI-tagged employer at weight 0.9. The spelled-
+    # out alias still resolves to the same industry.
+    industry_surfaces = sorted(
+        (
+            {tx.normalize_industry(i) for i in tx.INDUSTRY_ALIASES.values()}
+            | set(tx.INDUSTRY_ALIASES)
+        )
+        - tx.INDUSTRY_FUNCTION_SURFACES
+    )
+    industry_surfaces = [s for s in industry_surfaces if f" {s} " in padded]
+    industries = _dedupe(tx.normalize_industry(i) for i in industry_surfaces)
 
     stages = [stage for stage in tx.COMPANY_STAGES if f" {stage} " in padded]
     sizes = [size for size in tx.COMPANY_SIZE_BUCKETS if size in slug]
 
-    degrees = _dedupe(
-        canonical for token, canonical in _DEGREE_TOKENS.items() if f" {token} " in padded
-    )
+    degree_surfaces = [token for token in _DEGREE_TOKENS if f" {token} " in padded]
+    degrees = _dedupe(_DEGREE_TOKENS[token] for token in degree_surfaces)
 
     companies = _dedupe(
         tx.normalize_company(m.group(1))
@@ -421,7 +476,7 @@ def heuristic_parse(query: str) -> ParsedQuery:
     # "at least 5 years" and friends must not become company names.
     companies = [c for c in companies if not c.split()[0].isdigit() and c not in {"least", "most"}]
 
-    locations = _find_locations(query, slug)
+    locations, location_surfaces = _find_locations(query, slug)
     seniority = _find_seniority(slug)
 
     # Anything already captured as structure, plus recruiting boilerplate, must
@@ -430,6 +485,13 @@ def heuristic_parse(query: str) -> ParsedQuery:
     structural: set[str] = set(STOPWORDS) | _RECRUITING_STOPWORDS | set(tx.SENIORITY_ORDER)
     structural.update(word for token in _REMOTE_TOKENS for word in token.split())
     structural.update(("onsite", "hybrid", "office", "relocate", "relocation"))
+    # Seeded from the words the recruiter typed, not only from what they
+    # canonicalise to: "NYC" -> "new york" left "nyc" scoring every genuine New
+    # Yorker a miss, and the same held for "masters" -> ms and every industry
+    # alias.
+    for surface in (location_surfaces, industry_surfaces, degree_surfaces):
+        for item in surface:
+            structural.update(item.split())
     for group in (titles, skills, industries, stages, degrees, locations, seniority, companies):
         for item in group:
             structural.update(item.split())

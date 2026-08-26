@@ -210,6 +210,34 @@ class TestStaging:
         assert row.outbound_count == 3
         assert row.thread_count == 2
 
+    def test_threads_seen_by_an_earlier_job_are_not_forgotten(
+        self, session, account, connection
+    ):
+        """build_context runs once per job and the sweep re-enqueues itself
+        across many, so the per-job set of thread ids is not the running total.
+        Six threads in job one and one in job two used to leave a count of 1."""
+        org_id = account["org_id"]
+        _run(
+            session,
+            connection,
+            [
+                [
+                    _record(to=["ada@acme.com"], thread="t1", native="m1"),
+                    _record(to=["ada@acme.com"], thread="t2", native="m2"),
+                ]
+            ],
+            org_id=org_id,
+        )
+        _run(
+            session,
+            connection,
+            [[_record(to=["ada@acme.com"], thread="t3", native="m3")]],
+            org_id=org_id,
+        )
+        row = session.scalar(select(DiscoveredContact))
+        assert row.outbound_count == 3
+        assert row.thread_count == 3
+
     def test_drafts_are_ignored(self, session, account, connection):
         _run(
             session,

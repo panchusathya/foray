@@ -568,6 +568,69 @@ INDUSTRY_ALIASES = {
 }
 
 
+#: Industry surface forms that are really a job function, so scanning a query
+#: for them demands an employer tagged that way. Same failure the "machine
+#: learning" note above prevents: "AI engineers in NYC" was picking up an
+#: ``ai`` industry requirement and scoring a zero for every employer not
+#: tagged AI. The spelled-out alias still resolves, so "artificial
+#: intelligence companies" keeps working.
+INDUSTRY_FUNCTION_SURFACES = frozenset({"ai"})
+
+
 def normalize_industry(value: str) -> str:
     slug = slugify_text(value)
     return INDUSTRY_ALIASES.get(slug, slug)
+
+
+# --------------------------------------------------------------------------
+# degrees
+# --------------------------------------------------------------------------
+
+#: Both sides of an education comparison have to speak the same vocabulary.
+#: The query side canonicalises to these tokens; the document side arrives as
+#: whatever LinkedIn wrote ("master of science"), and ``"ms"`` is not a
+#: substring of that -- so asking for a master's scored a miss for everybody
+#: holding one.
+DEGREE_ALIASES = {
+    "phd": "phd", "ph d": "phd", "d phil": "phd", "dphil": "phd",
+    "doctorate": "phd", "doctoral": "phd", "doctor of philosophy": "phd",
+    "mba": "mba", "m b a": "mba", "master of business administration": "mba",
+    "executive mba": "mba", "emba": "mba",
+    "ms": "ms", "m s": "ms", "msc": "ms", "m sc": "ms", "masters": "ms",
+    "master": "ms", "masters degree": "ms", "ma": "ms", "m a": "ms",
+    "meng": "ms", "m eng": "ms", "mtech": "ms", "m tech": "ms", "mse": "ms",
+    "bs": "bs", "b s": "bs", "bsc": "bs", "b sc": "bs", "ba": "bs",
+    "b a": "bs", "bachelors": "bs", "bachelor": "bs", "bachelors degree": "bs",
+    "beng": "bs", "b eng": "bs", "btech": "bs", "b tech": "bs", "bse": "bs",
+    "ab": "bs", "bba": "bs",
+}
+
+#: Checked in order, because "master of business administration" contains both
+#: "master" and "business administration".
+_DEGREE_PHRASES = (
+    ("phd", ("doctor of philosophy", "doctorate", "doctoral", "phd")),
+    ("mba", ("master of business administration", "mba")),
+    ("ms", ("master",)),
+    ("bs", ("bachelor",)),
+)
+
+
+def normalize_degree(value: str) -> str:
+    """Canonical degree token, or the slug unchanged when it is not a degree.
+
+    Unrecognised text passes through so a field of study or an unusual
+    qualification still compares as itself rather than vanishing.
+    """
+    slug = slugify_text(value)
+    if not slug:
+        return ""
+    if slug in DEGREE_ALIASES:
+        return DEGREE_ALIASES[slug]
+    padded = f" {slug} "
+    for canonical, needles in _DEGREE_PHRASES:
+        if any(needle in slug for needle in needles):
+            return canonical
+    for alias, canonical in DEGREE_ALIASES.items():
+        if f" {alias} " in padded:
+            return canonical
+    return slug

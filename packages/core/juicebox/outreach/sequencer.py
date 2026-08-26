@@ -22,10 +22,11 @@ from ..models import (
     ProjectCandidate,
     Sequence,
     SequenceStep,
+    new_id,
     record_event,
     utcnow,
 )
-from ..security import signed_tracking_token
+from ..security import signed_intake_token, signed_tracking_token
 from . import templates
 from .ai_directives import resolve_directives
 from .personalize import personalize, sender_context
@@ -180,6 +181,12 @@ def enroll_candidates(
     person and expects mail. Later steps keep their configured timing.
     """
     now = now or utcnow()
+    # One row per person even when the payload names them twice. Rows created
+    # in the loop below are not in the `existing` map, so a repeated id used to
+    # insert a second Enrollment and trip the (sequence_id, candidate_id)
+    # unique constraint -- which rolls back everybody else in the request, not
+    # just the duplicate.
+    candidate_ids = list(dict.fromkeys(cid for cid in candidate_ids if cid))
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     first_due = now if (send_now or not steps) else schedule_step_at(steps[0], base=now)
 
@@ -581,6 +588,64 @@ def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None
     return emails[0], None
 
 
+def _preview_message(
+    *,
+    sequence: Sequence,
+    enrollment: Enrollment,
+    candidate: Candidate,
+    step: SequenceStep,
+    **fields,
+) -> Message:
+    """The row a dry run *would* have written, deliberately never persisted.
+
+    A preview still has to hand a Message back -- the API serialises it and the
+    CLI counts it -- but must not leave one behind. The request that asked for
+    the preview is committed by ``CommittingRoute``, so a row added "just to
+    return it" is permanent, and a persisted step makes ``process_enrollment``
+    advance an enrollment nobody actually mailed.
+
+    Column defaults only fire on flush, so the ones the API reads are filled in
+    by hand; without that the response serialises nulls into non-null fields.
+    """
+    stamp = utcnow()
+    defaults = {
+        "id": new_id("msg"),
+        "source": "sequence",
+        "from_address": "",
+        "to_address": "",
+        "subject": "",
+        "body": "",
+        "status": "queued",
+        "error": "",
+        # Marks the row as a preview wherever one is inspected, the same way
+        # the persisted dry-run rows used to.
+        "provider_message_id": "dry-run",
+        "mailbox_id": "",
+        "provider_native_id": "",
+        "internet_message_id": "",
+        "conversation_id": "",
+        "open_count": 0,
+        "click_count": 0,
+        "reply_intent": "",
+        "reply_text": "",
+        "ai_fragments": {},
+        "body_html": "",
+        "web_link": "",
+        "attachment_count": 0,
+        "created_at": stamp,
+        "updated_at": stamp,
+    }
+    return Message(
+        org_id=sequence.org_id,
+        enrollment_id=enrollment.id,
+        candidate_id=candidate.id,
+        step_id=step.id,
+        channel=step.channel,
+        direction="outbound",
+        **{**defaults, **fields},
+    )
+
+
 def send_step(
     db: Session,
     *,
@@ -593,7 +658,11 @@ def send_step(
     resolved=None,
 ) -> Message:
     """Send one step. ``resolved`` is the mailbox process_enrollment already
-    picked; passing it avoids resolving (and re-counting caps) twice."""
+    picked; passing it avoids resolving (and re-counting caps) twice.
+
+    ``dry_run`` renders the step and writes nothing at all -- see
+    ``_preview_message``.
+    """
     settings = get_settings()
     existing = _existing_outbound(db, enrollment.id, step.id)
     if existing is not None and existing.status == "sent":
@@ -607,6 +676,16 @@ def send_step(
 
     to_address, reach_error = _sendable_address(candidate, settings.min_reach_score)
     if to_address and is_suppressed(db, org_id=sequence.org_id, email=to_address):
+        if dry_run:
+            return _preview_message(
+                sequence=sequence,
+                enrollment=enrollment,
+                candidate=candidate,
+                step=step,
+                to_address=to_address,
+                status="failed",
+                error="suppressed",
+            )
         message = existing or Message(
             org_id=sequence.org_id,
             enrollment_id=enrollment.id,
@@ -649,6 +728,16 @@ def send_step(
         # Fail closed: a step with {{ai: ...}} directives must never send the
         # raw instruction text. The enrollment stays active so the step retries
         # once the model is back; the delay stops run_due hot-looping on it.
+        if dry_run:
+            return _preview_message(
+                sequence=sequence,
+                enrollment=enrollment,
+                candidate=candidate,
+                step=step,
+                to_address=to_address,
+                status="failed",
+                error=f"ai_directive_unresolved: {exc}"[:490],
+            )
         message = existing or Message(
             org_id=sequence.org_id,
             enrollment_id=enrollment.id,
@@ -668,7 +757,9 @@ def send_step(
             message.error = f"ai_directive_unresolved: {exc}"[:490]
         enrollment.next_send_at = now + timedelta(minutes=15)
         return message
-    if not enrollment.personalization:
+    # Not on a dry run: the cache is written for a send that is not happening,
+    # and it would pin the copy a later real send renders.
+    if not dry_run and not enrollment.personalization:
         enrollment.personalization = context
 
     plain_body = templates.to_text(body)
@@ -676,6 +767,25 @@ def send_step(
     # to record what actually went out.
     parent = _thread_parent(db, enrollment.id)
     subject = _thread_subject(subject, _root_subject(db, enrollment.id))
+
+    if dry_run:
+        # Everything below this line writes: the Message row, the enrollment's
+        # stop reason, and the send itself. A preview stops here with the copy
+        # it rendered and nothing else.
+        return _preview_message(
+            sequence=sequence,
+            enrollment=enrollment,
+            candidate=candidate,
+            step=step,
+            to_address=to_address,
+            subject=subject,
+            body=plain_body,
+            from_address=sequence.from_email or settings.outreach_from_email,
+            status="queued" if to_address else "failed",
+            error="" if to_address else (reach_error or "no email address on file"),
+            ai_fragments=fragments or {},
+        )
+
     message = existing
     if message is None:
         message = Message(
@@ -724,6 +834,7 @@ def send_step(
         base_url=settings.base_url.rstrip("/"),
         message_id=message.id,
         token=token,
+        sign_click=lambda target: signed_intake_token(f"click:{message.id}", target),
     )
 
     # Follow-ups thread off the previous send. Providers that cannot express
@@ -757,11 +868,6 @@ def send_step(
     # candidate-to-candidate. Set even on a failed attempt: it is the
     # address we tried.
     message.from_address = email.from_email
-
-    if dry_run:
-        message.status = "queued"
-        message.provider_message_id = "dry-run"
-        return message
 
     result = sender.send(email)
     if result.ok:
@@ -899,6 +1005,13 @@ def process_enrollment(
     if enrollment.status != "active":
         return "stopped", message
 
+    if dry_run:
+        # Nothing was sent, so nothing may move. Advancing here skipped the
+        # step for real: CommittingRoute commits the preview request, so a
+        # dry run over 50 enrollments left all 50 on step 2, marked contacted,
+        # having received nothing.
+        return "sent", message
+
     enrollment.current_step += 1
     if enrollment.current_step >= len(steps):
         _finish_enrollment(enrollment, "completed")
@@ -1027,28 +1140,37 @@ def record_reply(
     )
     db.add(inbound)
 
-    enrollment = db.get(Enrollment, message.enrollment_id)
+    # A bounce and an opt-out are facts about a person and a message, not about
+    # a sequence, so they are recorded whether or not one is behind the mail.
+    # Thread-synced outbound carries no enrollment by design -- a recruiter
+    # mailing someone by hand from Outlook -- and while these lived inside the
+    # enrollment branch, "please take me off your list" on such a thread wrote
+    # no Suppression at all, so enrolling that person later mailed them again.
+    if verdict.intent == "bounce":
+        message.status = "bounced"
+        suppress(
+            db,
+            org_id=message.org_id,
+            email=message.to_address,
+            reason="bounce",
+            source="bounce",
+            source_message_id=message.id,
+        )
+    elif verdict.intent == "unsubscribe":
+        suppress(
+            db,
+            org_id=message.org_id,
+            email=message.to_address,
+            reason="unsubscribe",
+            source="reply",
+            source_message_id=message.id,
+        )
+
+    enrollment = db.get(Enrollment, message.enrollment_id) if message.enrollment_id else None
     if enrollment is not None:
         if verdict.intent == "bounce":
-            message.status = "bounced"
             _finish_enrollment(enrollment, "bounced", "bounced")
-            suppress(
-                db,
-                org_id=message.org_id,
-                email=message.to_address,
-                reason="bounce",
-                source="bounce",
-                source_message_id=message.id,
-            )
         elif verdict.intent == "unsubscribe":
-            suppress(
-                db,
-                org_id=message.org_id,
-                email=message.to_address,
-                reason="unsubscribe",
-                source="reply",
-                source_message_id=message.id,
-            )
             _finish_enrollment(enrollment, "replied", "unsubscribe")
         elif verdict.should_stop_sequence and enrollment.sequence.stop_on_reply:
             _finish_enrollment(enrollment, "replied", verdict.intent)

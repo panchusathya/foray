@@ -12,6 +12,7 @@ from typing import Protocol
 
 import httpx
 from tenacity import (
+    Retrying,
     retry,
     retry_if_exception,
     stop_after_attempt,
@@ -74,22 +75,41 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {settings.openrouter_api_key}", **_HEADERS_EXTRA}
 
 
-@retry(
-    retry=retry_if_exception(_retryable),
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, max=30),
-    reraise=True,
-)
-def chat(system: str, user: str, *, model: str, max_tokens: int = 1600, timeout: float = 90.0) -> str:
-    """Synchronous single completion. Raises on non-retryable failure."""
-    with httpx.Client(base_url=settings.openrouter_base_url, timeout=timeout) as client:
-        resp = client.post(
-            "/chat/completions",
-            headers=_auth_headers(),
-            json=_payload(system, user, model=model, max_tokens=max_tokens),
-        )
-        resp.raise_for_status()
-        return _extract_text(resp.json())
+def chat(
+    system: str,
+    user: str,
+    *,
+    model: str,
+    max_tokens: int = 1600,
+    timeout: float = 90.0,
+    attempts: int = 5,
+) -> str:
+    """Synchronous single completion. Raises on non-retryable failure.
+
+    ``attempts`` is a caller's parameter rather than a decorator constant
+    because the retry stack is WALL CLOCK: five attempts of exponential backoff
+    is up to ~8 minutes, which is the right trade for a batch job that can wait
+    and the wrong one for a request path, where the budget belongs to the human
+    watching a spinner (see api/parse.py). tenacity sleeps with time.sleep, so
+    the cost lands wherever this call is made.
+    """
+
+    def _once() -> str:
+        with httpx.Client(base_url=settings.openrouter_base_url, timeout=timeout) as client:
+            resp = client.post(
+                "/chat/completions",
+                headers=_auth_headers(),
+                json=_payload(system, user, model=model, max_tokens=max_tokens),
+            )
+            resp.raise_for_status()
+            return _extract_text(resp.json())
+
+    return Retrying(
+        retry=retry_if_exception(_retryable),
+        stop=stop_after_attempt(max(1, attempts)),
+        wait=wait_exponential(multiplier=1, max=30),
+        reraise=True,
+    )(_once)
 
 
 @retry(
@@ -114,10 +134,21 @@ async def achat(
 class OpenRouterChat:
     """Synchronous adapter; construction performs no I/O."""
 
+    def __init__(self, *, timeout: float = 90.0, attempts: int = 5) -> None:
+        self._timeout = timeout
+        self._attempts = attempts
+
     def complete(
         self, system: str, user: str, *, model: str, max_tokens: int = 1600
     ) -> str:
-        return chat(system, user, model=model, max_tokens=max_tokens)
+        return chat(
+            system,
+            user,
+            model=model,
+            max_tokens=max_tokens,
+            timeout=self._timeout,
+            attempts=self._attempts,
+        )
 
 
 class AsyncOpenRouterChat:

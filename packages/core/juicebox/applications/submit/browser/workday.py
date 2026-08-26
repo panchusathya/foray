@@ -4,15 +4,20 @@ Workday is the common case and the hardest one: you cannot apply without an
 account, the account needs an email you can read, and the form is a wizard
 whose steps a tenant configures. So the run has two legs.
 
-**Leg one** creates the account (or reuses the one we already made for this
-tenant) and stops. Workday emails a verification link to the address we
-registered, which is the candidate's alias, which is a mailbox we own -- that
-is the whole reason the alias exists. The attempt parks as
-``needs_verification`` and the run's state goes on the attempt row.
+**Leg one** creates the account and stops. Workday emails a verification link
+to the address we registered, which is the candidate's alias, which is a
+mailbox we own -- that is the whole reason the alias exists. The attempt parks
+as ``needs_verification`` and the run's state goes on the attempt row.
 
 **Leg two** starts when ``applications/inbox.py`` sees that mail, clicks the
 link, and queues ``application.submit.verify``. It signs in, walks the wizard,
 fills what the field map knows, and submits.
+
+**A tenant we already registered for skips leg one entirely.** The service
+hands the stored login over on the context, and the run goes straight to leg
+two -- there is no second account, so there is no second verification mail to
+wait for, and parking on one that will never arrive is how an application sat
+in ``submitting`` until it aged out.
 
 **What it will not do.** Every required field it cannot find, or cannot answer
 from the package, ends the run as ``needs_human`` with the list. Workday
@@ -73,11 +78,13 @@ def _account_fields(email: str, password: str) -> list[FieldSpec]:
             selectors=('input[data-automation-id="password"]',),
             value=password,
             required=True,
+            secret=True,
         ),
         FieldSpec(
             key="verify_password",
             selectors=('input[data-automation-id="verifyPassword"]',),
             value=password,
+            secret=True,
         ),
         FieldSpec(
             key="terms",
@@ -146,6 +153,19 @@ class WorkdaySubmitter:
                 ),
             )
 
+        # Second role at a tenant we already registered for. No new account is
+        # being made, so no verification mail is coming; parking on one would
+        # leave the pursuit in `submitting` until it aged out. Leg two is the
+        # whole of the work from here.
+        if ctx.portal_password:
+            return self.resume(
+                ctx,
+                {
+                    "username": ctx.portal_username or ctx.from_address,
+                    "password": ctx.portal_password,
+                },
+            )
+
         password = secrets.token_urlsafe(18)
         log = RunLog()
         try:
@@ -161,16 +181,44 @@ class WorkdaySubmitter:
                     label="workday-account",
                     log=log,
                 )
+                artifacts = [path for path in [shot] if path]
                 if missing:
                     return SubmissionResult(
                         ok=False,
                         method=self.method,
                         needs_human=True,
                         error=f"could not fill required account fields: {', '.join(missing)}",
-                        artifacts=[path for path in [shot] if path],
+                        artifacts=artifacts,
                         verification=log.as_payload(),
                     )
-                driver.click(page, _SIGN_IN, log=log, what="submit account")
+                # Nothing missing is not evidence we are registering. The
+                # sign-in page carries an email box and a password box too, so
+                # a run that never reached the Create Account form fills both,
+                # reads as complete, and used to report an account created --
+                # after typing a brand-new password into a sign-in form. The
+                # confirm-password box and the terms checkbox exist only on the
+                # registration form, so one of them is the evidence.
+                if not {"verify_password", "terms"} & set(log.filled):
+                    return SubmissionResult(
+                        ok=False,
+                        method=self.method,
+                        needs_human=True,
+                        error=(
+                            f"workday {ctx.target.tenant} showed a sign-in form, not a "
+                            "registration form, and we hold no account for this tenant"
+                        ),
+                        artifacts=artifacts,
+                        verification=log.as_payload(),
+                    )
+                if not driver.click(page, _SIGN_IN, log=log, what="submit account"):
+                    return SubmissionResult(
+                        ok=False,
+                        method=self.method,
+                        needs_human=True,
+                        error="the registration form has no submit control we recognise",
+                        artifacts=artifacts,
+                        verification=log.as_payload(),
+                    )
         except BrowserUnavailable as exc:
             return SubmissionResult(ok=False, method=self.method, error=str(exc))
 
@@ -235,6 +283,7 @@ class WorkdaySubmitter:
                                 selectors=('input[data-automation-id="password"]',),
                                 value=password,
                                 required=True,
+                                secret=True,
                             ),
                         ],
                         log=log,
@@ -326,6 +375,42 @@ class WorkdaySubmitter:
             artifacts=artifacts,
             verification={"run": log.as_payload()},
         )
+
+
+def stored_account(
+    db: Session, *, candidate_id: str, vendor: str, tenant: str
+) -> tuple[str, str]:
+    """``(username, password)`` for a portal account we already hold, or blanks.
+
+    The write half has existed since the beginning and nothing ever read it,
+    which is why the second role at one Workday tenant landed on the sign-in
+    page with a freshly minted password and reported an account created.
+
+    A blob that no longer decrypts reads as no account, same as
+    ``submission._unseal``: registering again is recoverable, signing in with a
+    credential we cannot read is not.
+    """
+    if not vendor:
+        return "", ""
+    row = (
+        db.query(AtsAccount)
+        .filter(
+            AtsAccount.candidate_id == candidate_id,
+            AtsAccount.vendor == vendor,
+            AtsAccount.tenant == tenant,
+        )
+        .one_or_none()
+    )
+    if row is None or not row.token_blob:
+        return "", ""
+    from ....integrations.crypto import decrypt_json
+
+    try:
+        password = str(decrypt_json(row.token_blob).get("password") or "")
+    except ValueError as exc:
+        logger.warning("stored portal account %s could not be read: %s", row.id, exc)
+        return "", ""
+    return (row.username or ""), password
 
 
 def remember_account(

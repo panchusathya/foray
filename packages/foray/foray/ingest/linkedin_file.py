@@ -5,7 +5,8 @@
 
 Writes candidates (source='linkedin', login='li:'+slug), raw_profiles
 (source='linkedin', the whole record — the zero-API re-derive guarantee), and
-any business emails found in free text (source='linkedin', confidence 80).
+any business emails found in free text (source='linkedin', confidence
+LINKEDIN_EMAIL_CONFIDENCE, placeholder-filtered).
 Deliberately writes NO candidate_signals: derive stays the single signals
 writer, exactly as with GitHub.
 
@@ -23,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..db import get_pool
+from ..enrich.contacts import is_placeholder
 from ..enrich.emails import UPSERT_EMAIL
 from ..enrich.employer import is_work_domain
 from ..log import Heartbeat, get_logger
@@ -46,6 +48,16 @@ log = get_logger("ingest.linkedin")
 # imports of the same corpus must never interleave.
 IMPORT_LOCK_KEY = 0x11D1
 
+# Below commit (75) and below every vendor address, not above them as it was.
+# The ladder in enrich/emails.py justified 80 as "self-published, so stronger
+# than an assertion" -- but what is self-published here is an About section,
+# and what we store is whatever a regex found in it: an employer's careers
+# inbox, a bootcamp's, a recruiter's, or the person's own. At 80 nothing real
+# could ever displace it, because UPSERT_EMAIL only overwrites `source` on a
+# strict confidence improvement. 65 keeps the address (it is often the only
+# one we have) while letting a commit-mined or vendor-supplied address win.
+LINKEDIN_EMAIL_CONFIDENCE = 65
+
 
 _UPSERT_CANDIDATE = """
 insert into candidates
@@ -68,6 +80,37 @@ on conflict (candidate_id, source) do update set
 """
 
 
+async def store_emails(
+    conn, candidate_id: int, emails: list[str], key: str, stats: dict
+) -> None:
+    """Write the export's free-text addresses, minus the placeholders.
+
+    The gate is the same one contacts.store_result, commit_search._persist and
+    name_bridge._store_github_emails apply, and this writer needs it most: its
+    input is a regex over an About section, so "reach me at
+    firstname.lastname@example.com", no-reply@ and info@ all arrive shaped
+    exactly like a real address -- and a stored fake becomes primary_email and
+    then a send address.
+    """
+    for email in emails:
+        if is_placeholder(email):
+            stats["placeholder_emails"] += 1
+            log.info("import.placeholder_rejected", candidate_id=candidate_id, email=email)
+            continue
+        await conn.execute(
+            UPSERT_EMAIL,
+            candidate_id,
+            email,
+            "linkedin",
+            is_work_domain(email),
+            LINKEDIN_EMAIL_CONFIDENCE,
+            False,
+            f"bright_data export {key[:12]}",
+            1,
+        )
+        stats["emails"] += 1
+
+
 async def import_file(
     *,
     path: Path,
@@ -80,7 +123,14 @@ async def import_file(
     pool = await get_pool()
     key = file_key(path)
     shard_tag = f"brightdata:{key[:12]}"
-    stats = {"seen": 0, "upserted": 0, "skipped": 0, "emails": 0, "geo_skipped": 0}
+    stats = {
+        "seen": 0,
+        "upserted": 0,
+        "skipped": 0,
+        "emails": 0,
+        "placeholder_emails": 0,
+        "geo_skipped": 0,
+    }
 
     async with pool.acquire() as conn:
         locked = await conn.fetchval("select pg_try_advisory_lock($1)", IMPORT_LOCK_KEY)
@@ -122,19 +172,7 @@ async def import_file(
                             shard_tag,
                         )
                         await conn.execute(_UPSERT_RAW, candidate_id, row.login, _jsonb_safe(record))
-                        for email in row.emails:
-                            await conn.execute(
-                                UPSERT_EMAIL,
-                                candidate_id,
-                                email,
-                                "linkedin",
-                                is_work_domain(email),
-                                80,
-                                False,
-                                f"bright_data export {key[:12]}",
-                                1,
-                            )
-                            stats["emails"] += 1
+                        await store_emails(conn, candidate_id, row.emails, key, stats)
                         stats["upserted"] += 1
                     await conn.execute(
                         """
@@ -183,7 +221,8 @@ async def import_file(
     print(
         f"seen {stats['seen']:,} | upserted {stats['upserted']:,} | "
         f"geo-skipped {stats['geo_skipped']:,} | unusable {stats['skipped']:,} | "
-        f"emails {stats['emails']:,}" + (" [dry-run]" if dry_run else "")
+        f"emails {stats['emails']:,} | placeholders {stats['placeholder_emails']:,}"
+        + (" [dry-run]" if dry_run else "")
     )
     return stats
 

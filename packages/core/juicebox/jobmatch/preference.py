@@ -20,7 +20,9 @@ stated band — because that is the number a candidate's floor has to clear. A
 posting that states only a floor ("from 180k") could pay more, so it has no
 ceiling to fail and is never vetoed. Mismatched currencies are not compared at
 all: converting them would need a rate, and guessing one turns a bad rate into
-a dropped role.
+a dropped role — but "UNKNOWN" is the sentinel for a figure given with no
+currency, not a currency, and reading it as one made the veto dead for every
+heuristic-path extraction.
 """
 
 from __future__ import annotations
@@ -35,8 +37,11 @@ from ..search.parser import ParsedQuery
 # than keeping a score the current code would not produce. v2: the comp
 # comparison reads ParsedQuery.max_compensation, which the JD parser now
 # actually fills -- under v1 it read keys ParsedQuery cannot emit, so the
-# comp veto never fired.
-JOB_MATCH_ENGINE_VERSION = "pref-v3"
+# comp veto never fired. v4: the veto reads the "UNKNOWN" currency sentinel as
+# unstated rather than as a second stated currency, and tests the posting's
+# band against the candidate's *base* target -- so both the rows it wrongly
+# kept and the rows it wrongly dropped rescore.
+JOB_MATCH_ENGINE_VERSION = "pref-v4"
 
 # What each dimension is worth. A flat mean was the bug: a bullseye on title
 # and a total title miss both came out 0.500 for the same candidate, because
@@ -77,7 +82,7 @@ def preference_term(
     if excluded is not None:
         return 0.0, [excluded]
 
-    floor = pref.target_total or pref.target_base
+    floor = _comp_floor(pref)
     ceiling = _posting_ceiling(pref, have)
     if floor and ceiling is not None and ceiling < float(floor):
         return 0.0, [
@@ -166,6 +171,19 @@ def _exclusion_veto(wanted: ParsedQuery, posting: JobPosting | None) -> dict | N
     return None
 
 
+def _comp_floor(pref: CandidatePreference) -> float | None:
+    """The candidate's base target, falling back to total.
+
+    Base first because the number it is tested against is read off phrases like
+    "base salary range" -- a base band. Preferring the larger of the two figures
+    vetoed a 160-190k base band for somebody whose base target was 150k and
+    whose *total* target was 200k, and ``score_pair`` drops a vetoed row: a role
+    paying above their own base target disappeared silently. Where only a total
+    is on file it is the one figure we have.
+    """
+    return pref.target_base or pref.target_total
+
+
 def _posting_ceiling(pref: CandidatePreference, have: ParsedQuery) -> float | None:
     """Top of the posting's stated band, or ``None`` when it cannot be compared.
 
@@ -178,8 +196,16 @@ def _posting_ceiling(pref: CandidatePreference, have: ParsedQuery) -> float | No
     return _as_number(have.max_compensation)
 
 
+#: ``intake.extract`` writes this rather than guessing USD when a figure
+#: arrives with no stated currency (see ``CandidatePreference.comp_currency``).
+#: Reading it as a stated currency is how every heuristic-path extraction
+#: compared "UNKNOWN" against "USD", found two different currencies, and
+#: skipped the comp veto entirely.
+_UNSTATED_CURRENCIES = {"", "UNKNOWN"}
+
+
 def _currency_comparable(left: str, right: str) -> bool:
-    """Blank on either side means unknown, which we treat as comparable.
+    """An unstated currency on either side is comparable.
 
     Most records say nothing, and refusing to compare those would make the
     ceiling test dead again. Two *different* stated currencies is the case worth
@@ -187,7 +213,7 @@ def _currency_comparable(left: str, right: str) -> bool:
     """
     a = (left or "").strip().upper()
     b = (right or "").strip().upper()
-    if not a or not b:
+    if a in _UNSTATED_CURRENCIES or b in _UNSTATED_CURRENCIES:
         return True
     return a == b
 

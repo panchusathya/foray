@@ -23,6 +23,19 @@ from .security import TokenError, decode_access_token, hash_api_key
 # between the two surfaces, because everything signs with one SECRET_KEY.
 CANDIDATE_TOKEN_TYPES = frozenset({"candidate", "portal-link"})
 
+#: The role claim on the OAuth connect state (routers/integrations.py mints it).
+OAUTH_STATE_ROLE = "mailconnect"
+
+# Roles that exist to authorise ONE round trip, never a session. They are
+# signed with the same SECRET_KEY as a login token but travel where a login
+# token never would -- the connect state rides a query string to
+# login.microsoftonline.com, so it lands in browser history and the provider's
+# access logs. get_principal re-reads the role off the User row, so without
+# this a recovered state token would authenticate as that user at their REAL
+# role for its whole TTL. oauth_callback already refuses a login token as
+# state; this is the other half of the same wall.
+SINGLE_PURPOSE_TOKEN_ROLES = frozenset({OAUTH_STATE_ROLE})
+
 
 def get_db(request: Request) -> Iterator[Session]:
     session = get_session_factory()()
@@ -111,6 +124,8 @@ def get_principal(
     # lookup below, but the rejection must not depend on id prefixes never
     # colliding. A candidate session on a recruiter route is always a 401.
     if payload.get("typ") in CANDIDATE_TOKEN_TYPES:
+        raise _UNAUTHORIZED
+    if payload.get("role") in SINGLE_PURPOSE_TOKEN_ROLES:
         raise _UNAUTHORIZED
 
     user = db.get(User, payload["sub"])

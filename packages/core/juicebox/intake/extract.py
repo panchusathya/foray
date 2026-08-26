@@ -410,7 +410,18 @@ _EMPLOYMENT_PATTERNS: tuple[tuple[str, str], ...] = (
 _AUTH_PATTERNS: tuple[tuple[str, str], ...] = (
     ("sponsorship required", r"\b(need sponsorship|require sponsorship|need a visa|visa sponsorship|would need sponsoring)\b"),
     ("h-1b transfer needed", r"\b(h1b|h-1b)\b"),
-    ("opt", r"\b(opt|stem opt)\b"),
+    # "opt" is also an ordinary English verb -- "I'd opt for a smaller company",
+    # "I decided to opt out" -- and a bare match writes an immigration status the
+    # caller never claimed onto the profile a recruiter reads. Worse, it marks
+    # work_authorization answered, so the agent stops asking the one question
+    # whose whole point is "can I hire them without sponsoring a visa?". Same
+    # class as the "unknown" placeholder: a required field that looks filled is
+    # a question that never gets asked. The visa sense never arrives bare.
+    (
+        "opt",
+        r"\b(stem opt|f-?1 opt|opt (ead|status|visa|extension|expires|expiring|holder)"
+        r"|(on|under|using|have|has|got|holding) (my |an |the )?opt\b)",
+    ),
     ("green card", r"\b(green card|permanent resident)\b"),
     ("us citizen", r"\b(us citizen|u\.s\. citizen|american citizen)\b"),
     ("citizen", r"\b(i am a citizen|i'm a citizen)\b"),
@@ -477,8 +488,10 @@ def _heuristic_extract(transcript: str) -> ExtractionResult:
     record["timeline"] = _first_match(text, _TIMELINE_PATTERNS)
     record["employment_status"] = _first_match(text, _EMPLOYMENT_PATTERNS)
     record["work_authorization"] = _first_match(text, _AUTH_PATTERNS)
-    if record["work_authorization"] == "h-1b transfer needed":
-        low.append("work_authorization")  # an H-1B mention is not always a transfer ask
+    # An H-1B mention is not always a transfer ask, and OPT is a clock rather
+    # than a standing authorisation -- both are answers a human has to read.
+    if record["work_authorization"] in {"h-1b transfer needed", "opt"}:
+        low.append("work_authorization")
 
     wants_remote = _asserted(text, _REMOTE_TRUE)
     wants_office = _asserted(text, _REMOTE_FALSE)

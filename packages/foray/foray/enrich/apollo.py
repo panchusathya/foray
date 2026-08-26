@@ -13,7 +13,7 @@ import httpx
 from ..config import settings
 from ..log import get_logger
 from .emails import UPSERT_EMAIL
-from .employer import is_work_domain
+from .employer import freemail_domains, is_work_domain
 
 log = get_logger("enrich.apollo")
 
@@ -60,11 +60,17 @@ async def match_and_store(conn, candidate_id: int, node: dict) -> str | None:
 
     org = person.get("organization") or {}
     primary_domain = (org.get("primary_domain") or "").strip().lower() or None
+    # A freemail domain is not an employer: Apollo returns gmail.com as the
+    # primary_domain of a self-employed record. Dropped once, here, rather than
+    # at each use -- the domain is the reason the address below would be filed
+    # as work, so a guard on only the column write would still mark somebody's
+    # personal gmail as an apollo_work address at confidence 85.
+    employer_domain = primary_domain if primary_domain not in freemail_domains() else None
     verified = (person.get("email_status") or "").lower() == "verified"
 
     work = _usable(person.get("email"))
     if work:
-        is_work = (primary_domain and work.endswith("@" + primary_domain)) or is_work_domain(work)
+        is_work = (employer_domain and work.endswith("@" + employer_domain)) or is_work_domain(work)
         await conn.execute(
             UPSERT_EMAIL,
             candidate_id,
@@ -92,11 +98,18 @@ async def match_and_store(conn, candidate_id: int, node: dict) -> str | None:
                 1,
             )
 
-    if primary_domain:
+    if employer_domain:
+        # This column feeds the weight-A tsvector (search_doc.SEARCH_TSV_SQL)
+        # as well as the search card and the scoring prompt, so a gmail.com
+        # here ranks that person at title weight for every query containing
+        # "gmail" -- and `employer_domain is null` means it is written once and
+        # never corrected. contacts.store_result already filtered freemail and
+        # its comment claimed it was "guarded the way apollo.py guards it";
+        # now that is true.
         await conn.execute(
             "update candidate_signals set employer_domain = $1 "
             "where candidate_id = $2 and employer_domain is null",
-            primary_domain,
+            employer_domain,
             candidate_id,
         )
 

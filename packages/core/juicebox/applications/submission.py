@@ -40,6 +40,7 @@ from .state import TransitionError, has_consent, transition
 from .submit.base import (
     METHOD_CONSOLE,
     METHOD_MEMORY,
+    REDACTED,
     SECRET_VERIFICATION_KEYS,
     Attachment,
     SubmissionContext,
@@ -173,6 +174,12 @@ def submitter_for(db: Session, application: Application, posting: JobPosting, ta
 
 
 def attempts_used(db: Session, application: Application) -> int:
+    """How many attempts this pursuit has spent, against ``apply_max_attempts``.
+
+    Every row counts, ``running`` included: a row exists only once the adapter
+    is genuinely being run (see ``submit_application``), so a crash mid-run is
+    an attempt the employer's form may well have seen.
+    """
     rows = db.scalars(
         select(ApplicationSubmission).where(ApplicationSubmission.application_id == application.id)
     ).all()
@@ -214,8 +221,34 @@ def _repair_submitted(db: Session, application: Application) -> None:
         )
 
 
+def _over_the_attempt_cap(db: Session, application: Application) -> dict[str, Any] | None:
+    """``None`` when another attempt is allowed, otherwise the hand-off.
+
+    Returned rather than raised: raising would send the job round the queue's
+    backoff to be refused identically four more times, and the answer is not
+    going to change. The pursuit goes back to `prepared` with the reason on it,
+    which is what a person picking this up needs to read.
+    """
+    used = attempts_used(db, application)
+    if used < get_settings().apply_max_attempts:
+        return None
+    reason = f"already tried {used} times; this one needs a person"
+    if application.status == "submitting":
+        try:
+            transition(db, application, to_status="prepared", actor="agent", reason=reason)
+        except TransitionError:
+            logger.info("could not park application %s at the attempt cap", application.id)
+    return {"skipped": reason, "application_id": application.id}
+
+
 def submit_application(db: Session, application: Application) -> dict[str, Any]:
-    """Run one attempt. The worker's half; every exit writes an attempt row."""
+    """Run one attempt. The worker's half.
+
+    Every exit *from the adapter onwards* writes an attempt row. The exits
+    before it -- already submitted, over the retry cap, refused entry to
+    `submitting` -- deliberately do not: a row that never reached an adapter is
+    a retry the candidate is charged for and no employer ever saw.
+    """
     already = succeeded_submission(db, application)
     if already is not None:
         # The unique index would catch a genuine race; this catches the ordinary
@@ -225,6 +258,14 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         # does not sit in `submitting` forever.
         _repair_submitted(db, application)
         return {"skipped": "already submitted", "submission_id": already.id}
+
+    # The cap belongs here as well as in `request_submission`, because the queue
+    # is the other way in and it retries to WORKER_MAX_ATTEMPTS -- a larger,
+    # unrelated number. Without this the real ceiling on browser sessions
+    # filling an employer's form is the worker's, not the one a deployment set.
+    capped = _over_the_attempt_cap(db, application)
+    if capped:
+        return capped
 
     candidate = db.get(Candidate, application.candidate_id)
     posting = db.get(JobPosting, application.job_posting_id)
@@ -240,6 +281,20 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
             db, org_id=application.org_id, vendor=target.vendor, tenant=target.tenant
         )
 
+    # Into `submitting` before the adapter runs, so a crashed worker leaves a
+    # visible in-flight application rather than one that looks untouched. Not
+    # when we are already there: that is this job being retried after the worker
+    # died holding it, and the gates were satisfied on the way in the first time.
+    #
+    # And *before* the attempt row, not after. This move can refuse -- the
+    # candidate hit the weekly cap while the job sat in the queue -- and an
+    # attempt row written ahead of it counts against `attempts_used` for a try
+    # no adapter ever made. Five refused retries used to spend the whole retry
+    # budget and lock the application out with "this one needs a person",
+    # leaving five rows stuck at `running` that nothing sweeps.
+    if application.status != "submitting":
+        transition(db, application, to_status="submitting", actor="agent")
+
     attempt = ApplicationSubmission(
         org_id=application.org_id,
         application_id=application.id,
@@ -251,13 +306,6 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     )
     db.add(attempt)
     db.flush()
-
-    # Into `submitting` before the adapter runs, so a crashed worker leaves a
-    # visible in-flight application rather than one that looks untouched. Not
-    # when we are already there: that is this job being retried after the worker
-    # died holding it, and the gates were satisfied on the way in the first time.
-    if application.status != "submitting":
-        transition(db, application, to_status="submitting", actor="agent")
 
     ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
     try:
@@ -311,12 +359,20 @@ def _finish(
     attempt: ApplicationSubmission,
     result: SubmissionResult,
 ) -> None:
+    # A verdict that carries no evidence does not destroy the evidence already
+    # on the row. `expire_parked` and a refused resume both arrive here with
+    # nothing but a method and an error, and blanking a parked Workday attempt
+    # would take with it the screenshot, the run log, the tenant and the sealed
+    # password for a portal account that still exists on the employer's side --
+    # leaving a needs_human ticket with nothing in it for a person to act on.
     attempt.status = result.status
-    attempt.external_id = result.external_id[:200]
-    attempt.confirmation_ref = result.confirmation_ref[:400]
+    attempt.external_id = result.external_id[:200] or attempt.external_id
+    attempt.confirmation_ref = result.confirmation_ref[:400] or attempt.confirmation_ref
     attempt.error = (result.error or "")[:600]
-    attempt.artifacts = list(result.artifacts)
-    attempt.verification = _seal(result.verification)
+    if result.artifacts:
+        attempt.artifacts = list(result.artifacts)
+    if result.verification:
+        attempt.verification = _seal(result.verification)
     attempt.finished_at = utcnow() if result.status != "needs_verification" else None
     if result.method:
         attempt.method = result.method
@@ -466,6 +522,36 @@ def _email_sent_confirmation(db: Session, application: Application) -> None:
         logger.warning("could not email the sent-confirmation for %s: %s", application.id, exc)
 
 
+#: A key whose *name* says it holds a credential, wherever it sits. The
+#: top-level keys are sealed and handed back on resume; a nested copy -- the
+#: browser run log used to carry ``run.filled.password`` verbatim -- is
+#: redacted instead, because nothing reads a credential back out of a
+#: diagnostic record and a value nobody needs must not survive at all.
+_SECRET_NAME_MARKERS = ("password", "secret", "credential", "token")
+
+
+def _looks_secret(key: str) -> bool:
+    lowered = key.lower()
+    return any(marker in lowered for marker in _SECRET_NAME_MARKERS)
+
+
+def _redact(value):
+    """Every nested credential-shaped value replaced with the marker."""
+    if isinstance(value, dict):
+        return {
+            # Our own sealed blob is the one thing named like a secret that is
+            # already safe, and redacting it would throw away the credential
+            # leg two needs.
+            key: item
+            if key == "secret_blob"
+            else (REDACTED if _looks_secret(str(key)) else _redact(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    return value
+
+
 def _seal(verification: dict) -> dict:
     """Encrypt the credential keys before the attempt row is written.
 
@@ -473,9 +559,16 @@ def _seal(verification: dict) -> dict:
     stays readable, because that is what makes a parked attempt diagnosable.
     Only the secrets move behind ``integrations/crypto``, the same treatment
     mailbox OAuth tokens and ``ats_accounts.token_blob`` already get.
+
+    Popping the top level is not enough on its own: an adapter that nests a
+    credential (``verification["run"]["filled"]["password"]``, which is exactly
+    what the Workday account form produced) would write it to the row in clear,
+    and on the branches with no top-level copy there would be nothing to
+    encrypt at all. So the whole payload is swept.
     """
     payload = dict(verification or {})
     secrets_held = {key: payload.pop(key) for key in SECRET_VERIFICATION_KEYS if key in payload}
+    payload = _redact(payload)
     if secrets_held:
         from ..integrations.crypto import encrypt_json
 
@@ -600,6 +693,7 @@ def build_context(
     documents = current_documents(db, application)
     from_address, reply_to = alias.sending_identity(db, candidate, application)
     first, _, last = (candidate.full_name or "").strip().partition(" ")
+    portal_username, portal_password = _portal_account(db, candidate, target)
 
     return SubmissionContext(
         application_id=application.id,
@@ -614,6 +708,8 @@ def build_context(
         phone=_primary_phone(candidate),
         linkedin_url=candidate.linkedin_url or "",
         location=_location(candidate),
+        portal_username=portal_username,
+        portal_password=portal_password,
         resume=_attachment(documents.get("resume_generated") or documents.get("resume_uploaded")),
         cover_letter=_attachment(documents.get("cover_letter")),
         answers=list(application.form_answers or []),
@@ -621,6 +717,31 @@ def build_context(
         title=posting.title or "",
         posting_url=posting.source_url or "",
     )
+
+
+#: Vendors that make a candidate register before they can apply, and are
+#: therefore the only ones a stored portal login means anything for.
+_REGISTERING_VENDORS = (detect.VENDOR_WORKDAY, detect.VENDOR_ORACLE)
+
+
+def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str]:
+    """The login we hold for this tenant, for the adapter that needs it.
+
+    Read here rather than in the adapter for the reason ``_remember_account``
+    writes here: the seam is a plain value object, and an adapter holding a
+    ``Session`` is one refactor away from moving the pursuit itself.
+    """
+    if target.vendor not in _REGISTERING_VENDORS:
+        return "", ""
+    from .submit.browser.workday import stored_account
+
+    try:
+        return stored_account(
+            db, candidate_id=candidate.id, vendor=target.vendor, tenant=target.tenant
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing login is registering again
+        logger.warning("could not read the stored portal account: %s", exc)
+        return "", ""
 
 
 def _attachment(document: CandidateDocument | None) -> Attachment | None:

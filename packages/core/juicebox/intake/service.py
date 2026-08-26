@@ -384,8 +384,13 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
     call.low_confidence = list(result.low_confidence)
     call.fields_missing = list(state.required_missing)
     call.required_complete = state.required_complete
-    call.review_needed = result.review_needed
-    call.review_reason = result.review_reason[:400]
+    # Appended, not assigned: ``coverage_snapshot`` writes onto this same row
+    # *during* the call -- a degraded gate, a core-mode trim that left required
+    # fields unasked -- and a plain assignment here deletes both the moment the
+    # call ends cleanly. Those notes are the whole reason "how often does this
+    # happen?" is a query rather than a guess.
+    call.review_needed = call.review_needed or result.review_needed
+    call.review_reason = _join_reasons(call.review_reason, result.review_reason)
     call.status = STATUS_EXTRACTED
 
     record_contact(call, result)

@@ -12,6 +12,9 @@ Modes:
   --offline     score with the spend-free heuristic (explicit; model=offline-heuristic)
   (default)     fan out requests, parse, upsert into archetype_scores
   --stale-only  only rescore rows whose rubric_hash no longer matches
+
+Every mode that spends is additionally bounded by FORAY_LINKEDIN_SCORE_CAP, a
+run-wide ceiling on LinkedIn-evidence calls (see _linkedin_capped).
 """
 
 from __future__ import annotations
@@ -145,6 +148,41 @@ async def run_openrouter(
 # ------------------------------------------------------------------- sample --
 
 
+def _linkedin_capped(
+    plan: list[tuple[Archetype, list[Any]]], cap: int
+) -> tuple[list[tuple[Archetype, list[Any]]], int]:
+    """Trim LinkedIn-evidence rows to ``cap`` calls across the whole run.
+
+    The cap FORAY_LINKEDIN_SCORE_CAP documents ("the difference between ~$900
+    and ~$10") was defined in config.py and read by nothing -- the gates alone
+    were holding the line. It is enforced here rather than in
+    candidates_to_score because it is a budget for the run, not a predicate on
+    a row: it has to be spent across archetypes in one place, and it has to see
+    what --limit already produced.
+
+    LinkedIn rows are the ones capped because they are the ones there are
+    200,000 of, and their evidence is a profile rather than code -- the least
+    marginal value per call in the pool. GitHub-evidence rows are never
+    trimmed. Returns (plan, dropped).
+    """
+    if cap <= 0:
+        return plan, 0
+    budget = cap
+    dropped = 0
+    trimmed: list[tuple[Archetype, list[Any]]] = []
+    for arch, rows in plan:
+        kept = []
+        for row in rows:
+            if row.get("evidence_kind", "github") == "linkedin":
+                if budget <= 0:
+                    dropped += 1
+                    continue
+                budget -= 1
+            kept.append(row)
+        trimmed.append((arch, kept))
+    return trimmed, dropped
+
+
 def run_sample(arch: Archetype, rows: list[Any], chat: Chat | None = None) -> None:
     completion = OpenRouterChat() if chat is None else chat
     for row in rows:
@@ -180,6 +218,22 @@ async def amain(args: argparse.Namespace) -> int:
             limit = args.sample if args.sample else args.limit
             rows = await candidates_to_score(conn, arch, stale_only=args.stale_only, limit=limit)
             plan.append((arch, rows))
+
+        # Before --max-calls, because it is a ceiling and not an allocation:
+        # trimming first means the proportional split below divides what is
+        # actually payable. --offline is exempt; it spends nothing.
+        if not args.offline:
+            plan, dropped_linkedin = _linkedin_capped(plan, settings.linkedin_score_cap)
+            if dropped_linkedin:
+                log.info(
+                    "score.linkedin_capped",
+                    cap=settings.linkedin_score_cap,
+                    dropped=dropped_linkedin,
+                )
+                print(
+                    f"linkedin cap {settings.linkedin_score_cap}: "
+                    f"{dropped_linkedin} LinkedIn-evidence rows deferred to a later run"
+                )
 
         # --max-calls is a GLOBAL budget across all archetypes (unlike --limit,
         # which is per-archetype and so caps at 15x). Allocate it PROPORTIONALLY

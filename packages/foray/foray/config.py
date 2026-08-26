@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     parse_model: str = Field(
         default="openai/gpt-oss-120b", validation_alias="FORAY_PARSE_MODEL"
     )
+    # Wall-clock budget for the query-parse call, which runs on the request
+    # path with a human waiting. It is also the blast radius: the parse is a
+    # blocking client offloaded to a thread, so this is how long a search may
+    # hold its pooled connection before degrading to heuristic_parse.
+    parse_timeout_s: float = Field(
+        default=8.0, ge=0.5, le=60.0, validation_alias="FORAY_PARSE_TIMEOUT_S"
+    )
     scoring_concurrency: int = Field(default=10, validation_alias="FORAY_SCORING_CONCURRENCY")
     scoring_usd_per_call: float = Field(
         default=0.0003, validation_alias="FORAY_SCORING_USD_PER_CALL"
@@ -72,7 +79,9 @@ class Settings(BaseSettings):
     nightly_budget_min: int = Field(default=450, validation_alias="FORAY_NIGHTLY_BUDGET_MIN")
     # Hard ceiling on LLM calls spent scoring LinkedIn-evidence rows in one
     # run. Ungated, 200k rows x 15 archetypes would be ~$900; this plus the
-    # gates is the difference between that and ~$10.
+    # gates is the difference between that and ~$10. Enforced in
+    # score/run.py::_linkedin_capped -- for its first year it was documented
+    # here and read nowhere, so the gates were carrying it alone.
     linkedin_score_cap: int = Field(
         default=30_000, validation_alias="FORAY_LINKEDIN_SCORE_CAP"
     )
@@ -168,6 +177,14 @@ class Settings(BaseSettings):
     )
     rerank_failure_threshold: int = Field(
         default=3, ge=1, le=20, validation_alias="FORAY_RERANK_FAILURE_THRESHOLD"
+    )
+    # How long an open breaker stays open before one request is allowed to
+    # probe. Without it the breaker is a one-way switch: the early return
+    # happens before any inference, so the success that would close it can
+    # never occur, and three timeouts during a load spike mean un-reranked
+    # results until someone restarts the container.
+    rerank_breaker_cooldown_s: float = Field(
+        default=30.0, ge=0.0, le=3600.0, validation_alias="FORAY_RERANK_BREAKER_COOLDOWN_S"
     )
     rerank_warmup: bool = Field(default=True, validation_alias="FORAY_RERANK_WARMUP")
 

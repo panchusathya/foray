@@ -243,13 +243,23 @@ export function ContactsPage() {
   const [adding, setAdding] = useState(false);
   const lastIndex = useRef(null);
 
+  // The params as they are now, not as they were in the render that scheduled
+  // a write. The search debounce fires 300ms late; rebuilding from its own
+  // render's snapshot silently reverted anything clicked inside that window --
+  // type "acme", hit a sort header, and the sort vanished again.
+  const liveParams = useRef(searchParams);
+  useEffect(() => {
+    liveParams.current = searchParams;
+  }, [searchParams]);
+
   function patchParams(changes, { resetPage = true } = {}) {
-    const next = new URLSearchParams(searchParams);
+    const next = new URLSearchParams(liveParams.current);
     for (const [key, value] of Object.entries(changes)) {
       if (value === null || value === '') next.delete(key);
       else next.set(key, String(value));
     }
     if (resetPage) next.delete('page');
+    liveParams.current = next;
     setSearchParams(next);
   }
 

@@ -11,6 +11,7 @@ from ..models import Job, JobPosting, utcnow
 from .fees import fee_signals
 from .ids import spec_version_for
 from .referrals import warm_paths
+from .scrape import LOCATION_MAX, TITLE_MAX
 from .spec import job_spec
 
 logger = logging.getLogger(__name__)
@@ -64,12 +65,15 @@ def resolve_identity(posting: JobPosting) -> str:
     title = str(data.get("title") or "").strip()
     company = str(data.get("company") or "").strip()
     location = str(data.get("location") or "").strip()
+    # The scrape path's limits, not ad-hoc ones: title[:300] into a String(240)
+    # is rejected outright by Postgres, so a model echoing a long page heading
+    # failed the whole jobs.parse job and the posting never left pending_parse.
     if title and (not posting.title or _is_site_furniture(posting.title)):
-        posting.title = title[:300]
+        posting.title = title[:TITLE_MAX].rstrip()
     if company and not (posting.company or "").strip():
-        posting.company = company[:200]
+        posting.company = company[:TITLE_MAX].rstrip()
     if location and not (posting.location or "").strip():
-        posting.location = location[:200]
+        posting.location = location[:LOCATION_MAX].rstrip()
     return ""
 
 

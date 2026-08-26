@@ -95,13 +95,17 @@ export function BulkBar({
 
   function enrol() {
     if (!sequenceId) return;
-    // Same wording as the sequence editor's enrol panel, so the two surfaces
-    // do not describe the same outcome differently.
+    // Same wording as the sequence editor's enrol panel and Sourcing, so the
+    // three surfaces do not describe the same outcome differently. Not "they
+    // wait until one is found": send_step stops such an enrollment
+    // permanently, and nothing re-arms it once the address turns up.
     const withoutEmail = rows.filter((row) => !(row.emails ?? []).length);
     if (selectionIsIdsOnly || withoutEmail.length) {
       const detail = selectionIsIdsOnly
-        ? 'Some of these may have no email yet.'
-        : `${withoutEmail.length} of ${count} have no email yet — they wait until one is found.`;
+        ? 'Any with no email stop on the first send, permanently — find their addresses on '
+          + 'Sourcing first.'
+        : `${withoutEmail.length} of ${count} have no email — enrolling them stops on the first `
+          + 'send, permanently. Find their addresses on Sourcing first.';
       if (!window.confirm(`Enrol ${count} ${count === 1 ? 'person' : 'people'}? ${detail}`)) {
         return;
       }

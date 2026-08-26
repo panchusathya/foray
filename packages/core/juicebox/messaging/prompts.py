@@ -394,9 +394,16 @@ APPLY_ACK = (
     "I'll text you when it's ready to review."
 )
 
+# Names the budget that actually fires here. `create_application` refuses a
+# tapback for exactly one reachable reason -- the per-company cap in
+# `applications.limits.may_create_application`, two applications to one company
+# in thirty days. The copy used to say "this week's application limit", which
+# is the weekly *submission* cap: a different rule, a different number, and an
+# answer that sends somebody looking for a limit they have not hit.
 APPLY_PARKED = (
-    "I've noted you want {title} at {company}. You're at this week's "
-    "application limit, so I'll queue it and check back with you."
+    "I've noted you want {title} at {company}. You already have applications in "
+    "with them this month, so I'm holding this one rather than have them see you "
+    "twice — I'll come back to you on it."
 )
 
 # Proactive notifications: canned, never model-written. Nothing to reply to

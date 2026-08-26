@@ -113,6 +113,18 @@ def create_sequence(
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> SequenceOut:
+    # Same check update_sequence and enroll make: the FK only asks that the
+    # project row exist, so an id from another org would be pinned here and
+    # then read back out through /preview, which renders that org's role_title,
+    # project_name and location.
+    if payload.project_id is not None:
+        project = db.scalar(
+            select(Project).where(
+                Project.id == payload.project_id, Project.org_id == principal.org_id
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     if payload.mailbox_id:
         mailbox = db.get(MailboxConnection, payload.mailbox_id)
         if mailbox is None or mailbox.org_id != principal.org_id:

@@ -22,16 +22,36 @@ export function initialDeck(cards = []) {
   };
 }
 
+// A card is spoken for once its swipe has settled, and while its request is
+// still going. Both matter for the rewind below: a failure rewinds the index
+// over cards that were swiped after it, and re-presenting those would post a
+// second swipe for an application already being written.
+function spokenFor(state, card) {
+  return card.posting_id in state.answered || card.posting_id in state.pending;
+}
+
+// The index is a floor, not the answer: `failed` moves it back over cards that
+// may already be settled, so walk forward to the first one still open.
+function activeIndex(state) {
+  let index = state.index;
+  while (index < state.cards.length && spokenFor(state, state.cards[index])) index += 1;
+  return index;
+}
+
 export function currentCard(state) {
-  return state.cards[state.index] || null;
+  return state.cards[activeIndex(state)] || null;
 }
 
 export function upcoming(state, count = 2) {
-  return state.cards.slice(state.index + 1, state.index + 1 + count);
+  const ahead = [];
+  for (let i = activeIndex(state) + 1; i < state.cards.length && ahead.length < count; i += 1) {
+    if (!spokenFor(state, state.cards[i])) ahead.push(state.cards[i]);
+  }
+  return ahead;
 }
 
 export function isExhausted(state) {
-  return state.index >= state.cards.length;
+  return activeIndex(state) >= state.cards.length;
 }
 
 export function deckReducer(state, action) {
@@ -40,13 +60,14 @@ export function deckReducer(state, action) {
       return initialDeck(action.cards);
 
     case 'swipe': {
-      const card = currentCard(state);
+      const at = activeIndex(state);
+      const card = state.cards[at];
       if (!card) return state;
       // Advancing before the server answers is what makes the deck feel
       // native; `pending` is how a failure finds its way back to the card.
       return {
         ...state,
-        index: state.index + 1,
+        index: at + 1,
         pending: { ...state.pending, [card.posting_id]: action.direction },
       };
     }
@@ -67,6 +88,11 @@ export function deckReducer(state, action) {
       // The swipe did not land. Put the card back where it was rather than
       // pretending it was answered -- a silently dropped "apply" is the worst
       // outcome this screen can produce.
+      //
+      // Only this card comes back: the index rewinds over everything swiped
+      // after it, but currentCard skips whatever has already settled or is
+      // still in flight, so a failure on the first of three quick swipes does
+      // not re-present the two whose applications are already being written.
       const pending = { ...state.pending };
       delete pending[action.postingId];
       const position = state.cards.findIndex((card) => card.posting_id === action.postingId);

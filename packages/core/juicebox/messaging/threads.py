@@ -38,9 +38,44 @@ STATUS_ACTIVE = "active"
 STATUS_COMPLETE = "complete"
 STATUS_STOPPED = "stopped"
 
+# ``IntakeMessage.status`` on an outbound row carries two different facts, and
+# conflating them is what made delivery receipts erase our own questions from
+# the transcript:
+#
+# * **Did we hand it to the carrier?** ``sent`` at write time, ``failed`` when
+#   the channel refused or threw. This is the fact every reader actually wants
+#   -- it decides whether the message is part of the conversation, whether the
+#   intro has already gone out, and whether a nudge was spent.
+# * **What did the carrier do next?** ``apply_status_event`` rewrites the same
+#   column to ``delivered`` / ``read`` when Linq's receipts arrive, and the
+#   deployment subscribes to exactly those events. Nothing ever restores
+#   ``sent``.
+#
+# So ``status == "sent"`` is never the right test: it is true for a few seconds
+# and then false forever. Ask ``was_handed_off`` (or the frozenset, in a SQL
+# ``in_``) instead.
+MSG_SENT = "sent"
+MSG_DELIVERED = "delivered"
+MSG_READ = "read"
+MSG_FAILED = "failed"
+
+#: The statuses that mean the carrier took it. A receipt only ever moves a row
+#: further along this list, never back out of it.
+HANDED_OFF = frozenset({MSG_SENT, MSG_DELIVERED, MSG_READ})
+
 # How the transcript labels each side. Matches the voice fixtures exactly, so
 # the extractor sees the shape its heuristics and its prompt were written for.
 _SPEAKER = {INBOUND: "Candidate", OUTBOUND: "Agent"}
+
+
+def was_handed_off(message: IntakeMessage) -> bool:
+    """Did the channel accept this outbound message?
+
+    True for ``sent`` and for every later receipt state. An inbound row is
+    never handed off by us -- it arrived -- so callers ask this about outbound
+    rows only.
+    """
+    return (message.status or "") in HANDED_OFF
 
 
 def open_thread(
@@ -104,13 +139,24 @@ def open_thread(
     return thread
 
 
-def find_active_thread(db: Session, *, channel: str, from_address: str) -> IntakeThread | None:
-    """The open conversation for this sender on this channel, if any."""
+def find_active_thread(
+    db: Session, *, org_id: str, channel: str, from_address: str
+) -> IntakeThread | None:
+    """The open conversation for this sender on this channel *at this org*.
+
+    ``org_id`` is not optional, and that is the whole point. Two agencies each
+    claim their own Linq number; a candidate with an active thread at org A who
+    texts org B's number missed the provider-thread lookup and landed back in
+    A's thread. The message was written under A, the reply was composed from
+    A's transcript and delivered on B's line, and B's recruiters never saw
+    that anybody had texted them.
+    """
     if not from_address:
         return None
     return db.scalar(
         select(IntakeThread)
         .where(
+            IntakeThread.org_id == org_id,
             IntakeThread.channel == channel,
             IntakeThread.from_address == from_address,
             IntakeThread.status == STATUS_ACTIVE,
@@ -290,8 +336,12 @@ def record_outbound(
     for (``proactive``), a nudge (``nudge``), and protocol traffic
     (``system``): the nudge budget in ``cadence.py`` counts nudge rows — and
     only those — so what the budget charges for is exactly what was sent.
+
+    ``status`` here is the handoff fact: ``sent`` or ``failed``. Receipts
+    overwrite it later with ``delivered`` / ``read``, which is why readers use
+    ``was_handed_off`` rather than comparing against ``sent``.
     """
-    sent = result.status == "sent"
+    sent = result.status == MSG_SENT
     row = _insert_with_seq(
         db,
         thread,
@@ -339,6 +389,12 @@ def apply_status_event(
     ``read`` implies ``delivered``. Timestamps are only set, never cleared, so
     a delayed ``message.delivered`` after ``message.read`` is a no-op on
     ``read_at`` and fills ``delivered_at`` if it was missing.
+
+    **This is the writer that moves ``status`` past ``sent``.** Nothing puts it
+    back, so a reader asking "did this go out?" must ask ``was_handed_off`` --
+    comparing against ``sent`` means the answer flips to no the moment a
+    receipt lands, which erased our own questions from the transcript and
+    re-sent the LinkedIn intro on every reply.
     """
     if not provider_native_id:
         return None
@@ -354,15 +410,15 @@ def apply_status_event(
         if row.delivered_at is None:
             row.delivered_at = read_at
     if event_type == "message.failed":
-        row.status = "failed"
+        row.status = MSG_FAILED
         if error:
             row.error = error[:400]
     elif event_type == "message.read":
-        if row.status != "failed":
-            row.status = "read"
+        if row.status != MSG_FAILED:
+            row.status = MSG_READ
     elif event_type == "message.delivered":
-        if row.status not in {"read", "failed"}:
-            row.status = "delivered"
+        if row.status not in {MSG_READ, MSG_FAILED}:
+            row.status = MSG_DELIVERED
     db.flush()
     return row
 
@@ -385,9 +441,12 @@ def transcript_of(db: Session, thread: IntakeThread, *, candidate_only: bool = F
     just a slower transcript, and rendering it as one is what lets the
     extractor be reused rather than reimplemented.
 
-    Undelivered outbound messages are left out: the candidate never saw them,
-    so treating them as part of the conversation would have the extractor read
-    an answer as a response to a question that was never asked.
+    Outbound messages the channel never accepted are left out: the candidate
+    never saw them, so treating them as part of the conversation would have the
+    extractor read an answer as a response to a question that was never asked.
+    ``was_handed_off``, not ``status == "sent"`` -- a delivery receipt used to
+    drop the question out of the transcript underneath its own answer, leaving
+    the extractor a bare ``Candidate: 260`` with nothing to bind it to.
 
     ``candidate_only`` drops our side entirely, and exists for the heuristic
     extractor. The model needs the questions to know what an answer refers to;
@@ -397,7 +456,7 @@ def transcript_of(db: Session, thread: IntakeThread, *, candidate_only: bool = F
     """
     lines: list[str] = []
     for message in messages_of(db, thread):
-        if message.direction == OUTBOUND and (candidate_only or message.status != "sent"):
+        if message.direction == OUTBOUND and (candidate_only or not was_handed_off(message)):
             continue
         body = (message.body or "").strip()
         if not body:

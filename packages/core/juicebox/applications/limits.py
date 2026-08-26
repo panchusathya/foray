@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -123,7 +123,19 @@ def may_submit(
     db: Session, *, application: Application, now: datetime | None = None
 ) -> LimitDecision:
     """Five submissions per rolling week. Above that we are not representing
-    somebody, we are spraying."""
+    somebody, we are spraying.
+
+    An application already in flight spends the budget too. Counting only
+    ``submitted_at`` made everything in `submitting` -- queued, running, or
+    parked on a portal's verification mail -- invisible here, which defeats the
+    guarantee ``state.transition`` is written for: an in-flight run would pass
+    the gate on the way in, five others would fill the week while it waited,
+    and the move to `submitted` would then be refused *after* the employer
+    already had the application.
+
+    The application being decided never counts itself, or the second half of
+    that same round trip would refuse the pursuit its own in-flight row.
+    """
     now = now or utcnow()
     since = now - timedelta(days=7)
     count = (
@@ -133,7 +145,14 @@ def may_submit(
             .where(
                 Application.org_id == application.org_id,
                 Application.candidate_id == application.candidate_id,
-                Application.submitted_at >= since,
+                Application.id != application.id,
+                or_(
+                    Application.submitted_at >= since,
+                    and_(
+                        Application.status == "submitting",
+                        Application.submitting_at >= since,
+                    ),
+                ),
             )
         )
         or 0

@@ -36,11 +36,18 @@ function readBody(request) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let over = false;
     request.on('data', (chunk) => {
+      if (over) return;
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
+        over = true;
+        // Stop collecting, but do NOT destroy the request: that takes the
+        // socket down with the 413 still unwritten, and the caller gets an
+        // ECONNRESET it cannot tell apart from the service being down. The
+        // handler answers first, then drains (see drainRefused).
+        request.pause();
         reject(new Error('payload too large'));
-        request.destroy();
         return;
       }
       chunks.push(chunk);
@@ -48,6 +55,23 @@ function readBody(request) {
     request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     request.on('error', reject);
   });
+}
+
+// Throw away the rest of a body we have refused, rather than closing on the
+// client mid-upload. Any close while it is still sending -- destroy(), or the
+// destroySoon() Node does for us if the response says Connection: close --
+// arrives as an RST, and an RST makes the peer discard everything it has not
+// read yet, the 413 included. Draining costs nothing (the chunks are dropped,
+// not buffered) and lets the request end normally, which is what gets the
+// status code delivered. Bounded, so a client that ignores the answer and
+// keeps streaming is still hung up on eventually.
+function drainRefused(request, limit) {
+  let dropped = 0;
+  request.on('data', (chunk) => {
+    dropped += chunk.length;
+    if (dropped > limit) request.destroy();
+  });
+  request.resume();
 }
 
 function json(response, status, payload) {
@@ -74,7 +98,13 @@ export function createIngestServer() {
     try {
       rawBody = await readBody(request);
     } catch (error) {
+      // Answer first, then stop consuming. Destroying the request the moment
+      // the limit was hit took the socket down with the 413 still unwritten,
+      // and the partner ATS saw ECONNRESET -- indistinguishable from the
+      // service being down, so its retry re-posted the same oversize body
+      // forever instead of surfacing the size limit.
       json(response, 413, { error: error.message });
+      drainRefused(request, MAX_BODY_BYTES);
       return;
     }
 

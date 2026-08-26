@@ -10,10 +10,16 @@ Sources, in confidence order (see UPSERT: an address is never downgraded):
                    here). 75 needs author-name/login attribution, 55 needs the
                    same address across >=2 pushes.
   apollo_work / apollo_personal (85/70) -- captured by enrich.apollo (PR 2).
-  linkedin (80) -- a business address found in a Bright Data export's free
-                   text (rare: ~0.2% of records). Below apollo_work because a
-                   scraped self-declared address is weaker than a verified
-                   work record; above commit because it is self-published.
+  linkedin (65) -- a business address found in a Bright Data export's free
+                   text (rare: ~0.2% of records). It sat at 80 -- above commit
+                   and above every vendor source -- on the reasoning that a
+                   self-published address beats an assertion. What is
+                   self-published is the About section; what we store is
+                   whatever a regex found in it, which is as likely to be an
+                   employer's careers inbox as the person's own. Since
+                   UPSERT_EMAIL only replaces `source` on a strict confidence
+                   improvement, 80 meant no later real source could ever
+                   displace it. See ingest/linkedin_file.py.
   contactout_personal (72) -- a consumer address from ContactOut, which is
                    specialised for them and measured a 70% hit rate against
                    Apollo's 10% on the same ten candidates. Above
@@ -228,12 +234,21 @@ async def mine_commit_emails(
     semaphore = asyncio.Semaphore(max(1, concurrency))
     stored = 0
     checked = 0
+    unqueryable = 0
 
     async def fetch_one(client: httpx.AsyncClient, row) -> tuple:
         async with semaphore:
             top = row["top_repos"]
             top = _json.loads(top) if isinstance(top, str) else (top or [])
             repos = [r.get("name") for r in top if r.get("name")][:repos_per_candidate]
+            if not repos:
+                # No repos to mine, so no call was made and there is nothing to
+                # cache. `found = {}` here would be indistinguishable from "we
+                # asked and there was nothing", which stamps the 180-day cursor
+                # and hides the candidate for six months -- including from the
+                # run right after enrich.profiles finally lands their repos.
+                # Same class as the GitHub-429 stamp below; None says so.
+                return row, None, None
             found: dict[str, int] = {}
             try:
                 for repo in repos:
@@ -246,8 +261,11 @@ async def mine_commit_emails(
             except Exception as exc:  # noqa: BLE001 - recorded per-row, never fatal
                 return row, {}, exc
 
-    async def _persist(row, found: dict, exc) -> None:
-        nonlocal checked, stored
+    async def _persist(row, found: dict | None, exc) -> None:
+        nonlocal checked, stored, unqueryable
+        if found is None and exc is None:
+            unqueryable += 1
+            return
         checked += 1
         if exc is not None:
             await conn.execute(
@@ -261,7 +279,7 @@ async def mine_commit_emails(
             # timeout is not "we checked, nothing there", and the 180-day
             # cursor would skip this person until it expired.
             return
-        for email, occurrences in found.items():
+        for email, occurrences in (found or {}).items():
             await conn.execute(
                 UPSERT_EMAIL,
                 row["id"],
@@ -287,7 +305,9 @@ async def mine_commit_emails(
             "User-Agent": "foray-enricher",
         },
     ) as client:
-        with Heartbeat(log, lambda: {"checked": checked, "stored": stored}):
+        with Heartbeat(
+            log, lambda: {"checked": checked, "stored": stored, "no_repos": unqueryable}
+        ):
             # Network fans out (semaphore-bounded); writes happen on this one
             # connection as each fetch completes, so a deadline kill keeps all
             # progress up to that point instead of losing the whole batch.
@@ -296,8 +316,11 @@ async def mine_commit_emails(
                 row, found, exc = await coro
                 await _persist(row, found, exc)
 
-    log.info("commit_mining.done", checked=checked, stored=stored)
-    print(f"commit mining: checked {checked} candidates, stored {stored} addresses")
+    log.info("commit_mining.done", checked=checked, stored=stored, no_repos=unqueryable)
+    print(
+        f"commit mining: checked {checked} candidates, stored {stored} addresses, "
+        f"{unqueryable} skipped with no repos yet"
+    )
     return stored
 
 

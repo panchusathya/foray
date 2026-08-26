@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..deps import CommittingRoute, Principal, get_db, get_principal
+from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
 from ..models import ApiKey, Org, User
 from ..schemas import ApiKeyOut, LoginRequest, SignupRequest, TokenResponse, UserOut
 from ..security import (
@@ -101,9 +101,15 @@ def me(
 @router.post("/api-keys", response_model=ApiKeyOut, status_code=status.HTTP_201_CREATED)
 def create_api_key(
     name: str = "default",
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> ApiKeyOut:
+    """Mint an org-scoped key. Write permission, because the key IS one.
+
+    A key authenticates as role "service", which can_write, so a viewer
+    allowed through here would hand itself permanent write access to the whole
+    org — and one that carries no user id, so nothing it does has an actor.
+    """
     raw, key_hash, prefix = generate_api_key()
     record = ApiKey(org_id=principal.org_id, name=name, key_hash=key_hash, prefix=prefix)
     db.add(record)
@@ -130,9 +136,11 @@ def list_api_keys(
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 def revoke_api_key(
     key_id: str,
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> None:
+    """Revoking is a mutation, and cutting the org's integrations off is one a
+    read-only principal has no business making."""
     record = db.get(ApiKey, key_id)
     if record is None or record.org_id != principal.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")

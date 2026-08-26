@@ -342,6 +342,42 @@ def handle(
     return outcome
 
 
+#: The ATS vendors' own mail and form domains. A sender here is the vendor's
+#: robot, and the vendor is the same robot for every employer on it -- so its
+#: domain says nothing about *which* pursuit the mail concerns, and matching on
+#: it would file Acme's rejection against Beta.
+#:
+#: Deliberately the vendor-operated hosts only. ``oracle.com`` and
+#: ``workday.com`` are missing because those are employers in their own right,
+#: and an application to one of them must still match on its own domain; their
+#: ATS mail leaves from ``oraclecloud.com`` and ``myworkday.com``.
+_ATS_VENDOR_DOMAINS = {
+    "greenhouse.io": "greenhouse",
+    "greenhouse-mail.io": "greenhouse",
+    "ashbyhq.com": "ashby",
+    "lever.co": "lever",
+    "smartrecruiters.com": "smartrecruiters",
+    "myworkday.com": "workday",
+    "myworkdayjobs.com": "workday",
+    "myworkdaysite.com": "workday",
+    "oraclecloud.com": "oracle",
+    "icims.com": "icims",
+    "taleo.net": "taleo",
+    "jobvite.com": "jobvite",
+    "bamboohr.com": "bamboohr",
+    "workable.com": "workable",
+    "workablemail.com": "workable",
+}
+
+
+def _vendor_of(domain: str) -> str:
+    """The ATS vendor this sender belongs to, or empty for an employer's own."""
+    for vendor_domain, vendor in _ATS_VENDOR_DOMAINS.items():
+        if domain == vendor_domain or domain.endswith("." + vendor_domain):
+            return vendor
+    return ""
+
+
 def _match_application(
     db: Session, candidate: Candidate, *, from_address: str
 ) -> Application | None:
@@ -351,6 +387,14 @@ def _match_application(
     only signal in an ATS email we can trust -- the subject line is the
     requisition title if we are lucky. When it does not match, we do not guess:
     a wrong match moves the wrong application to rejected.
+
+    The domain has to be the *employer's*. An apply URL's host is the vendor's,
+    so ``no-reply@ashbyhq.com`` used to match every Ashby pursuit this
+    candidate had and the newest one won -- Acme's rejection closing out Beta,
+    with the pipeline stage moved and the candidate told a company that never
+    rejected them had. A vendor sender narrows to that vendor's pursuits and
+    answers only when exactly one is open, which is the same "unambiguous, so
+    not a guess" rule the fallback below already uses.
     """
     domain = (from_address or "").rpartition("@")[2].strip().lower()
     if not domain:
@@ -363,9 +407,15 @@ def _match_application(
         )
         .order_by(Application.updated_at.desc())
     ).all()
+    vendor = _vendor_of(domain)
+    at_this_vendor: list[Application] = []
     for application in rows:
         posting = db.get(JobPosting, application.job_posting_id)
         if posting is None:
+            continue
+        if vendor:
+            if (posting.ats_vendor or "").lower() == vendor:
+                at_this_vendor.append(application)
             continue
         haystack = " ".join(
             part.lower()
@@ -381,6 +431,8 @@ def _match_application(
         stem = domain.split(".")[0]
         if domain in haystack or (len(stem) > 3 and stem in haystack):
             return application
+    if len(at_this_vendor) == 1:
+        return at_this_vendor[0]
     # Exactly one open pursuit is not ambiguous, whoever the sender is.
     return rows[0] if len(rows) == 1 else None
 

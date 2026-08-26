@@ -123,6 +123,67 @@ class TestResolution:
         assert connection.daily_send_cap == 0
 
 
+class TestGlobalSenderGuard:
+    """`get_sender()` cannot build a mailbox sender, and must not pretend to.
+
+    Falling through to console here is the dangerous default: the deployment
+    is configured for real delivery, ConsoleSender reports every send as a
+    success, and `EmailSubmitter` reads that success as "the employer has it".
+    """
+
+    def test_refuses_instead_of_falling_back_to_console(self, monkeypatch):
+        monkeypatch.setenv("EMAIL_PROVIDER", "mailbox")
+        reset_settings_cache()
+        sender_mod.set_sender(None)
+        try:
+            resolved = sender_mod.get_sender()
+            assert isinstance(resolved, sender_mod.FailingSender)
+            assert "sender_for_org" in resolved.reason
+            assert resolved.send(_probe_email()).ok is False
+        finally:
+            sender_mod.set_sender(None)
+            monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
+            reset_settings_cache()
+
+    def test_an_email_submitter_cannot_report_success(self, monkeypatch):
+        """The specific regression: console returns ok=True having only logged,
+        which marks an application submitted with nothing sent."""
+        monkeypatch.setenv("EMAIL_PROVIDER", "mailbox")
+        reset_settings_cache()
+        sender_mod.set_sender(None)
+        try:
+            sender = sender_mod.get_sender()
+            assert not hasattr(sender, "send_with_attachments")
+            assert sender.send(_probe_email()).ok is False
+        finally:
+            sender_mod.set_sender(None)
+            monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
+            reset_settings_cache()
+
+    def test_other_providers_are_untouched(self, monkeypatch):
+        monkeypatch.setenv("EMAIL_PROVIDER", "console")
+        reset_settings_cache()
+        sender_mod.set_sender(None)
+        try:
+            assert isinstance(sender_mod.get_sender(), sender_mod.ConsoleSender)
+        finally:
+            sender_mod.set_sender(None)
+            monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
+            reset_settings_cache()
+
+
+def _probe_email():
+    from juicebox.outreach.sender import OutboundEmail
+
+    return OutboundEmail(
+        to="x@example.com",
+        subject="s",
+        text_body="b",
+        html_body="",
+        from_email="anna@goforay.io",
+    )
+
+
 class TestZohoFromAddress:
     """Zoho sends as the connected mailbox and nothing else."""
 

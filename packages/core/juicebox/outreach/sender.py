@@ -2,6 +2,11 @@
 
 ``console`` is the default so nothing leaves the machine during development;
 ``memory`` is what tests assert against; ``smtp`` is real delivery.
+
+``mailbox`` is real delivery through a connected mailbox's own HTTPS API, for
+hosts that block outbound SMTP. It is the one provider ``get_sender()`` cannot
+build, because choosing the connection needs a session and an org -- see
+``sender_for_org``.
 """
 
 from __future__ import annotations
@@ -178,6 +183,21 @@ def get_sender() -> EmailSender:
             )
         elif provider == "memory":
             _sender = MemorySender()
+        elif provider == "mailbox":
+            # `mailbox` cannot be served here: picking the connection needs a
+            # session and an org, which this function has neither of. Falling
+            # through to console would be the worst of both -- the deployment
+            # is configured for real delivery, and the caller would be handed
+            # a sender that reports every send as a success having only
+            # logged it. `EmailSubmitter` does exactly that and would mark an
+            # application submitted with nothing sent.
+            logger.error(
+                "EMAIL_PROVIDER=mailbox reached get_sender(); this caller needs "
+                "sender_for_org(db, org_id). Refusing rather than sending to the log."
+            )
+            _sender = FailingSender(
+                "EMAIL_PROVIDER=mailbox needs a session; this path must use sender_for_org()"
+            )
         else:
             _sender = ConsoleSender()
     return _sender

@@ -14,12 +14,25 @@ student or brand-new graduate — still in school, or under ~18 months of
 history — in which case education leads, the convention every campus career
 center teaches. A leadership section appears exactly when the data has one
 and takes whatever room its entries need.
+
+Section order is not the only thing that flexes. **The page setting does too.**
+A resume is read as a one-page document, so one fixed type size and one fixed
+set of gaps is the wrong choice at both ends: a three-role career printed at
+the density a fifteen-role career needs leaves four inches of white below the
+last line and reads as an unfinished draft, and a long history printed at the
+density a short one wants spills two orphaned lines onto a second page nobody
+wanted. ``_LADDER`` runs tight to airy — margins, type size, leading and gaps
+moving together the way a typesetter moves them — and ``render_resume_pdf``
+draws at the airiest setting that still lands inside the page budget. Filling
+the page is a typographic decision taken over the same facts; nothing is added
+or dropped to change the length.
 """
 
 from __future__ import annotations
 
 import io
 import re
+from dataclasses import dataclass
 from datetime import date
 from xml.sax.saxutils import escape as _xml_escape
 from xml.sax.saxutils import quoteattr
@@ -45,37 +58,135 @@ _MARGIN = 0.50 * inch
 # to it, so using the raw margin width made every two-column row hang 6pt past
 # the section rules on both sides.
 _FRAME_PADDING = 12
-_CONTENT_WIDTH = LETTER[0] - 2 * _MARGIN - _FRAME_PADDING
 
-_NAME = ParagraphStyle(
-    "name", fontName="Times-Bold", fontSize=16, leading=19, alignment=TA_CENTER
+
+@dataclass(frozen=True)
+class _Layout:
+    """One setting of the page, described the way a typesetter would.
+
+    ``margin`` is in points; the other three are multipliers on the reference
+    resume's type sizes, leading and gaps. Wider margins fill a page as much
+    as larger type does — they shorten the column, so the same words wrap to
+    more lines *and* have less height to cover.
+    """
+
+    margin: float
+    type: float
+    lead: float
+    gap: float
+
+    @property
+    def content_width(self) -> float:
+        return LETTER[0] - 2 * self.margin - _FRAME_PADDING
+
+
+# Tight to airy. The tight end is a real finance resume — 9pt with the gaps
+# closed up, which is how a fifteen-year history gets set by hand; the airy
+# end is 11pt on generous margins, which is how a two-internship resume gets
+# set by hand. Neither end is a page nobody would print.
+_LADDER: tuple[_Layout, ...] = (
+    _Layout(margin=0.50 * inch, type=0.90, lead=0.98, gap=0.55),
+    _Layout(margin=0.50 * inch, type=0.94, lead=1.00, gap=0.72),
+    _Layout(margin=0.50 * inch, type=0.97, lead=1.00, gap=0.86),
+    _Layout(margin=0.50 * inch, type=1.00, lead=1.00, gap=1.00),
+    _Layout(margin=0.60 * inch, type=1.00, lead=1.04, gap=1.20),
+    _Layout(margin=0.70 * inch, type=1.02, lead=1.08, gap=1.45),
+    _Layout(margin=0.80 * inch, type=1.05, lead=1.12, gap=1.75),
+    _Layout(margin=0.90 * inch, type=1.08, lead=1.16, gap=2.10),
+    _Layout(margin=1.00 * inch, type=1.10, lead=1.20, gap=2.50),
 )
-_CONTACT = ParagraphStyle(
-    "contact",
-    fontName="Times-Roman",
-    fontSize=9,
-    leading=11,
-    textColor="#000000",
-    alignment=TA_CENTER,
-)
-_HEADING = ParagraphStyle(
-    "heading", fontName="Times-Bold", fontSize=10, leading=13, spaceBefore=9, spaceAfter=2
-)
-_ROLE = ParagraphStyle("role", fontName="Times-Bold", fontSize=10, leading=12, alignment=TA_LEFT)
-_ROLE_R = ParagraphStyle("role_r", parent=_ROLE, alignment=TA_RIGHT)
-_TITLE = ParagraphStyle(
-    "title", fontName="Times-Italic", fontSize=10, leading=12, alignment=TA_LEFT
-)
-_DATES = ParagraphStyle(
-    "dates",
-    fontName="Times-Italic",
-    fontSize=9,
-    leading=12,
-    textColor="#000000",
-    alignment=TA_RIGHT,
-)
-_BODY = ParagraphStyle("body", fontName="Times-Roman", fontSize=10, leading=12)
-_BULLET = ParagraphStyle("bullet", parent=_BODY, leftIndent=0)
+# The setting the rest of this module is described in terms of: multipliers of
+# 1.0 on the original margin, so `_REFERENCE_STYLES` is the resume exactly as
+# it was drawn before the ladder existed.
+_REFERENCE = _LADDER[3]
+_CONTENT_WIDTH = _REFERENCE.content_width
+
+
+class _Styles:
+    """Every paragraph style for one ``_Layout``, scaled off the reference."""
+
+    def __init__(self, layout: _Layout) -> None:
+        self.layout = layout
+
+        def size(points: float) -> float:
+            return points * layout.type
+
+        def leading(points: float) -> float:
+            # Leading scales with the type first, then again with `lead`, so a
+            # setting can open the lines up without also enlarging the letters.
+            return points * layout.type * layout.lead
+
+        self.name = ParagraphStyle(
+            "name",
+            fontName="Times-Bold",
+            fontSize=size(16),
+            leading=leading(19),
+            alignment=TA_CENTER,
+        )
+        self.contact = ParagraphStyle(
+            "contact",
+            fontName="Times-Roman",
+            fontSize=size(9),
+            leading=leading(11),
+            textColor="#000000",
+            alignment=TA_CENTER,
+        )
+        self.heading = ParagraphStyle(
+            "heading",
+            fontName="Times-Bold",
+            fontSize=size(10),
+            leading=leading(13),
+            spaceBefore=9 * layout.gap,
+            spaceAfter=2 * layout.gap,
+        )
+        self.role = ParagraphStyle(
+            "role",
+            fontName="Times-Bold",
+            fontSize=size(10),
+            leading=leading(12),
+            alignment=TA_LEFT,
+        )
+        self.role_right = ParagraphStyle("role_r", parent=self.role, alignment=TA_RIGHT)
+        self.title = ParagraphStyle(
+            "title",
+            fontName="Times-Italic",
+            fontSize=size(10),
+            leading=leading(12),
+            alignment=TA_LEFT,
+        )
+        self.dates = ParagraphStyle(
+            "dates",
+            fontName="Times-Italic",
+            fontSize=size(9),
+            leading=leading(12),
+            textColor="#000000",
+            alignment=TA_RIGHT,
+        )
+        self.body = ParagraphStyle(
+            "body", fontName="Times-Roman", fontSize=size(10), leading=leading(12)
+        )
+        self.bullet = ParagraphStyle("bullet", parent=self.body, leftIndent=0)
+
+        self.entry_gap = 5 * layout.gap
+        self.header_gap = 4 * layout.gap
+        self.rule_gap = 4 * layout.gap
+        self.skills_gap = 2 * layout.gap
+        self.bullet_indent = 12 * layout.type
+
+
+_REFERENCE_STYLES = _Styles(_REFERENCE)
+
+# The reference styles under the names the module has always used: the resume
+# as drawn at density 1.0, and the default every helper below falls back to.
+_NAME = _REFERENCE_STYLES.name
+_CONTACT = _REFERENCE_STYLES.contact
+_HEADING = _REFERENCE_STYLES.heading
+_ROLE = _REFERENCE_STYLES.role
+_ROLE_R = _REFERENCE_STYLES.role_right
+_TITLE = _REFERENCE_STYLES.title
+_DATES = _REFERENCE_STYLES.dates
+_BODY = _REFERENCE_STYLES.body
+_BULLET = _REFERENCE_STYLES.bullet
 
 
 def _escape(value: object) -> str:
@@ -92,8 +203,8 @@ def _web_href(value: object) -> str:
     return text if re.match(r"^https?://", text, flags=re.IGNORECASE) else f"https://{text}"
 
 
-def _rule() -> HRFlowable:
-    return HRFlowable(width="100%", thickness=0.6, color="#999999", spaceAfter=4)
+def _rule(styles: _Styles = _REFERENCE_STYLES) -> HRFlowable:
+    return HRFlowable(width="100%", thickness=0.6, color="#999999", spaceAfter=styles.rule_gap)
 
 
 # CRM skills are stored lowercase because the search taxonomy normalizes them
@@ -175,10 +286,12 @@ def _date_span(start: object, end: object) -> str:
     return left or right
 
 
-def _two_columns(left: Paragraph, right: Paragraph) -> Table:
+def _two_columns(
+    left: Paragraph, right: Paragraph, width: float = _CONTENT_WIDTH
+) -> Table:
     table = Table(
         [[left, right]],
-        colWidths=[_CONTENT_WIDTH * 0.64, _CONTENT_WIDTH * 0.36],
+        colWidths=[width * 0.64, width * 0.36],
         style=TableStyle(
             [
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -193,50 +306,63 @@ def _two_columns(left: Paragraph, right: Paragraph) -> Table:
     return table
 
 
-def _bullet_list(bullets: list) -> ListFlowable:
+def _bullet_list(bullets: list, styles: _Styles = _REFERENCE_STYLES) -> ListFlowable:
+    indent = styles.bullet_indent
     return ListFlowable(
-        [ListItem(Paragraph(_escape(b), _BULLET), leftIndent=12) for b in bullets],
+        [ListItem(Paragraph(_escape(b), styles.bullet), leftIndent=indent) for b in bullets],
         bulletType="bullet",
         start="•",
-        leftIndent=12,
+        leftIndent=indent,
     )
 
 
-def _entry_flowables(job: dict) -> list:
+def _entry_flowables(job: dict, styles: _Styles = _REFERENCE_STYLES) -> list:
     """One experience-or-leadership entry: two ruled columns, then bullets."""
-    flows: list = [Spacer(1, 5)]
+    width = styles.layout.content_width
+    flows: list = [Spacer(1, styles.entry_gap)]
     company = _escape(job.get("company"))
     title = _escape(job.get("title"))
     location = _escape(job.get("location"))
     span = _escape(_date_span(job.get("start"), job.get("end")))
     top_left = company or title
     if top_left:
-        flows.append(_two_columns(Paragraph(top_left, _ROLE), Paragraph(location, _ROLE_R)))
+        flows.append(
+            _two_columns(
+                Paragraph(top_left, styles.role),
+                Paragraph(location, styles.role_right),
+                width,
+            )
+        )
     if company and (title or span):
-        flows.append(_two_columns(Paragraph(title, _TITLE), Paragraph(span, _DATES)))
+        flows.append(
+            _two_columns(Paragraph(title, styles.title), Paragraph(span, styles.dates), width)
+        )
     elif span:
-        flows.append(_two_columns(Paragraph("", _TITLE), Paragraph(span, _DATES)))
+        flows.append(
+            _two_columns(Paragraph("", styles.title), Paragraph(span, styles.dates), width)
+        )
     bullets = [b for b in (job.get("bullets") or []) if str(b).strip()]
     if bullets:
-        flows.append(_bullet_list(bullets))
+        flows.append(_bullet_list(bullets, styles))
     return flows
 
 
 _DETAIL_LABEL = re.compile(r"^([A-Za-z][A-Za-z &/]{1,24}):\s*(.+)$")
 
 
-def _labeled_line(text: str) -> Paragraph:
+def _labeled_line(text: str, styles: _Styles = _REFERENCE_STYLES) -> Paragraph:
     """"Honors: Dean's List" with the label bold, as the reference resumes do."""
     matched = _DETAIL_LABEL.match(text.strip())
     if matched:
         return Paragraph(
-            f"<b>{_escape(matched.group(1))}:</b> {_escape(matched.group(2))}", _BODY
+            f"<b>{_escape(matched.group(1))}:</b> {_escape(matched.group(2))}", styles.body
         )
-    return Paragraph(_escape(text), _BODY)
+    return Paragraph(_escape(text), styles.body)
 
 
-def _education_flowables(edu: dict) -> list:
-    flows: list = [Spacer(1, 5)]
+def _education_flowables(edu: dict, styles: _Styles = _REFERENCE_STYLES) -> list:
+    width = styles.layout.content_width
+    flows: list = [Spacer(1, styles.entry_gap)]
     school = _escape(edu.get("school"))
     degree_field = ", ".join(
         x for x in (_escape(edu.get("degree")), _escape(edu.get("field"))) if x
@@ -245,12 +371,18 @@ def _education_flowables(edu: dict) -> list:
         _date_span(str(edu.get("start_year") or ""), str(edu.get("end_year") or ""))
     )
     if school:
-        flows.append(_two_columns(Paragraph(school, _ROLE), Paragraph("", _ROLE_R)))
+        flows.append(
+            _two_columns(Paragraph(school, styles.role), Paragraph("", styles.role_right), width)
+        )
     if degree_field or years:
-        flows.append(_two_columns(Paragraph(degree_field, _TITLE), Paragraph(years, _DATES)))
+        flows.append(
+            _two_columns(
+                Paragraph(degree_field, styles.title), Paragraph(years, styles.dates), width
+            )
+        )
     for line in edu.get("details") or []:
         if str(line).strip():
-            flows.append(_labeled_line(str(line)))
+            flows.append(_labeled_line(str(line), styles))
     return flows
 
 
@@ -309,24 +441,17 @@ def _education_first(structured: dict, today: date) -> bool:
     return span is not None and span < 1.5
 
 
-def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
-    """One resume, letter-size, from a ``resume.v1`` dict."""
-    today = today or date.today()
+def _story(structured: dict, today: date, styles: _Styles) -> list:
+    """The whole resume as fresh flowables, set at one density.
+
+    Fresh on every call on purpose: platypus flowables carry wrap state, so a
+    story cannot be measured at one density and then drawn at another.
+    """
     contact = structured.get("contact") or {}
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=LETTER,
-        leftMargin=_MARGIN,
-        rightMargin=_MARGIN,
-        topMargin=_MARGIN,
-        bottomMargin=_MARGIN,
-        title=f"{contact.get('name') or 'Resume'} - Resume",
-    )
     story: list = []
 
     if contact.get("name"):
-        story.append(Paragraph(_escape(contact["name"]).upper(), _NAME))
+        story.append(Paragraph(_escape(contact["name"]).upper(), styles.name))
     contact_bits: list[str] = []
     if contact.get("phone"):
         contact_bits.append(_escape(contact["phone"]))
@@ -342,8 +467,8 @@ def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
         if contact.get(key):
             contact_bits.append(_escape(contact[key]))
     if contact_bits:
-        story.append(Paragraph(" | ".join(contact_bits), _CONTACT))
-    story.append(Spacer(1, 4))
+        story.append(Paragraph(" | ".join(contact_bits), styles.contact))
+    story.append(Spacer(1, styles.header_gap))
 
     # LinkedIn gives us a headline while an uploaded resume may give a terse
     # but meaningful summary. Preserve either when it is part of the supplied
@@ -352,36 +477,36 @@ def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
     # field empty, which naturally produces the education-first page.
     summary = (structured.get("summary") or "").strip()
     if summary:
-        story.append(Paragraph("SUMMARY", _HEADING))
-        story.append(_rule())
-        story.append(Paragraph(_escape(summary), _BODY))
+        story.append(Paragraph("SUMMARY", styles.heading))
+        story.append(_rule(styles))
+        story.append(Paragraph(_escape(summary), styles.body))
 
     def experience_section() -> None:
         entries = [j for j in (structured.get("experience") or []) if isinstance(j, dict)]
         if not entries:
             return
-        story.append(Paragraph("PROFESSIONAL EXPERIENCE", _HEADING))
-        story.append(_rule())
+        story.append(Paragraph("PROFESSIONAL EXPERIENCE", styles.heading))
+        story.append(_rule(styles))
         for job in entries:
-            story.extend(_entry_flowables(job))
+            story.extend(_entry_flowables(job, styles))
 
     def education_section() -> None:
         entries = [e for e in (structured.get("education") or []) if isinstance(e, dict)]
         if not entries:
             return
-        story.append(Paragraph("EDUCATION", _HEADING))
-        story.append(_rule())
+        story.append(Paragraph("EDUCATION", styles.heading))
+        story.append(_rule(styles))
         for edu in entries:
-            story.extend(_education_flowables(edu))
+            story.extend(_education_flowables(edu, styles))
 
     def leadership_section() -> None:
         entries = [j for j in (structured.get("leadership") or []) if isinstance(j, dict)]
         if not entries:
             return
-        story.append(Paragraph("LEADERSHIP & INVOLVEMENT", _HEADING))
-        story.append(_rule())
+        story.append(Paragraph("LEADERSHIP & INVOLVEMENT", styles.heading))
+        story.append(_rule(styles))
         for job in entries:
-            story.extend(_entry_flowables(job))
+            story.extend(_entry_flowables(job, styles))
 
     if _education_first(structured, today):
         education_section()
@@ -408,14 +533,90 @@ def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
     if interests:
         labeled.append(("Interests", ", ".join(display_skill(x) for x in interests)))
     if labeled:
-        story.append(Paragraph("SKILLS & INTERESTS", _HEADING))
-        story.append(_rule())
-        story.append(Spacer(1, 2))
+        story.append(Paragraph("SKILLS & INTERESTS", styles.heading))
+        story.append(_rule(styles))
+        story.append(Spacer(1, styles.skills_gap))
         for label, value in labeled:
-            story.append(Paragraph(f"<b>{_escape(label)}:</b> {_escape(value)}", _BODY))
+            story.append(Paragraph(f"<b>{_escape(label)}:</b> {_escape(value)}", styles.body))
 
-    doc.build(story)
-    return buffer.getvalue()
+    return story
+
+
+class _CountingDoc(SimpleDocTemplate):
+    """A document that remembers how many pages the story actually took."""
+
+    pages_used = 0
+
+    def afterPage(self) -> None:
+        self.pages_used = max(self.pages_used, self.page)
+
+
+def _draw(structured: dict, today: date, layout: _Layout, title: str) -> tuple[bytes, int]:
+    """``(pdf bytes, page count)`` for one setting of the page."""
+    buffer = io.BytesIO()
+    doc = _CountingDoc(
+        buffer,
+        pagesize=LETTER,
+        leftMargin=layout.margin,
+        rightMargin=layout.margin,
+        topMargin=layout.margin,
+        bottomMargin=layout.margin,
+        title=title,
+    )
+    doc.build(_story(structured, today, _Styles(layout)))
+    return buffer.getvalue(), max(1, doc.pages_used)
+
+
+def render_resume_pdf(structured: dict, *, today: date | None = None) -> bytes:
+    """One resume, letter-size, from a ``resume.v1`` dict.
+
+    Drawn at the airiest setting on ``_LADDER`` that still fits a single page,
+    which is what "make it one page" means when the career is short. A history
+    too long for that is allowed a second page and drawn at the airiest setting
+    that fits *two*, so the overflow is a balanced spread rather than three
+    orphaned lines. Only a career that will not fit two pages even squeezed is
+    drawn tightest and left to run: cutting somebody's jobs to hit a page count
+    is an editorial decision, and this function only sets type.
+    """
+    today = today or date.today()
+    contact = structured.get("contact") or {}
+    title = f"{contact.get('name') or 'Resume'} - Resume"
+
+    drawn: dict[int, tuple[bytes, int]] = {}
+
+    def at(index: int) -> tuple[bytes, int]:
+        if index not in drawn:
+            drawn[index] = _draw(structured, today, _LADDER[index], title)
+        return drawn[index]
+
+    def airiest_within(budget: int) -> int | None:
+        """The highest ladder index still inside ``budget`` pages, or None.
+
+        Airier settings never produce *fewer* pages, so "fits the budget" is
+        true for a prefix of the ladder and false after it — which is a binary
+        search, not a walk. That matters: walking from the airy end drafts the
+        five-page settings of a long career before rejecting them, and those
+        are the slowest drafts to make.
+        """
+        low, high, found = 0, len(_LADDER) - 1, None
+        while low <= high:
+            middle = (low + high) // 2
+            if at(middle)[1] <= budget:
+                found, low = middle, middle + 1
+            else:
+                high = middle - 1
+        return found
+
+    index = airiest_within(1)
+    if index is None:
+        # Too much career for one page. Take the airiest setting that fits two,
+        # so the overflow is a balanced spread rather than three orphaned lines.
+        index = airiest_within(2)
+    if index is None:
+        # It will not fit two pages even squeezed. Draw it tightest and let it
+        # run — cutting jobs to hit a page count is not a typographic decision.
+        index = 0
+    return at(index)[0]
 
 
 def render_letter_pdf(body_text: str, *, candidate_name: str = "", title: str = "") -> bytes:

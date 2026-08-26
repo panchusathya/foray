@@ -58,7 +58,7 @@ def wants_image(thread) -> bool:
 
 
 def card_media(
-    db: Session, *, thread, posting: JobPosting, card: dict[str, Any]
+    db: Session, *, thread, posting: JobPosting, card: dict[str, Any], index: int = 1, total: int = 1
 ) -> tuple[OutboundMedia, ...]:
     """The card image for this posting, as a sendable media part.
 
@@ -66,15 +66,18 @@ def card_media(
     cannot fetch, a Linq upload that refused. The caller sends the text card
     either way.
 
-    No position is passed in on purpose. The ordinal ("2 of 3") lives in the
-    text body, not in the pixels -- baking it into the image would key the cache
-    by position as well as posting and multiply it by the batch size, for a line
-    nobody reads twice.
+    The ordinal ("2 of 3") is baked into the pixels now that the image *is*
+    the card on rich threads -- with no text twin there is nowhere else for
+    the reply grammar ("apply to 2") to point. That keys the cache by position
+    as well as posting, which is bounded: MAX_PROPOSALS_PER_MESSAGE caps a
+    batch at three, so a posting renders at most a handful of variants, and a
+    solo card keeps the original "card" variant so nothing already cached is
+    re-rendered.
     """
     if not wants_image(thread):
         return ()
     try:
-        asset = _asset_for(db, thread=thread, posting=posting, card=card)
+        asset = _asset_for(db, thread=thread, posting=posting, card=card, index=index, total=total)
     except Exception as exc:  # noqa: BLE001 - a card is never worth a failed turn
         logger.warning("job card image unavailable for posting %s: %s", posting.id, exc)
         return ()
@@ -89,15 +92,21 @@ def card_media(
     )
 
 
+def _variant(index: int, total: int) -> str:
+    """The cache key's position half. Solo cards keep the original name."""
+    return VARIANT_CARD if total <= 1 else f"{VARIANT_CARD}-{index}of{total}"
+
+
 def _asset_for(
-    db: Session, *, thread, posting: JobPosting, card: dict[str, Any]
+    db: Session, *, thread, posting: JobPosting, card: dict[str, Any], index: int = 1, total: int = 1
 ) -> JobCardAsset | None:
     version = asset_version()
+    variant = _variant(index, total)
     row = db.scalar(
         select(JobCardAsset).where(
             JobCardAsset.org_id == thread.org_id,
             JobCardAsset.job_posting_id == posting.id,
-            JobCardAsset.variant == VARIANT_CARD,
+            JobCardAsset.variant == variant,
         )
     )
     if (
@@ -121,9 +130,9 @@ def _asset_for(
             logger.info("logo fetch missed for %s: %s", domain, exc)
     brand = palettemod.brand_from_logo(logo, domain=domain)
 
-    png = render_card_png(card, brand=brand, logo=logo, index=1, total=1)
+    png = render_card_png(card, brand=brand, logo=logo, index=index, total=total)
     relpath = storage.card_relpath(
-        org_id=thread.org_id, posting_id=posting.id, variant=VARIANT_CARD
+        org_id=thread.org_id, posting_id=posting.id, variant=variant
     )
     storage.save_bytes(relpath, png)
 
@@ -135,7 +144,15 @@ def _asset_for(
         # Recorded without an attachment id so the bytes are not re-rendered on
         # every send, but the next one still retries the upload. Storing a
         # half-made id would send a message referencing nothing.
-        _remember(db, row=row, thread=thread, posting=posting, relpath=relpath, version=version)
+        _remember(
+            db,
+            row=row,
+            thread=thread,
+            posting=posting,
+            relpath=relpath,
+            version=version,
+            variant=variant,
+        )
         raise exc
 
     return _remember(
@@ -145,6 +162,7 @@ def _asset_for(
         posting=posting,
         relpath=relpath,
         version=version,
+        variant=variant,
         attachment_id=attachment_id,
     )
 
@@ -157,11 +175,12 @@ def _remember(
     posting: JobPosting,
     relpath: str,
     version: str,
+    variant: str = VARIANT_CARD,
     attachment_id: str = "",
 ) -> JobCardAsset:
     if row is None:
         row = JobCardAsset(
-            org_id=thread.org_id, job_posting_id=posting.id, variant=VARIANT_CARD
+            org_id=thread.org_id, job_posting_id=posting.id, variant=variant
         )
         db.add(row)
     row.storage_path = relpath

@@ -34,7 +34,7 @@ from juicebox.messaging.linq import (
     LinqSendError,
 )
 from juicebox.messaging.threads import open_thread
-from juicebox.models import JobCardAsset, JobPosting
+from juicebox.models import JobCardAsset, JobPosting, utcnow
 
 CARD = {
     "title": "Founding Engineer",
@@ -63,6 +63,11 @@ def _posting(session, org_id, *, company="Sourcebot", suffix="1") -> JobPosting:
         company_domain=f"{company.lower()}.dev",
         jd_text="Build the thing.",
         status="open",
+        # Pre-resolved to a supported vendor: the proposal gate only cards
+        # roles an adapter can submit to, and resolving here would hit the
+        # network. The stamp makes resolve_target answer from the row.
+        ats_vendor="greenhouse",
+        ats_resolved_at=utcnow(),
     )
     session.add(posting)
     session.flush()
@@ -352,7 +357,7 @@ class TestEndToEnd:
     Title - Company" and nothing else.
     """
 
-    def test_an_imessage_thread_gets_image_and_text_in_one_bubble(
+    def test_an_imessage_thread_gets_the_image_as_the_card(
         self, session, account, uploads
     ):
         from test_messaging_manager import STRONG, _managed, _say
@@ -391,16 +396,16 @@ class TestEndToEnd:
         result = _say(session, thread, "find me some roles", native_id="m-e2e")
         assert result.action == "presented"
 
-        card_messages = [
-            item[1] for item in channel.sent if "ML Engineer" in (item[1].body or "")
-        ]
+        card_messages = [item[1] for item in channel.sent if item[1].media]
         assert len(card_messages) == 1
         message = card_messages[0]
-        # Both halves in one message: the picture and the words the candidate
-        # can read without tapping anything.
-        assert len(message.media) == 1
+        # The image IS the card on a rich thread: no text twin. The ordinal
+        # and the words are in the pixels, and the body carrying them too
+        # was the doubled bubble this replaced.
         assert message.media[0].attachment_id == "att_1"
-        assert "Sourcebot" in message.body
+        assert message.body == ""
+        # The role's words never appear as a separate text card either.
+        assert not any("ML Engineer" in (item[1].body or "") for item in channel.sent)
         assert len(uploads) == 1
 
     def test_an_sms_thread_gets_the_same_words_and_no_image(

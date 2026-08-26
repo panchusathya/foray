@@ -231,7 +231,7 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
         # by design: the standard set above is a complete package on its own.
         from .questions import augment_with_form_questions
 
-        answers = augment_with_form_questions(
+        answers, discovery = augment_with_form_questions(
             db, application=application, posting=posting, answers=answers
         )
         application.form_answers = answers
@@ -253,6 +253,9 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
         "resume_document_id": resume_doc.id,
         "cover_letter_document_id": letter_doc.id,
         "answers": len(application.form_answers or []),
+        # "ran" or "skipped: <reason>" -- whether the questions the candidate
+        # will review came from the employer's actual form or only our set.
+        "discovery": discovery,
     }
 
 

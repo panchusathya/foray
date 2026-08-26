@@ -48,7 +48,10 @@ from juicebox.worker import process_job
 HITS = [
     {
         "id": "exa-strat-1",
-        "url": "https://jobs.example.com/google-strategic-finance",
+        # A greenhouse-shaped URL so the proposal gate (which only cards roles
+        # whose vendor has a submit adapter) resolves it from the URL alone --
+        # no network, no `follow` hop, in a test about search-refill semantics.
+        "url": "https://boards.greenhouse.io/google/jobs/4012345",
         "title": "Strategic Finance Analyst",
         "text": (
             "Google is hiring a Strategic Finance Analyst in San Francisco, CA. "
@@ -375,6 +378,14 @@ class TestTheWholeChain:
         )
         thread.flow = FLOW_LINKEDIN_SHORT
         session.flush()
+        # The proposal gate liveness-checks the URLs about to be carded; a
+        # real HEAD to greenhouse.io from a test would 404 a made-up board
+        # and close the posting. Everything else about the gate runs real:
+        # the greenhouse-shaped HIT URL resolves from the URL alone.
+        import juicebox.jobmatch.liveness as liveness
+
+        original_is_gone = liveness.is_gone
+        liveness.is_gone = lambda url, **kw: False
         try:
             _turn(session, thread, "hey", "t0")
             _turn(session, thread, "sathya@example.com", "t1")
@@ -407,6 +418,7 @@ class TestTheWholeChain:
             assert "Strategic Finance Analyst" in body, f"expected a card, got: {body!r}"
             assert "Google" in body
         finally:
+            liveness.is_gone = original_is_gone
             embeddings_module.reset_embedder()
             set_scraper(None)
             set_llm(None)

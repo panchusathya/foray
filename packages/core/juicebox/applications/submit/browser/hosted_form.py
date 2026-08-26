@@ -24,7 +24,7 @@ from pathlib import Path
 from ..base import METHOD_BROWSER, SubmissionContext, SubmissionResult
 from . import driver
 from .driver import BrowserUnavailable, FieldSpec, RunLog
-from .forms import ASHBY, GREENHOUSE, LEVER, FormSpec
+from .forms import ASHBY, GREENHOUSE, LEVER, SMARTRECRUITERS, WORKABLE, FormSpec
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ def _values(ctx: SubmissionContext, resume_path: str) -> dict[str, str]:
     """Logical field name -> what we would put in it.
 
     Only what the record actually holds. A blank stays blank: ``why_company``
-    is left empty by ``docgen/answers`` on purpose, and a browser adapter is not
-    the place that decides to invent one.
+    arrives drafted-and-reviewed from ``docgen/answers`` or not at all, and a
+    browser adapter is never the place that invents one.
     """
     return {
         "full_name": ctx.full_name,
@@ -279,3 +279,13 @@ class LeverFormSubmitter(HostedFormSubmitter):
 class AshbyFormSubmitter(HostedFormSubmitter):
     def __init__(self) -> None:
         super().__init__(ASHBY)
+
+
+class SmartRecruitersFormSubmitter(HostedFormSubmitter):
+    def __init__(self) -> None:
+        super().__init__(SMARTRECRUITERS)
+
+
+class WorkableFormSubmitter(HostedFormSubmitter):
+    def __init__(self) -> None:
+        super().__init__(WORKABLE)

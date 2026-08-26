@@ -45,7 +45,7 @@ from ..models import (
     utcnow,
 )
 from ..portal.links import mint_portal_link
-from ..presentation.jobcard import jobcard, render_card
+from ..presentation.jobcard import clean_title, jobcard, render_card, role_line
 from . import cards as cards_media
 from . import identity, intents, prompts
 from .channels import OutboundMessage
@@ -377,7 +377,9 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
-    body = prompts.APPLY_ACK.format(title=posting.title, company=posting.company)
+    body = prompts.APPLY_ACK.format(
+        title=clean_title(posting.title, posting.company), company=posting.company
+    )
     action = ACTION_APPLIED
     application = None
     try:
@@ -397,7 +399,7 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
         # by this tap.
         _accept_proposal(proposal, last)
         body = (
-            f"You're already in flight for {posting.title} at {posting.company} — "
+            f"You're already in flight for {role_line(posting.title, posting.company)} — "
             'ask me "status" any time.'
         )
         action = ACTION_ANSWERED
@@ -409,7 +411,9 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
         # nothing behind it. Left at "proposed", the card is still live and
         # another tap (or another ask) retries once the budget frees up.
         logger.info("apply parked on thread %s: %s", thread.id, exc)
-        body = prompts.APPLY_PARKED.format(title=posting.title, company=posting.company)
+        body = prompts.APPLY_PARKED.format(
+            title=clean_title(posting.title, posting.company), company=posting.company
+        )
         action = ACTION_ANSWERED
     else:
         _accept_proposal(proposal, last)
@@ -591,20 +595,36 @@ def _fresh(db, thread, first: str, second: str) -> str:
     return first
 
 
-def _drop_dead_postings(db: Session, pairs: list) -> list:
-    """Check the handful about to be sent, and close the ones that are gone.
+def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, int]:
+    """Walk best-first and keep the first ``limit`` we can honestly card.
 
-    Freshness elsewhere means "recently seen", which is not the same as still
-    existing -- a live thread was sent a Rippling role whose page had already
-    been taken down. This is the last moment before a person clicks it.
+    Two checks per posting, both at the last moment before a person acts on it:
 
-    Closing the posting matters as much as skipping it: `eligible_matches`
-    only reads open postings, so a dead role removed here does not come back
-    on the next request.
+    **Still up.** Freshness elsewhere means "recently seen", which is not the
+    same as still existing -- a live thread was sent a Rippling role whose page
+    had already been taken down. Closing the posting matters as much as
+    skipping it: `eligible_matches` only reads open postings, so a dead role
+    removed here does not come back on the next request.
+
+    **On a vendor we can submit to.** The card says "👍 and i'll apply for
+    you", so a role with no submit adapter is a promise we cannot keep -- the
+    first live run carded three roles (YC, DigitalHire, a scraper mirror) and
+    could apply to none of them. The vendor check is `can_submit_vendor`, not
+    `submittable`: under APPLY_SUBMITTER=console the latter says yes to
+    everything. Resolution runs with ``stamp_on_miss=False`` so an aggregator
+    403ing our IP today does not cache "unrecognised" forever.
+
+    Walking a longer eligible list and stopping at ``limit`` is what keeps a
+    high-scoring unsupported role from starving the supported ones ranked
+    under it. Returns ``(kept, unsupported_dropped)`` so the caller can tell
+    "everything was taken down" from "nothing here is applicable".
     """
+    from ..applications.ats import detect as ats_detect
+    from ..applications.submit.registry import can_submit_vendor
     from ..jobmatch.liveness import is_gone
 
-    alive = []
+    kept: list = []
+    unsupported = 0
     for match, posting in pairs:
         url = (posting.source_url or "").strip()
         if url and is_gone(url):
@@ -612,8 +632,19 @@ def _drop_dead_postings(db: Session, pairs: list) -> list:
             db.flush()
             logger.info("closed dead posting %s before proposing it", posting.id)
             continue
-        alive.append((match, posting))
-    return alive
+        target = ats_detect.resolve_target(db, posting, stamp_on_miss=False)
+        if not can_submit_vendor(target.vendor):
+            unsupported += 1
+            logger.info(
+                "not carding posting %s: no submit adapter (vendor=%r)",
+                posting.id,
+                target.vendor,
+            )
+            continue
+        kept.append((match, posting))
+        if len(kept) >= limit:
+            break
+    return kept, unsupported
 
 
 def _identity_request(thread) -> tuple[str, str]:
@@ -664,7 +695,16 @@ def present_matches(
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
-    pairs = eligible_matches(db, org_id=thread.org_id, candidate_id=candidate_id)
+    # Over-fetched: the sendable filter below drops dead pages and roles with
+    # no submit adapter, and a filter over exactly three would let one
+    # high-scoring unapplicable role shrink the batch rather than yield to the
+    # supported role ranked under it.
+    pairs = eligible_matches(
+        db,
+        org_id=thread.org_id,
+        candidate_id=candidate_id,
+        limit=MAX_CARDS_PER_MESSAGE * 3,
+    )
     if not pairs:
         if quiet:
             return None
@@ -689,7 +729,10 @@ def present_matches(
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
 
     decision = limits.may_propose(
-        db, org_id=thread.org_id, candidate_id=candidate_id, count=len(pairs)
+        db,
+        org_id=thread.org_id,
+        candidate_id=candidate_id,
+        count=min(len(pairs), MAX_CARDS_PER_MESSAGE),
     )
     if not decision:
         if quiet:
@@ -704,19 +747,26 @@ def present_matches(
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
 
-    pairs = _drop_dead_postings(db, pairs)
+    pairs, unsupported = _sendable_postings(db, pairs, limit=MAX_CARDS_PER_MESSAGE)
     if not pairs:
         if quiet:
             return None
+        # Two honest empties, told apart so neither lies: everything was taken
+        # down, or everything left is a role we cannot apply to. The second is
+        # said once per request rather than never -- silence on an explicit
+        # "find me roles" reads as a dead line.
+        body = (
+            prompts.NOTHING_APPLICABLE
+            if unsupported
+            else (
+                "the roles i had lined up have already been taken down. "
+                "i'll keep looking and text you when something lands."
+            )
+        )
         row = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(
-                body=(
-                    "the roles i had lined up have already been taken down. "
-                    "i'll keep looking and text you when something lands."
-                )
-            ),
+            message=OutboundMessage(body=body),
             origin=origin,
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
@@ -758,17 +808,23 @@ def present_matches(
         db.add(proposal)
         db.flush()
 
-        # The text card is the message, on every channel and every protocol.
-        # An image is added to it where one will render inline; it is never a
-        # substitute for the words. That ordering is the whole difference from
-        # the vCard this replaces: that was a media-only bubble reading
-        # "[contact card] Title - Company", so a thread where the attachment
-        # failed to fetch showed a role with no detail and no way to act, and a
-        # thread where it worked still needed a tap to read anything.
+        # The image *is* the card wherever one actually exists; the text card
+        # is the message everywhere else. This is conditioned on the media
+        # part being in hand -- rendered, uploaded, id returned -- not on the
+        # protocol, which is what keeps the vCard's failure mode dead: that
+        # was a media-only bubble whose attachment could silently fail to
+        # fetch, leaving a role with no detail and no way to act. Here a
+        # failed render or upload returns no media and the words go instead,
+        # so every bubble carries the role one way or the other. The ordinal
+        # ("2 of 3") is baked into the image for the same reason the body
+        # carried it: "apply to 2" has to point at something visible.
         shown = {k: v for k, v in card.items() if k != "recruiter_only"}
+        media = cards_media.card_media(
+            db, thread=thread, posting=posting, card=shown, index=index, total=len(cards)
+        )
         message = OutboundMessage(
-            body=render_card(shown, index=index, total=len(cards)),
-            media=cards_media.card_media(db, thread=thread, posting=posting, card=shown),
+            body="" if media else render_card(shown, index=index, total=len(cards)),
+            media=media,
             verbatim=True,
         )
         row = _deliver(db, thread=thread, message=message, origin=origin)

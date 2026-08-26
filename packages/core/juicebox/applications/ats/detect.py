@@ -54,6 +54,7 @@ VENDOR_TALEO = "taleo"
 VENDOR_JOBVITE = "jobvite"
 VENDOR_BAMBOOHR = "bamboohr"
 VENDOR_WORKABLE = "workable"
+VENDOR_YC = "yc"
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,26 @@ PATTERNS: tuple[_Pattern, ...] = (
         tier=TIER_BROWSER,
         host=re.compile(r"^(?:apply|jobs)\.workable\.com$"),
         locator=re.compile(r"^/(?P<tenant>[\w.-]+)/j/(?P<job_id>[\w-]+)"),
+        required=True,
+    ),
+    # YC job pages. Both hosts show the same posting; applying happens on
+    # workatastartup.com behind a candidate account (browser/yc.py). `required`
+    # is what keeps company profiles (`/companies/nessie`) and WaaS listing
+    # pages (`/jobs/l/software-engineer`) out: neither is a posting, and both
+    # are in the book today. The company slug is the tenant so the recruiter
+    # views can name the employer even when the scrape left `company` blank.
+    _Pattern(
+        vendor=VENDOR_YC,
+        tier=TIER_BROWSER,
+        host=re.compile(r"^(?:www\.)?ycombinator\.com$"),
+        locator=re.compile(r"^/companies/(?P<tenant>[\w-]+)/jobs/(?P<job_id>[\w-]+)"),
+        required=True,
+    ),
+    _Pattern(
+        vendor=VENDOR_YC,
+        tier=TIER_BROWSER,
+        host=re.compile(r"^(?:www\.)?workatastartup\.com$"),
+        locator=re.compile(r"^/jobs/(?P<job_id>\d+)"),
         required=True,
     ),
 )
@@ -392,6 +413,7 @@ def resolve_target(
     client: httpx.Client | None = None,
     refresh: bool = False,
     allow_network: bool = True,
+    stamp_on_miss: bool = True,
 ) -> ApplyTarget:
     """Resolve, cache and return the apply target for one posting.
 
@@ -403,6 +425,13 @@ def resolve_target(
     parse path wants, since it runs on every posting we ingest and a fetch per
     posting is a fetch per posting. A miss there is not recorded as final, so
     the first submission attempt still gets to follow the link.
+
+    ``stamp_on_miss=False`` makes a *networked* miss non-final too. The
+    proposal gate resolves the handful of postings about to be carded, and an
+    aggregator that 403s a datacentre IP must not permanently cache
+    "unrecognised" on a posting a later attempt could resolve -- the same
+    reason the 2026-08 backfill was never run. Success still stamps either
+    way: a recognised vendor is a real answer.
     """
     if posting.ats_resolved_at is not None and not refresh:
         return target_of(posting)
@@ -420,10 +449,21 @@ def resolve_target(
                 vendor=VENDOR_EMAIL, apply_url=f"mailto:{address}", tier=TIER_EMAIL
             )
 
+    if not target and not stamp_on_miss:
+        # A miss the caller declared non-final: report it, write nothing. The
+        # row keeps whatever it had, and the next resolution gets a clean try.
+        return target
     posting.ats_vendor = target.vendor
     posting.ats_tenant = target.tenant[:120]
     posting.ats_external_job_id = target.external_job_id[:120]
     posting.apply_url = target.apply_url or source
+    # YC listings routinely arrive with the employer only in the URL slug --
+    # blank `company` makes every card and message read "at the company". The
+    # slug is not a perfect name ("10x-science" -> "10X Science") but it is
+    # the employer, which blank is not. Only ever fills a blank.
+    if target.vendor == VENDOR_YC and target.tenant and not (posting.company or "").strip():
+        posting.company = target.tenant.replace("-", " ").title()
+        posting.company_normalized = posting.company.lower()
     # Only a resolution that was allowed its network hop counts as final. The
     # parse path resolves from the URL alone -- cheap, inline, and enough for
     # the majority that are already a form -- and leaving the stamp unset is

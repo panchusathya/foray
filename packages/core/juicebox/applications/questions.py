@@ -39,22 +39,39 @@ def augment_with_form_questions(
     application: Application,
     posting: JobPosting,
     answers: list[dict],
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """The standard answers plus whatever this form actually asks.
 
-    Returns a new list; the caller assigns it to ``application.form_answers``.
+    Returns ``(answers, outcome)``; the caller assigns the list to
+    ``application.form_answers``. ``outcome`` is ``"ran"`` or
+    ``"skipped: <reason>"`` and travels on the package result -- the first
+    live package skipped discovery *silently* (the vendor guard below has no
+    log), so the portal presented our generic four as the employer's form and
+    nothing anywhere said so.
     """
     from .ats import detect
     from .submit.browser import driver
-    from .submit.browser.forms import PROBEABLE
+    from .submit.browser.forms import DISCOVERABLE
 
     target = detect.target_of(posting)
-    if not target or target.vendor not in PROBEABLE or not target.apply_url:
-        return answers
+    if not target or not target.apply_url:
+        logger.info("form questions skipped for %s: no apply target", application.id)
+        return answers, "skipped: no apply target"
+    if target.vendor not in DISCOVERABLE:
+        # DISCOVERABLE, not PROBEABLE: an account-gated vendor (Workday, YC)
+        # is probeable but its logged-out page is a registration form, and
+        # reading questions off that would surface "password" as the
+        # employer's.
+        logger.info(
+            "form questions skipped for %s: vendor %r has no reachable form",
+            application.id,
+            target.vendor,
+        )
+        return answers, f"skipped: vendor {target.vendor} has no reachable form"
     ok, reason = driver.available()
     if not ok:
         logger.info("form questions skipped for %s: %s", application.id, reason)
-        return answers
+        return answers, f"skipped: {reason}"
 
     from .submit.browser.questions import KIND_ATTESTATION, KIND_CUSTOM, discover
 
@@ -62,7 +79,7 @@ def augment_with_form_questions(
         discovered = discover(target.apply_url, vendor=target.vendor)
     except Exception as exc:  # noqa: BLE001 - the standard set is a complete package
         logger.warning("form discovery failed for %s: %s", application.id, exc)
-        return answers
+        return answers, f"skipped: discovery failed ({exc})"
 
     merged = [dict(item) for item in answers]
     existing = {str(item.get("key")): item for item in merged}
@@ -111,7 +128,7 @@ def augment_with_form_questions(
             application.id,
             target.vendor,
         )
-    return merged
+    return merged, "ran"
 
 
 def custom_blanks(application: Application) -> list[dict]:

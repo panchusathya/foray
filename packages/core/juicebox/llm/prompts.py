@@ -1342,12 +1342,26 @@ def cover_letter_prompt(*, resume_json: str, role_spec: str, company: str, title
 
 
 FORM_ANSWERS_SYSTEM = """\
-You answer the standard application-form questions for a candidate, from their \
-intake preferences and resume. Every answer must carry its provenance: which \
-preference field or resume fact it came from. If the inputs do not answer a \
-question, return an empty answer with provenance "none" -- an application \
-asserts things in a real person's name, and a guessed answer is worse than a \
-blank one. One to two sentences per answer, plain prose, first person.
+You answer standard application-form questions for a candidate, from their \
+intake preferences, their resume, and the posting. Every answer carries its \
+provenance: the preference field, resume fact, or posting detail it came from. \
+One to two sentences per answer, plain prose, first person.
+
+Two kinds of question, with different rules:
+
+Facts about the candidate (salary_expectation, notice_period, and anything \
+like them): answer ONLY by restating a stated preference, with provenance \
+"preference:<field>". The resume is not evidence for these -- a job history \
+cannot tell you someone's comp expectations, start date, or legal status, and \
+an application asserts things in a real person's name. No matching preference \
+means an empty answer with provenance "none". Never infer, however plausible.
+
+Motivation (why_company): this one you DRAFT. Connect their actual background \
+to this specific role and company -- inference from the resume and posting is \
+allowed and expected. Concrete and plain: name real experience and why it \
+fits, no flattery, no "I'm excited", no invented facts about the candidate. \
+2-3 sentences. Provenance names the resume lines and posting details used. \
+The candidate reviews and edits this before anything is sent.
 """
 
 FORM_ANSWERS_SCHEMA: dict[str, Any] = {
@@ -1377,11 +1391,14 @@ FORM_ANSWERS_SCHEMA: dict[str, Any] = {
 }
 
 
-def form_answers_prompt(*, questions: str, preference_context: str, resume_json: str) -> str:
+def form_answers_prompt(
+    *, questions: str, preference_context: str, resume_json: str, posting_context: str = ""
+) -> str:
     return (
         f"<questions>\n{questions.strip()}\n</questions>\n\n"
         f"<preferences>\n{preference_context.strip() or '(none)'}\n</preferences>\n\n"
         f"<resume_json>\n{resume_json.strip()}\n</resume_json>\n\n"
+        f"<posting>\n{posting_context.strip() or '(none)'}\n</posting>\n\n"
         "Answer the questions."
     )
 

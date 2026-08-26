@@ -68,8 +68,11 @@ def _browser_submitter(vendor: str) -> Submitter | None:
             AshbyFormSubmitter,
             GreenhouseFormSubmitter,
             LeverFormSubmitter,
+            SmartRecruitersFormSubmitter,
+            WorkableFormSubmitter,
         )
         from .browser.workday import WorkdaySubmitter
+        from .browser.yc import YCSubmitter
     except ImportError as exc:
         logger.debug("browser submitters unavailable: %s", exc)
         return None
@@ -78,6 +81,9 @@ def _browser_submitter(vendor: str) -> Submitter | None:
         detect.VENDOR_LEVER: LeverFormSubmitter,
         detect.VENDOR_ASHBY: AshbyFormSubmitter,
         detect.VENDOR_WORKDAY: WorkdaySubmitter,
+        detect.VENDOR_YC: YCSubmitter,
+        detect.VENDOR_SMARTRECRUITERS: SmartRecruitersFormSubmitter,
+        detect.VENDOR_WORKABLE: WorkableFormSubmitter,
     }.get(vendor)
     return built() if built is not None else None
 
@@ -143,3 +149,31 @@ def submittable(target: detect.ApplyTarget, *, board_key: str = "") -> bool:
     """Whether an automated attempt is possible at all, for copy that must not
     promise a submission we cannot make."""
     return get_submitter(target, board_key=board_key) is not None
+
+
+#: Vendors a live deployment can actually submit to, browser tier included.
+#: Kept as data rather than derived from ``_browser_submitter`` so the answer
+#: does not depend on whether Playwright happens to be installed in *this*
+#: process: the question "can Foray apply here" is about the product, and the
+#: web container asking it has no Chromium while the worker that submits does.
+BROWSER_VENDORS = (
+    detect.VENDOR_GREENHOUSE,
+    detect.VENDOR_LEVER,
+    detect.VENDOR_ASHBY,
+    detect.VENDOR_WORKDAY,
+    detect.VENDOR_YC,
+    detect.VENDOR_SMARTRECRUITERS,
+    detect.VENDOR_WORKABLE,
+)
+
+
+def can_submit_vendor(vendor: str) -> bool:
+    """Whether *some* adapter exists for this vendor, regardless of mode.
+
+    ``submittable`` answers "would a submit attempt run right now", and under
+    ``console``/``memory`` that is true for any vendor because the double
+    accepts everything. This answers the question the proposal gate needs --
+    "should we promise to apply to this role" -- which must not change when an
+    operator flips APPLY_SUBMITTER to rehearse.
+    """
+    return bool(vendor) and (vendor == detect.VENDOR_EMAIL or vendor in BROWSER_VENDORS)

@@ -832,6 +832,17 @@ CALLER_UNKNOWN = {
     "caller_recent_text": "",
     "caller_on_file": "",
     "caller_open_topics": "",
+    # The number they are calling from and the address we hold for them, so the
+    # agent can answer "what number do you have for me?" -- which it could not,
+    # despite having just resolved them by that very number.
+    "caller_phone": "",
+    "caller_email": "",
+    # The agent's entire first sentence. The inbound agent used to open with
+    # nothing at all, on the theory that whoever dialled speaks first; in
+    # practice the caller says "hello?" into silence and has to prompt it. The
+    # greeting is composed here because only this side knows whether there is a
+    # name to use.
+    "caller_greeting": "Hi, this is Vivian at Foray -- thanks for calling.",
 }
 
 # Long enough to hold a full preference read-back, short enough that Retell
@@ -878,17 +889,19 @@ def inbound_call_context(db: Session, *, org_id: str, phone: str) -> dict[str, s
     """
     candidate_id = resolve_candidate_id(db, org_id=org_id, phone=phone)
     if not candidate_id:
-        return dict(CALLER_UNKNOWN)
+        return _unknown_caller()
     candidate = db.get(Candidate, candidate_id)
     if candidate is None:
-        return dict(CALLER_UNKNOWN)
+        return _unknown_caller()
 
     preference = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
     )
+    first_name = (candidate.first_name or "").strip()
+    emails = [e for e in (candidate.emails or []) if isinstance(e, str) and e.strip()]
     return {
         "caller_known": "true",
-        "caller_first_name": (candidate.first_name or "").strip(),
+        "caller_first_name": first_name,
         "caller_since": _last_contact_phrase(db, org_id=org_id, candidate_id=candidate_id),
         "caller_recent_text": _recent_text_phrase(db, org_id=org_id, candidate_id=candidate_id),
         # `record_from_preference` takes a row, not an optional one -- a caller
@@ -898,7 +911,60 @@ def inbound_call_context(db: Session, *, org_id: str, phone: str) -> dict[str, s
             _on_file_summary(record_from_preference(preference)) if preference else ""
         ),
         "caller_open_topics": _open_topics(preference),
+        # The number they are dialling from, grouped so TTS does not read it as
+        # one long integer. Deliberately this number and not every number on the
+        # record: "what do you have for me?" is a question about the line they
+        # are on, and reading back a second number they did not ask about is a
+        # disclosure nobody requested.
+        "caller_phone": _spoken_phone(phone),
+        "caller_email": emails[0].strip() if emails else "",
+        "caller_greeting": _greeting_for(first_name),
     }
+
+
+def _unknown_caller() -> dict[str, str]:
+    """``CALLER_UNKNOWN`` with a greeting the agent can actually open on.
+
+    The dict's own literal is a last-ditch default for callers of the constant;
+    this is the path the webhook takes, so it gets the configured persona name.
+    """
+    return dict(CALLER_UNKNOWN, caller_greeting=_greeting_for(""))
+
+
+def _spoken_phone(phone: str) -> str:
+    """A number a voice can read back without it sounding like a serial code.
+
+    Grouped 3-3-4 for a US number, left alone otherwise -- a wrong guess about
+    grouping is worse than none, and the agent is reading it to the person whose
+    number it is, who will recognise it either way.
+    """
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return (phone or "").strip()
+    return f"{digits[:3]}, {digits[3:6]}, {digits[6:]}"
+
+
+def _greeting_for(first_name: str) -> str:
+    """The agent's opening line, composed here because only we know the name.
+
+    One sentence, warm, and short enough that the caller is not waiting through
+    a paragraph before they can say why they rang. The recording question comes
+    straight after, from the prompt -- it is not front-loaded into the greeting,
+    which is what made the old opener sound like a compliance script.
+
+    The persona name is read from settings rather than written in, so renaming
+    her does not leave one greeting still saying Vivian. Imported inside the
+    function for the same reason line 256 does: `intake` must not take a module
+    -level dependency on `messaging`.
+    """
+    from ..messaging.prompts import recruiter_name
+
+    who = recruiter_name()
+    if first_name:
+        return f"Hi {first_name} -- it's {who} at Foray. Good to hear from you."
+    return f"Hi, this is {who} at Foray -- thanks for calling."
 
 
 def _last_contact_phrase(db: Session, *, org_id: str, candidate_id: str) -> str:

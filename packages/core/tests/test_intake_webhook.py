@@ -949,6 +949,60 @@ class TestRingTimeRecognition:
         assert "250,000" in on_file
         assert "Stripe" in on_file
 
+    def test_the_agent_is_given_an_opening_line_to_speak(
+        self, client, session, signer, owned_number, account
+    ):
+        """The inbound agent used to open with an empty `begin_message`, on the
+        theory that whoever dialled speaks first. On a real call the caller said
+        "hello?" into silence and had to prompt it. The greeting is composed
+        here, so it must never come back blank."""
+        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        greeting = variables["caller_greeting"]
+        assert greeting.strip()
+        assert person.first_name in greeting
+
+    def test_an_unknown_caller_still_gets_a_greeting_without_a_name(
+        self, client, session, signer, owned_number, account
+    ):
+        variables = post(client, signer, inbound_payload(from_number=STRANGER_NUMBER)).json()[
+            "call_inbound"
+        ]["dynamic_variables"]
+        assert variables["caller_greeting"].strip()
+        assert "Foray" in variables["caller_greeting"]
+
+    def test_the_caller_is_told_which_number_we_hold(
+        self, client, session, signer, owned_number, account
+    ):
+        """It resolved them *by* this number and still could not say it back
+        when asked on a live call."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        spoken = variables["caller_phone"]
+        digits = "".join(c for c in spoken if c.isdigit())
+        assert digits and digits in "".join(c for c in CANDIDATE_NUMBER if c.isdigit())
+        # Grouped, so TTS does not read it as one long integer.
+        assert "," in spoken
+
+    def test_caller_since_is_never_a_calendar_date(
+        self, client, session, signer, owned_number, account
+    ):
+        """A live call produced a confident "April 15th" for a date no code path
+        can emit. Nothing here may look like one, or the model has a date to
+        anchor on."""
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]
+        since = variables["caller_since"].lower()
+        months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+        assert not any(m in since for m in months)
+        assert not any(c.isdigit() for c in since.replace("days", ""))
+
     def test_a_known_caller_with_no_record_yet_is_still_greeted(
         self, client, session, signer, owned_number, account
     ):

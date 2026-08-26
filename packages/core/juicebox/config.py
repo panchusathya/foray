@@ -146,8 +146,13 @@ class Settings:
     # main 120s budget is right for drafting a whole sequence in a worker and
     # absurd for a request someone is watching, so those get their own ceiling
     # and no retries: degrading to the heuristic text beats a spinner.
+    # 3.5s, not the 20s this used to be. The binding case is the mid-call
+    # coverage check, where the caller hears the wait as a dead line -- and at
+    # 20s they heard the agent ask "are you with me?" while it was still
+    # waiting. The endpoint degrades to heuristics on timeout, so failing fast
+    # costs one slightly worse next question and saves the call.
     llm_fast_timeout_seconds: float = field(
-        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 20.0)
+        default_factory=lambda: _env_float("LLM_FAST_TIMEOUT_SECONDS", 3.5)
     )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)

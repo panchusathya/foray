@@ -554,3 +554,28 @@ class TestFollowupNamesTheFormsQuestions:
         from juicebox.applications.followups import followup_message
 
         assert followup_message(self._app([]), self._Posting()) == ""
+
+
+class TestLabelCleaning:
+    """Flaws found by running discovery against the live Baseten form."""
+
+    def test_bare_name_is_identity(self):
+        """Ashby labels its name field just "Name"."""
+        assert classify("Name")[0] == KIND_IDENTITY
+
+    def test_a_company_name_question_is_still_custom(self):
+        """The reason "name" cannot be a fragment marker."""
+        assert classify("What company do you most admire and why?")[0] == KIND_CUSTOM
+
+    def test_a_swept_up_section_reduces_to_its_first_line(self):
+        """Seen live: the ethnicity group's label arrived as the entire gender
+        section, heading, prompt and options glued together by newlines."""
+        from juicebox.applications.submit.browser.questions import _clean_label
+
+        swept = "Gender\n\nInput gender\n\nMale\nFemale\nDecline to self-identify"
+        assert _clean_label(swept) == "Gender"
+
+    def test_a_long_first_line_is_capped(self):
+        from juicebox.applications.submit.browser.questions import _clean_label
+
+        assert len(_clean_label("x" * 500)) == 200

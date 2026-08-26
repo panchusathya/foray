@@ -43,6 +43,16 @@ KIND_STANDARD = "standard"
 KIND_ATTESTATION = "attestation"
 KIND_CUSTOM = "custom"
 
+#: Whole labels that are identity when exact. "name" as a *fragment* would
+#: swallow "company name you most admire"; as the entire label it is the
+#: name field.
+_IDENTITY_EXACT = frozenset({"name", "location", "address", "website"})
+
+#: Whole labels that are an option, not a question. A checkbox whose best
+#: label resolves to "Yes" cannot be named to a person, so it is skipped the
+#: same way an unlabeled control is.
+_OPTION_LABELS = frozenset({"yes", "no", "true", "false", "y", "n"})
+
 #: Label fragments that mean the adapter already fills this from the record.
 _IDENTITY_MARKERS = (
     "first name", "last name", "full name", "preferred name", "your name",
@@ -117,9 +127,12 @@ def classify(label: str) -> tuple[str, str]:
     label mentioning both an identity word and an attestation word ("veteran
     status of your... contact"? unlikely, but) errs on the side of attestation.
     """
-    lowered = f" {(label or '').strip().lower()} "
-    if not lowered.strip():
+    bare = (label or "").strip().lower()
+    lowered = f" {bare} "
+    if not bare:
         return KIND_CUSTOM, ""
+    if bare in _IDENTITY_EXACT:
+        return KIND_IDENTITY, ""
     for marker in _ATTESTATION_MARKERS:
         if marker in lowered:
             return KIND_ATTESTATION, ""
@@ -130,6 +143,21 @@ def classify(label: str) -> tuple[str, str]:
         if marker in lowered:
             return KIND_IDENTITY, ""
     return KIND_CUSTOM, ""
+
+
+def _clean_label(label: str) -> str:
+    """The question out of whatever text the DOM walk swept up.
+
+    A React board's section container answers ``innerText`` with the heading,
+    the prompt and every option glued together by newlines -- seen live on
+    Ashby, where the ethnicity group's label arrived as the entire gender
+    section. The first non-empty line is the question; the rest is furniture.
+    """
+    for line in (label or "").splitlines():
+        line = line.strip()
+        if line:
+            return line[:200]
+    return ""
 
 
 def question_key(label: str) -> str:
@@ -283,7 +311,12 @@ def discover(url: str, *, vendor: str = "") -> list[FormQuestion]:
     questions: list[FormQuestion] = []
     seen_keys: set[str] = set()
     for item in raw:
-        label = str(item.get("label") or "").strip()
+        label = _clean_label(str(item.get("label") or ""))
+        if label.lower() in _OPTION_LABELS:
+            # The label walk found an option ("Yes"), not the question. A
+            # control we cannot name to a person is one we cannot ask about.
+            logger.info("option-labeled %s control on %s skipped", item.get("fieldType"), url)
+            continue
         kind, standard_key = classify(label)
         key = standard_key if kind == KIND_STANDARD else question_key(label)
         if not label and kind == KIND_CUSTOM:

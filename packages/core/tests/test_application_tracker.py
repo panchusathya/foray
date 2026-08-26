@@ -160,6 +160,9 @@ class TestStoring:
     def test_mail_to_a_stranger_alias_is_not_stored(
         self, session, account, candidate, aliased, no_relay
     ):
+        """The address is ours, so the caller must not fall through to the
+        recruiter-reply path. Nothing is stored because the token does not
+        resolve to anyone."""
         out = handle(
             session,
             org_id=account["org_id"],
@@ -169,7 +172,8 @@ class TestStoring:
             body="b",
             native_id="zm-3",
         )
-        assert out["routed"] is False
+        assert out["routed"] is True
+        assert out["reason"] == "unresolved alias"
         assert session.scalars(select(ApplicationMessage)).all() == []
 
 

@@ -175,6 +175,34 @@ class TestResolving:
         session.flush()
         assert alias.resolve(session, row.address)[0] is None
 
+    def test_candidate_for_resolves_an_application_alias(
+        self, session, account, candidate, aliased
+    ):
+        """It used to verify every row against the candidate HMAC, so a
+        per-application alias — the only kind we mint now — returned None."""
+        application = _application(session, account, candidate)
+        row = alias.ensure_for_application(session, application)
+        assert alias.candidate_for(session, row.address).id == candidate.id
+
+    def test_ensure_does_not_return_an_application_row(
+        self, session, account, candidate, aliased
+    ):
+        application = _application(session, account, candidate)
+        minted = alias.ensure_for_application(session, application)
+        legacy = alias.ensure(session, candidate)
+        assert legacy.id != minted.id
+        assert legacy.scope == "candidate"
+
+    def test_revoke_covers_every_alias_for_the_candidate(
+        self, session, account, candidate, aliased
+    ):
+        legacy = alias.ensure(session, candidate)
+        application = _application(session, account, candidate)
+        app_row = alias.ensure_for_application(session, application)
+        alias.revoke(session, candidate.id)
+        assert legacy.status == "revoked"
+        assert app_row.status == "revoked"
+
     def test_the_bare_mailbox_resolves_to_nobody(self, session, aliased):
         """The bug that started this: a reply to anna@ has no token, so it is
         attributable to no one."""

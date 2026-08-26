@@ -265,3 +265,47 @@ async def _look_up(
                 return row, None, str(exc)
 
     return list(await asyncio.gather(*(one(row) for row in rows)))
+
+
+class ApolloBody(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
+@router.post("/candidates/{login}/apollo")
+async def apollo_resolve(
+    login: str,
+    body: ApolloBody,
+    x_foray_token: str | None = Header(default=None, alias="X-Foray-Token"),
+) -> dict:
+    """Explicit shortlist action: allow the Apollo step (a credit). Requires a reason."""
+    import functools
+
+    from ..enrich.apollo import match_and_store
+    from ..enrich.linkedin import resolve_and_store
+
+    _require_token(x_foray_token)
+    if not settings.apollo_api_key:
+        # settings.require() raises SystemExit, which inside a request
+        # handler kills the worker rather than answering the caller.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="APOLLO_API_KEY is not configured on this deployment",
+        )
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        candidate_id = await conn.fetchval(
+            "insert into shortlist_events (candidate_id, reason) "
+            "select id, $2 from candidates where login = $1 "
+            "returning candidate_id",
+            login,
+            body.reason,
+        )
+        if candidate_id is None:
+            return {"login": login, "linkedin_url": None, "linkedin_source": None, "found": False}
+        return await resolve_and_store(
+            conn,
+            login,
+            allow_apollo=True,
+            apollo_reason=body.reason,
+            apollo=functools.partial(match_and_store, conn, candidate_id),
+        )

@@ -165,7 +165,10 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     # turn: holding is the correct outcome, not a failure, and it is checked
     # before quiet hours because deferring a turn with nothing to send would
     # re-queue work for a message that was never going to exist.
-    if last is not None and last.direction == OUTBOUND:
+    # A failed outbound is not an ask they saw. Counting it as "their turn"
+    # froze the thread after a single carrier error: retries, quiet-hours
+    # resumes and the next worker tick all held forever on a bubble nobody got.
+    if last is not None and last.direction == OUTBOUND and last.status != "failed":
         return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     # Quiet hours, checked before composing for the same reason is_blocked is,
@@ -684,7 +687,9 @@ def _wrap_up(db: Session, *, thread: IntakeThread, state: Coverage) -> TurnResul
     _capture(db, thread=thread, force=True)
     if not thread.candidate_id:
         thread.review_needed = True
-        thread.review_reason = identity.UNATTRIBUTED_REASON
+        thread.review_reason = identity.join_reasons(
+            thread.review_reason, identity.UNATTRIBUTED_REASON
+        )
 
     close_thread(db, thread=thread, status=STATUS_COMPLETE)
     return TurnResult(
@@ -713,7 +718,9 @@ def _hand_over_to_manager(
     identity.link_candidate(db, thread=thread)
     if not thread.candidate_id:
         thread.review_needed = True
-        thread.review_reason = identity.UNATTRIBUTED_REASON
+        thread.review_reason = identity.join_reasons(
+            thread.review_reason, identity.UNATTRIBUTED_REASON
+        )
 
     thread.mode = MODE_MANAGING
     db.flush()
@@ -764,7 +771,7 @@ def _run_linkedin_short(
     if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
         return _linkedin_intro(db, thread=thread)
 
-    if last is not None and last.direction == OUTBOUND:
+    if last is not None and last.direction == OUTBOUND and last.status != "failed":
         return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     assert last is not None

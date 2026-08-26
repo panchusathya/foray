@@ -315,9 +315,31 @@ def _copy_contact(db: Session, thread: IntakeThread) -> None:
         db.flush()
 
 
-def _join_reasons(existing: str, addition: str) -> str:
+def join_reasons(existing: str, addition: str) -> str:
     parts = [p for p in [(existing or "").strip(), addition] if p]
     return "; ".join(parts)[:400]
+
+
+def _join_reasons(existing: str, addition: str) -> str:
+    return join_reasons(existing, addition)
+
+
+def clear_identity_review(thread: IntakeThread) -> None:
+    """Drop the identity reasons from the review note, keep the rest.
+
+    ``review_reason`` holds joined segments, so an equality check against
+    ``UNATTRIBUTED_REASON`` silently stopped clearing anything the moment a
+    wrap-up or extractor had already written another reason, and every
+    attributed thread stayed on the review queue forever.
+    """
+    remaining = [
+        part
+        for part in (thread.review_reason or "").split("; ")
+        if part and part != UNATTRIBUTED_REASON
+    ]
+    thread.review_reason = "; ".join(remaining)[:400]
+    if not remaining:
+        thread.review_needed = False
 
 
 def _copy_linkedin(db: Session, thread: IntakeThread) -> None:
@@ -413,8 +435,6 @@ def attribute_thread(db: Session, *, thread: IntakeThread, candidate_id: str) ->
     if coverage_of(thread.record or {}).covered:
         persist_preference(db, thread=thread, candidate_id=candidate.id)
 
-    if thread.review_reason == UNATTRIBUTED_REASON:
-        thread.review_needed = False
-        thread.review_reason = ""
+    clear_identity_review(thread)
     db.flush()
     return thread

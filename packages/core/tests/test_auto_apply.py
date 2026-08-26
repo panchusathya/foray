@@ -826,6 +826,31 @@ class TestAdapters:
             sender.set_sender(None)
         assert result.ok
         assert memory.outbox[0].from_email == "anna+abc@goforay.io"
+        assert memory.attachments and memory.attachments[0]
+        assert memory.attachments[0][0].filename == "ada-resume.pdf"
+
+    def test_the_email_adapter_refuses_a_sender_that_cannot_attach(self):
+        """A body-only send used to report success and mark the application
+        submitted without the resume. Console/memory are dry runs; anything
+        that actually delivers must carry the files or stop."""
+        from juicebox.applications.submit.email import EmailSubmitter
+        from juicebox.outreach import sender
+        from juicebox.outreach.sender import SendResult
+
+        class BodyOnly:
+            name = "resend"
+
+            def send(self, email):
+                return SendResult(ok=True, provider_message_id="re_lie")
+
+        ctx = self._ctx("email", "mailto:careers@acme.com")
+        sender.set_sender(BodyOnly())
+        try:
+            result = EmailSubmitter().submit(ctx)
+        finally:
+            sender.set_sender(None)
+        assert result.needs_human
+        assert "cannot attach" in result.error
 
     def test_the_email_adapter_refuses_with_no_return_address(self):
         from juicebox.applications.submit.email import EmailSubmitter

@@ -25,6 +25,7 @@ from typing import Protocol
 
 from ..log import get_logger
 from .emails import UPSERT_EMAIL
+from .employer import freemail_domains
 
 log = get_logger("enrich.contacts")
 
@@ -203,13 +204,17 @@ async def store_result(
 
     if result.employer_domain:
         # Guarded the way apollo.py guards it: fill a gap, never overwrite a
-        # domain another source already established.
-        await conn.execute(
-            "update candidate_signals set employer_domain = $1"
-            " where candidate_id = $2 and employer_domain is null",
-            result.employer_domain,
-            candidate_id,
-        )
+        # domain another source already established. A freemail domain is not
+        # an employer; the profile-email backfill already refuses those, and
+        # writing gmail.com here would poison search filters.
+        domain = result.employer_domain.strip().lower()
+        if domain and domain not in freemail_domains():
+            await conn.execute(
+                "update candidate_signals set employer_domain = $1"
+                " where candidate_id = $2 and employer_domain is null",
+                domain,
+                candidate_id,
+            )
 
     log.info(
         f"{provider}.stored",

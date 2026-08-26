@@ -138,24 +138,13 @@ def resolve(db: Session, address: str) -> tuple[Candidate | None, str]:
 def candidate_for(db: Session, address: str) -> Candidate | None:
     """Which candidate an alias address belongs to.
 
-    The token is verified against the row's own candidate id rather than
-    trusted: the address is attacker-supplied, and the row lookup alone would
-    make any stored alias addressable by anyone who learned it.
+    Delegates to ``resolve`` so application-scoped tokens are verified against
+    the application id, not the candidate id. A second verifier here that only
+    knew about the legacy HMAC would return ``None`` for every per-application
+    alias -- the address is ours, and this function would claim it is not.
     """
-    token = parse(address)
-    if not token:
-        return None
-    row = db.scalar(
-        select(CandidateAlias).where(
-            CandidateAlias.local_part == token, CandidateAlias.status == "active"
-        )
-    )
-    if row is None:
-        return None
-    if not verify_alias_token(row.candidate_id, token):
-        logger.warning("alias %s does not verify against candidate %s", address, row.candidate_id)
-        return None
-    return db.get(Candidate, row.candidate_id)
+    found, _ = resolve(db, address)
+    return found
 
 
 def ensure(db: Session, candidate: Candidate) -> CandidateAlias | None:
@@ -163,7 +152,12 @@ def ensure(db: Session, candidate: Candidate) -> CandidateAlias | None:
     address = address_for(candidate.id)
     if not address:
         return None
-    existing = db.scalar(select(CandidateAlias).where(CandidateAlias.candidate_id == candidate.id))
+    existing = db.scalar(
+        select(CandidateAlias).where(
+            CandidateAlias.candidate_id == candidate.id,
+            CandidateAlias.scope == "candidate",
+        )
+    )
     if existing is not None:
         if existing.status != "active":
             existing.status = "active"
@@ -188,12 +182,18 @@ def revoke(db: Session, candidate_id: str) -> None:
     Does not delete it: mail addressed to a revoked alias should be identifiable
     as ours and dropped deliberately, not land in the unmatched bucket.
     """
-    row = db.scalar(select(CandidateAlias).where(CandidateAlias.candidate_id == candidate_id))
-    if row is None or row.status == "revoked":
-        return
-    row.status = "revoked"
-    row.revoked_at = utcnow()
-    db.flush()
+    rows = db.scalars(
+        select(CandidateAlias).where(
+            CandidateAlias.candidate_id == candidate_id,
+            CandidateAlias.status != "revoked",
+        )
+    ).all()
+    now = utcnow()
+    for row in rows:
+        row.status = "revoked"
+        row.revoked_at = now
+    if rows:
+        db.flush()
 
 
 def address_for_application(application_id: str) -> str:

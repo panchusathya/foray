@@ -257,20 +257,23 @@ async def mine_commit_emails(
                 row["login"],
                 str(exc)[:500],
             )
-        else:
-            for email, occurrences in found.items():
-                await conn.execute(
-                    UPSERT_EMAIL,
-                    row["id"],
-                    email,
-                    "commit",
-                    is_work_domain(email),
-                    75,
-                    False,
-                    f"authored commits in own repo ({occurrences} commit(s))",
-                    occurrences,
-                )
-                stored += 1
+            # Do not stamp the negative cache on a vendor error: a 429 or
+            # timeout is not "we checked, nothing there", and the 180-day
+            # cursor would skip this person until it expired.
+            return
+        for email, occurrences in found.items():
+            await conn.execute(
+                UPSERT_EMAIL,
+                row["id"],
+                email,
+                "commit",
+                is_work_domain(email),
+                75,
+                False,
+                f"authored commits in own repo ({occurrences} commit(s))",
+                occurrences,
+            )
+            stored += 1
         # Stamp hit or miss: the negative cache and the resume cursor.
         await conn.execute(
             "update candidates set commit_emails_checked_at = now() where id = $1", row["id"]

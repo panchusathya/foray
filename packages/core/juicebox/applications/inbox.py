@@ -234,16 +234,26 @@ def handle(
     candidate = None
     matched_address = ""
     alias_application_id = ""
+    ours = False
     for address in to_addresses:
+        if alias.parse(address):
+            ours = True
         candidate, alias_application_id = alias.resolve(db, address)
         if candidate is not None:
             matched_address = address
             break
     if candidate is None:
+        # The address is ours even when the token does not resolve -- revoked,
+        # never issued, org mismatch on a later check. Falling through would
+        # hand an ATS acknowledgement to the recruiter-reply path, which is
+        # built to read a candidate changing their mind.
+        if ours:
+            return {"routed": True, "reason": "unresolved alias"}
         return {"routed": False, "reason": "not one of our aliases"}
     if candidate.org_id != org_id:
-        # The mailbox is shared; an alias belongs to exactly one org.
-        return {"routed": False, "reason": "org mismatch"}
+        # The mailbox is shared; an alias belongs to exactly one org. Still
+        # routed: it was our address, so the caller must not fall through.
+        return {"routed": True, "reason": "org mismatch"}
 
     # A sync page is replayed whenever the worker dies holding one, and the
     # ingest is only free if it is idempotent. Without this, a replay clicks a
@@ -276,9 +286,9 @@ def handle(
     }
 
     if classification.kind == KIND_VERIFICATION:
-        outcome.update(_verify(db, candidate, classification.detail))
+        outcome.update(_verify(db, candidate, classification.detail, application_id=alias_application_id))
     elif classification.kind == KIND_OTP:
-        outcome.update(_park_code(db, candidate, classification.detail))
+        outcome.update(_park_code(db, candidate, classification.detail, application_id=alias_application_id))
     elif classification.kind in {KIND_ACKNOWLEDGED, KIND_REJECTED} and application is not None:
         outcome.update(
             _move(db, application, to_status=classification.kind, phrase=classification.phrase)
@@ -375,22 +385,30 @@ def _match_application(
     return rows[0] if len(rows) == 1 else None
 
 
-def _parked(db: Session, candidate: Candidate) -> ApplicationSubmission | None:
-    """The attempt waiting on mail, if there is one."""
-    return db.scalar(
+def _parked(
+    db: Session, candidate: Candidate, *, application_id: str = ""
+) -> ApplicationSubmission | None:
+    """The attempt waiting on mail, if there is one.
+
+    When the alias names an application, attach the mail to that pursuit —
+    two parked Workday runs for the same person must not share an OTP.
+    """
+    stmt = (
         select(ApplicationSubmission)
         .join(Application, Application.id == ApplicationSubmission.application_id)
         .where(
             Application.candidate_id == candidate.id,
             ApplicationSubmission.status == "needs_verification",
         )
-        .order_by(ApplicationSubmission.created_at.desc())
     )
+    if application_id:
+        stmt = stmt.where(ApplicationSubmission.application_id == application_id)
+    return db.scalar(stmt.order_by(ApplicationSubmission.created_at.desc()))
 
 
-def _verify(db: Session, candidate: Candidate, url: str) -> dict:
+def _verify(db: Session, candidate: Candidate, url: str, *, application_id: str = "") -> dict:
     """Click a verification link, then un-park whatever was waiting on it."""
-    attempt = _parked(db, candidate)
+    attempt = _parked(db, candidate, application_id=application_id)
     if attempt is None:
         return {"action": "ignored", "reason": "no parked submission to verify"}
 
@@ -422,8 +440,8 @@ def _verify(db: Session, candidate: Candidate, url: str) -> dict:
     return {"action": "verified", "submission_id": attempt.id, "job_id": job.id}
 
 
-def _park_code(db: Session, candidate: Candidate, code: str) -> dict:
-    attempt = _parked(db, candidate)
+def _park_code(db: Session, candidate: Candidate, code: str, *, application_id: str = "") -> dict:
+    attempt = _parked(db, candidate, application_id=application_id)
     if attempt is None:
         return {"action": "ignored", "reason": "no parked submission wants a code"}
     state = dict(attempt.verification or {})

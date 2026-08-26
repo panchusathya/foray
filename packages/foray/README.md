@@ -52,9 +52,9 @@ principals and can decide whether the caller may run up a bill. nginx also
 returns 404 for `/foray/internal/`, so the token is the second line rather than
 the only one. `POST /internal/candidates/find-emails` is the first such route.
 
-Adding a paid route next to `/search` would make it payable by strangers. That is
-already true of `POST /candidate/{login}/apollo`, which predates the split and is
-only harmless because nothing calls it.
+Adding a paid route next to `/search` would make it payable by strangers. That
+used to be true of `POST /candidate/{login}/apollo`; it now lives at
+`POST /internal/candidates/{login}/apollo` behind the same token.
 
 ## Commands
 

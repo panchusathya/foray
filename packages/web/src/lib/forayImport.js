@@ -1,3 +1,9 @@
+// Personal before work. emails[0] is the address send_step mails, so a work
+// address in front of a personal one puts a recruiting pitch in a work inbox.
+function selectPersonalFirst(entries) {
+  return [...entries].sort((a, b) => Number(Boolean(a.is_work)) - Number(Boolean(b.is_work)));
+}
+
 // Maps a Foray search hit to a Juicebox CandidateIn payload. Pure and
 // dependency-free so it can be unit-tested without a browser.
 //
@@ -8,7 +14,7 @@
 // Candidate.emails (and thus primary_email for the sequencer).
 
 export function forayHitToCandidate(hit, { archetypeId = null } = {}) {
-  const emails = (hit.emails ?? []).map((e) => e.email).filter(Boolean);
+  const emails = selectPersonalFirst(hit.emails ?? []).map((e) => e.email).filter(Boolean);
   const emailReach = Object.fromEntries(
     (hit.emails ?? [])
       .filter((e) => e.email && e.reach_score != null)

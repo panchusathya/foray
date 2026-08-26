@@ -65,6 +65,7 @@ from juicebox.messaging.identity import (
     CONTACT_EMAIL,
     CONTACT_NAME,
     UNATTRIBUTED_REASON,
+    attribute_thread,
     find_email,
     find_name,
 )
@@ -209,6 +210,26 @@ class TestChannels:
         # or the thread would believe it had asked something nobody saw.
         assert thread.outbound_count == 1
         assert rows[1].status == "sent"
+
+    def test_a_failed_outbound_does_not_freeze_the_thread(
+        self, session, identified, fake_channel
+    ):
+        """Never-two-outbound-in-a-row used to treat a failed send as an ask
+        they saw. The next worker tick then held forever."""
+        run_turn(session, thread=identified)
+        record_inbound(
+            session,
+            thread=identified,
+            body="senior machine learning engineer roles",
+        )
+        fake_channel.fail_next = "carrier rejected"
+        failed = run_turn(session, thread=identified)
+        assert failed.sent and failed.sent[0].status == "failed"
+
+        fake_channel.fail_next = ""
+        retried = run_turn(session, thread=identified)
+        assert retried.action != ACTION_HELD
+        assert any(m.status == "sent" for m in retried.sent)
 
 
 # --------------------------------------------------------------------------
@@ -1229,6 +1250,29 @@ class TestThreadAttribution:
         )
         assert pref is not None
         assert pref.spec["job_titles"] == ["machine learning engineer"]
+
+    def test_attributing_clears_identity_from_a_compound_reason(
+        self, session, account, fake_channel
+    ):
+        """An equality check against UNATTRIBUTED_REASON left every attributed
+        thread on the review queue the moment wrap-up had already written
+        another reason onto the same field."""
+        person = self._person(session, account, "Ada Compound", "ada-compound@example.com")
+        thread = open_thread(
+            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
+        )
+        thread.review_needed = True
+        thread.review_reason = f"low confidence on timeline; {UNATTRIBUTED_REASON}"
+        thread.record = {
+            **thread.record,
+            "spec": {**thread.record["spec"], "job_titles": ["machine learning engineer"]},
+        }
+        session.flush()
+
+        attribute_thread(session, thread=thread, candidate_id=person.id)
+        assert UNATTRIBUTED_REASON not in (thread.review_reason or "")
+        assert "low confidence on timeline" in thread.review_reason
+        assert thread.review_needed is True
 
     def test_an_address_owned_by_somebody_else_is_refused(
         self, client, session, account, fake_channel

@@ -32,7 +32,8 @@ test('maps core fields with login as source_id', () => {
   assert.equal(c.current_company, 'Stripe');
   assert.equal(c.current_company_domain, 'stripe.com');
   assert.equal(c.years_experience, 7.2);
-  assert.deepEqual(c.emails, ['jane@stripe.com', 'jd@gmail.com']);
+  // Personal before work: emails[0] is what the sequencer mails.
+  assert.deepEqual(c.emails, ['jd@gmail.com', 'jane@stripe.com']);
   assert.deepEqual(c.raw.foray.email_reach, {
     'jane@stripe.com': 55,
     'jd@gmail.com': 72,

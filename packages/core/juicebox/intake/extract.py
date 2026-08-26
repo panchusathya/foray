@@ -42,7 +42,7 @@ from ..llm.prompts import (
     intake_extract_prompt,
 )
 from ..search.parser import ParsedQuery
-from .contact import find_email, find_name, scan_transcript
+from .contact import candidate_speech, find_email, find_name, scan_transcript
 from .schema import (
     EMPLOYMENT_STATUSES,
     EQUITY_IMPORTANCE,
@@ -466,7 +466,11 @@ _TITLE_CAPTURES = (
 
 
 def _heuristic_extract(transcript: str) -> ExtractionResult:
-    text = (transcript or "").lower()
+    # Preferences from what the caller said. The agent's script contains
+    # titles, seniority and "remote" as questions; a regex over the whole
+    # transcript treats those as answers. Identity still uses the full
+    # transcript below because scan_transcript keys off the question.
+    text = candidate_speech(transcript).lower()
     record = empty_record()
     low: list[str] = []
 

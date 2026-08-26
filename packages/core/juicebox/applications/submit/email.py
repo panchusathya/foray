@@ -10,12 +10,8 @@ mailbox we own, which is what lets the tracker see the employer's answer.
 
 from __future__ import annotations
 
-import logging
-
 from ...outreach.sender import OutboundEmail, get_sender
 from .base import METHOD_EMAIL, SubmissionContext, SubmissionResult
-
-logger = logging.getLogger(__name__)
 
 #: Enough for a recruiter to file it without opening the attachments.
 SUBJECT = "Application: {title}"
@@ -91,23 +87,27 @@ class EmailSubmitter:
                 error="no resume in the package",
             )
 
-        # The providers in outreach/sender.py have no attachment channel, and
-        # an application email without the resume is worse than none. SMTP is
-        # the only one that can carry it today, so anything else is logged and
-        # reported as needing a human rather than sent half-formed.
+        # An application email without the resume is worse than none. SMTP and
+        # Resend can carry attachments; console/memory are dry runs that only
+        # log. Anything else — including a mailbox sender that cannot attach
+        # — must stop as needs_human rather than report success half-formed.
         email = build_email(ctx)
         sender = get_sender()
         attach = getattr(sender, "send_with_attachments", None)
         if callable(attach):
             result = attach(email, ctx.attachments)
-        else:
+        elif getattr(sender, "name", "") in {"console", "memory"}:
             result = sender.send(email)
-            if getattr(sender, "name", "") not in {"console", "memory"}:
-                logger.warning(
-                    "%s cannot carry attachments; application %s went without them",
-                    getattr(sender, "name", "?"),
-                    ctx.application_id,
-                )
+        else:
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error=(
+                    f"{getattr(sender, 'name', 'sender')} cannot attach a resume; "
+                    "the application was not sent"
+                ),
+            )
         if not result.ok:
             return SubmissionResult(ok=False, method=self.method, error=result.error)
         return SubmissionResult(

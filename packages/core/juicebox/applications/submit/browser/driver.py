@@ -94,13 +94,27 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
-def _proxy_config(url: str) -> dict | None:
+#: Proxy gateways that encode a sticky-session id in the *username*, as
+#: ``user-session-<token>``. Bright Data and most residential vendors do this.
+#: A form fill is several requests to one domain, and they must all leave from
+#: one IP -- a page loaded from IP A and submitted from IP B is a tell. A token
+#: fixed for the life of one browser run gives each application its own stable
+#: IP without pinning every application to a single one.
+_SESSION_PROXY_HOSTS = ("superproxy.io",)
+
+
+def _proxy_config(url: str, *, session_token: str = "") -> dict | None:
     """Playwright's proxy dict from a standard proxy URL, or None for direct.
 
     Playwright wants the server split from the credentials, so a URL with a
     userinfo part (``http://user:pass@host:port`` -- the shape every proxy
     vendor hands you) is broken back apart here. A bare ``host:port`` with no
     scheme is assumed http, which is what the endpoints use.
+
+    ``session_token`` pins one sticky IP for this run: on a gateway that reads
+    a session id out of the username, it is appended as ``-session-<token>``
+    unless the configured username already carries one (so an operator who
+    wants a fixed IP keeps it). Other proxies are untouched.
     """
     url = (url or "").strip()
     if not url:
@@ -119,8 +133,16 @@ def _proxy_config(url: str) -> dict | None:
     if parsed.port:
         server += f":{parsed.port}"
     config: dict = {"server": server}
-    if parsed.username:
-        config["username"] = parsed.username
+    username = parsed.username or ""
+    if (
+        username
+        and session_token
+        and "-session-" not in username
+        and any(parsed.hostname.endswith(host) for host in _SESSION_PROXY_HOSTS)
+    ):
+        username = f"{username}-session-{session_token}"
+    if username:
+        config["username"] = username
     if parsed.password:
         config["password"] = parsed.password
     return config
@@ -142,10 +164,15 @@ def session(*, log: RunLog):
         _LAST_RUN_AT = time.monotonic()
 
         settings = get_settings()
+        # A fresh sticky-session token per run: one IP for this whole form
+        # fill, a different one for the next application.
+        import secrets
+
+        session_token = secrets.token_hex(6)
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=settings.apply_browser_headless,
-                proxy=_proxy_config(settings.apply_proxy_url),
+                proxy=_proxy_config(settings.apply_proxy_url, session_token=session_token),
                 # Two flags that most cheaply separate "real Chrome" from
                 # "automation" for a fingerprinter: the AutomationControlled
                 # blink feature is what sets navigator.webdriver, and the

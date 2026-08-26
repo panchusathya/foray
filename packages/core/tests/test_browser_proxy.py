@@ -52,3 +52,33 @@ def test_a_password_with_url_characters_survives():
 
 def test_garbage_is_direct_not_a_crash():
     assert _proxy_config("not a url") is None
+
+
+class TestStickySession:
+    """A form fill is several requests; they must all leave from one IP."""
+
+    BD = "http://brd-customer-x-zone-isp:pw@brd.superproxy.io:44445"
+
+    def test_a_session_token_is_appended_for_a_session_proxy(self):
+        config = _proxy_config(self.BD, session_token="abc123")
+        assert config["username"] == "brd-customer-x-zone-isp-session-abc123"
+
+    def test_no_token_leaves_the_username_alone(self):
+        config = _proxy_config(self.BD)
+        assert config["username"] == "brd-customer-x-zone-isp"
+
+    def test_a_configured_session_is_not_overridden(self):
+        """An operator who pinned one IP on purpose keeps it."""
+        url = "http://brd-customer-x-zone-isp-session-fixed:pw@brd.superproxy.io:44445"
+        config = _proxy_config(url, session_token="abc123")
+        assert config["username"] == "brd-customer-x-zone-isp-session-fixed"
+
+    def test_country_targeting_in_the_username_is_preserved(self):
+        url = "http://brd-customer-x-zone-isp-country-us:pw@brd.superproxy.io:44445"
+        config = _proxy_config(url, session_token="abc123")
+        assert config["username"] == "brd-customer-x-zone-isp-country-us-session-abc123"
+
+    def test_a_non_session_proxy_is_untouched(self):
+        """A plain proxy does not understand -session- syntax."""
+        config = _proxy_config("http://user:pw@gate.otherproxy.com:8000", session_token="abc123")
+        assert config["username"] == "user"

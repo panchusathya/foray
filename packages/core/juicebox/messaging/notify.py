@@ -43,6 +43,7 @@ EVENT_MATCHES_READY = "matches.ready"
 EVENT_PACKAGE_READY = "package.ready"
 EVENT_APPLICATION_SENT = "application.sent"
 EVENT_STATUS_CHANGED = "status.changed"
+EVENT_REFERRAL_CONFIRMED = "referral.confirmed"
 
 
 def manager_thread_for(db: Session, *, org_id: str, candidate_id: str) -> IntakeThread | None:
@@ -175,6 +176,21 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             db, org_id=thread.org_id, candidate_id=thread.candidate_id or ""
         )
         body = prompts.NOTIFY_STATUS_CHANGED.format(summary=summary)
+        row = _deliver(db, thread=thread, message=OutboundMessage(body=body), origin="proactive")
+        return {"event": event, "sent": 1 if row is not None else 0}
+
+    if event == EVENT_REFERRAL_CONFIRMED:
+        from ..models import Referral
+
+        referral = db.get(Referral, job.payload.get("subject_id") or "")
+        if referral is None or referral.org_id != thread.org_id:
+            return {"skipped": "referral not found for this thread"}
+        # The bonus comes off the row, not out of settings. The referrer was
+        # promised a number in the group chat; this is that same number even
+        # if the configured reward has moved since.
+        body = prompts.NOTIFY_REFERRAL_CONFIRMED.format(
+            bonus=referral.bonus_applications
+        )
         row = _deliver(db, thread=thread, message=OutboundMessage(body=body), origin="proactive")
         return {"event": event, "sent": 1 if row is not None else 0}
 

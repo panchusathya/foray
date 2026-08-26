@@ -90,6 +90,13 @@ KIND_DOC_PARSE = "docs.parse"
 # Idempotent on the inbound message id. Never on ensure_ticks.
 KIND_INTAKE_ATTACHMENT = "intake.attachment"
 
+# Answering one iMessage group chat: fetch the participants, record a referral
+# per newcomer, send the single reply, leave. A job rather than webhook work
+# for the same reason attachments are -- three network calls with the vendor
+# waiting on a 200. Idempotent on the group thread, which is closed on the way
+# out so a replay finds nothing to do.
+KIND_INTAKE_REFERRAL = "intake.referral"
+
 # Fetching one LinkedIn profile through the paid provider and promoting it
 # onto the CRM. Worker-only by design: the webhook that receives a URL
 # enqueues and returns, so a public request path never spends money.

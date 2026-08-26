@@ -34,6 +34,7 @@ SOURCE_INBOUND_TEXT = "inbound_text"
 SOURCE_VOICE_WRAP_UP = "voice_wrap_up"
 SOURCE_PORTAL = "portal"
 SOURCE_CONNECT_PAGE = "connect_page"
+SOURCE_REFERRAL_GROUP = "referral_group"
 
 # Versioned disclosure texts. Bump the version whenever the wording changes so
 # old rows keep describing what was actually shown at the time.
@@ -59,6 +60,22 @@ DISCLOSURE_INBOUND_TEXT = (
     "with a single acknowledgement, though neither is recited in the greeting."
 )
 DISCLOSURE_INBOUND_TEXT_VERSION = "inbound-text-v2"
+
+# The group-chat referral. Its own record rather than a reuse of the inbound
+# text one, because the material fact is different and the difference is the
+# whole risk: our reply reaches a third party who never texted us. Written to
+# say exactly what was sent and what was not, so a complaint can be answered
+# with the mechanism rather than an assurance about it.
+DISCLOSURE_REFERRAL_GROUP = (
+    "Person added our number to a group chat containing at least one other "
+    "party and sent a message. Prior express consent for that person is the "
+    "inbound message itself. Exactly one reply is sent into the group: it "
+    "identifies the org, discloses the AI, carries no link, and directs anyone "
+    "new to text our number themselves. We then leave the chat. No one-to-one "
+    "message is ever sent to a participant who has not texted us first, and "
+    "STOP is honoured in a group as anywhere else."
+)
+DISCLOSURE_REFERRAL_GROUP_VERSION = "referral-group-v1"
 
 # The voice wrap-up question, verbatim from INTAKE_COMPLIANCE.md §6 and the
 # deployed agent definition. Consent is for application updates, not marketing.

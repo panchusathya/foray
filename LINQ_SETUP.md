@@ -196,3 +196,81 @@ thread-scoped storage path and attached the moment identity capture links a
 candidate. Non-resume media (photos, video) get an honest "can't read that"
 reply with the upload-page link while the profile question is open, and are
 ignored otherwise. OCR on scanned images remains out of scope.
+
+## Group-chat referrals
+
+Off by default. A candidate can refer a friend by putting our line and the
+friend in an iMessage group — the whole gesture is three taps, no code and no
+form.
+
+```bash
+LINQ_GROUP_REFERRALS_ENABLED=false   # flip to true per deployment
+REFERRAL_BONUS_APPLICATIONS=5        # what a confirmed referral is worth
+```
+
+Its own flag, separate from `LINQ_ENABLED`, because this is the one path where
+a message of ours reaches somebody who never texted us. What the flag turns on:
+
+1. A group `message.received` opens a thread with `entry_point=linq_group`,
+   `mode=referral`, and queues one `intake.referral` job. No turn is ever run on
+   a group — the intake agent asks one person about their own preferences, and
+   there is more than one person in the room.
+2. The job reads the participants (`GET /v3/chats/{id}`), writes one `referrals`
+   row per newcomer, and sends **one** message into the group: AI disclosure,
+   our number, what the intro is worth, notice that we will step out once the
+   newcomer messages us, and no link.
+3. **We stay in the chat.** Handing somebody a number and leaving in the same
+   breath gives them no way to check they had the right one. A later ping in the
+   group gets exactly one redirect — "text me separately, happy to help
+   one-on-one" — and after that we go quiet and stay put. Two outbound messages
+   is the ceiling (`prompts.MAX_GROUP_REPLIES`).
+4. Nothing is ever sent one-to-one to the referred friend. The row stays
+   `pending` until **they** text our number; that inbound is both the
+   confirmation and the consent. It is what tells the referrer their intro
+   landed, and it is what makes us leave: a short sign-off naming nobody, then
+   `POST /v3/chats/{id}/leave`, then the thread closes.
+
+A group with nobody new in it is the one case we leave immediately — there is
+no one to wait for, so it gets an honest "I keep things one-on-one" and we go.
+
+**Consequence worth knowing:** if the newcomer never texts, we stay in that
+group indefinitely (quiet after the first redirect). There is no timer. If that
+turns out to matter, the event-driven place to add an exit is the redirect cap
+in `referrals.redirect_group` — being pinged twice with no private message is a
+reasonable signal to step out.
+
+The bonus is **recorded, not yet spendable**: `referrals.earned_bonus` sums
+confirmed rows and nothing reads it, so `applications.limits.may_submit` still
+enforces 5 submissions a week for everyone. The group copy says "banked" for
+exactly that reason — wire the bonus into `may_submit` and update the copy in
+the same change.
+
+Evidence record: `messaging/consent.py` grants these threads
+`SOURCE_REFERRAL_GROUP` with a versioned disclosure that states what is sent
+into a group and what is not. STOP works in a group as anywhere else.
+
+Because the group thread stays `active` while we are in the chat, it carries the
+referrer's own number in `from_address` — so `threads.find_active_thread`
+excludes `MODE_REFERRAL` outright. Without that, the referrer's next private
+message would resume the *group* thread and every reply to them would be
+delivered in front of the friend they just introduced. Do not remove that filter.
+
+### Group smoke test
+
+1. `LINQ_GROUP_REFERRALS_ENABLED=true`, recreate `api` + `worker`.
+2. From an iPhone, create a group with our Linq number and a second phone that
+   is **not** already a candidate. Send one message.
+3. Expect: one reply into the group, and that we are **still in it**. Check
+   `select status, referee_address from referrals` → one `pending` row for the
+   second phone.
+4. Send another message into the group: expect one "text me separately" reply.
+   Send a third and a fourth: expect silence, and we are still in the chat.
+5. Text our number from that second phone. Now expect the sign-off in the group
+   and "left the conversation". The row flips to `confirmed` with
+   `referee_thread_id` set, and the referrer gets the credit text if they have a
+   `managing` thread.
+
+Worth confirming against your Linq account before the first real run:
+`GET /v3/webhook-events` for the authoritative event list, and that `/leave` is
+POST — the docs pages disagree, and `leave_chat` is best-effort either way, so a
+wrong verb shows up as us staying in groups rather than as an error.

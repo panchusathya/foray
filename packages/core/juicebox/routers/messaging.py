@@ -42,7 +42,7 @@ from ..config import get_settings
 from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..intake.phones import lookup_key
 from ..intake.service import resolve_candidate_id
-from ..jobs import KIND_INTAKE_ATTACHMENT, KIND_INTAKE_TURN, enqueue
+from ..jobs import KIND_INTAKE_ATTACHMENT, KIND_INTAKE_REFERRAL, KIND_INTAKE_TURN, enqueue
 from ..messaging import consent, prompts
 from ..messaging.channels import LINQ, WEB, LinqChannel, OutboundMessage
 from ..messaging.conversation import deliver, run_turn
@@ -57,6 +57,7 @@ from ..messaging.linq import (
     verify_webhook,
 )
 from ..messaging.linq import SignatureError as LinqSignatureError
+from ..messaging.referrals import MODE_REFERRAL, confirm_pending, redirect_group
 from ..messaging.schemas import (
     ChatMessageIn,
     ChatMessageOut,
@@ -167,7 +168,9 @@ def _check_thread_creation_cap(db: Session, *, org_id: str) -> None:
             .select_from(IntakeThread)
             .where(
                 IntakeThread.org_id == org_id,
-                IntakeThread.entry_point.in_(("web_widget", "linq_inbound")),
+                IntakeThread.entry_point.in_(
+                    ("web_widget", "linq_inbound", "linq_group")
+                ),
                 IntakeThread.created_at >= since,
             )
         )
@@ -298,6 +301,154 @@ def post_message(
 
     result = run_turn(db, thread=thread)
     return _session_out(db, thread, action=result.action)
+
+
+def _handle_linq_group(db: Session, inbound) -> dict:
+    """A group chat: answer once, point the newcomer at their own thread, leave.
+
+    Deliberately does **not** go through ``_resolve_or_open_linq_thread``. That
+    function falls back to ``find_active_thread(org, channel, from_address)``,
+    which would return the referrer's existing one-to-one thread and then
+    overwrite its ``provider_thread_id`` with the group's chat id -- after
+    which every private reply we sent them would be delivered into the group,
+    in front of the friend they just introduced. The group gets its own row.
+
+    The reply itself is queued, not sent here: fetching the participants,
+    sending and leaving is three network calls, and Linq wants its 200 inside
+    ten seconds. Same reasoning as the attachment job.
+    """
+    from ..messaging.consent import (
+        DISCLOSURE_REFERRAL_GROUP,
+        DISCLOSURE_REFERRAL_GROUP_VERSION,
+        SOURCE_REFERRAL_GROUP,
+    )
+    from ..messaging.suppression import address_has_opted_out
+
+    if not get_settings().linq_group_referrals_enabled:
+        logger.info("Linq group chat %r ignored (referrals disabled)", inbound.chat_id)
+        return {"status": "ignored", "reason": "group_chat"}
+
+    if not inbound.provider_native_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No message id in payload"
+        )
+
+    org_id = resolve_linq_org_id(db, to_address=inbound.to_address)
+    if org_id is None:
+        # A group envelope does not reliably carry a recipient handle -- the
+        # chat is the recipient -- so falling back to our own configured line
+        # is the difference between this feature working and every group 404ing.
+        # Still never the payload: the org comes from a number we registered.
+        org_id = resolve_linq_org_id(db, to_address=get_settings().linq_from_number)
+    if org_id is None:
+        logger.warning("Linq group message to unclaimed number %r", inbound.to_address)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No org owns this number"
+        )
+
+    from_key = lookup_key(inbound.from_address) or inbound.from_address
+    thread = find_by_provider_id(
+        db, provider="linq", provider_thread_id=inbound.chat_id
+    )
+
+    if thread is None:
+        # Somebody on the do-not-contact list is not made a referrer by opening
+        # a group. Nothing is recorded and nothing is sent: answering would put
+        # a message on the screen of the person who told us to stop.
+        if address_has_opted_out(db, channel=LINQ, from_address=from_key):
+            logger.info("Linq group from opted-out sender %r ignored", from_key)
+            return {"status": "ignored", "reason": "sender_opted_out"}
+
+        _check_thread_creation_cap(db, org_id=org_id)
+        _check_sender_thread_cap(db, org_id=org_id, from_address=from_key, channel=LINQ)
+        to_key = lookup_key(inbound.to_address) or inbound.to_address
+        candidate_id = resolve_candidate_id(db, org_id=org_id, phone=from_key)
+        thread = open_thread(
+            db,
+            org_id=org_id,
+            channel=LINQ,
+            provider="linq",
+            provider_thread_id=inbound.chat_id,
+            entry_point="linq_group",
+            candidate_id=candidate_id,
+            from_address=from_key,
+            to_address=to_key,
+            consent_messaging=True,
+            # Its own mode, so nothing that walks threads can mistake a group
+            # for somebody's line to the agent: manager_thread_for and
+            # handle_notify both filter on MANAGER_MODES, and no turn is ever
+            # enqueued for this thread.
+            mode=MODE_REFERRAL,
+        )
+        consent.record_consent(
+            db,
+            org_id=org_id,
+            channel=LINQ,
+            scope=consent.SCOPE_MESSAGING,
+            source=SOURCE_REFERRAL_GROUP,
+            disclosure_text=DISCLOSURE_REFERRAL_GROUP,
+            disclosure_version=DISCLOSURE_REFERRAL_GROUP_VERSION,
+            candidate_id=candidate_id,
+            thread_id=thread.id,
+        )
+        created = True
+    else:
+        created = False
+
+    # Same ceiling the private path enforces. We should stop receiving here the
+    # moment we leave the chat, so reaching this is a sign we did not -- in
+    # which case a group must not be able to write rows forever.
+    if thread.inbound_count >= MAX_INBOUND_PER_THREAD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="This conversation has reached its message limit",
+        )
+
+    message, recorded = record_inbound(
+        db,
+        thread=thread,
+        body=inbound.body,
+        provider_native_id=inbound.provider_native_id,
+        raw=inbound.raw,
+    )
+    if not recorded:
+        return {"status": "accepted", "duplicate": True, "message_id": message.id}
+
+    # STOP works in a group exactly as it does anywhere else. Checked before
+    # the referral is queued, so an opt-out is never answered with an offer.
+    if looks_like_stop(inbound.body):
+        handle_stop(db, thread=thread)
+        return {"status": "accepted", "stopped": True, "message_id": message.id}
+
+    if not created:
+        # Still being talked to in the group. We stay in the room until the
+        # newcomer texts us, so this is not silence by default -- it is one
+        # redirect to a one-to-one, then quiet. `redirect_group` owns the cap;
+        # no turn is run either way, because whatever was asked, the answer is
+        # the same: not here.
+        redirected = redirect_group(db, thread=thread)
+        return {
+            "status": "accepted",
+            "answered": False,
+            "redirected": redirected,
+            "message_id": message.id,
+        }
+
+    enqueue(
+        db,
+        org_id=org_id,
+        kind=KIND_INTAKE_REFERRAL,
+        # Keyed on the thread, not the message: one answer per group forever,
+        # however many times the opening message is delivered.
+        idempotency_key=f"{KIND_INTAKE_REFERRAL}:{thread.id}",
+        payload={"thread_id": thread.id},
+    )
+    return {
+        "status": "accepted",
+        "group": True,
+        "message_id": message.id,
+        "thread_id": thread.id,
+    }
 
 
 def _resolve_or_open_linq_thread(
@@ -541,8 +692,7 @@ def linq_webhook(
         ) from exc
 
     if inbound.is_group:
-        logger.info("Linq group chat %r ignored", inbound.chat_id)
-        return {"status": "ignored", "reason": "group_chat"}
+        return _handle_linq_group(db, inbound)
 
     if not inbound.provider_native_id:
         raise HTTPException(
@@ -600,6 +750,15 @@ def linq_webhook(
         # except this one message.
         deliver(db, thread=thread, message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT))
         return {"status": "accepted", "stopped": True, "message_id": message.id}
+
+    # This sender may be somebody a group chat pointed here. Reaching us
+    # themselves is the only signal a referral waits on, and it is checked here
+    # rather than at thread creation because a friend who already had an open
+    # thread would never pass through that path -- their referral would sit
+    # pending forever. After the STOP branch on purpose: an opt-out is not a
+    # confirmation, whatever it earns anybody. Idempotent, so the cost of
+    # running it on every inbound is one indexed lookup.
+    confirm_pending(db, org_id=org_id, address=thread.from_address, thread=thread)
 
     if looks_like_help(inbound.body):
         deliver(db, thread=thread, message=OutboundMessage(body=prompts.HELP_REPLY))

@@ -603,6 +603,106 @@ def _refresh_media_url(attachment_id: str) -> str:
     return str(inner.get("url") or "").strip()
 
 
+@dataclass(frozen=True)
+class ChatHandle:
+    """One participant of a chat, as Linq reports them.
+
+    ``status`` is ``active`` | ``left`` | ``removed``. Somebody who has already
+    left a group is not in the room to be referred, so the caller filters on it
+    rather than assuming every handle is present.
+    """
+
+    handle: str
+    is_me: bool = False
+    status: str = "active"
+
+    @property
+    def is_active(self) -> bool:
+        return (self.status or "active").lower() == "active"
+
+
+def fetch_chat_handles(
+    chat_id: str, *, transport: Transport | None = None
+) -> tuple[ChatHandle, ...]:
+    """Who is in this chat. Empty when we cannot find out.
+
+    A ``message.received`` envelope carries the sender and the chat id but not
+    a reliable participant list, and a group referral is entirely a question
+    about the *other* people in the room -- so this is a real GET rather than a
+    read of the payload.
+
+    Empty on any failure, never a partial guess: the caller answers the group
+    politely and records no referral, which is the safe direction. Inventing a
+    participant would mean promising a reward for somebody who was never there.
+    """
+    if not chat_id:
+        return ()
+    settings = get_settings()
+    if transport is None and not settings.linq_api_key:
+        return ()
+    url = f"{LINQ_API_BASE}/chats/{chat_id}"
+    try:
+        if transport is not None:
+            data = transport("GET", url, {})
+        else:
+            response = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {settings.linq_api_key}"},
+                timeout=15.0,
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "linq chat fetch %s -> %s (%s)",
+                    chat_id,
+                    response.status_code,
+                    (response.text or "")[:200],
+                )
+                return ()
+            data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("linq chat fetch failed for %s: %s", chat_id, exc)
+        return ()
+    if not isinstance(data, dict):
+        return ()
+    # Unwrap the same two envelopes _refresh_media_url has to: a bare object,
+    # or one nested under its own resource name.
+    chat = data.get("chat") if isinstance(data.get("chat"), dict) else data
+    inner = chat.get("data") if isinstance(chat.get("data"), dict) else chat
+    raw = inner.get("handles") or inner.get("participants") or []
+    if not isinstance(raw, list):
+        return ()
+    found: list[ChatHandle] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            found.append(ChatHandle(handle=entry.strip()))
+            continue
+        if not isinstance(entry, dict):
+            continue
+        handle = str(entry.get("handle") or entry.get("address") or "").strip()
+        if not handle:
+            continue
+        found.append(
+            ChatHandle(
+                handle=handle,
+                is_me=bool(entry.get("is_me")),
+                status=str(entry.get("status") or "active").strip().lower(),
+            )
+        )
+    return tuple(found)
+
+
+def leave_chat(chat_id: str, *, transport: Transport | None = None) -> None:
+    """Remove our line from a group chat. Best-effort, like the other courtesies.
+
+    Deliberately not fatal. A referral that has been recorded and answered is
+    done; failing the job because we are still in the group would replay the
+    thank-you message, and a second thank-you is worse than an extra
+    participant. iMessage shows "left the conversation", which is the honest
+    signal -- we are not listening any more.
+    """
+    _chat_action("POST", chat_id, "leave", transport=transport)
+
+
 def resolve_linq_org_id(db: Session, *, to_address: str) -> str | None:
     """Which org owns the Linq line that was texted. Never reads the payload."""
     number = lookup_key(to_address)
@@ -853,7 +953,7 @@ def send_reaction(
 def _chat_action(
     method: str, chat_id: str, action: str, *, transport: Transport | None = None
 ) -> None:
-    """POST/DELETE a side-effect on a chat: typing, read. Never raises.
+    """POST/DELETE a side-effect on a chat: typing, read, leave. Never raises.
 
     These are courtesies. A failed one costs an indicator, and a turn that
     died because a receipt 500'd would cost the conversation.
@@ -880,7 +980,8 @@ def _chat_action(
         # why. Still best-effort -- we log and move on, never fail a turn.
         if response.status_code >= 400:
             logger.warning(
-                "linq typing %s -> %s (%s)",
+                "linq %s %s -> %s (%s)",
+                action,
                 method,
                 response.status_code,
                 (response.text or "")[:200],

@@ -446,6 +446,19 @@ class Settings:
     linq_webhook_secret: str = field(default_factory=lambda: _env("LINQ_WEBHOOK_SECRET", ""))
     linq_from_number: str = field(default_factory=lambda: _env("LINQ_FROM_NUMBER", ""))
     linq_enabled: bool = field(default_factory=lambda: _env_bool("LINQ_ENABLED", False))
+    # Group chats: answer once, point the newcomer at their own thread, leave.
+    # Off by default and separate from linq_enabled, because this is the one
+    # path where a message of ours reaches somebody who never texted us -- see
+    # messaging/referrals.py for what that buys and what it costs.
+    linq_group_referrals_enabled: bool = field(
+        default_factory=lambda: _env_bool("LINQ_GROUP_REFERRALS_ENABLED", False)
+    )
+    # What a confirmed referral is worth. Read by the group copy *and* stamped
+    # on the row, so the number a referrer is promised is the number stored --
+    # raising it later cannot silently restate what an old referral earned.
+    referral_bonus_applications: int = field(
+        default_factory=lambda: _env_int("REFERRAL_BONUS_APPLICATIONS", 5)
+    )
 
     # --- messaging governance (CANDIDATE_AGENT_PLAN §3-§4) ------------------
     # An outbound message answering an inbound one this recent sends regardless

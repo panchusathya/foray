@@ -35,7 +35,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -103,12 +102,6 @@ linq_router = APIRouter(route_class=CommittingRoute, prefix="/v1/intake/linq", t
 upload_router = APIRouter(
     route_class=CommittingRoute, prefix="/v1/intake/uploads", tags=["intake"]
 )
-# Contact-card vCards Linq fetches as media. Unauthenticated like uploads:
-# a purpose-scoped HMAC bound to one proposal, no principal.
-jobcard_router = APIRouter(
-    route_class=CommittingRoute, prefix="/v1/intake/jobcards", tags=["intake"]
-)
-
 _UNAUTHORIZED = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing intake token"
 )
@@ -484,52 +477,6 @@ async def upload_resume(
     return HTMLResponse(_UPLOAD_DONE, status_code=201)
 
 
-_NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-
-
-@jobcard_router.get("/{proposal_id}.vcf")
-def jobcard_vcf(
-    proposal_id: str, token: str = Query(default=""), db: Session = Depends(get_db)
-):
-    """The vCard Linq fetches for a job-match contact card.
-
-    A GET has no side effects, so a link preview prefetch cannot consume
-    anything. Bad token and unknown proposal are the same 404 so an id is
-    not confirmable by probing.
-    """
-    from ..messaging.jobcards import verify_jobcard_token
-    from ..models import JobMatch, JobPosting, JobProposal
-    from ..presentation.jobcard import jobcard
-    from ..presentation.logo import contact_photo, photo_for, posting_domain
-    from ..presentation.vcard import build_vcard, vcard_filename
-
-    if not verify_jobcard_token(proposal_id, token):
-        raise _NOT_FOUND
-    proposal = db.get(JobProposal, proposal_id)
-    if proposal is None:
-        raise _NOT_FOUND
-    posting = db.get(JobPosting, proposal.job_posting_id)
-    if posting is None:
-        raise _NOT_FOUND
-    match = db.get(JobMatch, proposal.job_match_id) if proposal.job_match_id else None
-    card = jobcard(posting, match)
-    if proposal.reasons:
-        card = {**card, "reasons": list(proposal.reasons)}
-    try:
-        photo = photo_for(posting_domain(posting), posting.company or "")
-        payload = build_vcard(card, photo_png=photo)
-    except Exception:  # noqa: BLE001 - never 500 over a favicon
-        logger.warning("jobcard render fell back to monogram for %s", proposal_id)
-        photo = contact_photo(None, company=posting.company or "")
-        payload = build_vcard(card, photo_png=photo)
-    filename = vcard_filename(card)
-    return Response(
-        content=payload,
-        media_type="text/vcard",
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
-
-
 @linq_router.post("/webhook")
 def linq_webhook(
     raw: bytes = Depends(raw_body),
@@ -621,6 +568,15 @@ def linq_webhook(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="This conversation has reached its message limit",
         )
+
+    # Which protocol this thread is actually on, remembered before anything
+    # can return early. It decides whether an outbound job card can carry an
+    # image or has to stay text-only, and the answer changes per message: an
+    # iMessage thread drops to SMS often enough that the last delivery is the
+    # only honest evidence. Only ever overwritten by a real value, so a payload
+    # that omits `service` leaves what we already knew intact.
+    if inbound.service:
+        thread.last_service = inbound.service
 
     message, created = record_inbound(
         db,
@@ -740,16 +696,28 @@ def _handle_linq_poll(db, payload: dict, *, event_type: str) -> dict:
 
 
 def _handle_linq_reaction(db, payload: dict) -> dict:
-    """A thumbs-up on a job card is a yes to that job.
+    """A thumbs-up on a job card is a yes to that job; a thumbs-down is a no.
 
     The card it lands on is the whole point: each role goes out in its own
     message, and the proposal row remembers which message carried it, so a
     reaction resolves to exactly one posting. Reacting to a bubble is the
     cheapest possible "apply to this" -- no typing, no ordinal to get wrong.
 
-    Anything that is not an unambiguous yes from the candidate is recorded and
-    ignored. Submitting an application off a `laugh` would be acting on a
-    guess about somebody's intent, and an application cannot be unsent.
+    The two directions are deliberately not symmetrical.
+
+    **Yes goes through a job.** It files an application, which cannot be
+    unsent, so it takes the same rails every other apply takes.
+
+    **No is written here and answers nothing.** Declining sends no message at
+    all: a confirmation bubble for every role somebody swipes past is noise,
+    and the tapback the candidate can already see on their own screen is the
+    acknowledgement. It needs no consent check for the same reason -- nothing
+    is delivered. The decline is enough to keep the role from coming back,
+    because `eligible_matches` excludes any posting this candidate already has
+    a proposal for, whatever its status.
+
+    Anything else is recorded and ignored. Acting on a `laugh` or an
+    `emphasize` would be a guess at somebody's intent.
     """
     from ..models import JobProposal
 
@@ -759,7 +727,7 @@ def _handle_linq_reaction(db, payload: dict) -> dict:
         logger.info("Linq reaction ignored: %s", exc)
         return {"status": "ignored", "reason": str(exc)}
 
-    if not event.is_positive:
+    if not (event.is_positive or event.is_negative):
         logger.info(
             "Linq reaction %r (%s, from_me=%s) noted, not acted on",
             event.reaction_type,
@@ -793,6 +761,9 @@ def _handle_linq_reaction(db, payload: dict) -> dict:
         logger.info("Linq reaction on a message carrying no job card")
         return {"status": "accepted", "acted": False, "reason": "not_a_job_card"}
 
+    if event.is_negative:
+        return _decline_proposal(db, thread=thread, proposal=proposal)
+
     enqueue(
         db,
         org_id=thread.org_id,
@@ -803,6 +774,59 @@ def _handle_linq_reaction(db, payload: dict) -> dict:
     )
     logger.info("Linq thumbs-up on proposal %s queued as an apply", proposal.id)
     return {"status": "accepted", "acted": True, "proposal_id": proposal.id}
+
+
+def _decline_proposal(db, *, thread, proposal) -> dict:
+    """Record a thumbs-down. No message, no job, no reply.
+
+    Only a proposal still open to an answer is moved. A role the candidate
+    already said yes to must not be flipped by a later thumbs-down: the
+    application is filed and possibly already submitted, so the honest answer
+    to "I changed my mind" is a conversation, not a status rewrite that would
+    leave an accepted application hanging off a declined proposal.
+    """
+    from ..models import record_event, utcnow
+
+    if proposal.status != "proposed":
+        logger.info(
+            "Linq thumbs-down on proposal %s already %s; left alone",
+            proposal.id,
+            proposal.status,
+        )
+        return {
+            "status": "accepted",
+            "acted": False,
+            "reason": f"already_{proposal.status}",
+            "proposal_id": proposal.id,
+        }
+
+    proposal.status = "declined"
+    proposal.responded_at = utcnow()
+    # The card we sent, which is the message the tapback landed on. A tapback
+    # is not an IntakeMessage of its own, so there is no inbound row to point
+    # at -- the same substitution `apply_to_proposal` makes for the yes case.
+    proposal.responded_message_id = proposal.message_id
+    proposal.decline_reason = "tapback:dislike"
+    record_event(
+        db,
+        org_id=thread.org_id,
+        type="proposal.declined",
+        subject_type="job_proposal",
+        subject_id=proposal.id,
+        payload={
+            "job_posting_id": proposal.job_posting_id,
+            "candidate_id": proposal.candidate_id,
+            "reason": "tapback:dislike",
+        },
+    )
+    # One flush covering both writes. `record_event` only adds to the session
+    # and the factory runs autoflush=False, so without this the event is
+    # invisible to anything reading in the same request -- it would still be
+    # committed by CommittingRoute, which is exactly what makes the gap easy to
+    # miss.
+    db.flush()
+    logger.info("Linq thumbs-down declined proposal %s", proposal.id)
+    return {"status": "accepted", "acted": True, "declined": True, "proposal_id": proposal.id}
 
 
 def _handle_linq_status(db, payload: dict, *, event_type: str) -> dict:

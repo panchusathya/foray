@@ -1138,10 +1138,12 @@ def _paid_profile_fallback(db: Session, *, thread, url: str):
 def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
     """Fetch a LinkedIn profile and re-enqueue the thread's next turn.
 
-    Two sources, in cost order: the browser scrape, then the paid provider if
-    it misses. See ``enrich.profile_sources``.
+    Two sources. ``profile_sources.scrape_first`` decides whether the free
+    browser scrape is tried before the paid provider, and by default it is not
+    -- a scrape with no session costs a minute to fail and the candidate spends
+    that minute watching a typing indicator. See ``enrich.profile_sources``.
     """
-    from .enrich.linkedin_scrape import ScrapeError, scrape_profile
+    from .enrich.profile_sources import scrape_first
     from .messaging.linkedin_flow import (
         FLOW_META_KEY,
         apply_profile_to_record,
@@ -1161,17 +1163,21 @@ def _handle_linkedin_scrape(db: Session, job: Job, now) -> dict[str, Any]:
     maybe_start_typing(thread)
     profile = None
     failure = ""
-    try:
-        profile = scrape_profile(url)
-    except ScrapeError as exc:
-        logger.warning("linkedin scrape failed for thread %s: %s", thread.id, exc)
-        failure = str(exc)
-    except Exception as exc:
-        logger.exception("linkedin scrape crashed for thread %s", thread.id)
-        failure = str(exc)
+    if scrape_first():
+        from .enrich.linkedin_scrape import ScrapeError, scrape_profile
+
+        try:
+            profile = scrape_profile(url)
+        except ScrapeError as exc:
+            logger.warning("linkedin scrape failed for thread %s: %s", thread.id, exc)
+            failure = str(exc)
+        except Exception as exc:
+            logger.exception("linkedin scrape crashed for thread %s", thread.id)
+            failure = str(exc)
 
     if profile is None:
-        # Free first, paid second. The scrape hitting an auth wall says
+        # The paid provider: either the scrape missed, or it was skipped
+        # because it could not have hit. A scrape hitting an auth wall says
         # nothing about whether this person exists, so spend a lookup rather
         # than drop the candidate into a question batch they did not need.
         #

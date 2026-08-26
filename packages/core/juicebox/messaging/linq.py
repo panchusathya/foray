@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +40,32 @@ class SignatureError(RuntimeError):
 
 class LinqSendError(RuntimeError):
     """Outbound delivery failed."""
+
+
+# What Linq says it actually delivered over. Canonical spellings, because the
+# payload's casing is not guaranteed and this string is stored and compared.
+SERVICE_IMESSAGE = "iMessage"
+SERVICE_RCS = "RCS"
+SERVICE_SMS = "SMS"
+# The two that render an inline image without turning it into an MMS.
+RICH_SERVICES = frozenset({SERVICE_IMESSAGE, SERVICE_RCS})
+
+_SERVICES = {
+    "imessage": SERVICE_IMESSAGE,
+    "rcs": SERVICE_RCS,
+    "sms": SERVICE_SMS,
+    "mms": SERVICE_SMS,
+}
+
+
+def normalize_service(value: Any) -> str:
+    """``"imessage"`` -> ``"iMessage"``; anything unrecognised -> ``""``.
+
+    Empty is meaningful and must not become a default: "we have never seen a
+    protocol on this thread" is the case that has to fall back to text, and a
+    guess of ``SMS`` or ``iMessage`` would each be wrong half the time.
+    """
+    return _SERVICES.get(str(value or "").strip().lower(), "")
 
 
 @dataclass(frozen=True)
@@ -92,6 +118,10 @@ class InboundLinq:
     is_group: bool
     raw: dict
     attachments: tuple[InboundAttachment, ...] = ()
+    #: ``iMessage`` | ``RCS`` | ``SMS``, or "" when the payload did not say.
+    #: Recorded on the thread so an outbound card knows whether an image will
+    #: render inline or arrive as an MMS.
+    service: str = ""
 
 
 def _decode_secret(secret: str) -> bytes:
@@ -251,7 +281,65 @@ def parse_inbound(payload: dict) -> InboundLinq:
         is_group=is_group,
         raw=data,
         attachments=_media_parts(part_list),
+        service=_service_of(data, nested if isinstance(nested, dict) else None),
     )
+
+
+def _service_of(data: dict, nested: dict | None) -> str:
+    """The protocol, from wherever this envelope shape put it.
+
+    The message object wins over the chat: a chat's service is what it usually
+    delivers over, and the message's is what this one actually used. An
+    iMessage thread falls back to SMS per-message often enough that the
+    difference decides whether the next card can carry an image.
+    """
+    for source in (nested, data, data.get("chat")):
+        if not isinstance(source, dict):
+            continue
+        service = normalize_service(source.get("service"))
+        if service:
+            return service
+    return ""
+
+
+@dataclass(frozen=True)
+class OutboundMedia:
+    """One media part on an outbound message.
+
+    Either an ``attachment_id`` we pre-uploaded or a public ``url`` Linq
+    fetches. The id is preferred and is what job cards use: it does not expire,
+    so it can be cached and reused across every candidate shown the same role,
+    and it needs no public route of our own.
+    """
+
+    content_type: str = ""
+    attachment_id: str = ""
+    url: str = ""
+    filename: str = ""
+
+
+def _outbound_parts(body: str, media: Sequence[OutboundMedia]) -> list[dict[str, Any]]:
+    """Media first, then the text.
+
+    Linq forbids *consecutive text* parts, so one media part plus one text part
+    is fine and two text parts are not -- which is why the body is never split.
+    Media leads because that is the order a phone renders it in: the card, then
+    the sentence about the card.
+    """
+    parts: list[dict[str, Any]] = []
+    for part in media or ():
+        if part.attachment_id:
+            item: dict[str, Any] = {"type": "media", "attachment_id": part.attachment_id}
+        elif part.url:
+            item = {"type": "media", "url": part.url}
+        else:
+            continue
+        if part.filename:
+            item["filename"] = part.filename
+        parts.append(item)
+    if body:
+        parts.append({"type": "text", "value": body})
+    return parts
 
 
 def send_message(
@@ -259,15 +347,15 @@ def send_message(
     chat_id: str,
     body: str,
     idempotency_key: str,
-    media_url: str = "",
-    filename: str = "",
+    media: Sequence[OutboundMedia] = (),
     transport: Transport | None = None,
 ) -> str:
-    """Send one outbound reply. Returns Linq's message id.
+    """Send one outbound reply, optionally carrying media. Returns Linq's id.
 
-    A ``media_url`` is a media-only bubble: Linq fetches the public HTTPS URL
-    and the transcript body stays on our row. Text and media are not mixed;
-    a caption on a contact card would render as a second bubble.
+    Text and media travel together in one message: a job card and the sentence
+    about it are one bubble to react to, not two. That matters beyond looks --
+    a tapback resolves to a single message id, and splitting the card from its
+    caption would make half of them land on a bubble carrying no proposal.
     """
     if not chat_id:
         raise LinqSendError("chat_id is required")
@@ -278,13 +366,9 @@ def send_message(
         raise LinqSendError("LINQ_API_KEY is not configured")
 
     url = f"{LINQ_API_BASE}/chats/{chat_id}/messages"
-    if media_url:
-        part: dict[str, Any] = {"type": "media", "url": media_url}
-        if filename:
-            part["filename"] = filename
-        parts = [part]
-    else:
-        parts = [{"type": "text", "value": body}]
+    parts = _outbound_parts(body, media)
+    if not parts:
+        raise LinqSendError("a message needs a body or a media part")
     payload = {
         "message": {
             "parts": parts,
@@ -360,6 +444,93 @@ def parse_poll_vote(payload: dict) -> tuple[str, str, bool]:
         str(data.get("option_id") or ""),
         bool(handle.get("is_me")),
     )
+
+
+#: ``POST /attachments`` answers with a presigned PUT valid for 15 minutes.
+#: Nothing here holds one that long -- the upload follows immediately -- but the
+#: window is why the id is what gets cached and the URL never is.
+ATTACHMENT_UPLOAD_TIMEOUT = 60.0
+
+
+def upload_attachment(
+    *,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    transport: Transport | None = None,
+    uploader: Callable[[str, dict[str, str], bytes], None] | None = None,
+) -> str:
+    """Pre-upload bytes to Linq and return the durable ``attachment_id``.
+
+    Two legs: ask for a presigned URL, then PUT to it. Returns the id, which
+    does not expire and is what a later send references.
+
+    **This is the path an outbound image takes, not a public URL of our own.**
+    There is no object store or CDN here and no static mount; the only
+    unauthenticated file route (``routers/portal.py``) signs for sixty seconds,
+    which is nowhere near enough for a vendor-side fetch. Handing Linq the
+    bytes sidesteps the whole question -- and unlike a signed URL of ours, an
+    id cannot leak a route to anyone who forwards the message.
+    """
+    settings = get_settings()
+    if not settings.linq_api_key and transport is None:
+        raise LinqSendError("LINQ_API_KEY is not configured")
+    if not data:
+        raise LinqSendError("nothing to upload")
+
+    url = f"{LINQ_API_BASE}/attachments"
+    payload = {
+        "filename": filename or "attachment",
+        "content_type": content_type,
+        "size_bytes": len(data),
+    }
+    try:
+        if transport is not None:
+            response = transport("POST", url, payload)
+        else:
+            http = httpx.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.linq_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=ATTACHMENT_UPLOAD_TIMEOUT,
+            )
+            http.raise_for_status()
+            response = http.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Linq attachment reservation failed: %s", exc)
+        raise LinqSendError(str(exc)) from exc
+    except ValueError as exc:
+        raise LinqSendError(f"malformed attachment response: {exc}") from exc
+
+    if not isinstance(response, dict):
+        raise LinqSendError("malformed attachment response")
+    attachment_id = str(response.get("attachment_id") or response.get("id") or "").strip()
+    upload_url = str(response.get("upload_url") or "").strip()
+    headers = response.get("required_headers")
+    headers = {str(k): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
+    if not attachment_id or not upload_url:
+        raise LinqSendError("Linq returned no attachment_id/upload_url")
+
+    if uploader is not None:
+        uploader(upload_url, headers, data)
+        return attachment_id
+
+    headers.setdefault("Content-Type", content_type)
+    try:
+        put = httpx.put(
+            upload_url, headers=headers, content=data, timeout=ATTACHMENT_UPLOAD_TIMEOUT
+        )
+        put.raise_for_status()
+    except httpx.HTTPError as exc:
+        # The id exists but has no bytes behind it, so it must not be cached --
+        # a send referencing it would fail forever. Raising is what stops the
+        # caller storing it.
+        logger.warning("Linq attachment upload failed: %s", exc)
+        raise LinqSendError(f"attachment upload failed: {exc}") from exc
+    return attachment_id
 
 
 class MediaFetchError(RuntimeError):
@@ -458,6 +629,15 @@ REACTION_EVENTS = frozenset({"reaction.added", "reaction.removed"})
 # `laugh`: acting on an ambiguous tapback would submit an application nobody
 # asked for, and the cost of missing one is that they type "apply to 2".
 POSITIVE_REACTIONS = frozenset({"like", "love"})
+# And the one they mean as "no, not this one". Only `dislike`: a `question`
+# tapback is a question, not a refusal, and nothing else in the set reads
+# unambiguously as no.
+#
+# The asymmetry with POSITIVE_REACTIONS is deliberate and worth keeping. A
+# false positive files an application that cannot be unsent; a false negative
+# drops one role out of a list, which the next batch replaces. So "yes" takes
+# two agreeing spellings and this takes the one that cannot mean anything else.
+NEGATIVE_REACTIONS = frozenset({"dislike"})
 
 
 @dataclass(frozen=True)
@@ -470,11 +650,22 @@ class ReactionEvent:
 
     @property
     def is_positive(self) -> bool:
-        return (
-            self.event_type == "reaction.added"
-            and not self.is_from_me
-            and self.reaction_type in POSITIVE_REACTIONS
-        )
+        return self._is_candidate_signal and self.reaction_type in POSITIVE_REACTIONS
+
+    @property
+    def is_negative(self) -> bool:
+        return self._is_candidate_signal and self.reaction_type in NEGATIVE_REACTIONS
+
+    @property
+    def _is_candidate_signal(self) -> bool:
+        """An intentional tapback from the candidate, not us and not a removal.
+
+        `reaction.removed` is excluded from both: taking a thumb back is not an
+        instruction, it is the absence of one. Reading a removed thumbs-up as a
+        decline -- or a removed thumbs-down as renewed interest -- would invent
+        a decision out of somebody tidying up a mis-tap.
+        """
+        return self.event_type == "reaction.added" and not self.is_from_me
 
 
 def parse_reaction(payload: dict) -> ReactionEvent:

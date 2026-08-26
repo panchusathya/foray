@@ -124,19 +124,32 @@ Set `LINQ_ENABLED=true` only after steps 1–4 are complete.
 If `LINQ_FROM_NUMBER` is set when running `juicebox seed`, the demo org gets an
 `IntakeNumber` row with `provider=linq` automatically.
 
-## 8. LinkedIn scrape (LinkedIn-first intake)
+## 8. LinkedIn profile lookup (LinkedIn-first intake)
 
-Linq threads ask for a LinkedIn URL first, then scrape the profile in a
-Playwright browser on the worker. Without a logged-in session the scrape fails
-open and the thread asks 2–3 leftover questions instead.
+Linq threads ask for a LinkedIn URL first, then look the profile up. **The paid
+provider goes first, and the free browser scrape is off by default.**
 
-On the worker host:
+That inverts the obvious cost order for a reason measured on a live intake. The
+scrape cannot return anything without a logged-in session, and with none it does
+not fail fast: Chromium launches, the navigation to linkedin.com from a
+datacentre IP burns its 30s timeout, and `_playwright_fetch` retries the whole
+thing once. Roughly a minute spent proving a miss, with the paid lookup that was
+always going to answer still to come — and a candidate watching a typing
+indicator for all of it. Free is only cheaper than paid when the two cost the
+same wait.
+
+So the default needs no LinkedIn setup at all: set `APIFY_API_TOKEN` (or
+`SCRAPIN_API_KEY` with `PROFILE_PROVIDER=scrapin`) and the lookup answers in
+one hop.
+
+To put the free scrape back in front, on the worker host:
 
 ```bash
 # optional extra; the API image does not need this
 pip install 'packages/core[linkedin]'
 playwright install chromium
 
+LINKEDIN_SCRAPE_ENABLED=true
 # session cookie — Playwright storage_state JSON, or a raw li_at=... string
 # never commit this
 LINKEDIN_SESSION_COOKIE='[{"name":"li_at","value":"...","domain":".linkedin.com","path":"/"}]'
@@ -144,9 +157,12 @@ LINKEDIN_SESSION_COOKIE='[{"name":"li_at","value":"...","domain":".linkedin.com"
 LINKEDIN_SESSION_PATH=/opt/juicebox/secrets/linkedin-cookies.json
 ```
 
-Add the same vars to `/opt/juicebox/.env` and recreate `worker`. LinkedIn ToS /
-account-ban risk is operator-owned; rotate the session when scrapes start
-returning auth-wall errors.
+Both are required together. `LINKEDIN_SCRAPE_ENABLED=true` with no session is
+ignored — that is a configuration that cannot succeed, and obeying it would
+restore exactly the wait the default exists to remove. Add the vars to
+`/opt/juicebox/.env` and recreate `worker`. LinkedIn ToS / account-ban risk is
+operator-owned; rotate the session when scrapes start returning auth-wall
+errors.
 
 ## Troubleshooting
 
@@ -157,7 +173,9 @@ returning auth-wall errors.
 | 503 on webhook | `LINQ_ENABLED=false` or missing `LINQ_API_KEY` / `LINQ_FROM_NUMBER` |
 | No reply | Worker not running; `LinqChannel` not configured; missing `provider_thread_id` |
 | Stuck at Sent, never Read | SMS fallback, or the recipient has read receipts off — expected |
-| Scrape skipped, extra questions | Missing `LINKEDIN_SESSION_*`, Playwright, or an auth wall |
+| Profile lookup empty, extra questions | No `APIFY_API_TOKEN` / `SCRAPIN_API_KEY`; profile not public |
+| Scrape never runs | Expected: `LINKEDIN_SCRAPE_ENABLED` is false by default, and needs a session cookie too |
+| LinkedIn step takes ~a minute | The free scrape is enabled without a working session — unset `LINKEDIN_SCRAPE_ENABLED` |
 | Voice calls wrong number | Linq number registered with `--provider retell` — fix provider column |
 
 ## Out of scope (accepted gaps)

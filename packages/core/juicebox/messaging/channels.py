@@ -20,10 +20,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
-from urllib.parse import urlparse
 
 from ..config import get_settings
-from .linq import LinqSendError, send_message, send_reaction, stop_typing
+from .linq import (
+    LinqSendError,
+    OutboundMedia,
+    send_message,
+    send_reaction,
+    stop_typing,
+)
 
 WEB = "web"
 LINQ = "linq"
@@ -60,12 +65,11 @@ class OutboundMessage:
     # "ml engineer at anthropic" makes a proper noun look like a typo and the
     # card harder to skim. Prose stays lowercase; other people's names do not.
     verbatim: bool = False
-    # Public HTTPS URL for a media-only bubble (a vCard, a photo). Blank is a
-    # text send. The body is still stored on our row for the transcript.
-    media_url: str = ""
-    # Optional filename Linq/iMessage uses to pick a renderer. The vCard
-    # route's ``.vcf`` slug lives here so the wire part is not just the id.
-    media_filename: str = ""
+    # Media travelling with this message -- today, a rendered job card. Empty
+    # is a text send, and a channel with no media support ignores it rather
+    # than failing: `body` is always a complete message on its own, which is
+    # what lets an image be best-effort without ever costing the words.
+    media: tuple[OutboundMedia, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -182,8 +186,7 @@ class LinqChannel:
                 chat_id=provider_thread_id,
                 body=message.body,
                 idempotency_key=message.send_key or message.asked_field or message.body[:255],
-                media_url=message.media_url,
-                filename=message.media_filename or _filename_from_url(message.media_url),
+                media=message.media,
             )
         except LinqSendError as exc:
             raise ChannelError(str(exc)) from exc
@@ -239,14 +242,6 @@ class FakeChannel:
     @property
     def bodies(self) -> list[str]:
         return [item[1].body for item in self.sent]
-
-
-def _filename_from_url(url: str) -> str:
-    """Last path segment of a media URL, if it looks like a filename."""
-    if not url:
-        return ""
-    name = urlparse(url).path.rsplit("/", 1)[-1].strip()
-    return name if "." in name else ""
 
 
 _channels: dict[str, MessageChannel] = {}

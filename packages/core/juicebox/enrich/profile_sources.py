@@ -1,14 +1,23 @@
 """Two ways to learn about a candidate from a LinkedIn URL, in order.
 
-**Scrape first.** The browser scraper (``enrich.linkedin_scrape``) costs
-nothing per lookup and is enough for onboarding: a title, an employer, a
-location, roughly how long they have been working. That is all the
-conversation needs to confirm back and shorten the interview.
+**The paid provider first** (``enrich.linkedin_profile``), which is not the
+order this module was built in. The free browser scraper
+(``enrich.linkedin_scrape``) costs nothing per lookup and is enough for
+onboarding — a title, an employer, a location, roughly how long they have been
+working — so it led, and the provider was the fallback.
 
-**Fall back to the paid provider** (``enrich.linkedin_profile``) when the
-scrape fails — an auth wall, a CAPTCHA, no session cookie, Playwright not
-installed. The provider costs money per lookup, which is exactly why it is
-second and not first.
+What that ladder left out is *latency*, and a candidate waiting on a text pays
+it. The scrape cannot return anything without a logged-in LinkedIn session,
+and when it has none it does not fail fast: Chromium launches, the navigation
+to linkedin.com from a datacentre IP burns its 30s timeout, and
+``_playwright_fetch`` retries the whole thing once. That is about a minute
+spent proving a miss, before the paid lookup that was always going to answer
+runs at all. Free is only cheaper than paid when the two cost the same wait.
+
+So ``scrape_first`` decides, and it says no unless a session is configured
+*and* an operator asked for it (``LINKEDIN_SCRAPE_ENABLED``). Where the scrape
+can genuinely succeed the original cost order is still right and comes back
+with one env var.
 
 **And reach for the paid provider deliberately when we need employment
 history.** The scrape does not produce one; a tailored resume cannot be
@@ -30,6 +39,43 @@ from ..models import Candidate
 from .linkedin_scrape import LinkedInProfile
 
 logger = logging.getLogger(__name__)
+
+
+def scrape_first() -> bool:
+    """Whether the free scrape is worth trying before paying.
+
+    What is being weighed is Playwright's cost, not scraping's, and the three
+    conditions follow from that:
+
+    * An **injected scraper** always wins. It is the test seam and it launches
+      no browser, so none of the reasons below apply to it. Checking this first
+      is what keeps "the browser scrape is off" from also meaning "the fixture
+      scrape is off".
+    * Otherwise an operator has to ask (``LINKEDIN_SCRAPE_ENABLED``).
+    * And a **session must exist**, which is not redundant with the flag: the
+      flag set without a cookie is a config that cannot succeed, and obeying it
+      would reintroduce the minute-long guaranteed miss the flag exists to
+      remove. A config that cannot work loses to one that can.
+
+    Read at call time, never cached, so ops can flip it on a running worker.
+    """
+    from .linkedin_scrape import has_scraper
+
+    if has_scraper():
+        return True
+    from ..config import get_settings
+
+    if not get_settings().linkedin_scrape_enabled:
+        return False
+    from .linkedin_session import load_cookies
+
+    if not load_cookies():
+        logger.info(
+            "LINKEDIN_SCRAPE_ENABLED is set but no session is configured; "
+            "going straight to the paid provider"
+        )
+        return False
+    return True
 
 
 def profile_from_paid_payload(parsed: dict, *, url: str) -> LinkedInProfile:

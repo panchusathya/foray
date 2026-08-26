@@ -34,6 +34,10 @@ from juicebox.messaging.threads import STATUS_COMPLETE, open_thread, record_inbo
 from juicebox.models import Application, Job, JobMatch, JobPosting, JobProposal
 from juicebox.worker import process_job
 
+#: The card head joins title and company with an em dash. Spelled as an
+#: escape because a literal one here has been mangled by tooling before.
+EM_DASH = "—"
+
 STRONG = {
     "name": "title", "label": "Title", "kind": "title", "weight": 1.0,
     "status": "strong", "score": 0.95, "evidence": "Current title matches", "sources": [],
@@ -218,18 +222,33 @@ class TestManaging:
 
         result = _say(session, thread, "find me some roles", native_id="m-present")
         assert result.action == "presented"
-        # Linq: one media bubble per role (placeholder body + vCard URL) and a tail.
+        # Linq: one text card per role, then a tail. The card *is* the message
+        # now -- it was a media-only bubble reading "[contact card] Title -
+        # Company", which said almost nothing and needed a tap to say more.
         burst = "\n".join(channel.bodies)
-        assert "[contact card] ML Engineer — Anthropic" in burst
-        assert "[contact card] ML Engineer — Figma" in burst
-        assert "tap a card" in channel.bodies[-1].lower()
-        assert "/m/" in channel.bodies[-1]
-        card_messages = [item[1] for item in channel.sent if item[1].media_url]
+        assert f"ML Engineer {EM_DASH} Anthropic" in burst
+        assert f"ML Engineer {EM_DASH} Figma" in burst
+        assert "[contact card]" not in burst
+        # The reasons are in the thread, where they can be read without tapping.
+        assert "Current title matches" in burst
+        # The tail is the two gestures and the dashboard, not an instruction to
+        # go and look somewhere else.
+        tail = channel.bodies[-1]
+        assert "tap a card" not in tail.lower()
+        assert "\U0001f44d" in tail and "\U0001f44e" in tail
+        assert "/m/" in tail
+        card_messages = [
+            item[1] for item in channel.sent if "ML Engineer" in (item[1].body or "")
+        ]
         assert len(card_messages) == 2
         assert all(m.verbatim for m in card_messages)
-        assert all(".vcf?" in m.media_url for m in card_messages)
-        # Reasons live on the vCard, not the transcript placeholder.
-        assert "Current title matches" not in burst
+        # No `last_service` on this thread, so we have never been told the
+        # protocol -- and an image on an SMS thread is an MMS. Text only, and
+        # not because rendering failed.
+        assert all(not m.media for m in card_messages)
+        # The posting URL is gone from the card: tapping it lands the candidate
+        # on the employer's form, which is the job we offered to do for them.
+        assert "https://jobs.example.com" not in burst
         assert "0.9" not in "".join(channel.bodies[:-1])
 
         frame = thread.last_presented or []
@@ -241,7 +260,9 @@ class TestManaging:
         for proposal in proposals:
             row = session.get(IntakeMessage, proposal.message_id)
             assert row is not None and row.direction == "outbound"
-            assert "[contact card]" in (row.body or "")
+            # The proposal points at the bubble carrying its own role, which is
+            # what makes a tapback resolvable to one job.
+            assert "ML Engineer" in (row.body or "")
 
         result = _say(session, thread, "apply to 2", native_id="m-apply")
         assert result.action == "applied"
@@ -724,8 +745,16 @@ class TestChatCourtesies:
 
         assert send_reaction("m-1", "like") is False
 
-    def test_send_message_media_is_a_media_only_part(self):
-        from juicebox.messaging.linq import send_message
+    def test_send_message_puts_media_and_text_in_one_message(self):
+        """One bubble, media first, then the words.
+
+        Both matter. Media leads because that is the order a phone renders it
+        in -- the card, then the sentence about the card. And they share a
+        message because a tapback resolves to a single message id: split them
+        and half the thumbs-up gestures would land on a bubble carrying no
+        proposal at all.
+        """
+        from juicebox.messaging.linq import OutboundMedia, send_message
 
         captured = []
 
@@ -735,17 +764,58 @@ class TestChatCourtesies:
 
         native = send_message(
             chat_id="chat-1",
-            body="[contact card] ignored",
+            body="1/2  ML Engineer",
             idempotency_key="k",
-            media_url="https://example.com/x.vcf",
-            filename="acme-role.vcf",
+            media=(
+                OutboundMedia(
+                    content_type="image/png",
+                    attachment_id="att_123",
+                    filename="acme-role.png",
+                ),
+            ),
             transport=transport,
         )
         assert native == "linq-m-1"
         parts = captured[0]["message"]["parts"]
         assert parts == [
-            {"type": "media", "url": "https://example.com/x.vcf", "filename": "acme-role.vcf"}
+            {"type": "media", "attachment_id": "att_123", "filename": "acme-role.png"},
+            {"type": "text", "value": "1/2  ML Engineer"},
         ]
+
+    def test_send_message_still_accepts_a_public_url(self):
+        """An id is preferred, but a URL part is still a legal media part."""
+        from juicebox.messaging.linq import OutboundMedia, send_message
+
+        captured = []
+
+        def transport(method, url, body):
+            captured.append(body)
+            return {"id": "linq-m-2"}
+
+        send_message(
+            chat_id="chat-1",
+            body="",
+            idempotency_key="k",
+            media=(OutboundMedia(url="https://example.com/x.png"),),
+            transport=transport,
+        )
+        assert captured[0]["message"]["parts"] == [
+            {"type": "media", "url": "https://example.com/x.png"}
+        ]
+
+    def test_send_message_with_nothing_to_send_refuses(self):
+        """A message with no body and no media is a bug, not an empty send."""
+        import pytest
+
+        from juicebox.messaging.linq import LinqSendError, send_message
+
+        with pytest.raises(LinqSendError):
+            send_message(
+                chat_id="chat-1",
+                body="",
+                idempotency_key="k",
+                transport=lambda *a: {"id": "x"},
+            )
 
 
 class TestWebCardsStayText:
@@ -781,7 +851,7 @@ class TestWebCardsStayText:
         assert "ML Engineer — Figma" in burst
         assert "Current title matches" in burst
         assert "1/" in burst
-        assert not any(item[1].media_url for item in fake.sent)
+        assert not any(item[1].media for item in fake.sent)
 
 
 class TestTapbackAppliesToCardRows:

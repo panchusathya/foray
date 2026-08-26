@@ -46,11 +46,9 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_card
-from ..presentation.logo import photo_for, posting_domain
-from ..presentation.vcard import vcard_filename
+from . import cards as cards_media
 from . import identity, intents, prompts
-from .channels import LINQ, OutboundMessage
-from .jobcards import mint_jobcard_link
+from .channels import OutboundMessage
 from .threads import was_handed_off
 
 logger = logging.getLogger(__name__)
@@ -143,7 +141,24 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     if intent.kind == intents.INTENT_AFFIRM:
         # "yes" almost always means yes to the thing we just offered, and the
         # thing we offer is roles.
+        #
+        # Deliberately ahead of the pending-application branch below, and left
+        # alone. A bare "yes" against "any visa sponsorship needed, or are you
+        # authorised to work there?" is genuinely ambiguous -- it could be
+        # either half -- and the extractor cannot tell them apart either. So a
+        # yes stays a yes to roles, and an answer that matters arrives in words.
         return present_matches(db, thread=thread, state=state)
+
+    # Everything below is a reply with no command in it. If an application has
+    # asked this candidate a question and is still waiting, that is what they
+    # are replying to -- and the generic branches were the bug: an answer to
+    # "what should we put for comp expectations?" got "noted, thanks. anything
+    # else you want me looking for?", which named no role and invited a fresh
+    # job search, and a following "no" then read as declining one.
+    answered = _absorb_application_answer(db, thread=thread, state=state)
+    if answered is not None:
+        return answered
+
     if intent.kind == intents.INTENT_ACK:
         return _acknowledge(db, thread=thread, last=last, state=state, intent=intent)
     if intent.kind == intents.INTENT_DECLINE:
@@ -151,6 +166,66 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     if intent.kind == intents.INTENT_PROFILE_ANSWER:
         return _say(_fresh(db, thread, prompts.MANAGER_NOTED, prompts.MANAGER_NOTED_AGAIN))
     return _say(_fresh(db, thread, prompts.MANAGER_FALLBACK, prompts.MANAGER_FALLBACK_AGAIN))
+
+
+def _absorb_application_answer(db: Session, *, thread: IntakeThread, state):
+    """Fold a reply into the application that asked, or return None.
+
+    ``None`` means no application was waiting, and the caller carries on with
+    the ordinary intent branches -- this must not become a catch-all that
+    swallows conversation whenever an old application has a blank on it, which
+    is why ``awaiting_text_answers`` requires the row to have actually been
+    asked about.
+
+    The preference is already updated by this point: ``_managing_turn`` runs
+    ``_reread`` and ``_capture`` before any of this, so the extractor has seen
+    the message. What was missing was the second half -- folding that into the
+    application's own ``form_answers``, which only ever happened when the
+    candidate opened the portal.
+    """
+    from ..applications import followups
+    from .conversation import TurnResult, _deliver
+
+    if not thread.candidate_id:
+        return None
+    application = followups.awaiting_text_answers(
+        db, org_id=thread.org_id, candidate_id=thread.candidate_id
+    )
+    if application is None:
+        return None
+
+    outcome = followups.absorb_text_answers(db, application)
+    posting = db.get(JobPosting, application.job_posting_id)
+    body = followups.answer_acknowledgement(application, posting, outcome)
+
+    # Answering is what makes an attempt possible, so this is where one is
+    # retried. The first attempt ran at package time, before these answers
+    # existed: a required blank refuses the run before the browser opens, so
+    # without this the candidate answers the question and nothing whatsoever
+    # happens. `auto_submit` reports rather than raises, returns any attempt
+    # already in flight instead of queueing a second, and most postings have no
+    # adapter at all -- so a hand-off stays a hand-off.
+    submission = ""
+    if not outcome["missing"]:
+        from ..applications.submission import auto_submit
+
+        _, submission = auto_submit(db, application)
+        logger.info(
+            "answers completed application %s; submission: %s",
+            application.id,
+            submission,
+        )
+
+    # verbatim: names the role and the employer out of the posting.
+    row = _deliver(db, thread=thread, message=OutboundMessage(body=body, verbatim=True))
+    result = TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
+    logger.info(
+        "application %s absorbed answers %s (still missing %s)",
+        application.id,
+        outcome["filled"],
+        outcome["missing"],
+    )
+    return result
 
 
 def apply_to_proposal(db: Session, *, thread: IntakeThread, proposal_id: str) -> dict:
@@ -682,27 +757,20 @@ def present_matches(
         )
         db.add(proposal)
         db.flush()
-        try:
-            photo_for(posting_domain(posting), posting.company or "")
-        except Exception as exc:  # noqa: BLE001 - pre-warm; GET still has a fallback
-            logger.info("jobcard photo pre-warm missed for %s: %s", posting.id, exc)
 
-        if thread.channel == LINQ:
-            message = OutboundMessage(
-                body=f"[contact card] {card['title']} — {card['company']}",
-                media_url=mint_jobcard_link(proposal),
-                media_filename=vcard_filename(card),
-                verbatim=True,
-            )
-        else:
-            message = OutboundMessage(
-                body=render_card(
-                    {k: v for k, v in card.items() if k != "recruiter_only"},
-                    index=index,
-                    total=len(cards),
-                ),
-                verbatim=True,
-            )
+        # The text card is the message, on every channel and every protocol.
+        # An image is added to it where one will render inline; it is never a
+        # substitute for the words. That ordering is the whole difference from
+        # the vCard this replaces: that was a media-only bubble reading
+        # "[contact card] Title - Company", so a thread where the attachment
+        # failed to fetch showed a role with no detail and no way to act, and a
+        # thread where it worked still needed a tap to read anything.
+        shown = {k: v for k, v in card.items() if k != "recruiter_only"}
+        message = OutboundMessage(
+            body=render_card(shown, index=index, total=len(cards)),
+            media=cards_media.card_media(db, thread=thread, posting=posting, card=shown),
+            verbatim=True,
+        )
         row = _deliver(db, thread=thread, message=message, origin=origin)
         if row is None or not was_handed_off(row):
             # A card nobody received must not bury the posting. `JobProposal`

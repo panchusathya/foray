@@ -698,6 +698,87 @@ package owns only what is different about text. Plan and phasing live in
   recording and a call has no message counts. Merging them is the `IntakeSession`
   refactor, which a review queue should not force.
 
+### Proposing a role in a thread (`messaging/cards.py`, `presentation/cardimage.py`)
+
+- **The text card is the message; the image is added to it.** A role used to go
+  out as a media-only vCard bubble reading `[contact card] Title - Company`,
+  with a tail saying "tap a card for details" -- so everything that made the
+  role worth considering lived inside an attachment, reading it took a tap, and
+  acting on it took a link. Now `render_card` always produces the body and
+  `cards.card_media` adds a rendered PNG where one will render inline. Both
+  halves ride one message, because a tapback resolves to a single message id:
+  split them and half the thumbs-up gestures land on a bubble holding no
+  proposal.
+
+- **`last_service` gates the image, and empty is not SMS.** An image over SMS is
+  an MMS -- carrier cost, recompression, and some carriers strip it -- so only
+  `iMessage` and `RCS` get one. Empty means Linq never told us, which is a third
+  state: presentation falls back to text for both, but a guess either way is
+  wrong about half the time and bills MMS for half of those. The message's
+  service beats the chat's, because an iMessage thread drops to SMS per-message
+  often enough that only the last delivery is evidence.
+
+- **Every failure in the card path returns "no media", never raises.** A role
+  the candidate never hears about is far worse than a role without a picture.
+  `card_version` on `job_card_assets` is what makes the cache safe to keep: one
+  posting renders and uploads once for every candidate shown it, and a bump
+  re-renders rather than serving pixels the current code would not produce. A
+  refused upload stores the render with a *blank* version, so the bytes are not
+  rebuilt but the upload is retried -- storing the version there would cache a
+  row whose attachment id is empty and attach nothing forever.
+
+- **Nothing in a card asks the candidate to leave.** The posting URL was dropped
+  from the body: tapping it landed them on the employer's own form, which is the
+  job we offered to do for them. The tail is the two gestures and then the
+  dashboard, which is for tracking what is in flight -- not for reading these or
+  applying to them. `url` stays on the projection for recruiter-side views.
+
+- **The two tapback directions are deliberately asymmetrical.** A yes (`like`,
+  `love`) files an application that cannot be unsent, so it goes through a job
+  with every rail. A no (`dislike` only) is a row update that sends nothing --
+  a confirmation bubble per dismissed role is noise, and the tapback is already
+  on the candidate's own screen. `question` is a question, not a refusal.
+  `reaction.removed` counts as neither: taking a thumb back is the absence of a
+  decision, and reading it as one invents intent out of a corrected mis-tap. An
+  already-answered proposal is never flipped, or a filed application would hang
+  off a proposal the record says was refused. The decline lands on
+  `JobProposal`, never `JobMatch.status` -- the proposal is the candidate-consent
+  axis -- and nothing extra was needed to stop the role returning, because
+  `eligible_matches` already skips any posting with a proposal of any status.
+
+- **An answer belongs to the application that asked for it**
+  (`manager._absorb_application_answer`). `ask_for_missing` marks the rows it
+  asked about; before this nothing on the messaging side read them back, so an
+  answer to "what should we put for comp expectations?" got the generic "noted,
+  thanks. anything else you want me looking for?" -- no role named, and an
+  invitation to start a fresh search over an application still waiting on the
+  candidate. A following "no" then read as declining a job search. Worse, and
+  the half that mattered: `refill_from_preference` was only ever called from the
+  portal route, so answering over text folded nothing into the form. The branch
+  runs before the no-command intents, requires a row that was actually asked
+  about (or it becomes a catch-all), distinguishes "understood" from "did not
+  catch that", and retries the submission once the answers are complete --
+  the first attempt ran at package time, before the answers existed. `INTENT_AFFIRM`
+  stays ahead of it: a bare "yes" against "sponsorship needed, or are you
+  authorised?" could be either half, and the extractor cannot tell either.
+
+- **`asked_blanks` is not `blank_answers`.** The latter reads a key *absent*
+  from `form_answers` as blank, which is right for what a package still owes and
+  wrong for whether a conversation is finished -- a key nobody was asked about
+  would keep the set from ever reading complete, so the acknowledgement would
+  say "one more thing" forever and the submission retry would never fire.
+
+- **Portal links are a short code, not a JWT** (`portal/links.py`). The URL is
+  `/m/<20 hex chars>`; it used to carry a full signed token, which made every
+  texted link several hundred characters of bearer credential travelling into
+  screenshots, forwards and preview fetches. The signature was doing no work
+  the row was not: `consumed_at` is what makes a link single-use. `next_path`
+  moved onto the row for the same reason it was never a query parameter --
+  where somebody is going should not survive a forward -- and `safe_next`
+  refuses anything that is not a same-origin path, on the way in *and* out. The
+  legacy JWT branch in `exchange` exists only for links already in candidates'
+  phones and is deletable one `PORTAL_LINK_TTL_SECONDS` after shipping.
+
 
 ## Phone numbers in the UI (`packages/web/src/lib/phone.js`)
 

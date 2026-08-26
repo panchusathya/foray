@@ -89,6 +89,13 @@ def render_card(card: dict[str, Any], *, index: int, total: int) -> str:
 
     The position ("2/3") stays because the reply grammar is ordinal: "apply to
     2" has to refer to something the person can see.
+
+    **No posting URL.** It used to close the card, and it was the one thing on
+    here that asked the candidate to leave: tapping it lands them on the
+    employer's own form, which is the job we are offering to do for them. The
+    card plus a tapback is the whole interaction now, and ``_detail`` answers a
+    number without sending anybody anywhere. ``url`` stays on the projection
+    for the recruiter-side views that do want to open the posting.
     """
     head = f"{index}/{total}  {card['title']} — {card['company']}"
     lines = [head[:MAX_CARD_LINE_CHARS]]
@@ -96,8 +103,6 @@ def render_card(card: dict[str, Any], *, index: int, total: int) -> str:
         lines.append(card["location"][:MAX_CARD_LINE_CHARS])
     for reason in (card.get("reasons") or [])[:2]:
         lines.append(f"· {reason}"[:MAX_CARD_LINE_CHARS])
-    if card.get("url"):
-        lines.append(card["url"])
     return "\n".join(lines)
 
 

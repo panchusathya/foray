@@ -100,6 +100,18 @@ def reset_scraper() -> None:
     set_scraper(None)
 
 
+def has_scraper() -> bool:
+    """Whether something has been installed in place of the browser.
+
+    ``profile_sources.scrape_first`` asks, because the cost it is avoiding is
+    Playwright's and not scraping's: an injected scraper needs no session, no
+    Chromium and no navigation, so none of the reasons to skip the free path
+    apply to it. Without this, turning the browser scrape off would silently
+    take the test seam with it.
+    """
+    return _scraper is not None
+
+
 def is_ic_title(title: str) -> bool:
     """True when the title does not look like people-management."""
     return not bool(_MGMT_TITLE.search(title or ""))

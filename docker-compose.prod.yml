@@ -130,6 +130,13 @@ x-app-env: &app_env
   LINQ_WEBHOOK_SECRET: ${LINQ_WEBHOOK_SECRET:-}
   LINQ_FROM_NUMBER: ${LINQ_FROM_NUMBER:-}
   LINQ_ENABLED: ${LINQ_ENABLED:-false}
+  # TCPA restricts solicitation to 8am-9pm in the recipient's local time and
+  # the damages are statutory per message, so `true` is the default and the
+  # only safe one. Off is a deliberate choice for a deployment whose only
+  # recipients are the people testing it -- turn it back on before anybody
+  # else's number is in here. A resolved timezone uses hardcoded bounds, so
+  # this switch is the only thing that reaches every thread.
+  QUIET_HOURS_ENABLED: ${QUIET_HOURS_ENABLED:-true}
   # Candidate documents (resumes, cover letters). The `filedata` volume is
   # mounted on api AND worker — the worker writes generated PDFs, the api
   # serves uploads and downloads. Back this volume up alongside pgdata: the

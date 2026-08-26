@@ -267,16 +267,30 @@ def build_message_content(
     prior_fragments: dict[str, str] | None = None,
     connection=None,
     now: datetime | None = None,
+    strict: bool = True,
 ) -> tuple[str, str, dict, dict[str, str]]:
     """Render one step. Raises ``LLMUnavailable`` when the step contains
     ``{{ai: ...}}`` directives and no model can resolve them — deliberately not
     caught here, so a directive's instruction text can never reach a candidate.
+
+    Raises ``MalformedTemplate`` for the same reason, and first: render() can
+    only substitute what its patterns match, so a placeholder they do not claim
+    survives as literal braces in the sent body. Checked before personalize()
+    rather than after, so a template that cannot send costs no model call.
+
+    ``strict=False`` skips only that check, for preview — see preview_step.
 
     ``prior_fragments`` (from a previous attempt's Message row) makes retries
     reuse the exact text that may already have gone out. The personalize()
     cache in ``enrollment.personalization`` is separate and never holds
     directive output: fragments are per-step, that cache is per-enrollment.
     """
+    if strict:
+        broken = templates.malformed_placeholders(
+            step.subject_template or ""
+        ) + templates.malformed_placeholders(step.body_template or "")
+        if broken:
+            raise templates.MalformedTemplate(", ".join(dict.fromkeys(broken)))
     project = db.get(Project, sequence.project_id) if sequence.project_id else None
     if context is None:
         # sequence.personalize stays the operator's off switch; this only ever
@@ -326,7 +340,13 @@ def preview_step(
     enrollment: Enrollment | None = None,
 ) -> tuple[str, str, dict]:
     """Preview honours directives too; the router decides how to present an
-    unresolvable one (banner + placeholder rather than a 500)."""
+    unresolvable one (banner + placeholder rather than a 500).
+
+    ``strict=False`` below is deliberate: a preview must show what would
+    actually go out, and for a malformed placeholder that is the raw braces.
+    Raising here would replace the one screen that makes the mistake obvious
+    with an error. The router pairs the rendered body with a named warning;
+    sending still refuses."""
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     if not steps:
         raise ValueError("sequence has no steps")
@@ -342,6 +362,7 @@ def preview_step(
         candidate=candidate,
         enrollment=enrollment,
         connection=connection,
+        strict=False,
     )
     if step is not steps[0]:
         # Follow-ups inherit the first step's line -- show the recruiter the
@@ -498,6 +519,44 @@ def _finish_enrollment(enrollment: Enrollment, status: str, reason: str = "") ->
     enrollment.next_send_at = None
 
 
+def _failed_message(
+    db: Session,
+    *,
+    existing: Message | None,
+    sequence: Sequence,
+    enrollment: Enrollment,
+    candidate: Candidate,
+    step: SequenceStep,
+    to_address: str,
+    error: str,
+) -> Message:
+    """Record a send failure on this step's row, reusing a prior attempt's.
+
+    Every caller wants the same thing -- one row per (enrollment, step),
+    marked failed with a reason short enough for the column -- and each was
+    writing its own copy of it.
+    """
+    error = error[:490]
+    if existing is not None:
+        existing.status = "failed"
+        existing.error = error
+        return existing
+    message = Message(
+        org_id=sequence.org_id,
+        enrollment_id=enrollment.id,
+        candidate_id=candidate.id,
+        step_id=step.id,
+        channel=step.channel,
+        direction="outbound",
+        to_address=to_address,
+        status="failed",
+        error=error,
+    )
+    db.add(message)
+    db.flush()
+    return message
+
+
 def _existing_outbound(db: Session, enrollment_id: str, step_id: str) -> Message | None:
     return db.scalar(
         select(Message).where(
@@ -607,23 +666,16 @@ def send_step(
 
     to_address, reach_error = _sendable_address(candidate, settings.min_reach_score)
     if to_address and is_suppressed(db, org_id=sequence.org_id, email=to_address):
-        message = existing or Message(
-            org_id=sequence.org_id,
-            enrollment_id=enrollment.id,
-            candidate_id=candidate.id,
-            step_id=step.id,
-            channel=step.channel,
-            direction="outbound",
+        message = _failed_message(
+            db,
+            existing=existing,
+            sequence=sequence,
+            enrollment=enrollment,
+            candidate=candidate,
+            step=step,
             to_address=to_address,
-            status="failed",
             error="suppressed",
         )
-        if existing is None:
-            db.add(message)
-            db.flush()
-        else:
-            message.status = "failed"
-            message.error = "suppressed"
         _finish_enrollment(enrollment, "stopped", "suppressed")
         return message
 
@@ -649,24 +701,39 @@ def send_step(
         # Fail closed: a step with {{ai: ...}} directives must never send the
         # raw instruction text. The enrollment stays active so the step retries
         # once the model is back; the delay stops run_due hot-looping on it.
-        message = existing or Message(
-            org_id=sequence.org_id,
-            enrollment_id=enrollment.id,
-            candidate_id=candidate.id,
-            step_id=step.id,
-            channel=step.channel,
-            direction="outbound",
+        message = _failed_message(
+            db,
+            existing=existing,
+            sequence=sequence,
+            enrollment=enrollment,
+            candidate=candidate,
+            step=step,
             to_address=to_address,
-            status="failed",
-            error=f"ai_directive_unresolved: {exc}"[:490],
+            error=f"ai_directive_unresolved: {exc}",
         )
-        if existing is None:
-            db.add(message)
-            db.flush()
-        else:
-            message.status = "failed"
-            message.error = f"ai_directive_unresolved: {exc}"[:490]
         enrollment.next_send_at = now + timedelta(minutes=15)
+        return message
+    except templates.MalformedTemplate as exc:
+        # Same fail-closed reason -- a placeholder the renderer cannot parse
+        # reaches the candidate as raw braces -- but a different wait. An
+        # unavailable model comes back on its own; a typo'd placeholder needs a
+        # person to edit the step, so retrying in 15 minutes just re-fails.
+        # An hour is long enough for that edit and short enough that it then
+        # sends on its own, without anyone re-enrolling the candidate.
+        logger.warning(
+            "step %s has unparseable placeholders (%s); not sending", step.id, exc
+        )
+        message = _failed_message(
+            db,
+            existing=existing,
+            sequence=sequence,
+            enrollment=enrollment,
+            candidate=candidate,
+            step=step,
+            to_address=to_address,
+            error=f"malformed_template: {exc}",
+        )
+        enrollment.next_send_at = now + timedelta(hours=1)
         return message
     if not enrollment.personalization:
         enrollment.personalization = context

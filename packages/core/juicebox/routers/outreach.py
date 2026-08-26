@@ -361,6 +361,14 @@ def preview(
         step
         and templates.used_directives(f"{step.subject_template or ''}\n{step.body_template or ''}")
     )
+    # Read off the step, not off the rendered body: a rendered value may legally
+    # contain braces, and the templates are the only place a recruiter can fix.
+    warnings = (
+        templates.malformed_placeholders(step.subject_template or "")
+        + templates.malformed_placeholders(step.body_template or "")
+        if step
+        else []
+    )
     try:
         subject, body, context = preview_step(
             db,
@@ -410,6 +418,7 @@ def preview(
         ai_status=ai_status,
         sender_email=context.get("sender_email", ""),
         sender_name=context.get("sender_name", ""),
+        warnings=list(dict.fromkeys(warnings)),
     )
 
 

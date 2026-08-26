@@ -99,12 +99,31 @@ class TestMinting:
         second = alias.ensure_for_application(session, application)
         assert first.id == second.id
 
-    def test_an_existing_candidate_alias_is_kept(self, session, account, candidate, aliased):
-        """Someone who already applied under a candidate-scoped address keeps
-        it -- the employer has that one on file."""
+    def test_a_legacy_candidate_alias_does_not_absorb_new_applications(
+        self, session, account, candidate, aliased
+    ):
+        """The bug this replaced: falling back to the candidate's old alias
+        meant no existing candidate ever got a per-application address, so the
+        feature applied to nobody. Caught by a dry run in production."""
         legacy = alias.ensure(session, candidate)
         application = _application(session, account, candidate)
-        assert alias.ensure_for_application(session, application).id == legacy.id
+        minted = alias.ensure_for_application(session, application)
+
+        assert minted.id != legacy.id
+        assert minted.scope == "application"
+        assert minted.application_id == application.id
+
+    def test_the_legacy_alias_still_resolves_afterwards(
+        self, session, account, candidate, aliased
+    ):
+        """Not orphaning it is the whole reason the fallback looked right."""
+        legacy = alias.ensure(session, candidate)
+        application = _application(session, account, candidate)
+        alias.ensure_for_application(session, application)
+
+        found, application_id = alias.resolve(session, legacy.address)
+        assert found.id == candidate.id
+        assert application_id == ""
 
     def test_nothing_is_minted_when_aliasing_is_off(self, session, account, candidate):
         application = _application(session, account, candidate)

@@ -207,9 +207,15 @@ def address_for_application(application_id: str) -> str:
 def ensure_for_application(db: Session, application) -> CandidateAlias | None:
     """The application's alias row, issued on first use. ``None`` when off.
 
-    Reuses whatever this application already has, including a legacy
-    candidate-scoped row from before aliases were minted per application --
-    reissuing would change the address an employer is already writing to.
+    Reuses only a row already bound to *this application*. It deliberately does
+    not fall back to the candidate's legacy alias: almost every candidate who
+    predates this has one, so a fallback means no existing candidate ever gets
+    a per-application address and the feature quietly applies to nobody.
+
+    The legacy rows are not orphaned by that. ``resolve`` still verifies them
+    against the candidate HMAC, so mail an employer is already sending to an
+    old address keeps arriving -- it simply stops being the address handed out
+    for new applications.
     """
     address = address_for_application(application.id)
     if not address:
@@ -217,13 +223,6 @@ def ensure_for_application(db: Session, application) -> CandidateAlias | None:
     existing = db.scalar(
         select(CandidateAlias).where(CandidateAlias.application_id == application.id)
     )
-    if existing is None:
-        existing = db.scalar(
-            select(CandidateAlias).where(
-                CandidateAlias.candidate_id == application.candidate_id,
-                CandidateAlias.scope == "candidate",
-            )
-        )
     if existing is not None:
         if existing.status != "active":
             existing.status = "active"

@@ -43,6 +43,7 @@ def _values(ctx: SubmissionContext, resume_path: str) -> dict[str, str]:
         "email": ctx.from_address,
         "phone": ctx.phone,
         "linkedin": ctx.linkedin_url,
+        "location": ctx.location,
         "comments": ctx.answer("why_company"),
         "resume": resume_path,
         "cover_letter": "",
@@ -163,7 +164,7 @@ class HostedFormSubmitter:
             values = _values(ctx, str(resume_path))
 
             try:
-                with driver.session(log=log) as page:
+                with driver.session(log=log, profile=ctx.browser_profile) as page:
                     page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
 
                     # Most boards render the posting with the form collapsed or

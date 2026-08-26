@@ -89,6 +89,8 @@ def request_submission(
         if refresh_target and posting.ats_resolved_at is None
         else detect.target_of(posting)
     )
+    if not target:
+        target = _form_target(posting)
     submitter, _ = submitter_for(db, application, posting, target)
     if submitter is None:
         raise NotSubmittable(
@@ -152,6 +154,19 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
     blocked = first_submission_gate(db, application)
     if blocked:
         return None, blocked
+    # A required form question nobody has answered refuses the run before the
+    # browser opens (`hosted_form.unanswerable_questions`), so queueing here
+    # spends attempt 1 on a run we already know terminuses -- and `needs_human`
+    # is a terminus on the attempt row. Withhold instead: asking happens first,
+    # and the answer that completes the set is what queues the attempt.
+    from .followups import required_form_blanks
+
+    waiting = required_form_blanks(application)
+    if waiting:
+        named = "; ".join(
+            str(item.get("question") or item.get("key")) for item in waiting[:3]
+        )
+        return None, f"waiting on required form answers: {named}"
     try:
         return request_submission(db, application, requested_by="candidate"), "queued"
     except NotSubmittable as exc:
@@ -165,12 +180,31 @@ def submitter_for(db: Session, application: Application, posting: JobPosting, ta
 
     Both callers need the same two lookups in the same order, and a second copy
     of "which key, which adapter" is how the API path and the form path drift
-    apart.
+    apart. The posting's derived spec rides along for the same reason: it is
+    the fallback adapter for a board nobody mapped, and reading it here keeps
+    the API path and the form path answering from the same facts.
     """
+    from .formspec import usable_spec
+
     key = credentials.board_key(
         db, org_id=application.org_id, vendor=target.vendor, tenant=target.tenant
     )
-    return get_submitter(target, board_key=key), key
+    return get_submitter(target, board_key=key, derived_spec=usable_spec(posting)), key
+
+
+def _form_target(posting: JobPosting) -> detect.ApplyTarget:
+    """A target for a derived-spec run: no vendor, just where the form is.
+
+    ``target_of`` answers empty for an unrecognised board, and the derived
+    ``HostedFormSubmitter`` still needs ``ctx.target.apply_url`` to navigate.
+    Deliberately vendorless -- inventing a vendor here would leak a guess into
+    every row that stores ``target.vendor`` as a fact.
+    """
+    return detect.ApplyTarget(
+        vendor="",
+        apply_url=(posting.apply_url or posting.source_url or "").strip(),
+        tier=detect.TIER_BROWSER,
+    )
 
 
 def attempts_used(db: Session, application: Application) -> int:
@@ -273,6 +307,8 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         raise ApplicationError("application lost its candidate or posting")
 
     target = detect.target_of(posting) or detect.resolve_target(db, posting)
+    if not target:
+        target = _form_target(posting)
     submitter, board_key = submitter_for(db, application, posting, target)
     if submitter is None:
         raise NotSubmittable(f"no submitter for {target.vendor or 'unrecognised ATS'}")
@@ -308,12 +344,18 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     db.flush()
 
     ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
+    profile = _browser_profile_for(db, application, submitter, target)
+    ctx.browser_profile = profile
     try:
         result = submitter.submit(ctx)
     except Exception as exc:
         _finish(db, application, attempt, SubmissionResult(ok=False, error=str(exc)[:600]))
         raise
 
+    if profile is not None:
+        from .submit.browser.profiles import persist as persist_profile
+
+        persist_profile(db, profile, user_agent=get_settings().apply_browser_user_agent)
     _remember_account(db, application, target, result)
     _finish(db, application, attempt, result)
     return {
@@ -323,6 +365,32 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
         "method": attempt.method,
         "status": attempt.status,
     }
+
+
+def _browser_profile_for(db: Session, application: Application, submitter, target):
+    """The candidate's warm profile for this run, when profiles are on.
+
+    ``None`` in every other case, and ``None`` is always safe: the driver
+    falls back to the proven cold context. CDP takes precedence -- the
+    Scraping Browser owns its fingerprint -- and only a browser-method
+    adapter gets one at all: an API or email submitter opens no page.
+    """
+    settings = get_settings()
+    if not settings.apply_browser_profiles or settings.apply_browser_cdp_url.strip():
+        return None
+    if getattr(submitter, "method", "") != "browser":
+        return None
+    from urllib.parse import urlparse
+
+    from .submit.browser.profiles import profile_for
+
+    host = (urlparse(target.apply_url or "").netloc or "").split(":")[0].lower()
+    return profile_for(
+        db,
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        run_hosts={host},
+    )
 
 
 def _remember_account(db: Session, application: Application, target, result) -> None:

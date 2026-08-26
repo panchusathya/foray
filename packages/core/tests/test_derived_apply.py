@@ -1,0 +1,853 @@
+"""Applying to a board nobody mapped: derived specs, the ask loop, warm state.
+
+Three claims under test, each the inversion of a live failure:
+
+* An unknown board with a usable derived spec IS carded, and one without is
+  not -- with a derivation queued so the next match has the answer. Before
+  this, ``can_submit_vendor("")`` made the unknown frontier invisible.
+* A required form question is asked over text and its answer lands on the
+  form, and no submit attempt is spent while it is blank -- attempt 1 used to
+  burn on a run ``unanswerable_questions`` was guaranteed to refuse.
+* The candidate's browser state is a credential: filtered per run's hosts,
+  merged on save, and never handed to a host it was not made on.
+"""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import select
+from test_messaging_manager import _managed, _posting, _say
+
+from juicebox.applications import followups, formspec
+from juicebox.applications.ats import detect
+from juicebox.applications.service import create_application
+from juicebox.applications.submit import registry
+from juicebox.applications.submit.browser.derive import derive_spec
+from juicebox.applications.submit.browser.forms import FormSpec
+from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
+from juicebox.jobs import KIND_APP_SUBMIT, KIND_JOBS_FORMSPEC_ONE
+from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
+from juicebox.messaging.threads import open_thread
+from juicebox.models import Application, AtsAccount, Job, JobMatch, JobPosting, utcnow
+
+STRONG = {"name": "skills", "label": "Skills", "score": 0.9, "evidence": "strong"}
+
+
+# ---------------------------------------------------------------------------
+# fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def channel():
+    fake = FakeChannel(consent=True)
+    set_channel(LINQ, fake)
+    return fake
+
+
+@pytest.fixture
+def thread(session, account, channel):
+    return open_thread(
+        session,
+        org_id=account["org_id"],
+        channel=LINQ,
+        provider="linq",
+        provider_thread_id="chat-derived",
+        entry_point="linq_inbound",
+        from_address="+15134333227",
+        consent_messaging=True,
+    )
+
+
+@pytest.fixture
+def live_mode(monkeypatch):
+    from juicebox.config import reset_settings_cache
+
+    monkeypatch.setenv("APPLY_SUBMITTER", "live")
+    reset_settings_cache()
+    registry.reset_overrides()
+    yield
+    registry.reset_overrides()
+    reset_settings_cache()
+
+
+@pytest.fixture
+def memory_mode(monkeypatch):
+    from juicebox.config import reset_settings_cache
+
+    monkeypatch.setenv("APPLY_SUBMITTER", "memory")
+    reset_settings_cache()
+    registry.reset_overrides()
+    yield registry.memory_submitter()
+    registry.reset_overrides()
+    reset_settings_cache()
+
+
+def _controls(**overrides) -> list[dict]:
+    """A plausible one-page form, as _ENUMERATE_JS would report it."""
+    base = [
+        {"label": "Full Name", "selector": "input[name=\"name\"]", "fieldType": "text", "required": True},
+        {"label": "Email", "selector": "input[name=\"email\"]", "fieldType": "text", "required": True},
+        {"label": "Phone", "selector": "input[name=\"phone\"]", "fieldType": "text", "required": False},
+        {"label": "Resume/CV", "selector": "#resume", "fieldType": "file", "required": True},
+        {"label": "Why us?", "selector": "textarea[name=\"why\"]", "fieldType": "textarea", "required": False},
+    ]
+    if overrides.get("drop_resume"):
+        base = [c for c in base if c["fieldType"] != "file"]
+    if overrides.get("password"):
+        base.append({"label": "Password", "selector": "#pw", "fieldType": "password", "required": True})
+    return base
+
+
+_BUTTONS = [
+    {"text": "Apply now", "selector": 'a:has-text("Apply now")', "tag": "a", "type": ""},
+    {"text": "Submit application", "selector": 'button:has-text("Submit application")', "tag": "button", "type": "submit"},
+]
+
+
+def _unknown_posting(session, org_id, *, suffix="u1", spec=None, unusable=False) -> JobPosting:
+    """A posting on a host detect.py cannot name, resolution already cached."""
+    posting = JobPosting(
+        org_id=org_id,
+        source="exa",
+        source_id=f"derived-{suffix}",
+        title="Platform Engineer",
+        company="Nimbus Robotics",
+        company_normalized="nimbus robotics",
+        jd_text="Build things.",
+        status="open",
+        source_url=f"https://careers.nimbusrobotics.example/jobs/{suffix}",
+        # Stamped-unrecognised: resolve_target answers from the row, no network.
+        ats_vendor="",
+        ats_resolved_at=utcnow(),
+    )
+    if spec is not None:
+        posting.form_spec = spec.to_dict()
+        posting.form_spec_checked_at = utcnow()
+    if unusable:
+        posting.form_spec = {formspec.UNUSABLE_KEY: "no derivable form"}
+        posting.form_spec_checked_at = utcnow()
+    session.add(posting)
+    session.flush()
+    return posting
+
+
+def _spec() -> FormSpec:
+    spec = derive_spec(_controls(), _BUTTONS)
+    assert spec is not None
+    return spec
+
+
+# ---------------------------------------------------------------------------
+# deriving the spec
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveSpec:
+    def test_a_plain_application_form_derives(self):
+        spec = _spec()
+        assert spec.fields["resume"] == ("#resume",)
+        assert spec.files == frozenset({"resume"})
+        assert {"email", "resume", "full_name"} <= set(spec.required)
+        # type=submit outranks the Apply control that opened the form.
+        assert spec.submit[0] == 'button:has-text("Submit application")'
+        # The landmark is a field we know is there -- the Ashby lesson.
+        assert spec.landmark[0] == 'input[name="email"]'
+
+    def test_a_newsletter_is_not_an_application(self):
+        """An email field alone is a mailing list; only a form that wants a
+        CV is a form we may promise to fill."""
+        assert derive_spec(_controls(drop_resume=True), _BUTTONS) is None
+
+    def test_a_password_control_refuses_the_page(self):
+        """A password means an account wall, and 'filling' one types a fresh
+        password into a sign-in form -- the base.py disaster, generalised."""
+        assert derive_spec(_controls(password=True), _BUTTONS) is None
+
+    def test_the_autofill_trap_prefers_the_labelled_resume(self):
+        controls = [
+            {"label": "", "selector": "input[type=file]", "fieldType": "file", "required": False},
+            {"label": "Resume", "selector": "#real-resume", "fieldType": "file", "required": True},
+            {"label": "Email", "selector": "#email", "fieldType": "text", "required": True},
+        ]
+        spec = derive_spec(controls, _BUTTONS)
+        assert spec is not None
+        assert spec.fields["resume"] == ("#real-resume",)
+
+    def test_a_field_with_no_selector_is_dropped(self):
+        """driver.fill cannot address what enumeration could not name, and a
+        spec whose email dropped is no spec at all."""
+        controls = [
+            {"label": "Email", "selector": "", "fieldType": "text", "required": True},
+            {"label": "Resume", "selector": "#r", "fieldType": "file", "required": True},
+        ]
+        assert derive_spec(controls, _BUTTONS) is None
+
+    def test_no_submit_control_no_spec(self):
+        assert derive_spec(_controls(), []) is None
+
+    def test_round_trip_survives_the_json_column(self):
+        spec = _spec()
+        back = FormSpec.from_dict(spec.to_dict())
+        assert back is not None
+        assert back.fields == spec.fields
+        assert back.required == spec.required
+        assert back.submit == spec.submit
+        assert back.files == spec.files
+
+    def test_an_unusable_marker_is_not_a_spec(self):
+        assert FormSpec.from_dict({formspec.UNUSABLE_KEY: "x"}) is None
+
+
+# ---------------------------------------------------------------------------
+# routing: registry and submitter_for
+# ---------------------------------------------------------------------------
+
+
+class TestRouting:
+    def test_unknown_vendor_with_a_spec_gets_the_hosted_form(self, live_mode):
+        target = detect.ApplyTarget(vendor="", apply_url="https://x.example/jobs/1")
+        submitter = registry.get_submitter(target, derived_spec=_spec())
+        assert isinstance(submitter, HostedFormSubmitter)
+        assert submitter.vendor == "derived"
+
+    def test_unknown_vendor_without_a_spec_stays_a_handoff(self, live_mode):
+        target = detect.ApplyTarget(vendor="", apply_url="https://x.example/jobs/1")
+        assert registry.get_submitter(target) is None
+
+    def test_account_gated_vendors_never_take_a_derived_spec(self, live_mode):
+        """Workday with a spec still routes to its own adapter; a derived
+        hosted-form run against an account wall is the thing the password
+        guard exists to prevent."""
+        for vendor in registry.ACCOUNT_GATED_VENDORS:
+            target = detect.ApplyTarget(vendor=vendor, apply_url="https://x.example")
+            submitter = registry.get_submitter(target, derived_spec=_spec())
+            assert not (
+                isinstance(submitter, HostedFormSubmitter)
+                and getattr(submitter, "vendor", "") == "derived"
+            ), vendor
+
+    def test_submitter_for_reads_the_spec_off_the_posting(
+        self, session, account, live_mode
+    ):
+        """The real caller: patching get_submitter alone would pass while the
+        feature is broken."""
+        from juicebox.applications.submission import _form_target, submitter_for
+
+        posting = _unknown_posting(session, account["org_id"], suffix="sf", spec=_spec())
+        candidate_id = _seed_candidate(session, account["org_id"])
+        application = _application_for(session, account["org_id"], candidate_id, posting)
+        target = _form_target(posting)
+        submitter, _ = submitter_for(session, application, posting, target)
+        assert isinstance(submitter, HostedFormSubmitter)
+        assert submitter.spec.fields["resume"] == ("#resume",)
+
+    def test_console_mode_changes_neither_gate(self, session, account):
+        """can_submit_vendor and can_apply must not change when an operator
+        flips APPLY_SUBMITTER to rehearse."""
+        assert registry.mode() == "console"
+        assert not registry.can_submit_vendor("")
+        with_spec = _unknown_posting(session, account["org_id"], suffix="g1", spec=_spec())
+        without = _unknown_posting(session, account["org_id"], suffix="g2")
+        empty = detect.ApplyTarget()
+        assert registry.can_apply(with_spec, empty)
+        assert not registry.can_apply(without, empty)
+        # Recognised-but-unsupported stays out even with a spec cached on the
+        # row: a page-1 derivation of a wizard cards a promise we cannot keep.
+        taleo = detect.ApplyTarget(vendor="taleo")
+        assert not registry.can_apply(with_spec, taleo)
+
+
+def _seed_candidate(session, org_id) -> str:
+    import uuid
+
+    from juicebox.models import Candidate
+
+    row = Candidate(
+        org_id=org_id,
+        source="manual",
+        source_id=f"derived-{uuid.uuid4().hex[:8]}",
+        full_name="Ada Okonkwo",
+        emails=["ada-derived@example.com"],
+    )
+    session.add(row)
+    session.flush()
+    return row.id
+
+
+def _application_for(session, org_id, candidate_id, posting) -> Application:
+    session.add(
+        JobMatch(
+            org_id=org_id,
+            job_posting_id=posting.id,
+            candidate_id=candidate_id,
+            score=0.9,
+            criteria=[STRONG],
+            status="new",
+        )
+    )
+    session.flush()
+    application = create_application(
+        session,
+        org_id=org_id,
+        candidate_id=candidate_id,
+        job_posting_id=posting.id,
+        source="candidate",
+    )
+    application.status = "prepared"
+    application.approved_at = utcnow()
+    session.flush()
+    return application
+
+
+# ---------------------------------------------------------------------------
+# the carding gate
+# ---------------------------------------------------------------------------
+
+
+class TestCardingGate:
+    def _pairs(self, session, posting):
+        match = JobMatch(
+            org_id=posting.org_id,
+            job_posting_id=posting.id,
+            candidate_id=_seed_candidate(session, posting.org_id),
+            score=0.9,
+            criteria=[STRONG],
+            status="new",
+        )
+        session.add(match)
+        session.flush()
+        return [(match, posting)]
+
+    def test_a_derived_posting_is_carded(self, session, account, monkeypatch):
+        from juicebox.messaging import manager
+
+        monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
+        posting = _unknown_posting(session, account["org_id"], suffix="c1", spec=_spec())
+        kept, unsupported = manager._sendable_postings(
+            session, self._pairs(session, posting), limit=3
+        )
+        assert [p.id for _, p in kept] == [posting.id]
+        assert unsupported == 0
+
+    def test_an_unchecked_unknown_is_dropped_and_derivation_queued(
+        self, session, account, monkeypatch
+    ):
+        from juicebox.messaging import manager
+
+        monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
+        posting = _unknown_posting(session, account["org_id"], suffix="c2")
+        kept, unsupported = manager._sendable_postings(
+            session, self._pairs(session, posting), limit=3
+        )
+        assert kept == []
+        assert unsupported == 1
+        job = session.scalar(
+            select(Job).where(
+                Job.org_id == account["org_id"], Job.kind == KIND_JOBS_FORMSPEC_ONE
+            )
+        )
+        assert job is not None
+        assert job.payload["posting_id"] == posting.id
+
+    def test_a_checked_unusable_posting_queues_nothing(self, session, account, monkeypatch):
+        from juicebox.messaging import manager
+
+        monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
+        posting = _unknown_posting(session, account["org_id"], suffix="c3", unusable=True)
+        kept, unsupported = manager._sendable_postings(
+            session, self._pairs(session, posting), limit=3
+        )
+        assert kept == []
+        assert unsupported == 1
+        assert (
+            session.scalar(
+                select(Job).where(
+                    Job.org_id == account["org_id"], Job.kind == KIND_JOBS_FORMSPEC_ONE
+                )
+            )
+            is None
+        )
+
+    def test_recognised_vendors_never_queue_a_derivation(self, session, account):
+        posting = _posting(session, account["org_id"], company="Taleo Corp", suffix="c4")
+        posting.ats_vendor = "taleo"
+        session.flush()
+        assert formspec.enqueue_derivation(session, posting) is None
+
+
+# ---------------------------------------------------------------------------
+# the derivation job
+# ---------------------------------------------------------------------------
+
+
+class TestFormspecJob:
+    def _job(self, session, posting) -> Job:
+        job = formspec.enqueue_derivation(session, posting)
+        assert job is not None
+        return job
+
+    def test_a_usable_derivation_lands_on_the_row(self, session, account, monkeypatch):
+        import juicebox.applications.submit.browser.derive as derive_mod
+
+        posting = _unknown_posting(session, account["org_id"], suffix="j1")
+        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (_spec(), []))
+        result = formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
+        assert result["outcome"] == "usable"
+        assert formspec.usable_spec(posting) is not None
+        assert posting.form_spec_checked_at is not None
+
+    def test_no_form_is_a_definitive_answer(self, session, account, monkeypatch):
+        import juicebox.applications.submit.browser.derive as derive_mod
+
+        posting = _unknown_posting(session, account["org_id"], suffix="j2")
+        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (None, []))
+        result = formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
+        assert result["outcome"] == "unusable"
+        assert formspec.usable_spec(posting) is None
+        assert posting.form_spec == {formspec.UNUSABLE_KEY: "no derivable form"}
+
+    def test_a_transient_failure_stamps_nothing(self, session, account, monkeypatch):
+        """The stamp_on_miss lesson: a 403 from a datacentre IP today must not
+        cache 'no form here' forever. The exception propagates so the queue's
+        backoff owns the retry, and the row stays clean."""
+        import juicebox.applications.submit.browser.derive as derive_mod
+
+        posting = _unknown_posting(session, account["org_id"], suffix="j3")
+
+        def boom(url, **kw):
+            raise RuntimeError("net::ERR_TIMED_OUT")
+
+        monkeypatch.setattr(derive_mod, "inspect_form", boom)
+        with pytest.raises(RuntimeError):
+            formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
+        assert posting.form_spec is None
+        assert posting.form_spec_checked_at is None
+
+    def test_a_vendor_resolved_meanwhile_wins(self, session, account):
+        posting = _unknown_posting(session, account["org_id"], suffix="j4")
+        job = self._job(session, posting)
+        posting.ats_vendor = "greenhouse"
+        session.flush()
+        result = formspec.handle_formspec_one(session, job, utcnow())
+        assert "vendor greenhouse" in result["skipped"]
+
+
+# ---------------------------------------------------------------------------
+# package-time re-derivation
+# ---------------------------------------------------------------------------
+
+
+class TestPackageTimeRederivation:
+    """The last read before a browser fills it: a board can reshape between
+    carding and applying, so package time re-inspects and refreshes the row."""
+
+    def _application(self, session, account, posting):
+        candidate_id = _seed_candidate(session, account["org_id"])
+        return _application_for(session, account["org_id"], candidate_id, posting)
+
+    def test_the_derived_path_merges_and_refreshes(self, session, account, monkeypatch):
+        import juicebox.applications.submit.browser.derive as derive_mod
+        from juicebox.applications.questions import augment_with_form_questions
+        from juicebox.applications.submit.browser import driver
+        from juicebox.applications.submit.browser.questions import FormQuestion
+
+        posting = _unknown_posting(session, account["org_id"], suffix="r1", spec=_spec())
+        application = self._application(session, account, posting)
+        monkeypatch.setattr(driver, "available", lambda: (True, ""))
+        question = FormQuestion(
+            key="q_new01",
+            label="What draws you to robotics?",
+            kind="custom",
+            field_type="textarea",
+            selector="#q_new",
+            required=True,
+        )
+        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (_spec(), [question]))
+
+        merged, outcome = augment_with_form_questions(
+            session, application=application, posting=posting, answers=[]
+        )
+        assert outcome == "ran"
+        added = next(item for item in merged if item.get("key") == "q_new01")
+        assert added["kind"] == "custom"
+        assert added["form_required"] is True
+        assert posting.form_spec_checked_at is not None
+
+    def test_a_board_that_reshaped_away_degrades(self, session, account, monkeypatch):
+        import juicebox.applications.submit.browser.derive as derive_mod
+        from juicebox.applications.questions import augment_with_form_questions
+        from juicebox.applications.submit.browser import driver
+
+        posting = _unknown_posting(session, account["org_id"], suffix="r2", spec=_spec())
+        application = self._application(session, account, posting)
+        monkeypatch.setattr(driver, "available", lambda: (True, ""))
+        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (None, []))
+
+        answers = [{"key": "salary_expectation", "answer": "$200k"}]
+        merged, outcome = augment_with_form_questions(
+            session, application=application, posting=posting, answers=answers
+        )
+        assert merged == answers, "the standard set is still a complete package"
+        assert outcome == "skipped: form no longer derivable"
+        assert formspec.usable_spec(posting) is None, "the row now says what the page said"
+
+
+# ---------------------------------------------------------------------------
+# the ask loop: withhold, ask over text, absorb, submit once
+# ---------------------------------------------------------------------------
+
+
+QUESTION = "What interests you about infrastructure?"
+
+
+def _asking_application(session, account, thread) -> tuple[Application, JobPosting]:
+    """Prepared, consented, everything standard answered -- only the form's
+    own required question and one optional attestation are blank."""
+    posting = _posting(
+        session, account["org_id"], company="Nimbus", title="Platform Engineer", suffix="ask"
+    )
+    application = _application_for(session, account["org_id"], thread.candidate_id, posting)
+    application.form_answers = [
+        {"key": "salary_expectation", "answer": "$220k", "kind": "standard"},
+        {"key": "notice_period", "answer": "2 weeks", "kind": "standard"},
+        {"key": "work_authorization", "answer": "US citizen", "kind": "standard"},
+        {"key": "why_company", "answer": "drafted words", "kind": "standard", "edited": True},
+        {
+            "key": "q_infra01",
+            "question": QUESTION,
+            "answer": "",
+            "kind": "custom",
+            "field_type": "textarea",
+            "selector": "textarea[name=\"why\"]",
+            "form_required": True,
+        },
+        {
+            "key": "q_vet01",
+            "question": "Veteran status",
+            "answer": "",
+            "kind": "attestation",
+            "field_type": "select",
+            "selector": "#vet",
+            "form_required": False,
+        },
+    ]
+    session.flush()
+    return application, posting
+
+
+def _prior_submitted(session, account, candidate_id):
+    """A previously submitted application, so the first-submission human gate
+    does not swallow what these tests actually exercise."""
+    posting = _posting(
+        session, account["org_id"], company="Elsewhere", title="SRE", suffix="prior"
+    )
+    application = _application_for(
+        session, account["org_id"], candidate_id, posting
+    )
+    application.status = "submitted"
+    application.submitted_at = utcnow()
+    session.flush()
+    return application
+
+
+class TestAskLoop:
+    def test_auto_submit_withholds_while_a_required_blank_exists(
+        self, session, account, channel, thread, memory_mode
+    ):
+        from juicebox.applications.submission import auto_submit
+
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread)
+        _prior_submitted(session, account, thread.candidate_id)
+
+        job, reason = auto_submit(session, application)
+        assert job is None
+        assert "waiting on required form answers" in reason
+        assert QUESTION in reason
+        assert (
+            session.scalar(
+                select(Job).where(
+                    Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
+                )
+            )
+            is None
+        ), "no attempt may be spent on a run we already know terminuses"
+
+    def test_the_question_is_asked_and_the_attestation_never_is(
+        self, session, account, channel, thread, memory_mode
+    ):
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread)
+
+        result = followups.ask_for_missing(session, application)
+        assert result["sent"] == 1
+        body = channel.sent[-1][1].body
+        assert "what interests you about infrastructure" in body.lower()
+        assert "veteran" not in body.lower()
+        assert thread.last_field_asked == "q_infra01"
+        row = next(
+            item
+            for item in application.form_answers
+            if item.get("key") == "q_infra01"
+        )
+        assert row.get("asked_text") is True
+
+    def test_asking_twice_is_one_ask(self, session, account, channel, thread, memory_mode):
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread)
+        followups.ask_for_missing(session, application)
+        sent_before = len(channel.sent)
+        result = followups.ask_for_missing(session, application)
+        assert len(channel.sent) == sent_before
+        assert result.get("skipped") or result.get("sent") == 0
+
+    def test_the_reply_lands_on_the_form_and_submits_once(
+        self, session, account, channel, thread, memory_mode
+    ):
+        """The whole loop: ask -> reply -> verbatim answer on the row ->
+        exactly one attempt queued, and the acknowledgement names completion
+        rather than inviting a fresh job search."""
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread)
+        _prior_submitted(session, account, thread.candidate_id)
+        followups.ask_for_missing(session, application)
+
+        _say(
+            session,
+            thread,
+            "the scheduler work — i spent two years on nomad internals",
+            native_id="d-1",
+        )
+
+        row = next(
+            item
+            for item in application.form_answers
+            if item.get("key") == "q_infra01"
+        )
+        assert "nomad internals" in row["answer"]
+        assert row["provenance"] == "candidate:text"
+        assert row["edited"] is True, "their words survive re-discovery"
+
+        submit_jobs = session.scalars(
+            select(Job).where(
+                Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
+            )
+        ).all()
+        assert len(submit_jobs) == 1
+
+    def test_two_questions_arrive_one_per_message(
+        self, session, account, channel, thread, memory_mode
+    ):
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread)
+        answers = [dict(item) for item in application.form_answers]
+        answers.append(
+            {
+                "key": "q_lang01",
+                "question": "Which languages do you write daily?",
+                "answer": "",
+                "kind": "custom",
+                "field_type": "text",
+                "selector": "#langs",
+                "form_required": True,
+            }
+        )
+        application.form_answers = answers
+        session.flush()
+
+        followups.ask_for_missing(session, application)
+        first_body = channel.sent[-1][1].body.lower()
+        assert "what interests you" in first_body
+        assert "languages" not in first_body, "one question per message"
+
+        _say(session, thread, "the scheduler work", native_id="d-2")
+        second_body = channel.sent[-1][1].body.lower()
+        assert "languages" in second_body, "the ack carries the next question"
+        assert thread.last_field_asked == "q_lang01"
+
+
+# ---------------------------------------------------------------------------
+# warm profiles
+# ---------------------------------------------------------------------------
+
+
+class TestProfiles:
+    def test_filtering_releases_nothing_to_another_host(self):
+        from juicebox.applications.submit.browser.profiles import filtered_state
+
+        state = {
+            "cookies": [
+                {"name": "sess", "domain": ".host-a.example", "path": "/", "value": "s1"},
+                {"name": "sess", "domain": "accounts.google.com", "path": "/", "value": "g"},
+            ],
+            "origins": [
+                {"origin": "https://host-a.example", "localStorage": []},
+                {"origin": "https://host-b.example", "localStorage": []},
+            ],
+        }
+        a = filtered_state(state, hosts={"jobs.host-a.example"})
+        assert a is not None
+        assert [c["domain"] for c in a["cookies"]] == [".host-a.example"]
+        assert [o["origin"] for o in a["origins"]] == ["https://host-a.example"]
+        assert filtered_state(state, hosts={"host-c.example"}) is None
+
+    def test_state_round_trips_encrypted_and_merges(self, session, account):
+        from juicebox.applications.submit.browser.profiles import persist, profile_for
+        from juicebox.models import BrowserProfile
+
+        candidate_id = _seed_candidate(session, account["org_id"])
+        profile = profile_for(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            run_hosts={"host-a.example"},
+        )
+        assert profile is not None
+        assert profile.storage_state is None
+        token = profile.egress_session
+        assert token, "sticky egress is minted with the row"
+
+        profile.saved_state = {
+            "cookies": [{"name": "sess", "domain": ".host-a.example", "path": "/", "value": "s1"}],
+            "origins": [],
+        }
+        persist(session, profile, user_agent="UA-1")
+
+        row = session.scalar(select(BrowserProfile))
+        assert row.storage_state and "host-a" not in row.storage_state, "encrypted at rest"
+        assert row.user_agent == "UA-1"
+
+        # A later run against host B sees none of host A's jar...
+        again_b = profile_for(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            run_hosts={"host-b.example"},
+        )
+        assert again_b.storage_state is None
+        assert again_b.egress_session == token, "one candidate, one egress IP"
+        # ...and a run against host A gets it back.
+        again_a = profile_for(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            run_hosts={"host-a.example"},
+        )
+        assert again_a.storage_state is not None
+        assert again_a.storage_state["cookies"][0]["value"] == "s1"
+
+        # A save from host B's run merges over the jar, never replaces it.
+        again_b.saved_state = {
+            "cookies": [{"name": "other", "domain": ".host-b.example", "path": "/", "value": "b"}],
+            "origins": [],
+        }
+        persist(session, again_b)
+        both = profile_for(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            run_hosts={"host-a.example", "host-b.example"},
+        )
+        assert {c["domain"] for c in both.storage_state["cookies"]} == {
+            ".host-a.example",
+            ".host-b.example",
+        }
+
+    def test_the_flag_and_cdp_gate_the_whole_feature(self, session, account, monkeypatch):
+        from types import SimpleNamespace
+
+        import juicebox.applications.submission as submission_mod
+        from juicebox.applications.submission import _browser_profile_for
+
+        posting = _unknown_posting(session, account["org_id"], suffix="p1", spec=_spec())
+        candidate_id = _seed_candidate(session, account["org_id"])
+        application = _application_for(session, account["org_id"], candidate_id, posting)
+        submitter = SimpleNamespace(method="browser")
+        target = detect.ApplyTarget(vendor="", apply_url="https://careers.x.example/1")
+
+        def settings(profiles: bool, cdp: str = ""):
+            return SimpleNamespace(
+                apply_browser_profiles=profiles, apply_browser_cdp_url=cdp
+            )
+
+        # Off by default: byte-for-byte the proven cold context.
+        monkeypatch.setattr(submission_mod, "get_settings", lambda: settings(False))
+        assert _browser_profile_for(session, application, submitter, target) is None
+        # CDP wins even with the flag on: the Scraping Browser owns its
+        # fingerprint.
+        monkeypatch.setattr(
+            submission_mod, "get_settings", lambda: settings(True, "wss://cdp.example")
+        )
+        assert _browser_profile_for(session, application, submitter, target) is None
+        # On, local Chromium, browser method: a profile.
+        monkeypatch.setattr(submission_mod, "get_settings", lambda: settings(True))
+        profile = _browser_profile_for(session, application, submitter, target)
+        assert profile is not None
+        # A non-browser submitter opens no page and gets no credential.
+        api = SimpleNamespace(method="ats_api")
+        assert _browser_profile_for(session, application, api, target) is None
+
+
+# ---------------------------------------------------------------------------
+# account handover
+# ---------------------------------------------------------------------------
+
+
+class TestHandover:
+    def _account_row(self, session, account, candidate_id) -> AtsAccount:
+        from juicebox.applications.submit.browser.workday import remember_account
+
+        return remember_account(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            vendor="workday",
+            tenant="nimbus",
+            username="anna+abc@goforay.io",
+            password="generated-secret",
+        )
+
+    def test_a_handed_over_account_is_never_offered_again(self, session, account):
+        from juicebox.applications.submit.browser.workday import stored_account
+
+        candidate_id = _seed_candidate(session, account["org_id"])
+        row = self._account_row(session, account, candidate_id)
+        username, password = stored_account(
+            session, candidate_id=candidate_id, vendor="workday", tenant="nimbus"
+        )
+        assert username and password == "generated-secret"
+
+        row.handed_over_at = utcnow()
+        session.flush()
+        assert stored_account(
+            session, candidate_id=candidate_id, vendor="workday", tenant="nimbus"
+        ) == ("", "")
+
+    def test_the_portal_never_returns_the_password(self, session, account, client):
+        from juicebox.portal.links import mint_session_token
+
+        candidate_id = _seed_candidate(session, account["org_id"])
+        row = self._account_row(session, account, candidate_id)
+        session.commit()
+        headers = {
+            "Authorization": f"Bearer {mint_session_token(org_id=account['org_id'], candidate_id=candidate_id)}"
+        }
+
+        listing = client.get("/v1/portal/accounts", headers=headers)
+        assert listing.status_code == 200
+        assert "generated-secret" not in listing.text
+        entry = listing.json()[0]
+        assert entry["vendor"] == "workday"
+        assert entry["username"] == "anna+abc@goforay.io"
+        assert entry["handed_over"] is False
+
+        taken = client.post(f"/v1/portal/accounts/{row.id}/handover", headers=headers)
+        assert taken.status_code == 200
+        assert "generated-secret" not in taken.text
+        assert taken.json()["handed_over"] is True
+
+        # Idempotent, and the listing reflects it.
+        again = client.post(f"/v1/portal/accounts/{row.id}/handover", headers=headers)
+        assert again.status_code == 200
+        assert client.get("/v1/portal/accounts", headers=headers).json()[0]["handed_over"] is True

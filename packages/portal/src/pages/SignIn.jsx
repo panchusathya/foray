@@ -2,10 +2,35 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { GoogleButton } from '../components/GoogleButton.jsx';
-import { ErrorNote, Screen } from '../components/ui.jsx';
+import { ErrorNote } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
-import { once } from '../lib/once.js';
 import { useAuth } from '../lib/auth.jsx';
+import { once } from '../lib/once.js';
+
+function Wordmark() {
+  return (
+    <span className="lockup">
+      <span className="glyph" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+        <i />
+      </span>
+      Foray
+    </span>
+  );
+}
+
+function AuthShell({ children }) {
+  return (
+    <main className="auth">
+      <div className="auth-card">
+        <Wordmark />
+        {children}
+      </div>
+    </main>
+  );
+}
 
 // The magic-link landing. Loading this page is a plain GET with no side
 // effects -- an iMessage link preview prefetches it, and burning the grant on
@@ -37,22 +62,24 @@ export function MagicLinkPage() {
 
   if (!error) {
     return (
-      <Screen title="Signing you in…">
-        <div className="skel" style={{ height: 120 }} />
-      </Screen>
+      <AuthShell>
+        <h1>Signing you in…</h1>
+        <div className="skel" style={{ height: 96, marginTop: 'var(--s-4)' }} />
+      </AuthShell>
     );
   }
 
   return (
-    <Screen title="That link has expired">
-      <p className="muted">
-        Links are single-use and short-lived. Text your recruiter&apos;s agent for a fresh one, or
-        sign in with a code.
+    <AuthShell>
+      <h1>That link has expired</h1>
+      <p className="sub">
+        Links are single-use and short-lived. Message your agent for a fresh one, or sign in with
+        a code.
       </p>
       <button type="button" className="btn primary wide" onClick={() => navigate('/login')}>
         Email me a code
       </button>
-    </Screen>
+    </AuthShell>
   );
 }
 
@@ -122,59 +149,72 @@ export function LoginPage() {
   };
 
   return (
-    <Screen title="Sign in" sub="No password — we'll email you a code.">
+    <AuthShell>
+      <h1>
+        Your <span className="marker">search</span>, in one place.
+      </h1>
+      <p className="sub">
+        Applications, the people who can vouch for you, and every message we draft. No password —
+        we email you a code.
+      </p>
+
       <ErrorNote error={error} />
-      {googleClientId && stage === 'email' ? (
-        <div className="card stack">
-          <GoogleButton clientId={googleClientId} onCredential={onGoogle} />
-          <div className="or">or</div>
-        </div>
-      ) : null}
-      {stage === 'email' ? (
-        <form className="card stack" onSubmit={requestCode}>
-          <div className="field">
-            <label htmlFor="email">Email</label>
-            <input
-              id="email"
-              type="email"
-              inputMode="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </div>
-          <button type="submit" className="btn primary wide" disabled={busy}>
-            Send me a code
-          </button>
-        </form>
-      ) : (
-        <form className="card stack" onSubmit={verify}>
-          <p className="muted">
-            If we know that address, a six-digit code is on its way to it.
-          </p>
-          <div className="field">
-            <label htmlFor="code">Code</label>
-            <input
-              id="code"
-              inputMode="numeric"
-              /* iOS lifts the code straight out of Mail with this. */
-              autoComplete="one-time-code"
-              pattern="[0-9]*"
-              maxLength={6}
-              required
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-            />
-          </div>
-          <button type="submit" className="btn primary wide" disabled={busy}>
-            Sign in
-          </button>
-          <button type="button" className="btn wide" onClick={() => setStage('email')}>
-            Use a different email
-          </button>
-        </form>
-      )}
-    </Screen>
+
+      <div className="stack">
+        {googleClientId && stage === 'email' ? (
+          <>
+            <GoogleButton clientId={googleClientId} onCredential={onGoogle} />
+            <div className="or">or</div>
+          </>
+        ) : null}
+
+        {stage === 'email' ? (
+          <form className="stack" onSubmit={requestCode}>
+            <div className="field">
+              <label htmlFor="email">Email</label>
+              <input
+                id="email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </div>
+            <button type="submit" className="btn primary wide" disabled={busy}>
+              {busy ? 'Sending…' : 'Email me a code'}
+            </button>
+          </form>
+        ) : (
+          <form className="stack" onSubmit={verify}>
+            <p className="muted">If we know that address, a six-digit code is on its way to it.</p>
+            <div className="field">
+              <label htmlFor="code">Code</label>
+              <input
+                id="code"
+                inputMode="numeric"
+                /* iOS lifts the code straight out of Mail with this. */
+                autoComplete="one-time-code"
+                pattern="[0-9]*"
+                maxLength={6}
+                required
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+              />
+            </div>
+            <button type="submit" className="btn primary wide" disabled={busy}>
+              {busy ? 'Checking…' : 'Sign in'}
+            </button>
+            <button type="button" className="btn ghost wide" onClick={() => setStage('email')}>
+              Use a different email
+            </button>
+          </form>
+        )}
+      </div>
+
+      <p className="legal">Foray never sends a message in your name without you.</p>
+    </AuthShell>
   );
 }

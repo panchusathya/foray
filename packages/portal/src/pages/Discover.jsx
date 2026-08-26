@@ -1,16 +1,26 @@
+/**
+ * Discover — the swipe deck.
+ *
+ * One decision per screen, and the decision is "should we apply for you".
+ * Everything that is not that decision (search, the result of the last swipe)
+ * sits above the deck and stays out of the drag surface.
+ */
+
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import { CardDeck } from '../components/CardDeck.jsx';
-import { Empty, ErrorNote, Screen, Skeleton } from '../components/ui.jsx';
+import { IconArrow, IconSearch } from '../components/icons.jsx';
+import { Empty, ErrorNote, Head, Note, Screen } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
+import { useApplications } from '../lib/store.jsx';
 
 export function DiscoverPage() {
+  const { reload } = useApplications();
   const [cards, setCards] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
   const [note, setNote] = useState('');
-  const navigate = useNavigate();
 
   const load = useCallback(async (q = '') => {
     setError(null);
@@ -27,19 +37,24 @@ export function DiscoverPage() {
     load();
   }, [load]);
 
-  const onSwipe = useCallback(async (card, direction) => {
-    const result = await api.swipe(card.posting_id, direction);
-    if (result.status === 'parked') {
-      // Told, not hidden: a swipe that did not become an application because
-      // of a weekly cap has to say so, or the deck silently eats intent.
-      setNote(
-        `Noted ${card.title} at ${card.company} — you're at this week's application limit, so it's queued.`,
-      );
-    } else if (result.status === 'accepted') {
-      setNote(`Preparing your application for ${card.title} at ${card.company}.`);
-    }
-    return result;
-  }, []);
+  const onSwipe = useCallback(
+    async (card, direction) => {
+      const result = await api.swipe(card.posting_id, direction);
+      if (result.status === 'parked') {
+        // Told, not hidden: a swipe that did not become an application
+        // because of a weekly cap has to say so, or the deck silently eats
+        // somebody's intent.
+        setNote(
+          `Noted ${card.title} at ${card.company} — you're at this week's application limit, so it's queued.`,
+        );
+      } else if (result.status === 'accepted') {
+        setNote(`On it — writing your application for ${card.title} at ${card.company}.`);
+        reload();
+      }
+      return result;
+    },
+    [reload],
+  );
 
   const onSearch = (event) => {
     event.preventDefault();
@@ -48,49 +63,69 @@ export function DiscoverPage() {
   };
 
   return (
-    <Screen title="Discover" sub="Swipe right to apply, left to skip.">
-      <form className="row" onSubmit={onSearch} style={{ marginBottom: 12 }}>
-        <input
-          className="field"
-          style={{ flex: 1, minHeight: 44, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--surface)', color: 'var(--ink)' }}
-          placeholder="Search by title or company"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          aria-label="Search roles"
-        />
-        <button type="submit" className="btn">
-          Search
-        </button>
+    <Screen>
+      <Head title="Discover" sub="Right to apply, left to skip. We write the rest." />
+
+      <form onSubmit={onSearch}>
+        <label className="search">
+          <IconSearch />
+          <input
+            type="search"
+            value={query}
+            placeholder="Filter by title or company"
+            onChange={(event) => setQuery(event.target.value)}
+            aria-label="Search roles"
+          />
+        </label>
       </form>
 
-      <ErrorNote error={error} />
-      {note && <div className="banner info">{note}</div>}
+      <div className="stack tight" style={{ marginTop: 'var(--s-3)' }}>
+        <ErrorNote error={error} />
+        {note ? <Note tone="good">{note}</Note> : null}
+      </div>
 
-      {cards === null && <Skeleton height={220} count={1} />}
-      {cards !== null && cards.length === 0 && (
-        <Empty title="Nothing new right now">
-          Your recruiter&apos;s agent is still looking. It will text you the moment something
-          clears the bar.
-        </Empty>
-      )}
-      {cards !== null && cards.length > 0 && (
+      {cards === null ? (
+        <div className="skel" style={{ height: 420, marginTop: 'var(--s-3)' }} />
+      ) : null}
+
+      {cards !== null && cards.length === 0 ? (
+        <div style={{ marginTop: 'var(--s-4)' }}>
+          <Empty
+            title="Nothing new right now"
+            glyph="~"
+            action={
+              <Link className="btn" to="/applications">
+                See your applications
+                <IconArrow />
+              </Link>
+            }
+          >
+            Your agent is still looking. It will message you the moment something clears the bar
+            you set.
+          </Empty>
+        </div>
+      ) : null}
+
+      {cards !== null && cards.length > 0 ? (
         <CardDeck
           cards={cards}
           onSwipe={onSwipe}
           onExhausted={() => (
             <Empty
               title="That's everything for now"
+              glyph="✓"
               action={
-                <button type="button" className="btn" onClick={() => navigate('/applications')}>
+                <Link className="btn primary" to="/applications">
                   See your applications
-                </button>
+                  <IconArrow />
+                </Link>
               }
             >
               New roles land here as they are found.
             </Empty>
           )}
         />
-      )}
+      ) : null}
     </Screen>
   );
 }

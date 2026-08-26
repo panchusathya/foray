@@ -77,11 +77,43 @@ def portal_only_blanks(application: Application) -> list[str]:
     return [key for key in PORTAL_ONLY if not filled.get(key)]
 
 
+#: How many of a form's own questions get quoted in the text before the rest
+#: collapse to a count. Five custom questions verbatim is a wall of text.
+MAX_NAMED_FORM_QUESTIONS = 2
+
+
+def form_question_blanks(application: Application) -> list[dict]:
+    """This form's own unanswered questions, required ones first.
+
+    Discovered from the live form (``applications/questions.py``), and only the
+    portal can answer them -- a text reply has nowhere to land, because the
+    preference extractor only knows the standard keys.
+    """
+    blanks = [
+        item
+        for item in (application.form_answers or [])
+        if item.get("kind") == "custom" and not str(item.get("answer") or "").strip()
+    ]
+    return sorted(blanks, key=lambda item: not item.get("form_required"))
+
+
+def attestation_count(application: Application) -> int:
+    """Unanswered self-ID questions. Counted, never quoted: race and disability
+    do not belong in an SMS, even as a question."""
+    return sum(
+        1
+        for item in (application.form_answers or [])
+        if item.get("kind") == "attestation" and not str(item.get("answer") or "").strip()
+    )
+
+
 def followup_message(application: Application, posting: JobPosting | None) -> str:
     """One message naming the role and the blanks, or "" when nothing is owed."""
     missing = blank_answers(application)
     mine = portal_only_blanks(application)
-    if not missing and not mine:
+    form_blanks = form_question_blanks(application)
+    attestations = attestation_count(application)
+    if not missing and not mine and not form_blanks and not attestations:
         return ""
 
     where = ""
@@ -106,13 +138,28 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
             f"- {PORTAL_ONLY[key].format(company=company)} — that one's yours to write, "
             "i won't put words in your mouth. add it in the app and i'll include it."
         )
+    for item in form_blanks[:MAX_NAMED_FORM_QUESTIONS]:
+        question = str(item.get("question") or "").strip().rstrip("?")
+        lines.append(
+            f'- their form asks: "{question}?" '
+            "— answer in the app and i'll include it."
+        )
+    overflow = len(form_blanks) - MAX_NAMED_FORM_QUESTIONS
+    if overflow > 0:
+        lines.append(f"- plus {overflow} more of their questions, all in the app.")
+    if attestations:
+        plural = "questions" if attestations > 1 else "question"
+        lines.append(
+            f"- {attestations} self-ID {plural} (things like veteran or disability "
+            "status) — in the app too. only you can answer those; i never fill them in."
+        )
     if not missing:
-        # Nothing to ask, only something to hand over. A question head would
+        # Nothing to ask, only things to hand over. A question head would
         # misdescribe what this message wants.
         head = (
-            f"{where} needs one thing from you:"
+            f"{where} needs a few things from you:"
             if where
-            else "your application needs one thing from you:"
+            else "your application needs a few things from you:"
         )
     return head + "\n\n" + "\n".join(lines)
 
@@ -149,7 +196,16 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     that made the agent look like it was not listening.
     """
     missing = blank_answers(application)
-    mine = portal_only_blanks(application)
+    # Everything the message hands over rather than asks: the write-it-yourself
+    # keys, this form's own questions, and the self-ID entries. The self-ID
+    # ones are named here only so the ask-once flag lands on their rows -- the
+    # rendered message carries them as a count, never by name.
+    mine = portal_only_blanks(application) + [
+        str(item.get("key"))
+        for item in (application.form_answers or [])
+        if item.get("kind") in ("custom", "attestation")
+        and not str(item.get("answer") or "").strip()
+    ]
     if not missing and not mine:
         return {"asked": [], "skipped": "package answered everything"}
 

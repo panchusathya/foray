@@ -258,6 +258,95 @@ function Board({ applications }) {
 
 // ---------------------------------------------------------------- detail --
 
+function AnswersCard({ application, onSaved, locked }) {
+  // Draft state per key, only for answers being edited right now.
+  const [drafts, setDrafts] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const answers = application.form_answers || [];
+  const attestations = answers.filter((a) => a.kind === 'attestation');
+  const ordinary = answers.filter((a) => a.kind !== 'attestation');
+  const dirty = Object.keys(drafts).filter(
+    (key) => drafts[key] !== undefined
+      && drafts[key] !== (answers.find((a) => a.key === key)?.answer || ''),
+  );
+
+  const save = async () => {
+    if (!dirty.length || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await api.saveAnswers(
+        application.id,
+        dirty.map((key) => ({ key, answer: drafts[key] })),
+      );
+      setDrafts({});
+      onSaved(updated);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const row = (answer) => {
+    const value = drafts[answer.key] !== undefined ? drafts[answer.key] : answer.answer || '';
+    return (
+      <div className="qa" key={answer.key}>
+        <div className="q">
+          {answer.question}
+          {answer.form_required ? <span className="req" title="The form requires this"> *</span> : null}
+        </div>
+        {locked ? (
+          <div className="a">{answer.answer || <em className="muted">left blank</em>}</div>
+        ) : (
+          <textarea
+            className="a-edit"
+            rows={value.length > 120 ? 4 : 2}
+            value={value}
+            placeholder="Your answer, in your words…"
+            onChange={(event) =>
+              setDrafts((prev) => ({ ...prev, [answer.key]: event.target.value }))
+            }
+          />
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <section className="card" style={{ marginTop: 'var(--s-3)' }}>
+      <div className="card-head">
+        <h2>Their questions, your answers</h2>
+      </div>
+      {ordinary.map(row)}
+      {attestations.length ? (
+        <>
+          <div className="qa-divider">
+            {/* These never come pre-filled and never will: they are the
+                candidate's own statements. Blank is a real answer — it reads
+                as declining to self-identify. */}
+            <span className="tiny">
+              Self-identification — optional, only you can answer these, and we never fill
+              them in for you.
+            </span>
+          </div>
+          {attestations.map(row)}
+        </>
+      ) : null}
+      <ErrorNote error={error} />
+      {!locked && dirty.length ? (
+        <div className="qa-save">
+          <button type="button" className="btn primary" disabled={saving} onClick={save}>
+            {saving ? 'Saving…' : `Save ${dirty.length > 1 ? `${dirty.length} answers` : 'answer'}`}
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function ApplicationDetailPage() {
   const { applicationId } = useParams();
   const { patch, reload } = useApplications();
@@ -422,19 +511,11 @@ export function ApplicationDetailPage() {
       ) : null}
 
       {(application.form_answers || []).length > 0 ? (
-        <section className="card" style={{ marginTop: 'var(--s-3)' }}>
-          <div className="card-head">
-            <h2>Their questions, your answers</h2>
-          </div>
-          {application.form_answers.map((answer) => (
-            <div className="qa" key={answer.key}>
-              <div className="q">{answer.question}</div>
-              <div className="a">
-                {answer.answer || <em className="muted">left blank for you to fill in</em>}
-              </div>
-            </div>
-          ))}
-        </section>
+        <AnswersCard
+          application={application}
+          onSaved={setApplication}
+          locked={!['draft', 'prepared', 'awaiting_consent'].includes(application.status)}
+        />
       ) : null}
 
       <ApplicationPeople applicationId={applicationId} company={application.company} />

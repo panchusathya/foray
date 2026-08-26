@@ -1512,3 +1512,21 @@ button.card {
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* Answer editing, inline in the Q&A card. */
+.a-edit {
+  width: 100%;
+  resize: vertical;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.a-edit:focus-visible { outline: none; box-shadow: var(--ring); }
+.qa .req { color: var(--bad); font-weight: 700; }
+.qa-divider { margin: 10px 0 4px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.qa-save { display: flex; justify-content: flex-end; margin-top: 10px; }

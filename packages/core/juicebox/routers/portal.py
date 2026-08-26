@@ -360,6 +360,83 @@ def get_application(
     return _application_out(db, application)
 
 
+class AnswerPatchIn(BaseModel):
+    answers: list[dict] = []
+
+
+@router.patch("/applications/{application_id}/answers")
+def patch_answers(
+    application_id: str,
+    payload: AnswerPatchIn,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """The candidate answers their own application's questions.
+
+    This is the endpoint the follow-up text has been pointing at ("answer in
+    the app and i'll include it"), and it is the *only* place an attestation --
+    veteran status, disability, EEO self-ID -- can be answered at all: the
+    package never generates one and the agent never asks one over SMS, so a
+    required self-ID question is answerable exactly here, by the person it is
+    about, or not at all.
+
+    Existing keys only. A candidate can fill or reword any answer on their own
+    application, but the question list is the form's, not theirs -- inventing a
+    key here would put an unasked answer on the wire at submit time.
+    """
+    application = _application(db, principal, application_id)
+    if application.status not in {"draft", "prepared", "awaiting_consent"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"answers are locked once submission starts ({application.status})",
+        )
+
+    updates = {
+        str(item.get("key")): str(item.get("answer") or "").strip()
+        for item in (payload.answers or [])
+        if str(item.get("key") or "").strip()
+    }
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing to save."
+        )
+
+    answers = [dict(item) for item in (application.form_answers or [])]
+    known = {str(item.get("key")) for item in answers}
+    unknown = sorted(set(updates) - known)
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"not questions on this application: {', '.join(unknown)}",
+        )
+
+    changed = []
+    for item in answers:
+        key = str(item.get("key"))
+        if key not in updates or str(item.get("answer") or "") == updates[key]:
+            continue
+        item["answer"] = updates[key]
+        # Their words, on the record as theirs. `edited` is also what shields
+        # the answer from refill_from_preference and re-discovery merges.
+        item["edited"] = True
+        item["generated_by"] = "candidate"
+        item["provenance"] = "candidate:portal"
+        changed.append(key)
+
+    if changed:
+        application.form_answers = answers
+        db.flush()
+        record_event(
+            db,
+            org_id=principal.org_id,
+            type="application.answers_edited",
+            subject_type="application",
+            subject_id=application.id,
+            payload={"keys": changed},
+        )
+    return _application_out(db, application)
+
+
 @router.post("/applications/{application_id}/approve")
 def approve_package(
     application_id: str,

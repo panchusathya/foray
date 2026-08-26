@@ -536,7 +536,7 @@ class TestThePortalOnlyBlank:
         assert "why Voice Capital" in body
         # It is a hand-off, not a question, so it must not claim to be asking.
         assert "i don't have yet" not in body
-        assert "needs one thing from you" in body
+        assert "needs a few things from you" in body
 
     def test_nothing_owed_is_silent(self):
         from juicebox.applications.followups import followup_message

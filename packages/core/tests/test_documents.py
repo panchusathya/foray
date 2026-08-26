@@ -159,6 +159,47 @@ class TestParse:
 
 
 class TestTailorHonesty:
+    def test_default_upload_supersedes_candidate_and_linkedin_facts(
+        self, session, account, candidate
+    ):
+        authored = {
+            "contact": {"name": "Ada O.", "email": "authored@example.com"},
+            "summary": "Candidate-authored summary.",
+            "experience": [
+                {
+                    "company": "Candidate Authored Co",
+                    "title": "Engineer",
+                    "start": "2022",
+                    "end": "present",
+                    "location": "",
+                    "bullets": ["Built the product named in my resume."],
+                }
+            ],
+            "education": [],
+            "skills": ["Candidate-authored skill"],
+            "certifications": [],
+        }
+        session.add(
+            CandidateDocument(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                kind="resume_uploaded",
+                is_default=True,
+                status="ready",
+                source="upload",
+                structured=authored,
+            )
+        )
+        session.flush()
+
+        resume, generated_by = build_resume_json(session, candidate)
+
+        assert generated_by == "upload"
+        assert resume["summary"] == "Candidate-authored summary."
+        assert [row["company"] for row in resume["experience"]] == ["Candidate Authored Co"]
+        assert resume["skills"] == ["Candidate-authored skill"]
+        assert resume["leadership"] == []  # schema shape only; no LinkedIn graft
+
     def test_an_inventing_model_is_thrown_away(self, session, account, candidate):
         """The adversarial case: the transport returns a plausible resume with
         an employer the candidate never had. The guard must ship the

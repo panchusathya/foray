@@ -22,7 +22,7 @@ from .. import storage
 from ..docgen.answers import build_form_answers
 from ..docgen.cover_letter import build_cover_letter
 from ..docgen.render import render_letter_pdf, render_resume_pdf
-from ..docgen.resume import RESUME_SCHEMA_VERSION, build_resume_json
+from ..docgen.resume import RESUME_SCHEMA_VERSION, build_resume_json, default_uploaded_resume
 from ..jobs import KIND_APP_PACKAGE, OPEN_STATUSES, Job, enqueue
 from ..models import (
     Application,
@@ -157,6 +157,10 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
     if candidate is None or posting is None:
         raise ApplicationError("application lost its candidate or posting")
 
+    uploaded = default_uploaded_resume(db, candidate.id)
+    if uploaded is not None and not uploaded.storage_path:
+        raise ApplicationError("the uploaded resume is still processing")
+
     # A resume with no employment history is not a resume. The onboarding
     # scrape only learns a current title and a rough tenure, so a candidate
     # who came in that way has nothing for the generator to work from -- this
@@ -164,7 +168,7 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
     # (enrich.profile_sources). Inline rather than queued: we are already in a
     # worker job, and a package built now with a blank career cannot be
     # un-sent later.
-    if not candidate.experiences and candidate.linkedin_url:
+    if uploaded is None and not candidate.experiences and candidate.linkedin_url:
         from ..enrich.profile_sources import paid_lookup
 
         _, error = paid_lookup(
@@ -184,15 +188,6 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
     preference = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == candidate.id)
     )
-    uploaded = db.scalar(
-        select(CandidateDocument)
-        .where(
-            CandidateDocument.candidate_id == candidate.id,
-            CandidateDocument.kind == "resume_uploaded",
-            CandidateDocument.is_default.is_(True),
-        )
-        .order_by(CandidateDocument.created_at.desc())
-    )
     uploaded_text = uploaded.text_extracted if uploaded is not None else ""
 
     try:
@@ -203,15 +198,20 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
             posting=posting,
             uploaded_text=uploaded_text,
         )
-        resume_doc = _write_document(
-            db,
-            application=application,
-            kind="resume_generated",
-            structured=resume_json,
-            generated_by=resume_by,
-            pdf=render_resume_pdf(resume_json),
-            filename=_document_name(candidate, posting, "resume"),
-        )
+        if uploaded is not None:
+            # Do not re-render or rewrite a candidate-authored resume. The
+            # original bytes, filename, and content type remain the attachment.
+            resume_doc = uploaded
+        else:
+            resume_doc = _write_document(
+                db,
+                application=application,
+                kind="resume_generated",
+                structured=resume_json,
+                generated_by=resume_by,
+                pdf=render_resume_pdf(resume_json),
+                filename=_document_name(candidate, posting, "resume"),
+            )
 
         letter_body, letter_by = build_cover_letter(resume_json, posting)
         letter_doc = _write_document(
@@ -288,7 +288,7 @@ def _document_name(candidate: Candidate, posting: JobPosting, suffix: str) -> st
 
 
 def current_documents(db: Session, application: Application) -> dict[str, CandidateDocument]:
-    """The latest ready variant per kind for this application."""
+    """The latest ready variant per kind, falling back to the profile upload."""
     rows = db.scalars(
         select(CandidateDocument)
         .where(
@@ -297,7 +297,14 @@ def current_documents(db: Session, application: Application) -> dict[str, Candid
         )
         .order_by(CandidateDocument.created_at)
     ).all()
-    return {row.kind: row for row in rows}
+    documents = {row.kind: row for row in rows}
+    uploaded = default_uploaded_resume(db, application.candidate_id)
+    if uploaded is not None and uploaded.storage_path:
+        # An upload made after an earlier package was generated still wins at
+        # submission time. Keep the old artifact for audit, but never attach it.
+        documents.pop("resume_generated", None)
+        documents["resume_uploaded"] = uploaded
+    return documents
 
 
 def application_status_summary(db: Session, *, org_id: str, candidate_id: str) -> str:

@@ -510,6 +510,15 @@ def list_documents(
         )
         .order_by(CandidateDocument.created_at.desc())
     ).all()
+    has_default_upload = any(
+        row.kind == "resume_uploaded" and row.is_default and row.storage_path for row in rows
+    )
+    if has_default_upload:
+        rows = [
+            row
+            for row in rows
+            if row.kind != "resume_generated"
+        ]
     return {"documents": [PortalDocumentOut.model_validate(row).model_dump() for row in rows]}
 
 

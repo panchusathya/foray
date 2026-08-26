@@ -78,6 +78,38 @@ def _bare_candidate(session, org_id, **extra) -> Candidate:
 
 
 class TestRefresh:
+    def test_an_uploaded_resume_is_returned_without_generating_a_replacement(
+        self, session, account, rich_candidate
+    ):
+        from juicebox import storage
+
+        uploaded = CandidateDocument(
+            org_id=account["org_id"],
+            candidate_id=rich_candidate.id,
+            kind="resume_uploaded",
+            is_default=True,
+            filename="my-resume.pdf",
+            content_type="application/pdf",
+            status="ready",
+            source="upload",
+            structured={"contact": {"name": "Ada"}, "experience": []},
+        )
+        session.add(uploaded)
+        session.flush()
+        uploaded.storage_path = storage.document_relpath(
+            org_id=uploaded.org_id,
+            candidate_id=uploaded.candidate_id,
+            document_id=uploaded.id,
+        )
+        storage.save_bytes(uploaded.storage_path, b"%PDF-candidate-original")
+
+        doc, error = refresh_profile_resume(session, rich_candidate)
+
+        assert error == ""
+        assert doc.id == uploaded.id
+        assert storage.read_bytes(doc.storage_path) == b"%PDF-candidate-original"
+        assert profile_resume_of(session, rich_candidate.id) is None
+
     def test_a_real_candidate_gets_a_ready_document(self, session, account, rich_candidate):
         doc, error = refresh_profile_resume(session, rich_candidate)
         assert error == ""

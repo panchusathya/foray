@@ -36,6 +36,7 @@ from juicebox.jobs import KIND_APP_PACKAGE
 from juicebox.models import (
     APPLICATION_STATUSES,
     Candidate,
+    CandidateDocument,
     JobMatch,
     JobPosting,
     JobProposal,
@@ -325,6 +326,72 @@ def linq_message_row(session, account):
 
 
 class TestPackageBuild:
+    def test_default_upload_is_the_exact_application_resume(
+        self, session, account, candidate
+    ):
+        from juicebox import storage
+
+        original = b"%PDF-exact-candidate-upload"
+        uploaded = CandidateDocument(
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            kind="resume_uploaded",
+            is_default=True,
+            filename="ada-original.pdf",
+            content_type="application/pdf",
+            status="ready",
+            source="upload",
+            structured={
+                "contact": {"name": "Ada Okonkwo", "email": "ada@example.com"},
+                "summary": "My own summary.",
+                "experience": [],
+                "education": [],
+                "skills": ["My own skill"],
+                "certifications": [],
+            },
+        )
+        session.add(uploaded)
+        session.flush()
+        uploaded.storage_path = storage.document_relpath(
+            org_id=uploaded.org_id,
+            candidate_id=uploaded.candidate_id,
+            document_id=uploaded.id,
+        )
+        storage.save_bytes(uploaded.storage_path, original)
+        posting = _posting(session, account["org_id"], suffix="upload")
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+        stale_generated = CandidateDocument(
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            application_id=application.id,
+            kind="resume_generated",
+            filename="stale-generated.pdf",
+            content_type="application/pdf",
+            status="ready",
+            source="generated",
+        )
+        session.add(stale_generated)
+        session.flush()
+        stale_generated.storage_path = storage.document_relpath(
+            org_id=stale_generated.org_id,
+            candidate_id=stale_generated.candidate_id,
+            document_id=stale_generated.id,
+        )
+        storage.save_bytes(stale_generated.storage_path, b"%PDF-stale-generated")
+
+        result = build_package(session, application)
+        documents = current_documents(session, application)
+
+        assert result["resume_document_id"] == uploaded.id
+        assert set(documents) == {"resume_uploaded", "cover_letter"}
+        assert documents["resume_uploaded"].id == uploaded.id
+        assert storage.read_bytes(documents["resume_uploaded"].storage_path) == original
+
     def test_template_package_end_to_end(self, session, account, candidate):
         """No API key anywhere: the package still builds, honestly flat."""
         posting = _posting(session, account["org_id"])

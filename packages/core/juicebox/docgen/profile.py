@@ -32,11 +32,12 @@ from sqlalchemy.orm import Session
 from .. import storage
 from ..models import Candidate, CandidateDocument, CandidatePreference
 from .render import render_resume_pdf
-from .resume import RESUME_SCHEMA_VERSION, build_resume_json
+from .resume import RESUME_SCHEMA_VERSION, build_resume_json, default_uploaded_resume
 
 logger = logging.getLogger(__name__)
 
 SKIPPED_EMPTY = "nothing to assert yet (no history, summary, or skills)"
+SKIPPED_UPLOAD_PENDING = "the uploaded resume is still processing"
 
 
 def profile_resume_of(db: Session, candidate_id: str) -> CandidateDocument | None:
@@ -53,13 +54,21 @@ def profile_resume_of(db: Session, candidate_id: str) -> CandidateDocument | Non
 def refresh_profile_resume(
     db: Session, candidate: Candidate
 ) -> tuple[CandidateDocument | None, str]:
-    """Regenerate the profile resume from what the CRM now knows.
+    """Use an uploaded resume, or generate a profile resume as the fallback.
 
     Returns ``(document, error)``. ``(None, reason)`` means there was nothing
     worth generating; a document with a non-empty ``error`` means generation
     failed and the row says so — the next promote event retries by design, so
     the failure is recorded rather than raised.
     """
+    uploaded = default_uploaded_resume(db, candidate.id)
+    if uploaded is not None:
+        # The candidate's own file is authoritative even if parsing found no
+        # text. Once bytes exist, the portal can view/download the original.
+        if uploaded.storage_path:
+            return uploaded, ""
+        return None, SKIPPED_UPLOAD_PENDING
+
     if not candidate.experiences and (candidate.linkedin_url or "").strip():
         from ..enrich.profile_sources import paid_lookup
 

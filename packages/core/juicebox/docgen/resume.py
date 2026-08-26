@@ -9,6 +9,7 @@ test hands it a transport that tries anyway and asserts the guard catches it.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -22,7 +23,7 @@ from ..llm.prompts import (
     RESUME_TAILOR_SYSTEM,
     resume_tailor_prompt,
 )
-from ..models import Candidate, CandidatePreference, JobPosting
+from ..models import Candidate, CandidateDocument, CandidatePreference, JobPosting
 from ..search.parser import ParsedQuery
 
 logger = logging.getLogger(__name__)
@@ -38,14 +39,24 @@ def build_resume_json(
     posting: JobPosting | None = None,
     uploaded_text: str = "",
 ) -> tuple[dict, str]:
-    """``(resume.v1 dict, generated_by)`` where generated_by is llm|template.
+    """``(resume.v1 dict, generated_by)`` where generated_by is upload|llm|template.
 
     Tailoring without a model is real: skills are reordered by overlap with
     the posting's parsed spec, which is most of what "tailored" means at the
     keyword-screen stage.
+    A candidate's default upload is the source of truth. When its parse has a
+    usable ``resume.v1`` object, return that object without adding, deleting,
+    or rewriting facts from LinkedIn/CRM data. The original uploaded file is
+    attached by ``applications.service``; this JSON supports answers and
+    cover letters only.
     """
+    uploaded = default_uploaded_resume(db, candidate.id)
+    structured = uploaded.structured if uploaded is not None else None
+    if isinstance(structured, dict) and structured:
+        return _normalized_uploaded_resume(structured), "upload"
+
     base = _deterministic_resume(candidate, preference=preference, posting=posting)
-    _graft_uploaded_sections(db, candidate, base)
+    _graft_linkedin_sections(db, candidate, base)
 
     llm = get_llm()
     if not llm.available:
@@ -71,66 +82,58 @@ def build_resume_json(
     return tailored, "llm"
 
 
-def _graft_uploaded_sections(db: Session, candidate: Candidate, base: dict) -> None:
-    """Carry over what the CRM has no columns for, from their own upload.
-
-    Leadership, interests, languages, certifications and the labeled lines
-    under a school (Honors, GPA, Coursework) exist only on the parsed
-    ``resume.v1`` of the candidate's uploaded resume — the Candidate row has
-    nowhere to hold them. A generated resume that silently dropped somebody's
-    licenses or campus leadership would be a worse document than the one they
-    gave us. Sections graft only into blanks; nothing the deterministic base
-    asserts is replaced.
-    """
-    from ..models import CandidateDocument
-
-    uploaded = db.scalar(
+def default_uploaded_resume(db: Session, candidate_id: str) -> CandidateDocument | None:
+    """Return the candidate-authored resume that supersedes every other source."""
+    return db.scalar(
         select(CandidateDocument)
         .where(
-            CandidateDocument.candidate_id == candidate.id,
+            CandidateDocument.candidate_id == candidate_id,
             CandidateDocument.kind == "resume_uploaded",
             CandidateDocument.is_default.is_(True),
         )
         .order_by(CandidateDocument.created_at.desc())
     )
-    structured = uploaded.structured if uploaded is not None else None
-    # A LinkedIn profile is also a source document. Use its volunteer and
-    # organization entries when the candidate has not supplied a stronger,
-    # self-authored resume to take precedence.
-    if not isinstance(structured, dict) or not structured:
-        profile = db.scalar(
-            select(CandidateDocument)
-            .where(
-                CandidateDocument.candidate_id == candidate.id,
-                CandidateDocument.source == "linkedin_ingest",
-            )
-            .order_by(CandidateDocument.created_at.desc())
+
+
+def _normalized_uploaded_resume(structured: dict) -> dict:
+    """Copy an upload and add only absent schema containers, never new facts."""
+    resume = copy.deepcopy(structured)
+    resume.setdefault("contact", {})
+    resume.setdefault("summary", "")
+    for key in (
+        "experience",
+        "education",
+        "skills",
+        "certifications",
+        "languages",
+        "leadership",
+        "interests",
+    ):
+        resume.setdefault(key, [])
+    return resume
+
+
+def _graft_linkedin_sections(db: Session, candidate: Candidate, base: dict) -> None:
+    """Use LinkedIn-only leadership when no candidate-authored resume exists."""
+    profile = db.scalar(
+        select(CandidateDocument)
+        .where(
+            CandidateDocument.candidate_id == candidate.id,
+            CandidateDocument.source == "linkedin_ingest",
         )
-        profile_structured = profile.structured if profile is not None else None
-        if isinstance(profile_structured, dict):
-            structured = {
-                "leadership": ((profile_structured.get("raw") or {}).get("leadership") or [])
-            }
+        .order_by(CandidateDocument.created_at.desc())
+    )
+    profile_structured = profile.structured if profile is not None else None
+    structured = None
+    if isinstance(profile_structured, dict):
+        structured = {
+            "leadership": ((profile_structured.get("raw") or {}).get("leadership") or [])
+        }
     if not isinstance(structured, dict) or not structured:
         return
 
-    for key in ("leadership", "interests", "languages", "certifications"):
-        if not base.get(key) and structured.get(key):
-            base[key] = list(structured[key])
-
-    details_by_school = {
-        str(edu.get("school") or "").strip().casefold(): [
-            str(line) for line in edu.get("details") or []
-        ]
-        for edu in structured.get("education") or []
-        if isinstance(edu, dict)
-    }
-    for edu in base.get("education") or []:
-        if edu.get("details"):
-            continue
-        lines = details_by_school.get(str(edu.get("school") or "").strip().casefold())
-        if lines:
-            edu["details"] = lines
+    if not base.get("leadership") and structured.get("leadership"):
+        base["leadership"] = list(structured["leadership"])
 
 
 def _tailor_is_honest(base: dict, tailored: dict) -> bool:
@@ -251,8 +254,8 @@ def _deterministic_resume(
         "skills": skills,
         "certifications": [],
         # The Candidate row has no columns for these; the candidate's own
-        # uploaded resume fills them via _graft_uploaded_sections. Empty is
-        # honest here.
+        # LinkedIn source artifacts can fill leadership when there is no
+        # uploaded resume. Empty is honest here.
         "languages": [],
         "leadership": [],
         "interests": [],

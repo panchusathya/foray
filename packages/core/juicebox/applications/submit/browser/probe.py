@@ -105,10 +105,9 @@ def probe(url: str, *, org_id: str = "probe", spec: FormSpec | None = None) -> P
         with driver.session(log=log) as page:
             page.goto(url, wait_until="domcontentloaded")
             # Opening the form is a navigation, not an application.
-            if spec.open_form and not _find(page, spec.landmark):
-                driver.click(page, spec.open_form, log=log, what="open form")
-                page.wait_for_timeout(1500)
-            report.reached_form = bool(_find(page, spec.landmark))
+            report.reached_form = bool(
+                driver.reach_form(page, landmark=spec.landmark, open_form=spec.open_form, log=log)
+            )
 
             for key, selectors in spec.fields.items():
                 report.fields.append(

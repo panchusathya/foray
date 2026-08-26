@@ -193,6 +193,54 @@ def _first(page, selectors: tuple[str, ...]):
     return None
 
 
+def wait_for_any(page, selectors: tuple[str, ...], *, timeout_ms: int = 12000) -> str:
+    """Wait until one of ``selectors`` exists, and return the one that hit.
+
+    Opening a form is a navigation on some boards and a client-side route on
+    others. A fixed sleep has to be long enough for the slowest of those, which
+    makes it a tax on every fast one -- and when it is still too short the
+    symptom is a field map that reads as entirely dead, which is the one
+    failure this tier must not report wrongly.
+    """
+    waited = 0
+    poll = 250
+    while True:
+        hit = first_match(page, selectors)
+        if hit or waited >= timeout_ms:
+            return hit
+        page.wait_for_timeout(poll)
+        waited += poll
+
+
+def reach_form(
+    page,
+    *,
+    landmark: tuple[str, ...],
+    open_form: tuple[str, ...],
+    log: RunLog,
+) -> str:
+    """Get from a posting page to its application form. Returns the landmark hit.
+
+    Three shapes, and the waits are what tell them apart:
+
+    * the form is already on the page (Greenhouse) -- the first wait returns at
+      once and nothing is clicked;
+    * the form is behind a control that is in the initial HTML (Lever);
+    * the control itself is React-rendered (Ashby), so it does not exist yet
+      when ``domcontentloaded`` fires. Clicking straight away finds nothing to
+      click, and the whole field map then reads as dead -- which is exactly how
+      a working Ashby board probed as unusable.
+
+    Opening the form is a navigation, never a send.
+    """
+    hit = wait_for_any(page, landmark, timeout_ms=4000)
+    if hit or not open_form:
+        return hit
+    if wait_for_any(page, open_form, timeout_ms=8000):
+        click(page, open_form, log=log, what="open form")
+    return wait_for_any(page, landmark)
+
+
 def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
     located = _first(page, selectors)
     if located is None:

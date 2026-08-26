@@ -31,7 +31,7 @@ from ..config import get_settings
 from ..deps import CommittingRoute, get_db
 from ..models import Candidate, CandidateAuthGrant, CandidateEmail, PortalOtp, utcnow
 from ..outreach.sender import OutboundEmail, sender_for_org
-from ..portal.links import mint_session_token
+from ..portal.links import mint_session_token, safe_next
 from ..portal.mail import portal_sender
 from ..security import TokenError, decode_access_token
 
@@ -66,19 +66,54 @@ def _aware(value):
 
 @router.post("/exchange")
 def exchange(payload: ExchangeIn, db: Session = Depends(get_db)) -> dict:
-    """One magic link → one session. The grant row makes it one."""
-    try:
-        claims = decode_access_token(payload.token)
-    except TokenError as exc:
-        raise _UNAUTHORIZED from exc
-    if claims.get("typ") != "portal-link":
+    """One magic link → one session. The grant row makes it one.
+
+    Two shapes of token, and both resolve to the same grant row.
+
+    A **short code** is what `mint_portal_link` issues now: the row is looked
+    up by `link_code` and there is no signature, because the signature was
+    never what made the link single-use — `consumed_at` is. 80 bits of
+    `secrets`, one use, and a TTL is the same trust model as any
+    password-reset link.
+
+    A **JWT** is the old shape, still accepted. Links already sitting in
+    candidates' message histories have not expired yet, and refusing them would
+    break the one thing a magic link exists to do. Safe to delete once
+    `PORTAL_LINK_TTL_SECONDS` has elapsed since this shipped.
+    """
+    now = utcnow()
+    token = (payload.token or "").strip()
+    if not token:
         raise _UNAUTHORIZED
 
-    grant = db.get(CandidateAuthGrant, str(claims.get("jti") or ""))
-    now = utcnow()
+    expected_candidate = ""
+    next_path = ""
+    if "." in token:
+        # JWT: three base64url segments. A short code has no dots, so the
+        # discriminator cannot collide with a real code.
+        try:
+            claims = decode_access_token(token)
+        except TokenError as exc:
+            raise _UNAUTHORIZED from exc
+        if claims.get("typ") != "portal-link":
+            raise _UNAUTHORIZED
+        grant = db.get(CandidateAuthGrant, str(claims.get("jti") or ""))
+        expected_candidate = str(claims.get("sub") or "")
+        next_path = str(claims.get("next") or "/")
+    else:
+        grant = db.scalar(
+            select(CandidateAuthGrant).where(CandidateAuthGrant.link_code == token)
+        )
+        # An empty code would otherwise match every OTP and recruiter grant,
+        # so the lookup is guarded rather than trusting the column.
+        if grant is not None and not grant.link_code:
+            raise _UNAUTHORIZED
+        if grant is not None:
+            next_path = grant.next_path or "/"
+
     if (
         grant is None
-        or grant.candidate_id != claims.get("sub")
+        or (expected_candidate and grant.candidate_id != expected_candidate)
         or grant.consumed_at is not None
         or _aware(grant.expires_at) < now
     ):
@@ -95,7 +130,10 @@ def exchange(payload: ExchangeIn, db: Session = Depends(get_db)) -> dict:
             org_id=candidate.org_id, candidate_id=candidate.id
         ),
         "expires_in": settings.portal_session_ttl_seconds,
-        "next": str(claims.get("next") or "/"),
+        # Re-validated on the way out, not just on the way in: a legacy token's
+        # `next` claim was never checked, and this is the value the SPA router
+        # navigates to.
+        "next": safe_next(next_path),
         "candidate": {"first_name": candidate.first_name or candidate.full_name or ""},
     }
 

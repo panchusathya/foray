@@ -2319,15 +2319,39 @@ class AtsAccount(Base, TimestampMixin):
 class CandidateAuthGrant(Base, TimestampMixin):
     """One single-use portal magic link, and whether it was spent.
 
-    The signature alone is not enough: a texted link lands in SMS previews,
-    browser history, and forwarded screenshots, so its JWT carries a ``jti``
-    pointing here and the exchange endpoint marks the row consumed. A second
-    exchange finds ``consumed_at`` set and refuses — replay is a 401, not a
-    second session.
+    A signature alone was never enough: a texted link lands in SMS previews,
+    browser history, and forwarded screenshots, so the row is what makes the
+    link single-use. The exchange marks it consumed and a second attempt is a
+    401, not a second session.
+
+    ``link_code`` is what appears in the URL, and it replaced a full JWT
+    carried in the path. The signed token was several hundred characters of
+    bearer credential in the candidate's message history, which read as a wall
+    of noise at the end of every message and travelled into every screenshot
+    and preview fetch of it. The code is 80 bits from ``secrets``, single-use
+    and short-lived, so the row does the work the signature was doing while the
+    URL stays something a person can look at.
+
+    ``next_path`` used to be a ``next`` claim inside that token. It moves here
+    for the same reason: nothing sensitive belongs in the URL, and with the
+    token gone there is nowhere else to put it.
     """
 
     __tablename__ = "candidate_auth_grants"
-    __table_args__ = (Index("ix_candidate_auth_grants_candidate", "org_id", "candidate_id"),)
+    __table_args__ = (
+        Index("ix_candidate_auth_grants_candidate", "org_id", "candidate_id"),
+        # Partial: every OTP and recruiter grant carries '' and SQL compares
+        # '' to '' as equal, so a plain unique index would let the second one
+        # ever issued collide with the first. Same shape as the tracker's
+        # provider_native_id index, and found the same way.
+        Index(
+            "uq_candidate_auth_grant_code",
+            "link_code",
+            unique=True,
+            sqlite_where=text("link_code != ''"),
+            postgresql_where=text("link_code != ''"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cgrant"))
     org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
@@ -2336,6 +2360,13 @@ class CandidateAuthGrant(Base, TimestampMixin):
     )
     # sms | email | otp | recruiter -- how the link (or session) was issued.
     channel: Mapped[str] = mapped_column(String(16), default="")
+    #: The opaque segment in ``/m/<code>``. Unique, because it is looked up
+    #: directly; nullable-by-empty for OTP and recruiter grants, which never
+    #: appear in a URL at all.
+    link_code: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    #: Where to land after the exchange. A path only, and validated as one on
+    #: the way in -- an absolute URL here would make this an open redirect.
+    next_path: Mapped[str] = mapped_column(String(400), default="/", server_default="/")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

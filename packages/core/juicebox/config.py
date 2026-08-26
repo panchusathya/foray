@@ -68,6 +68,15 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# A current Chrome-on-Windows UA. The apply browser's baseline, so a residential
+# proxy is never paired with a headless-looking UA. Kept as a module constant so
+# the empty-env fallback and any future reference read the same string.
+_DEFAULT_APPLY_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- app -------------------------------------------------------------
@@ -577,6 +586,23 @@ class Settings:
     # A visible browser is for debugging one run by hand, never for the worker.
     apply_browser_headless: bool = field(
         default_factory=lambda: _env_bool("APPLY_BROWSER_HEADLESS", True)
+    )
+    # Route the apply browser through a proxy so employer anti-bot sees a
+    # residential IP, not this datacentre's block -- the thing that got a real
+    # Ashby submission flagged as spam. A standard proxy URL, credentials in
+    # it: `http://user:pass@gate.provider.com:7777`. Empty means direct, which
+    # is the state every deployment starts in.
+    apply_proxy_url: str = field(default_factory=lambda: _env("APPLY_PROXY_URL", ""))
+    # A real browser's UA. A residential IP serving the default headless string
+    # is still obviously a bot, so the two travel together. This is the always-on
+    # baseline, not an opt-in: an *empty* env value falls back to it rather than
+    # blanking the UA, because the compose anchor sets the var to "" when nobody
+    # configured one and a blank UA would hand the headless string right back.
+    # Overridable to a real value because a UA naming a Chromium version the
+    # image no longer ships is a lie a fingerprinter catches against the TLS
+    # handshake.
+    apply_browser_user_agent: str = field(
+        default_factory=lambda: _env("APPLY_BROWSER_USER_AGENT", "").strip() or _DEFAULT_APPLY_UA
     )
     # How long a browser run may sit waiting on a verification email before it
     # stops being "in flight" and becomes something a person has to look at.

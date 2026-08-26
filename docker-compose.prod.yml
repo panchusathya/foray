@@ -223,6 +223,10 @@ x-app-env: &app_env
   APPLY_ALIAS_RELAY: ${APPLY_ALIAS_RELAY:-true}
   APPLY_MAX_ATTEMPTS: ${APPLY_MAX_ATTEMPTS:-3}
   APPLY_BROWSER_HEADLESS: ${APPLY_BROWSER_HEADLESS:-true}
+  # Residential proxy for the apply browser -- employer anti-bot flags
+  # this datacentre's IP. `http://user:pass@gate:port`. Empty = direct.
+  APPLY_PROXY_URL: ${APPLY_PROXY_URL:-}
+  APPLY_BROWSER_USER_AGENT: ${APPLY_BROWSER_USER_AGENT:-}
   APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}
   # No ATS API key here on purpose: those are issued per employer, not per
   # deployment, and live encrypted in ats_board_credentials. See

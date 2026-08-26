@@ -94,6 +94,38 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
+def _proxy_config(url: str) -> dict | None:
+    """Playwright's proxy dict from a standard proxy URL, or None for direct.
+
+    Playwright wants the server split from the credentials, so a URL with a
+    userinfo part (``http://user:pass@host:port`` -- the shape every proxy
+    vendor hands you) is broken back apart here. A bare ``host:port`` with no
+    scheme is assumed http, which is what the endpoints use.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    from urllib.parse import urlparse
+
+    if "://" not in url:
+        url = "http://" + url
+    parsed = urlparse(url)
+    # A hostname with whitespace is not a hostname -- it is a typo'd setting,
+    # and launching through it would fail every run. Direct is the safer read.
+    if not parsed.hostname or " " in parsed.hostname:
+        return None
+    scheme = parsed.scheme or "http"
+    server = f"{scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    config: dict = {"server": server}
+    if parsed.username:
+        config["username"] = parsed.username
+    if parsed.password:
+        config["password"] = parsed.password
+    return config
+
+
 @contextlib.contextmanager
 def session(*, log: RunLog):
     """A paced, serialised browser context. Closes whatever it opened."""
@@ -111,16 +143,33 @@ def session(*, log: RunLog):
 
         settings = get_settings()
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=settings.apply_browser_headless)
+            browser = playwright.chromium.launch(
+                headless=settings.apply_browser_headless,
+                proxy=_proxy_config(settings.apply_proxy_url),
+                # Two flags that most cheaply separate "real Chrome" from
+                # "automation" for a fingerprinter: the AutomationControlled
+                # blink feature is what sets navigator.webdriver, and the
+                # default headless UA names "HeadlessChrome" outright.
+                args=["--disable-blink-features=AutomationControlled"],
+            )
             try:
                 context = browser.new_context(
                     viewport={"width": 1440, "height": 900},
                     accept_downloads=False,
+                    user_agent=settings.apply_browser_user_agent or None,
+                    locale="en-US",
+                    timezone_id="America/Los_Angeles",
+                )
+                # navigator.webdriver stays true even with the launch flag on
+                # some Chromium builds; this removes it before any page script
+                # on the employer's form can read it.
+                context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 context.set_default_timeout(ACTION_TIMEOUT_MS)
                 context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
                 page = context.new_page()
-                log.step("browser opened")
+                log.step("browser opened" + (" via proxy" if settings.apply_proxy_url else ""))
                 yield page
             finally:
                 with contextlib.suppress(Exception):

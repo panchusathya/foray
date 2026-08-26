@@ -330,6 +330,63 @@ class TestEndToEndWithTheMemorySubmitter:
         assert sent.from_address.startswith("anna+")
         assert sent.reply_to_address == "ada@example.com"
 
+    def test_a_dry_run_never_texts_the_candidate(
+        self, session, account, candidate, memory_mode, aliased, monkeypatch
+    ):
+        """A rehearsal must be invisible outside our own records.
+
+        Console and memory return ok=True on purpose, so the status machine and
+        the attempt row get exercised. The notification is the one part of that
+        which reaches a real person, and "your application has been sent" is a
+        lie when nothing was sent.
+        """
+        from juicebox.applications import submission as submission_mod
+
+        notified = []
+        monkeypatch.setattr(
+            submission_mod,
+            "_notify_sent",
+            lambda db, application, attempt: notified.append(attempt.method)
+            if attempt.method not in {"console", "memory"}
+            else None,
+        )
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        request_submission(session, application)
+        submit_application(session, application)
+
+        assert application.status == "submitted"
+        assert application.submission_method == "memory"
+        assert notified == []
+
+    def test_a_real_send_still_notifies(self, session, account, candidate, monkeypatch):
+        """The suppression keys off the method, so a real adapter is unaffected."""
+        from juicebox.applications import submission as submission_mod
+        from juicebox.messaging import notify as notify_mod
+        from juicebox.models import ApplicationSubmission as _Attempt
+
+        called = []
+        monkeypatch.setattr(
+            notify_mod, "notify_candidate", lambda db, **kw: called.append(kw["event"])
+        )
+
+        application = Application(
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id="jp_x",
+            status="submitted",
+        )
+        for method, expected in (("console", 0), ("memory", 0), ("greenhouse_api", 1)):
+            called.clear()
+            submission_mod._notify_sent(
+                session,
+                application,
+                _Attempt(org_id=account["org_id"], id=f"sub_{method}", method=method, attempt=1),
+            )
+            assert len(called) == expected, f"{method} should notify {expected} time(s)"
+
     def test_a_second_attempt_is_refused_after_success(
         self, session, account, candidate, memory_mode, aliased
     ):

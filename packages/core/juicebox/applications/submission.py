@@ -38,6 +38,8 @@ from .ats import detect
 from .service import ApplicationError, current_documents
 from .state import TransitionError, has_consent, transition
 from .submit.base import (
+    METHOD_CONSOLE,
+    METHOD_MEMORY,
     SECRET_VERIFICATION_KEYS,
     Attachment,
     SubmissionContext,
@@ -310,18 +312,7 @@ def _finish(
         application.submission_method = attempt.method[:32]
         application.submission_url = attempt.confirmation_ref[:400] or application.submission_url
         transition(db, application, to_status="submitted", actor="agent")
-        # `transition` only notifies on a recruiter's move -- nobody wants a
-        # text announcing what they just did themselves. This is the one case
-        # where the agent acted and the candidate genuinely does not know yet.
-        from ..messaging.notify import EVENT_APPLICATION_SENT, notify_candidate
-
-        notify_candidate(
-            db,
-            org_id=application.org_id,
-            candidate_id=application.candidate_id,
-            event=EVENT_APPLICATION_SENT,
-            subject_id=application.id,
-        )
+        _notify_sent(db, application, attempt)
         return
 
     # A parked run stays `submitting`: it is still in flight, waiting on mail to
@@ -338,6 +329,40 @@ def _finish(
     except TransitionError:
         # Withdrawn under us, or already terminal. The attempt row is the record.
         logger.info("could not park application %s after a failed attempt", application.id)
+
+
+def _notify_sent(db: Session, application: Application, attempt: ApplicationSubmission) -> None:
+    """Tell the candidate their application went out -- when it actually did.
+
+    `transition` only notifies on a recruiter's move, because nobody wants a
+    text announcing what they just did themselves. A successful attempt is the
+    one case where the agent acted and the candidate genuinely does not know.
+
+    Except in a dry run. `ConsoleSubmitter` and `MemorySubmitter` return
+    ok=True on purpose, so that a rehearsal exercises the status machine and
+    the attempt row without an employer hearing anything. The notification is
+    the one part of that rehearsal that reaches a real person, and "your
+    application has been sent" is false when nothing was sent. A dry run must
+    be invisible outside our own records.
+    """
+    if attempt.method in {METHOD_CONSOLE, METHOD_MEMORY}:
+        logger.info(
+            "not notifying candidate %s: attempt %s was a %s dry run, nothing was sent",
+            application.candidate_id,
+            attempt.id,
+            attempt.method,
+        )
+        return
+
+    from ..messaging.notify import EVENT_APPLICATION_SENT, notify_candidate
+
+    notify_candidate(
+        db,
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        event=EVENT_APPLICATION_SENT,
+        subject_id=application.id,
+    )
 
 
 def _seal(verification: dict) -> dict:

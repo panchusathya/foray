@@ -2070,6 +2070,9 @@ class ApplicationMessage(Base, TimestampMixin):
     application_id: Mapped[str | None] = mapped_column(
         ForeignKey("applications.id", ondelete="SET NULL"), nullable=True
     )
+    #: inbound (the employer wrote to us) | outbound (we replied for the
+    #: candidate). One table for both so a thread reads as a conversation.
+    direction: Mapped[str] = mapped_column(String(16), default="inbound")
     #: verification | otp | acknowledged | rejected | interview | assessment | other
     kind: Mapped[str] = mapped_column(String(32), default="other")
     #: The alias it arrived at -- anna+<token>@, kept so a support question
@@ -2077,9 +2080,15 @@ class ApplicationMessage(Base, TimestampMixin):
     alias_address: Mapped[str] = mapped_column(String(320), default="")
     from_address: Mapped[str] = mapped_column(String(320), default="")
     from_name: Mapped[str] = mapped_column(String(200), default="")
+    #: Where a reply should actually go. ATS mail is sent *from* a robot and
+    #: carries the address that routes back in Reply-To, so this is the field a
+    #: reply targets and ``from_address`` is only the fallback.
+    reply_to_address: Mapped[str] = mapped_column(String(320), default="")
     subject: Mapped[str] = mapped_column(String(500), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     provider_native_id: Mapped[str] = mapped_column(String(200), default="")
+    #: The RFC 5322 Message-ID, which is what a reply threads off.
+    rfc_message_id: Mapped[str] = mapped_column(String(400), default="")
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: Whether the relay to the candidate's own inbox went out.
@@ -2149,6 +2158,16 @@ class CandidateAlias(Base, TimestampMixin):
     candidate_id: Mapped[str] = mapped_column(
         ForeignKey("candidates.id", ondelete="CASCADE"), index=True
     )
+    # Which application this alias belongs to, for rows minted per application.
+    # Null on the legacy candidate-scoped rows, which employers are already
+    # writing to and which therefore have to keep resolving forever.
+    application_id: Mapped[str | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"), nullable=True
+    )
+    #: candidate | application -- which id the local part is an HMAC of, and so
+    #: which token verifies it. The row is the discriminator because the two
+    #: token shapes are indistinguishable by inspection, deliberately.
+    scope: Mapped[str] = mapped_column(String(16), default="candidate")
     # The full address, and the token we generated its local part from.
     address: Mapped[str] = mapped_column(String(255))
     local_part: Mapped[str] = mapped_column(String(120), default="")

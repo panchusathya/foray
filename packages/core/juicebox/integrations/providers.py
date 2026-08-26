@@ -59,6 +59,10 @@ class MailboxEvent:
     # RFC 5322 Message-ID of this message, and of the one it answers.
     rfc_message_id: str = ""
     in_reply_to: str = ""
+    # Where the sender wants an answer to go. ATS mail is sent *from* a robot
+    # and puts the address that routes back here, so for the application inbox
+    # this -- not `from_address` -- is what a reply targets.
+    reply_to: str = ""
     received_at: datetime | None = None
     sent_at: datetime | None = None
     is_draft: bool = False

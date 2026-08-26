@@ -87,6 +87,10 @@ x-app-env: &app_env
   # outbound 25/465/587/2525, so `smtp` cannot deliver from here at all.
   EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
   EMAIL_MAILBOX_ADDRESS: ${EMAIL_MAILBOX_ADDRESS:-}
+  # `resend` is what carries the alias: Zoho refuses a sub-addressed From
+  # and any Reply-To it has not verified, and this host drops every SMTP
+  # port, so HTTPS to a verified domain is the only door left.
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
   SMTP_HOST: ${SMTP_HOST:-}
   SMTP_PORT: ${SMTP_PORT:-587}
   SMTP_USER: ${SMTP_USER:-}

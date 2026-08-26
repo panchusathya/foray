@@ -400,7 +400,9 @@ class ZohoClient:
         return data if isinstance(data, list) else []
 
 
-def to_event(payload: dict, *, body: str = "", in_reply_to: str = "") -> MailboxEvent:
+def to_event(
+    payload: dict, *, body: str = "", in_reply_to: str = "", reply_to: str = ""
+) -> MailboxEvent:
     """One Zoho message payload as a provider-neutral MailboxEvent.
 
     The list view has no body, so ``body`` is supplied separately by whoever
@@ -421,6 +423,7 @@ def to_event(payload: dict, *, body: str = "", in_reply_to: str = "") -> Mailbox
         thread_id=str(payload.get("threadId") or ""),
         rfc_message_id=str(payload.get("mailId") or payload.get("messageIdHeader") or ""),
         in_reply_to=in_reply_to,
+        reply_to=reply_to,
         received_at=received,
         sent_at=sent,
         # Zoho reports mode/isDraft inconsistently across views; both spellings
@@ -818,14 +821,21 @@ class ZohoProvider:
         except ZohoError as exc:
             logger.warning("zoho content fetch failed for %s: %s", native_id, exc)
 
+        # A sub-addressed recipient means application-inbox mail, where the
+        # Reply-To is the only address a reply can reach -- the From is a
+        # no-reply robot. That is worth the second call; a plain "+" test keeps
+        # it provider-neutral and needs no lookup.
+        sub_addressed = any("+" in part.partition("@")[0] for part in _addresses(payload.get("toAddress")))
         in_reply_to = ""
-        if not payload.get("threadId"):
+        reply_to = ""
+        if not payload.get("threadId") or sub_addressed:
             try:
                 header = client.fetch_header(folder_id, native_id)
                 in_reply_to = _header_value(header, "in-reply-to")
+                reply_to = _header_value(header, "reply-to")
             except ZohoError as exc:
                 logger.warning("zoho header fetch failed for %s: %s", native_id, exc)
-        return to_event(payload, body=body, in_reply_to=in_reply_to)
+        return to_event(payload, body=body, in_reply_to=in_reply_to, reply_to=reply_to)
 
     # ---- drafts and search ----------------------------------------------
 

@@ -6,20 +6,32 @@
  * screen is the durable copy, and for a Workday-style pursuit it is the only
  * place the verification mail is visible at all.
  *
- * Deliberately read-only. Replying from here means sending as the alias, which
- * is a different feature with its own consent question — until then the detail
- * view says which address it arrived at, so a person can answer from their own
- * client if they want to.
+ * Replies go out as the alias, not from the candidate's own address. They
+ * applied as anna+<token>@, so that is the only sender the employer has a
+ * record of, and a reply from a personal inbox arrives as a stranger on a
+ * thread nobody can match. It also keeps the employer's answer coming back to
+ * us, which is what stops this screen going dark the moment a real
+ * conversation starts.
+ *
+ * A message with no one behind it — a verification robot — says so instead of
+ * offering a box that would bounce.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { IconBuilding, IconTracker } from '../components/icons.jsx';
-import { Empty, ErrorNote, Head, Screen, Sheet, Skeleton } from '../components/ui.jsx';
+import { Empty, ErrorNote, Head, Note, Screen, Sheet, Skeleton } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { ago } from '../lib/applications.js';
-import { chipsFor, kindLabel, order, senderInitials, senderLabel } from '../lib/inbox.js';
+import {
+  canReply,
+  chipsFor,
+  kindLabel,
+  order,
+  senderInitials,
+  senderLabel,
+} from '../lib/inbox.js';
 
 export function TrackerTabs({ current }) {
   return (
@@ -54,6 +66,71 @@ function MessageRow({ message, onOpen }) {
         {label ? <span className={`tag ${message.kind}`}>{label}</span> : null}
       </span>
     </button>
+  );
+}
+
+function Composer({ message, onSent }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState(null);
+  const [sent, setSent] = useState(false);
+
+  if (!canReply(message)) {
+    return (
+      <Note tone="info">
+        {/* Saying so beats a reply box that bounces. */}
+        This came from a no-reply address, so there is nobody to answer here.
+      </Note>
+    );
+  }
+
+  if (sent) {
+    return <Note tone="good">Sent. Their answer will land back in this thread.</Note>;
+  }
+
+  const send = async () => {
+    const body = text.trim();
+    if (!body || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await api.trackerReply(message.id, body);
+      setSent(true);
+      setText('');
+      onSent?.();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="composer">
+      <label className="em" htmlFor="reply-body">
+        Reply to {message.reply_to}
+      </label>
+      <textarea
+        id="reply-body"
+        rows={5}
+        value={text}
+        placeholder="Tuesday works for me…"
+        onChange={(event) => setText(event.target.value)}
+        disabled={sending}
+      />
+      <ErrorNote error={error} />
+      <div className="composer-foot">
+        <span className="em">
+          {/* The one thing worth saying here: it does not come from their
+              Gmail, and that is deliberate. */}
+          Sends as {message.alias_address || 'your application address'}, so they recognise
+          you.
+        </span>
+        <button type="button" className="btn" onClick={send} disabled={sending || !text.trim()}>
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -167,6 +244,7 @@ export function InboxPage() {
                 </Link>
               ) : null}
               <pre className="msg-body">{open.body}</pre>
+              <Composer message={open} onSent={() => load(kind)} />
               {open.alias_address ? (
                 <p className="em">
                   {/* The literal address, not a monogram: the whole point is

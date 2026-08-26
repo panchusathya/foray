@@ -386,7 +386,7 @@ def _email_sent_confirmation(db: Session, application: Application) -> None:
     posting = db.get(JobPosting, application.job_posting_id)
     title = (posting.title if posting else "") or "the role"
     company = (posting.company if posting else "") or "the company"
-    alias_address = alias.address_for(candidate.id)
+    alias_address = alias.address_for_application(application.id)
 
     try:
         from ..outreach.sender import OutboundEmail, sender_for_org
@@ -557,7 +557,7 @@ def build_context(
 ) -> SubmissionContext:
     """Everything the adapter is allowed to see, with the bytes already read."""
     documents = current_documents(db, application)
-    from_address, reply_to = alias.sending_identity(db, candidate)
+    from_address, reply_to = alias.sending_identity(db, candidate, application)
     first, _, last = (candidate.full_name or "").strip().partition(" ")
 
     return SubmissionContext(

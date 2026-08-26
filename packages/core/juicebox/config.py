@@ -180,7 +180,12 @@ class Settings:
     rerank_weight: float = field(default_factory=lambda: _env_float("RERANK_WEIGHT", 0.25))
 
     # --- outreach --------------------------------------------------------
-    # console | smtp | memory | mailbox
+    # console | smtp | memory | mailbox | resend
+    #
+    # `resend` is the one that can carry the alias: it sends from any address
+    # on a verified domain, so `anna+<token>@` survives the send, and it takes
+    # a free Reply-To. The Zoho API refuses both (500 "Given FromAddress not
+    # exists!" and 500 "You need to verify the ReplyTo address").
     #
     # `mailbox` sends app-level mail (portal sign-in codes, the alias relay)
     # through a connected mailbox's own HTTPS API instead of SMTP. It exists
@@ -194,6 +199,7 @@ class Settings:
     email_mailbox_address: str = field(
         default_factory=lambda: _env("EMAIL_MAILBOX_ADDRESS", "").strip().lower()
     )
+    resend_api_key: str = field(default_factory=lambda: _env("RESEND_API_KEY", ""))
     smtp_host: str = field(default_factory=lambda: _env("SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: _env_int("SMTP_PORT", 587))
     smtp_user: str = field(default_factory=lambda: _env("SMTP_USER", ""))

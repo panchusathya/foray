@@ -178,6 +178,40 @@ def classify(subject: str, body: str) -> InboundClassification:
     return InboundClassification(KIND_OTHER)
 
 
+def _bare(address: str) -> str:
+    """The address out of a ``Name <addr>`` header value."""
+    _, bare = parseaddr((address or "").strip())
+    return bare or (address or "").strip()
+
+
+#: Local parts that exist to refuse mail. Matched on the local part only --
+#: "noreply.co" is a real domain and "no-reply@" on it is still a robot.
+_NO_REPLY_LOCALS = ("no-reply", "noreply", "donotreply", "do-not-reply", "no_reply")
+
+
+def repliable_address(message: ApplicationMessage) -> str:
+    """Where a reply to this message should go, or empty if nowhere.
+
+    ``Reply-To`` first: ATS mail is sent *from* a robot and puts the address
+    that routes back -- a recruiter, or the vendor's own threading address --
+    in Reply-To. Falling back to ``From`` catches the humans who write
+    directly.
+
+    Empty is a real answer, not a failure. Workday verification mail has no
+    recipient behind it, and offering a reply box that bounces is worse than
+    saying so.
+    """
+    for candidate_address in (message.reply_to_address, message.from_address):
+        bare = _bare(candidate_address).lower()
+        if not bare or "@" not in bare:
+            continue
+        local = bare.partition("@")[0]
+        if any(marker in local for marker in _NO_REPLY_LOCALS):
+            continue
+        return bare
+    return ""
+
+
 def handle(
     db: Session,
     *,
@@ -188,6 +222,8 @@ def handle(
     body: str,
     native_id: str = "",
     received_at: datetime | None = None,
+    reply_to: str = "",
+    rfc_message_id: str = "",
 ) -> dict:
     """Act on one message addressed to an alias. Returns what it decided.
 
@@ -197,8 +233,9 @@ def handle(
     """
     candidate = None
     matched_address = ""
+    alias_application_id = ""
     for address in to_addresses:
-        candidate = alias.candidate_for(db, address)
+        candidate, alias_application_id = alias.resolve(db, address)
         if candidate is not None:
             matched_address = address
             break
@@ -224,7 +261,12 @@ def handle(
             return {"routed": True, "reason": "already handled", "candidate_id": candidate.id}
 
     classification = classify(subject, body)
-    application = _match_application(db, candidate, from_address=from_address)
+    # An application-scoped alias already answers this exactly. The domain
+    # heuristic below is only for legacy candidate-scoped aliases, where the
+    # address says who but not which pursuit.
+    application = db.get(Application, alias_application_id) if alias_application_id else None
+    if application is None:
+        application = _match_application(db, candidate, from_address=from_address)
     outcome: dict = {
         "routed": True,
         "candidate_id": candidate.id,
@@ -266,9 +308,11 @@ def handle(
         alias_address=matched_address[:320],
         from_address=(bare_from or from_address or "")[:320],
         from_name=(display_name or "")[:200],
+        reply_to_address=_bare(reply_to)[:320],
         subject=(subject or "")[:500],
         body=body or "",
         provider_native_id=(native_id or "")[:200],
+        rfc_message_id=(rfc_message_id or "")[:400],
         received_at=received_at or utcnow(),
     )
     db.add(stored)
@@ -422,31 +466,51 @@ def relay(
 ) -> bool:
     """Forward employer mail to the candidate's own inbox.
 
-    ``From`` is the alias, because we cannot send as the employer -- SPF and
-    DMARC exist -- and ``Reply-To`` is the original sender so a reply at least
-    *addresses* the right person. It will still go out from the candidate's own
-    address if they hit Reply in their own client, which orphans the thread at
-    the employer's end. That is a real hole and the portal is where it gets
-    closed, not here.
+    ``From`` is the alias, never the employer: sending as ``no-reply@acme.com``
+    from our infrastructure fails SPF, fails DKIM alignment and gets binned by
+    the recipient's DMARC. Every masked-mail service rewrites the From for the
+    same reason. That rewrite is the compliant behaviour, not a shortcut.
+
+    ``Reply-To`` is the alias as well, which is the part worth arguing about.
+    Pointing it at the employer would be the obvious choice and is wrong twice
+    over: Zoho refuses to send an unverified Reply-To at all, and a reply that
+    went straight to the employer would come *from* the candidate's own address
+    -- one the employer has no record of, on an application they filed under
+    ours. Pointing it back at the alias means a reply lands somewhere we can
+    attribute, whatever client it was sent from.
+
+    The footer says all of this out loud, because a rewritten From with no
+    explanation reads as spam.
     """
     if not get_settings().apply_alias_relay:
         return False
     real = alias.primary_email(candidate)
     if not real or real == alias_address:
         return False
-    note = (
-        "This arrived at the address used for your application. "
-        f"Reply from your Foray inbox so the employer sees the same sender ({alias_address})."
+
+    sender_line = _bare(from_address)
+    footer = "\n".join(
+        [
+            "",
+            "—" * 24,
+            "Reply to this email and we will send it on as you — the employer",
+            "sees the same address your application came from.",
+            "",
+            "Replying from any other address sends from one they have no record of.",
+            "",
+            f"This is your Foray managed address. Forwarding to: {real}",
+            f"Sent from: {sender_line or 'an address the employer did not disclose'}",
+        ]
     )
     result = sender_for_org(db, candidate.org_id).send(
         OutboundEmail(
             to=real,
             subject=subject or "(no subject)",
-            text_body=f"{body}\n\n---\n{note}\n",
+            text_body=f"{body}\n{footer}\n",
             html_body="",
             from_email=alias_address,
             from_name=f"{candidate.full_name or 'Applications'} via Foray",
-            headers={"Reply-To": from_address} if from_address else {},
+            headers={"Reply-To": alias_address} if alias_address else {},
         )
     )
     if not result.ok:

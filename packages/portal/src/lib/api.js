@@ -110,6 +110,10 @@ export const api = {
     request(`/tracker/messages${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
   trackerMessage: (id) => request(`/tracker/messages/${id}`),
   trackerPipeline: () => request('/tracker/pipeline'),
+  // Answers as the alias the application was filed under, never the
+  // candidate's own address — the employer has no record of that one.
+  trackerReply: (id, body) =>
+    request(`/tracker/messages/${id}/reply`, { method: 'POST', body: { body } }),
 
   documents: () => request('/documents'),
   documentUrl: (id) => request(`/documents/${id}/download-url`, { method: 'POST' }),

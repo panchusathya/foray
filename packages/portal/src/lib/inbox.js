@@ -88,3 +88,14 @@ export function order(messages = []) {
     return 0;
   });
 }
+
+/**
+ * Whether this message has anyone behind it.
+ *
+ * The server decides — it has the Reply-To header and the no-reply rules — and
+ * hands down an address or an empty string. The UI only has to not offer a box
+ * that would bounce.
+ */
+export function canReply(message = {}) {
+  return Boolean(message.reply_to);
+}

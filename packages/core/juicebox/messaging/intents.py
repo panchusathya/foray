@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 INTENT_JOBS_MORE = "jobs_more"
 INTENT_JOBS_DETAIL = "jobs_detail"
 INTENT_APPLY = "apply"
+INTENT_APPLY_LINK = "apply_link"
 INTENT_STATUS = "status"
 INTENT_NETWORKING = "networking"
 INTENT_PROFILE_ANSWER = "profile_answer"
@@ -46,6 +47,8 @@ class Intent:
     kind: str
     # 1-based index into the presented list; 0 = no specific role referenced.
     selection: int = 0
+    # The job link an APPLY_LINK message carried; "" for every other intent.
+    url: str = ""
 
 
 _ORDINALS = {
@@ -123,6 +126,16 @@ def classify(body: str, *, presented: list[dict[str, Any]]) -> Intent:
     if not text:
         return Intent(INTENT_OTHER)
     selection = resolve_reference(body, presented)
+
+    # A job link outranks every keyword: "apply to this <url>" is about the
+    # URL, not about the cards on screen. Deterministic, so a texted link
+    # works with no API key. LinkedIn profile URLs are excluded inside
+    # find_job_link -- those are identity, absorbed elsewhere.
+    from .apply_link import find_job_link
+
+    link = find_job_link(body or "")
+    if link:
+        return Intent(INTENT_APPLY_LINK, selection, url=link)
 
     if any(word in text for word in _APPLY_WORDS):
         return Intent(INTENT_APPLY, selection)

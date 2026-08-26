@@ -39,6 +39,17 @@ EVENT_PROFILE_READY = "profile.ready"
 EVENT_MATCHES_READY = "matches.ready"
 EVENT_PACKAGE_READY = "package.ready"
 EVENT_STATUS_CHANGED = "status.changed"
+# Apply-by-link dead ends, subject-keyed on the link message so a retried
+# job cannot text the same refusal twice.
+EVENT_LINK_PROBLEM = "link.problem"
+EVENT_LINK_DUPLICATE = "link.duplicate"
+EVENT_LINK_PARKED = "link.parked"
+
+_LINK_EVENT_BODIES = {
+    EVENT_LINK_PROBLEM: prompts.NOTIFY_LINK_PROBLEM,
+    EVENT_LINK_DUPLICATE: prompts.NOTIFY_LINK_DUPLICATE,
+    EVENT_LINK_PARKED: prompts.NOTIFY_LINK_PARKED,
+}
 
 
 def manager_thread_for(db: Session, *, org_id: str, candidate_id: str) -> IntakeThread | None:
@@ -135,6 +146,15 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             db,
             thread=thread,
             message=OutboundMessage(body=body, verbatim=True),
+            origin="proactive",
+        )
+        return {"event": event, "sent": 1 if row is not None else 0}
+
+    if event in _LINK_EVENT_BODIES:
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=_LINK_EVENT_BODIES[event]),
             origin="proactive",
         )
         return {"event": event, "sent": 1 if row is not None else 0}

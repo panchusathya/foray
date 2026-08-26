@@ -35,6 +35,7 @@ from ..applications.service import (
     request_package,
 )
 from ..intake.schema import coverage
+from ..jobmatch.ids import source_id_for
 from ..models import (
     Application,
     IntakeMessage,
@@ -46,7 +47,7 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import jobcard, render_text
-from . import identity, intents, prompts
+from . import apply_link, identity, intents, prompts
 from .channels import OutboundMessage
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,10 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         identity.link_candidate(db, thread=thread)
     state = coverage(thread.record or {})
 
+    # A link that arrived before we knew who was texting is spent the moment
+    # a candidate exists -- idempotent, so re-entered turns cannot double it.
+    apply_link.ensure_enqueued(db, thread)
+
     presented = list(thread.last_presented or [])
     intent = intents.classify(last.body or "", presented=presented)
 
@@ -121,6 +126,8 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         )
         return TurnResult(action, thread, state, sent=[r for r in [row] if r])
 
+    if intent.kind == intents.INTENT_APPLY_LINK:
+        return _apply_by_link(db, thread=thread, last=last, state=state, url=intent.url)
     if intent.kind == intents.INTENT_APPLY:
         return _apply(db, thread=thread, last=last, state=state, selection=intent.selection)
     if intent.kind == intents.INTENT_JOBS_MORE:
@@ -210,6 +217,54 @@ def _apply(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, sel
 
     row = _deliver(db, thread=thread, message=OutboundMessage(body=body))
     return TurnResult(action, thread, state, sent=[r for r in [row] if r])
+
+
+def _apply_by_link(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, url: str):
+    """A job URL in the message: the posting and the per-application yes at once.
+
+    The link is stashed before anything else. Identity may still be missing,
+    and the stash is what lets the answer to "what name goes on this?" finish
+    the job the link started -- ``ensure_enqueued`` runs at the top of every
+    managing turn, so the reply that links a candidate spends it.
+    """
+    from .conversation import TurnResult, _deliver
+
+    apply_link.stash(thread, url=url, message_id=last.id)
+
+    candidate_id = thread.candidate_id or identity.link_candidate(db, thread=thread)
+    if not candidate_id:
+        ask, field = _identity_request(thread)
+        body = prompts.LINK_NEED_IDENTITY.format(ask=ask[0].lower() + ask[1:])
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body, asked_field=field)
+        )
+        return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
+
+    # Already in flight for this exact URL: say so now rather than promising
+    # a package the worker would refuse a minute later.
+    posting = db.scalar(
+        select(JobPosting).where(
+            JobPosting.org_id == thread.org_id,
+            JobPosting.source_id == source_id_for(url=url),
+        )
+    )
+    if posting is not None:
+        existing = db.scalar(
+            select(Application).where(
+                Application.candidate_id == candidate_id,
+                Application.job_posting_id == posting.id,
+            )
+        )
+        if existing is not None:
+            apply_link.clear(thread)
+            row = _deliver(
+                db, thread=thread, message=OutboundMessage(body=prompts.NOTIFY_LINK_DUPLICATE)
+            )
+            return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
+
+    apply_link.ensure_enqueued(db, thread)
+    row = _deliver(db, thread=thread, message=OutboundMessage(body=prompts.LINK_ACK))
+    return TurnResult(ACTION_APPLIED, thread, state, sent=[r for r in [row] if r])
 
 
 def _detail(db: Session, *, thread: IntakeThread, state, selection: int):

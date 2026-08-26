@@ -21,6 +21,7 @@ from .jobs import (
     INTERACTIVE_KINDS,
     KIND_AGENT_TICK,
     KIND_APP_PACKAGE,
+    KIND_APPLY_LINK,
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
@@ -908,6 +909,12 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
     return result
 
 
+def _handle_apply_link(db: Session, job: Job, now) -> dict[str, Any]:
+    from .messaging.apply_link import handle_apply_link
+
+    return handle_apply_link(db, job, now)
+
+
 def _handle_thread_notify(db: Session, job: Job, now) -> dict[str, Any]:
     from .messaging.notify import handle_notify
 
@@ -1060,6 +1067,7 @@ HANDLERS = {
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
+    KIND_APPLY_LINK: _handle_apply_link,
     KIND_PROFILE_INGEST: _handle_profile_ingest,
     KIND_THREAD_NOTIFY: _handle_thread_notify,
     KIND_LINKEDIN_SCRAPE: _handle_linkedin_scrape,

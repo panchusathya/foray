@@ -95,6 +95,12 @@ KIND_THREAD_NOTIFY = "thread.notify"
 # applications.service is what collapses double-clicks.
 KIND_APP_PACKAGE = "application.package"
 
+# A job URL a candidate texted: ingest the posting, open the application with
+# the link message as its consent, queue the package. Keyed on that message id
+# -- permanent on purpose, one link message is one application attempt however
+# many times the webhook retries or the turn re-runs.
+KIND_APPLY_LINK = "application.from_link"
+
 OPEN_STATUSES = ("queued", "running")
 
 
@@ -184,7 +190,7 @@ def recover_stale_locks(db: Session, *, now: datetime | None = None) -> int:
 # inside a claim is not enough on its own: a batch is processed serially, so a
 # turn queued behind nineteen mailbox syncs waits for all nineteen. The worker
 # claims these separately for that reason.
-INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE)
+INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE, KIND_APPLY_LINK)
 
 
 def claim(

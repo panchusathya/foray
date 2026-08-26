@@ -141,6 +141,14 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
             if spec.required:
                 missing.append(spec.key)
             continue
+        if spec.kind == "radio":
+            # A radio group is many elements, so `_first` is the wrong shape:
+            # the value picks which one, by each option's own label.
+            if _check_radio(page, spec, log=log):
+                log.filled[spec.key] = spec.value
+            elif spec.required:
+                missing.append(spec.key)
+            continue
         located = _first(page, spec.selectors)
         if located is None:
             log.step(f"no field for {spec.key}")
@@ -165,6 +173,45 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
         log.step(f"filled {spec.key}")
     log.missing = missing
     return missing
+
+
+#: How each radio option's label is read: its wrapping <label>, or the one its
+#: id points at. Evaluated per option because the group shares one selector.
+_RADIO_LABEL_JS = (
+    "el => (el.closest('label')?.innerText"
+    " || (el.id && document.querySelector(`label[for=\"${CSS.escape(el.id)}\"]`)?.innerText)"
+    " || '').trim()"
+)
+
+
+def _check_radio(page, spec: FieldSpec, *, log: RunLog) -> bool:
+    """Pick the option whose label matches the answer. Exact beats substring:
+    'Yes' must not select 'Yes, with conditions' when a plain 'Yes' exists."""
+    wanted = spec.value.strip().lower()
+    try:
+        group = page.locator(spec.selectors[0])
+        count = group.count()
+        exact = substring = None
+        for index in range(count):
+            option = group.nth(index)
+            label = str(option.evaluate(_RADIO_LABEL_JS) or "").strip().lower()
+            if not label:
+                continue
+            if label == wanted:
+                exact = option
+                break
+            if substring is None and (wanted in label or label in wanted):
+                substring = option
+        chosen = exact or substring
+        if chosen is None:
+            log.step(f"no radio option matching {spec.value!r} for {spec.key}")
+            return False
+        chosen.check()
+        log.step(f"checked {spec.key} = {spec.value}")
+        return True
+    except Exception as exc:  # noqa: BLE001 - one field, not the run
+        log.step(f"could not pick a radio for {spec.key}: {exc}")
+        return False
 
 
 def first_match(page, selectors: tuple[str, ...]) -> str:

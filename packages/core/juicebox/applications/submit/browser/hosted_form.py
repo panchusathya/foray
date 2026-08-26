@@ -49,6 +49,61 @@ def _values(ctx: SubmissionContext, resume_path: str) -> dict[str, str]:
     }
 
 
+def discovered_specs(ctx: SubmissionContext) -> list[FieldSpec]:
+    """FieldSpecs for the questions this form itself added.
+
+    Discovery (``applications/questions.py``) stored each one's selector and
+    control type on the answer entry at package time; whatever the candidate
+    wrote in the portal is the value. Entries without a selector are skipped --
+    we cannot fill what we cannot address, and ``unanswerable_questions`` has
+    already decided whether that blank is allowed to stop the run.
+    """
+    kinds = {"text": "text", "textarea": "text", "select": "select",
+             "checkbox": "check", "radio": "radio", "file": "file"}
+    specs: list[FieldSpec] = []
+    for entry in ctx.answers:
+        if entry.get("kind") not in ("custom", "attestation"):
+            continue
+        selector = str(entry.get("selector") or "")
+        if not selector:
+            continue
+        field_type = str(entry.get("field_type") or "text")
+        if field_type == "file":
+            # A custom file upload ("portfolio deck") is nothing we hold.
+            continue
+        specs.append(
+            FieldSpec(
+                key=str(entry.get("key")),
+                selectors=(selector,),
+                value=str(entry.get("answer") or "").strip(),
+                required=bool(entry.get("form_required")),
+                kind=kinds.get(field_type, "text"),
+            )
+        )
+    return specs
+
+
+def unanswerable_questions(ctx: SubmissionContext) -> list[str]:
+    """Labels of required discovered questions nobody has answered.
+
+    Checked before the browser ever opens: "a required field we cannot answer
+    from the record stops the run" extends to the form's own questions. Only
+    *required* blanks stop it -- an optional attestation left blank IS an
+    answer (declining to self-identify), and the candidate was told where
+    those questions live before they approved. What never happens is anybody
+    but the candidate writing one.
+    """
+    labels: list[str] = []
+    for entry in ctx.answers:
+        if entry.get("kind") not in ("custom", "attestation"):
+            continue
+        if str(entry.get("answer") or "").strip():
+            continue
+        if entry.get("form_required"):
+            labels.append(str(entry.get("question") or entry.get("key")))
+    return labels
+
+
 def specs_for(spec: FormSpec, values: dict[str, str]) -> list[FieldSpec]:
     return [
         FieldSpec(
@@ -85,6 +140,17 @@ class HostedFormSubmitter:
                 method=self.method,
                 needs_human=True,
                 error="no return address to put on the application",
+            )
+        unanswered = unanswerable_questions(ctx)
+        if unanswered:
+            # Before the browser opens: the answer is not going to appear
+            # mid-run, and a page view spent discovering that is wasted.
+            named = "; ".join(unanswered[:3])
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error=f"the form requires answers only the candidate can give: {named}",
             )
 
         log = RunLog()
@@ -130,6 +196,9 @@ class HostedFormSubmitter:
                         )
 
                     missing = driver.fill(page, specs_for(self.spec, values), log=log)
+                    # The form's own questions, by the selectors discovery
+                    # stored. Answered in the portal, filled here verbatim.
+                    missing += driver.fill(page, discovered_specs(ctx), log=log)
                     before = driver.snapshot(
                         page,
                         org_id=ctx.org_id,

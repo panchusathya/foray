@@ -227,6 +227,13 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
         answers, _ = build_form_answers(
             preference=preference, resume_json=resume_json, posting=posting
         )
+        # The form's own questions, where a browser can read them. Best-effort
+        # by design: the standard set above is a complete package on its own.
+        from .questions import augment_with_form_questions
+
+        answers = augment_with_form_questions(
+            db, application=application, posting=posting, answers=answers
+        )
         application.form_answers = answers
         application.package_error = ""
     except Exception as exc:

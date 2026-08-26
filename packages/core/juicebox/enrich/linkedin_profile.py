@@ -458,16 +458,52 @@ def _leadership(person: dict) -> list[dict]:
     return out
 
 
+#: Vendors disagree about how to write a month. Apify has sent 2, "2", "Feb"
+#: and "February" for the same one.
+_MONTH_NAMES = {
+    name: number
+    for number, name in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+        start=1,
+    )
+}
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _month_number(value: Any) -> int | None:
+    """A month as 1-12, whatever the vendor called it."""
+    number = _as_int(value)
+    if number is None:
+        number = _MONTH_NAMES.get(str(value).strip().lower()[:3])
+    if number is None or not 1 <= number <= 12:
+        return None
+    return number
+
+
 def _date_str(value: Any) -> str:
-    """YYYY or YYYY-MM from the shapes these vendors use; '' when absent."""
+    """YYYY or YYYY-MM from the shapes these vendors use; '' when absent.
+
+    Nothing here raises. This runs while parsing a payload from somebody
+    else's API, on a code path that a live text conversation is waiting on --
+    a month named "Feb" used to reach ``int()`` and take the whole profile
+    lookup down with it, leaving the thread silent with no reply and no error
+    the candidate could see. A date we cannot read is worth less than the rest
+    of the profile, so it degrades to the year, or to nothing.
+    """
     if isinstance(value, dict):
-        year = value.get("year")
-        month = value.get("month")
-        if not year:
+        year = _as_int(value.get("year"))
+        if year is None:
             return ""
-        if month:
-            return f"{int(year):04d}-{int(month):02d}"
-        return f"{int(year):04d}"
+        month = _month_number(value.get("month"))
+        if month is not None:
+            return f"{year:04d}-{month:02d}"
+        return f"{year:04d}"
     if isinstance(value, str):
         return value.strip()[:7]
     return ""

@@ -653,3 +653,90 @@ class TestApifyProvider:
         with pytest.raises(ProfileProviderUnavailable):
             provider.fetch("https://www.linkedin.com/in/nobody")
         config.reset_settings_cache()
+
+
+class TestDateShapes:
+    """Vendors disagree about how to write a month.
+
+    A month named "Feb" reached `int()` and took the whole paid profile lookup
+    down with it. The job died before the thread's next turn was enqueued, so a
+    candidate mid-conversation sent their LinkedIn URL, got no reply, asked
+    "Hello?", and got nothing again. Five retries, five identical failures.
+
+    A date we cannot read is worth less than the rest of the profile, so
+    nothing in here raises.
+    """
+
+    def test_a_numeric_month(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": 2}) == "2024-02"
+
+    def test_a_numeric_month_as_a_string(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": "2024", "month": "2"}) == "2024-02"
+
+    def test_an_abbreviated_month_name(self):
+        """The exact payload that broke production."""
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": "Feb"}) == "2024-02"
+
+    def test_a_full_month_name(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": "February"}) == "2024-02"
+
+    def test_month_names_are_case_insensitive(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": "DEC"}) == "2024-12"
+
+    def test_an_unreadable_month_degrades_to_the_year(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": "sometime"}) == "2024"
+
+    def test_an_out_of_range_month_degrades_to_the_year(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": 2024, "month": 13}) == "2024"
+        assert _date_str({"year": 2024, "month": 0}) == "2024"
+
+    def test_an_unreadable_year_is_nothing_rather_than_a_crash(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"year": "recently", "month": "Feb"}) == ""
+
+    def test_a_missing_year_is_empty(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str({"month": "Feb"}) == ""
+
+    def test_the_string_and_absent_shapes_are_unchanged(self):
+        from juicebox.enrich.linkedin_profile import _date_str
+
+        assert _date_str("2024-02-01") == "2024-02"
+        assert _date_str(None) == ""
+        assert _date_str(42) == ""
+
+    def test_a_named_month_survives_the_caller(self):
+        """The level that actually matters: one odd date must not lose the row
+        or take the lookup down."""
+        from juicebox.enrich.linkedin_profile import _leadership
+
+        rows = _leadership(
+            {
+                "volunteerExperience": [
+                    {
+                        "organizationName": "Acme",
+                        "role": "Analyst",
+                        "startEndDate": {"start": {"year": 2022, "month": "Feb"}},
+                    }
+                ]
+            }
+        )
+        assert len(rows) == 1
+        assert rows[0]["start"] == "2022-02"
+        assert rows[0]["end"] == "present"

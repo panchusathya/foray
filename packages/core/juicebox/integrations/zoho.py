@@ -207,10 +207,34 @@ def _epoch_ms(raw) -> datetime | None:
     return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
+def _unescape(raw):
+    """Undo Zoho's HTML escaping of recipient fields.
+
+    ``toAddress`` comes back as ``&lt;anna+token@goforay.io&gt;``, not
+    ``<anna+token@goforay.io>``. Every parser below looks for angle brackets to
+    find the address inside a "Display Name <a@b>" value, so without this the
+    brackets are never found, ``&lt;`` stays glued to the local part and
+    ``&gt;`` to the domain, and the result is an address that matches nothing.
+
+    That is not cosmetic. It made every message sent to an application alias
+    unroutable: `applications/alias.parse` compares the domain exactly, so
+    ``goforay.io&gt;`` fails and the mail falls through to the recruiter-reply
+    path and is discarded. Found by mailing a live alias and watching nothing
+    arrive, having tested every layer above this one with clean addresses.
+
+    ``fromAddress`` is returned bare, with no brackets and so nothing to
+    escape, which is why reply matching never showed the fault.
+    """
+    if isinstance(raw, list):
+        return [html.unescape(str(item)) for item in raw]
+    return html.unescape(str(raw))
+
+
 def _addresses(raw) -> list[str]:
     """Zoho joins recipients into one comma-separated string."""
     if not raw:
         return []
+    raw = _unescape(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     out = []
     for part in parts:
@@ -262,6 +286,7 @@ def _named_addresses(raw) -> list[tuple[str, str]]:
     """
     if not raw:
         return []
+    raw = _unescape(raw)
     parts = raw if isinstance(raw, list) else _split_recipients(str(raw))
     out: list[tuple[str, str]] = []
     for part in parts:

@@ -198,6 +198,55 @@ class TestFeedAndSwipe:
         )
         assert replay.json().get("duplicate") is True
 
+    def test_swipe_right_on_a_closed_posting_does_not_open_a_pursuit(
+        self, client, session, account, candidate, headers
+    ):
+        org_id = account["org_id"]
+        posting = _posting(session, org_id, suffix="closed")
+        posting.status = "closed"
+        _match(session, org_id, candidate, posting)
+        session.commit()
+
+        response = client.post(
+            f"/v1/portal/feed/{posting.id}/swipe", json={"direction": "right"}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "parked"
+        assert session.scalar(select(Application)) is None
+        proposal = session.scalar(select(JobProposal))
+        assert proposal is not None and proposal.status == "accepted"
+
+    def test_the_last_swipe_of_the_week_is_not_parked_as_over_budget(
+        self, client, session, account, candidate, headers
+    ):
+        from juicebox.applications.limits import PROPOSALS_PER_WEEK
+
+        org_id = account["org_id"]
+        now = utcnow()
+        for index in range(PROPOSALS_PER_WEEK - 1):
+            posting = _posting(session, org_id, company=f"Co{index}", suffix=f"cap{index}")
+            session.add(
+                JobProposal(
+                    org_id=org_id,
+                    candidate_id=candidate.id,
+                    job_posting_id=posting.id,
+                    channel="portal",
+                    status="accepted",
+                    responded_at=now,
+                )
+            )
+        last = _posting(session, org_id, suffix="cap-last")
+        _match(session, org_id, candidate, last)
+        session.commit()
+
+        response = client.post(
+            f"/v1/portal/feed/{last.id}/swipe", json={"direction": "right"}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "accepted"
+        assert response.json().get("application_id")
+
     def test_swipe_left_never_resurfaces(self, client, session, account, candidate, headers):
         org_id = account["org_id"]
         posting = _posting(session, org_id, suffix="left")
@@ -236,6 +285,8 @@ class TestApplications:
             f"/v1/portal/applications/{application.id}/confirm-submitted", headers=headers
         )
         assert premature.status_code == 409
+        session.expire_all()
+        assert not session.get(Application, application.id).submission_method
 
         approved = client.post(
             f"/v1/portal/applications/{application.id}/approve", headers=headers

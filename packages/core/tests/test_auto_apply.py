@@ -639,6 +639,30 @@ class TestInboundMail:
         assert outcome["action"] == "moved_to_acknowledged"
         assert application.status == "acknowledged"
 
+    def test_an_acknowledgement_during_submitting_still_lands(
+        self, session, account, candidate, aliased
+    ):
+        """ATS mail often arrives before the browser run records submitted."""
+        from juicebox.applications.inbox import handle
+
+        posting = _posting(session, account["org_id"])
+        application = _ready(session, account["org_id"], candidate, posting)
+        transition(session, application, to_status="submitting", actor="candidate")
+        row = ensure(session, candidate)
+
+        outcome = handle(
+            session,
+            org_id=account["org_id"],
+            to_addresses=(row.address,),
+            from_address="no-reply@anthropic.com",
+            subject="We received your application",
+            body="Thank you for applying to Anthropic.",
+        )
+        assert outcome["routed"] is True
+        assert outcome["action"] == "moved_to_acknowledged"
+        assert application.status == "acknowledged"
+        assert application.submitted_at is not None
+
     def test_an_unmatched_sender_moves_nothing(self, session, account, candidate, aliased):
         from juicebox.applications.inbox import handle
 

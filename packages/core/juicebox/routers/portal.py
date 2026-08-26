@@ -36,6 +36,7 @@ from ..applications.service import (
     request_package,
 )
 from ..applications.state import TransitionError, transition
+from ..applications.submit.base import METHOD_CONSOLE, METHOD_MEMORY
 from ..crm import patch_candidate
 from ..deps import CandidatePrincipal, CommittingRoute, get_candidate_principal, get_db
 from ..models import (
@@ -237,33 +238,58 @@ def swipe(
         )
     )
     now = utcnow()
+
+    if payload.direction == "left":
+        db.add(
+            JobProposal(
+                org_id=principal.org_id,
+                candidate_id=principal.candidate_id,
+                job_posting_id=posting_id,
+                job_match_id=match.id if match is not None else None,
+                channel="portal",
+                status="declined",
+                responded_at=now,
+                decline_reason="swiped_left",
+            )
+        )
+        db.flush()
+        return {"status": "declined"}
+
+    # Budget *before* inserting this row: `may_propose` counts every proposal
+    # including one just flushed, so checking after would park the legal last
+    # swipe of the week as over budget.
+    budget = limits.may_propose(
+        db,
+        org_id=principal.org_id,
+        candidate_id=principal.candidate_id,
+        in_new_message=False,
+    )
+    bar = (
+        passes_bar(match, posting)
+        if match is not None
+        else None
+    )
+
     proposal = JobProposal(
         org_id=principal.org_id,
         candidate_id=principal.candidate_id,
         job_posting_id=posting_id,
         job_match_id=match.id if match is not None else None,
         channel="portal",
-        status="accepted" if payload.direction == "right" else "declined",
+        status="accepted",
         responded_at=now,
-        decline_reason="swiped_left" if payload.direction == "left" else "",
     )
     db.add(proposal)
     db.flush()
 
-    if payload.direction == "left":
-        return {"status": "declined"}
-
-    # The weekly proposal budget applies to a pulled feed too -- a fast thumb
-    # must not do what consent forbids one at a time. Over budget, the
-    # acceptance is parked: recorded, visible, not yet an application.
-    decision = limits.may_propose(
-        db,
-        org_id=principal.org_id,
-        candidate_id=principal.candidate_id,
-        in_new_message=False,
-    )
-    if not decision:
-        return {"status": "parked", "reason": decision.reason, "detail": decision.detail}
+    # Over budget, closed, or below the bar: the acceptance is parked —
+    # recorded, visible, not yet an application. The feed already hid these,
+    # but a stale client can still POST the id.
+    if not budget:
+        return {"status": "parked", "reason": budget.reason, "detail": budget.detail}
+    if bar is None or not bar.ok:
+        why = "no-match" if bar is None else bar.why_not
+        return {"status": "parked", "reason": why, "detail": why}
 
     try:
         application = create_application(
@@ -502,11 +528,16 @@ def confirm_submitted(
 ) -> dict:
     """The one-tap 'I applied' after the Tier-0 hand-off."""
     application = _application(db, principal, application_id)
-    application.submission_method = "portal_link"
+    # Stamp the method only after the move succeeds — a 409 (no consent,
+    # illegal status) must not rewrite a browser/email attempt that is
+    # already in flight, or a draft that never left.
+    previous_method = application.submission_method or ""
     try:
         transition(db, application, to_status="submitted", actor="candidate")
     except TransitionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if not previous_method:
+        application.submission_method = "portal_link"
     return _application_out(db, application)
 
 
@@ -827,10 +858,13 @@ def tracker_pipeline(
                 "title": (posting.title if posting else "") or "",
                 "submitted_at": application.submitted_at,
                 "submission_url": application.submission_url or "",
-                # `console` is a dry run. Saying "sent" for one would be the
-                # same lie the notification suppression exists to prevent.
+                # `console` and `memory` are dry runs. Saying "sent" for one
+                # would be the same lie the notification suppression exists
+                # to prevent.
                 "was_really_sent": bool(
-                    attempt and attempt.status == "succeeded" and attempt.method != "console"
+                    attempt
+                    and attempt.status == "succeeded"
+                    and attempt.method not in {METHOD_CONSOLE, METHOD_MEMORY}
                 ),
                 "vendor": (attempt.vendor if attempt else "") or "",
                 "attempt_status": (attempt.status if attempt else "") or "",

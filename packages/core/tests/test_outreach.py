@@ -707,6 +707,10 @@ class TestReplies:
         assert enrollment.status == "replied"
         assert enrollment.next_send_at is None
         assert session.query(Message).filter_by(direction="inbound").count() == 1
+        inbound = session.query(Message).filter_by(direction="inbound").one()
+        assert inbound.from_address == message.to_address
+        assert inbound.to_address == message.from_address
+        assert inbound.to_address == "talent@acme-talent.com"
 
     def test_bounce_marks_the_message_and_enrollment(
         self, session, outreach_fixture, mailbox
@@ -756,6 +760,18 @@ class TestReplies:
             org_id=message.org_id,
             candidate_email="ada@example.com",
             provider_message_id=None,
+        )
+        assert found is not None and found.id == message.id
+
+    def test_inbound_matching_by_rfc_in_reply_to(self, session, outreach_fixture, mailbox):
+        message = self._send_first(session, outreach_fixture)
+        message.internet_message_id = "<out-1@acme-talent.com>"
+        session.flush()
+        found = find_message_for_reply(
+            session,
+            org_id=message.org_id,
+            candidate_email=None,
+            provider_message_id="<out-1@acme-talent.com>",
         )
         assert found is not None and found.id == message.id
 

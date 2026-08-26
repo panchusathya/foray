@@ -460,13 +460,32 @@ def _park_code(db: Session, candidate: Candidate, code: str, *, application_id: 
 
 
 def _move(db: Session, application: Application, *, to_status: str, phrase: str) -> dict:
+    reason = f"employer mail: {phrase}"[:240]
+    # An ATS ack can land while the browser run is still in `submitting`.
+    # Jumping straight to acknowledged/rejected is not a legal move, and
+    # skipping `submitted` would leave `submitted_at` unset on a pursuit
+    # the employer already has. Step through submitted first.
+    if application.status == "submitting" and to_status in {
+        KIND_ACKNOWLEDGED,
+        KIND_REJECTED,
+    }:
+        try:
+            transition(
+                db,
+                application,
+                to_status="submitted",
+                actor="agent",
+                reason=reason,
+            )
+        except TransitionError as exc:
+            return {"action": "not_moved", "reason": str(exc)}
     try:
         transition(
             db,
             application,
             to_status=to_status,
             actor="agent",
-            reason=f"employer mail: {phrase}"[:240],
+            reason=reason,
         )
     except TransitionError as exc:
         return {"action": "not_moved", "reason": str(exc)}

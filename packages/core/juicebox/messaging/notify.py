@@ -148,9 +148,10 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             from .conversation import react_to_message
 
             consenting = db.get(IntakeMessage, application.consenting_message_id)
-            # Tapback-apply binds consenting_message_id to our outbound tail
-            # today; 👍 that bubble would look like we liked our own card.
-            # Only react when the yes was a candidate inbound.
+            # Tapback-apply binds consent to the card that was tapped, which
+            # is our outbound — 👍 that bubble would look like we liked our
+            # own card. Only react when the yes was a candidate inbound
+            # ("apply to 2").
             if (
                 consenting is not None
                 and consenting.thread_id == thread.id

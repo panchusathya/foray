@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -753,6 +753,10 @@ def send_step(
         references=_reference_chain(db, enrollment.id) if parent is not None else "",
         thread_native_id=parent.provider_native_id if same_mailbox else "",
     )
+    # Who we sent as, so an inbound recorded against this row is not
+    # candidate-to-candidate. Set even on a failed attempt: it is the
+    # address we tried.
+    message.from_address = email.from_email
 
     if dry_run:
         message.status = "queued"
@@ -1005,10 +1009,11 @@ def record_reply(
         step_id=message.step_id,
         channel=message.channel,
         direction="inbound",
-        # The reply came FROM the candidate's address; sent_at makes the
-        # timeline sort real instead of falling back to created_at.
+        # The reply came FROM the candidate's address, TO the mailbox we
+        # sent from. Writing both as `to_address` made every inbound look
+        # like the candidate mailing themselves.
         from_address=message.to_address,
-        to_address=message.to_address,
+        to_address=message.from_address,
         subject=subject,
         body=body,
         status="received",
@@ -1079,13 +1084,27 @@ def record_reply(
 def find_message_for_reply(
     db: Session, *, org_id: str, candidate_email: str | None, provider_message_id: str | None
 ) -> Message | None:
-    """Match an inbound email back to the outbound message that provoked it."""
+    """Match an inbound email back to the outbound message that provoked it.
+
+    ``provider_message_id`` is overloaded on purpose: mailbox sync passes the
+    provider's native id, and an ESP inbound-parse webhook passes RFC
+    ``In-Reply-To``. Both are stored on the outbound row (native id vs
+    ``internet_message_id``), so looking at only one silently dropped the
+    other.
+    """
     if provider_message_id:
         message = db.scalar(
-            select(Message).where(
+            select(Message)
+            .where(
                 Message.org_id == org_id,
-                Message.provider_message_id == provider_message_id,
+                Message.direction == "outbound",
+                or_(
+                    Message.provider_message_id == provider_message_id,
+                    Message.provider_native_id == provider_message_id,
+                    Message.internet_message_id == provider_message_id,
+                ),
             )
+            .order_by(Message.created_at.desc())
         )
         if message is not None:
             return message

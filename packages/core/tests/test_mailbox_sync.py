@@ -162,6 +162,17 @@ def synced_org(session, account, outreach_fixture):
     return {"connection": connection, "sequence": sequence, "ada": ada}
 
 
+class TestGraphToEvent:
+    def test_reply_to_is_read_off_the_payload(self):
+        payload = _inbound()
+        payload["replyTo"] = [{"emailAddress": {"address": "dana@parasail.ai"}}]
+        event = microsoft.to_event(payload)
+        assert event.reply_to == "dana@parasail.ai"
+
+    def test_missing_reply_to_stays_empty(self):
+        assert microsoft.to_event(_inbound()).reply_to == ""
+
+
 class TestSyncMailbox:
     def test_first_sync_initialises_without_reading_history(self, session, account):
         connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")

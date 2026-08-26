@@ -792,21 +792,27 @@ class TestTapbackAppliesToCardRows:
         from juicebox.worker import process_job
 
         thread = _managed(session, thread)
-        posting = _posting(session, account["org_id"], company="Rippling", suffix="tb")
-        session.add(
-            JobMatch(
-                org_id=account["org_id"],
-                job_posting_id=posting.id,
-                candidate_id=thread.candidate_id,
-                score=0.9,
-                criteria=[STRONG],
-                status="new",
+        org_id = account["org_id"]
+        for index, company in enumerate(("Rippling", "Figma")):
+            posting = _posting(session, org_id, company=company, suffix=f"tb{index}")
+            session.add(
+                JobMatch(
+                    org_id=org_id,
+                    job_posting_id=posting.id,
+                    candidate_id=thread.candidate_id,
+                    score=0.9,
+                    criteria=[STRONG],
+                    status="new",
+                )
             )
-        )
         session.flush()
         _say(session, thread, "find me roles", native_id="tb-present")
-        proposal = session.scalar(select(JobProposal))
-        card = session.get(IntakeMessage, proposal.message_id)
+        proposals = list(
+            session.scalars(select(JobProposal).order_by(JobProposal.created_at)).all()
+        )
+        assert len(proposals) >= 2
+        first = proposals[0]
+        card = session.get(IntakeMessage, first.message_id)
         assert card is not None and card.provider_native_id
         result = _handle_linq_reaction(
             session,
@@ -822,12 +828,15 @@ class TestTapbackAppliesToCardRows:
         )
         assert result["acted"] is True
         jobs = list(session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all())
-        job = next(j for j in jobs if (j.payload or {}).get("apply_proposal_id") == proposal.id)
+        job = next(j for j in jobs if (j.payload or {}).get("apply_proposal_id") == first.id)
         job.status = "running"
         process_job(session, job, now=datetime.now(tz=UTC))
         application = session.scalar(select(Application))
         assert application is not None
-        assert application.job_posting_id == posting.id
+        assert application.job_posting_id == first.job_posting_id
+        # Consent is bound to the card that was tapped, not the later bubble
+        # sitting at the tail of the thread.
+        assert application.consenting_message_id == card.id
 
 
 class TestAckReactions:

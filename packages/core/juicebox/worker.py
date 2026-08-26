@@ -198,6 +198,14 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     )
     if status == "deferred":
         return {"defer": True, "status": status}
+    if status == "failed" and enrollment.status == "active":
+        # The step is still due. Marking the job succeeded spends the
+        # permanent idempotency key, and the tick cannot re-queue it — the
+        # same trap `deferred` exists to avoid. Raise so `mark_failed`
+        # retries; a stopped enrollment (suppressed, missing email) is
+        # already finished and the job can succeed.
+        error = (_message.error if _message is not None else "") or "send failed"
+        raise RuntimeError(f"outreach send failed: {error}")
     return {"status": status}
 
 

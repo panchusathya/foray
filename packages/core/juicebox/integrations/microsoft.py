@@ -230,7 +230,7 @@ class GraphClient:
     # Fields the inbox sync needs; body arrives as text via the Prefer header.
     _DELTA_SELECT = (
         "$select=id,conversationId,internetMessageId,from,toRecipients,ccRecipients,"
-        "subject,bodyPreview,body,isDraft,receivedDateTime,sentDateTime,"
+        "replyTo,subject,bodyPreview,body,isDraft,receivedDateTime,sentDateTime,"
         "hasAttachments,webLink"
     )
 
@@ -475,6 +475,7 @@ def to_event(payload: dict) -> MailboxEvent:
             if address:
                 recipients.append(address.lower())
     sender = ((payload.get("from") or {}).get("emailAddress") or {}).get("address", "") or ""
+    reply_to = next((address for address, _ in _recipients(payload, "replyTo")), "")
     return MailboxEvent(
         native_id=payload.get("id", "") or "",
         from_address=sender.lower(),
@@ -488,6 +489,7 @@ def to_event(payload: dict) -> MailboxEvent:
         # for internetMessageHeaders per message would double the call count
         # for a match conversationId already makes.
         in_reply_to="",
+        reply_to=reply_to,
         received_at=_stamp(payload.get("receivedDateTime", "") or ""),
         sent_at=_stamp(payload.get("sentDateTime", "") or ""),
         is_draft=bool(payload.get("isDraft")),

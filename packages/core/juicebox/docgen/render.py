@@ -39,7 +39,12 @@ from reportlab.platypus import (
 )
 
 _MARGIN = 0.50 * inch
-_CONTENT_WIDTH = LETTER[0] - 2 * _MARGIN
+# SimpleDocTemplate's frame adds six points of padding on each side. Story
+# paragraphs already live inside that frame; tables do not shrink themselves
+# to it, so using the raw margin width made every two-column row hang 6pt past
+# the section rules on both sides.
+_FRAME_PADDING = 12
+_CONTENT_WIDTH = LETTER[0] - 2 * _MARGIN - _FRAME_PADDING
 
 _NAME = ParagraphStyle(
     "name", fontName="Times-Bold", fontSize=16, leading=19, alignment=TA_LEFT
@@ -160,7 +165,7 @@ def _date_span(start: object, end: object) -> str:
 
 
 def _two_columns(left: Paragraph, right: Paragraph) -> Table:
-    return Table(
+    table = Table(
         [[left, right]],
         colWidths=[_CONTENT_WIDTH * 0.64, _CONTENT_WIDTH * 0.36],
         style=TableStyle(
@@ -173,6 +178,8 @@ def _two_columns(left: Paragraph, right: Paragraph) -> Table:
             ]
         ),
     )
+    table.hAlign = "LEFT"
+    return table
 
 
 def _bullet_list(bullets: list) -> ListFlowable:

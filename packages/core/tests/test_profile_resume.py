@@ -103,6 +103,18 @@ class TestRefresh:
         ).all()
         assert len(rows) == 1
 
+    def test_linkedin_bullet_markers_survive_as_separate_bullets(
+        self, session, account, rich_candidate
+    ):
+        rich_candidate.experiences[0].description = "First result • Second result\nThird result"
+        doc, error = refresh_profile_resume(session, rich_candidate)
+        assert error == ""
+        assert doc.structured["experience"][0]["bullets"] == [
+            "First result",
+            "Second result",
+            "Third result",
+        ]
+
     def test_a_candidate_the_crm_knows_nothing_about_gets_no_document(self, session, account):
         candidate = _bare_candidate(session, account["org_id"])
         doc, reason = refresh_profile_resume(session, candidate)
@@ -267,6 +279,15 @@ class TestAdaptiveLayout:
         assert _NAME.fontName == "Times-Bold"
         assert _CONTACT.fontName == "Times-Roman"
         assert _BODY.fontName == "Times-Roman"
+
+    def test_two_column_rows_fit_the_same_frame_as_section_rules(self):
+        from reportlab.platypus import Paragraph
+
+        from juicebox.docgen.render import _CONTENT_WIDTH, _ROLE, _two_columns
+
+        row = _two_columns(Paragraph("Company", _ROLE), Paragraph("Location", _ROLE))
+        assert sum(row._argW) == _CONTENT_WIDTH
+        assert row.hAlign == "LEFT"
 
     def test_a_student_leads_with_education(self):
         from juicebox.docgen.render import _education_first

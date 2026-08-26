@@ -359,6 +359,7 @@ def map_profile(payload: dict[str, Any], *, linkedin_url: str) -> dict[str, Any]
                 "start_date": start,
                 "end_date": end,
                 "is_current": not end,
+                "location": _apify_location(item.get("location")),
                 "description": str(item.get("description") or ""),
             }
         )

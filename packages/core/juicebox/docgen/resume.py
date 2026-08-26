@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -194,10 +195,14 @@ def _deterministic_resume(
         key=lambda e: ((0 if e.is_current else 1), e.position),
     )
     for exp in ordered:
+        # LinkedIn providers preserve authored bullets in a few shapes: real
+        # line breaks, or one text block separated by bullet glyphs. Split
+        # those markers so every real profile bullet reaches the resume while
+        # leaving ordinary prose as one truthful bullet.
         bullets = [
-            line.strip(" -•\t")
-            for line in (exp.description or "").splitlines()
-            if line.strip(" -•\t")
+            line.strip(" -•●▪\t")
+            for line in re.split(r"[\r\n]+|[•●▪]", exp.description or "")
+            if line.strip(" -•●▪\t")
         ]
         experience.append(
             {

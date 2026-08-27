@@ -48,6 +48,19 @@ class TestRequestShape:
         assert sent["output_config"]["format"] == {"type": "json_schema", "schema": schema}
         assert sent["messages"] == [{"role": "user", "content": "hello"}]
 
+    def test_json_call_with_an_image_sends_a_multimodal_user_message(self):
+        client, transport = build([{"type": "stop"}])
+        png = b"\x89PNG\r\n\x1a\n"
+
+        client.json(system="sys", prompt="what next", schema={}, image=png)
+
+        content = transport.calls[0]["messages"][0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "image"
+        assert content[0]["source"]["media_type"] == "image/png"
+        assert content[0]["source"]["data"]
+        assert content[1] == {"type": "text", "text": "what next"}
+
     def test_text_call_sends_effort_without_a_format(self):
         """The 0.77.x trap: output_config carrying effort alone."""
         client, transport = build(["plain words"])
@@ -307,3 +320,31 @@ class TestCallerDegradation:
 
         assert verdict.intent == "unsubscribe"
         assert verdict.classified_by == "heuristic"
+
+
+class TestOpenRouterImageParts:
+    def test_anthropic_image_blocks_become_data_uris(self):
+        from juicebox.llm.openrouter import _openrouter_messages
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "abc",
+                        },
+                    },
+                    {"type": "text", "text": "what next"},
+                ],
+            }
+        ]
+        out = _openrouter_messages(messages)
+        assert out[0]["content"][0] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc"},
+        }
+        assert out[0]["content"][1] == {"type": "text", "text": "what next"}

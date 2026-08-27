@@ -126,7 +126,17 @@ def check(
 ) -> Decision:
     klass = page_class(obs)
     if klass in HANDOFF_PAGES and action.type != "stop":
-        return Decision(False, reason=f"page class {klass} is a hand-off", page_class=klass)
+        # unknown is the one hand-off that is often transient -- a step
+        # mid-render, an overlay half-open. Re-observing recovered the wizard
+        # where an instant hand-off ended a live run one fill in (Intapp,
+        # 2026-08-27). The named classes (login, captcha, payment, self-id)
+        # stay terminal: those are walls, not noise.
+        return Decision(
+            False,
+            reason=f"page class {klass} is a hand-off",
+            page_class=klass,
+            replan=(klass == PAGE_UNKNOWN),
+        )
     if action.type not in allowed_actions(klass, allow_submit=allow_submit):
         return Decision(
             False,
@@ -338,6 +348,7 @@ _VERB_FOR_TYPE = {
     "select": "select",
     "select-one": "select",
     "button": "click_next",
+    "option": "click_next",
     "submit": "final_submit",
     "reset": "click_next",
     "image": "click_next",
@@ -388,6 +399,13 @@ def _self_id_required(obs: Observation, blob: str) -> bool:
 def _looks_like_application(obs: Observation) -> bool:
     types = {c.field_type for c in obs.controls}
     labels = " ".join(c.label for c in obs.controls)
+    if "option" in types:
+        # An open option list is a form question mid-answer. The overlay hides
+        # the page's Next button, so the usual signals below all miss and a
+        # wizard step with its dropdown open read as unknown and ended the run
+        # (live, Intapp 2026-08-27). Captcha/login/self-id checks still run
+        # first -- this only rescues the pages those did not claim.
+        return True
     if "file" in types and re.search(r"resum|curriculum|\bcv\b", labels, re.I):
         return True
     if any(c.field_type == "email" or "email" in c.label.lower() for c in obs.controls):

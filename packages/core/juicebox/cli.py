@@ -244,7 +244,7 @@ def cmd_run_agents(args: argparse.Namespace) -> int:
 
 
 def cmd_work(args: argparse.Namespace) -> int:
-    from .jobs import INTERACTIVE_KINDS
+    from .jobs import CANDIDATE_APPLY_KINDS, INTERACTIVE_KINDS
     from .worker import drain, run_loop
 
     if args.once:
@@ -252,7 +252,15 @@ def cmd_work(args: argparse.Namespace) -> int:
             processed = drain(db)
         print(f"processed={processed}")
         return 0
-    run_loop(only=INTERACTIVE_KINDS if args.intake_only else None)
+    only = None
+    exclude = None
+    if args.intake_only:
+        only = INTERACTIVE_KINDS
+    elif args.apply_only:
+        only = CANDIDATE_APPLY_KINDS
+    elif args.exclude_apply:
+        exclude = CANDIDATE_APPLY_KINDS
+    run_loop(only=only, exclude=exclude)
     return 0
 
 
@@ -615,6 +623,26 @@ def build_parser() -> argparse.ArgumentParser:
             "process: a batch of job parses can hold the general worker for "
             "minutes, and nothing inside a process can preempt work already "
             "running -- measured at 284s to answer 'Hey' on a live thread"
+        ),
+    )
+    work.add_argument(
+        "--apply-only",
+        action="store_true",
+        help=(
+            "run ONLY the candidate application pipeline (packages, submits, "
+            "form-spec derivations, candidate notifies). Same reasoning as "
+            "--intake-only: three 👍-applications once waited ten minutes "
+            "behind a batch of outreach sends"
+        ),
+    )
+    work.add_argument(
+        "--exclude-apply",
+        action="store_true",
+        help=(
+            "the general worker's half of --apply-only: never claim the "
+            "application-pipeline kinds, so the dedicated worker actually "
+            "owns their latency. Without a worker running --apply-only these "
+            "kinds would never run -- pair the two flags, never deploy one"
         ),
     )
     work.set_defaults(func=cmd_work)

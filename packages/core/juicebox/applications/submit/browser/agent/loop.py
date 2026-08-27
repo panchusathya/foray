@@ -429,6 +429,11 @@ def _trace(
     decision: Decision | None,
     executed: str,
 ) -> None:
+    label = ""
+    if action is not None and action.control_id:
+        label = next(
+            (c.label for c in obs.controls if c.id == action.control_id), ""
+        )
     result.steps.append(
         trace.record(
             observation_fingerprint=obs.fingerprint(),
@@ -437,6 +442,8 @@ def _trace(
             proposed=action,
             decision=decision,
             executed=executed,
+            control_label=label,
+            control_count=len(obs.controls),
         )
     )
 

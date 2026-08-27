@@ -51,6 +51,15 @@ _RECEIPT = re.compile(
     re.I,
 )
 _NEXT = re.compile(r"^\s*(next|continue|save and continue|proceed)\b", re.I)
+#: Controls that leave the application: page chrome, not wizard flow. The
+#: planner clicked "Back to Job Posting" mid-wizard and the run ended on the
+#: posting page with no way back (live, Intapp 2026-08-27).
+_NAV_AWAY = re.compile(
+    r"back to (the )?job|candidate home|job alerts|search for jobs|"
+    r"working at|privacy (policy|notice)|skip to main|sign out|log out|"
+    r"main menu|settings|linkedin$|youtube$|^x$|facebook$|twitter$",
+    re.I,
+)
 _SUBMIT = re.compile(r"\b(submit|send application|apply now)\b", re.I)
 _CREATE_ACCOUNT = re.compile(r"create (an )?account|register|sign up", re.I)
 
@@ -235,6 +244,17 @@ def check(
             True, resolved_value=resolved, resolved_file=file_path, page_class=klass
         )
     if action.type in CLICK_TYPES:
+        if action.type == "click_next" and _NAV_AWAY.search(control.label.strip()):
+            return Decision(
+                False,
+                reason=(
+                    f"control {control.id} ({control.label[:40]!r}) leaves the "
+                    "application -- click the wizard's own Save and Continue / "
+                    "Next control, or an option row, never page navigation"
+                ),
+                page_class=klass,
+                replan=True,
+            )
         if action.type == "click_next" and _looks_like_submit(control) and allow_submit is False:
             return Decision(
                 False, reason="preflight cannot click a submit control", page_class=klass

@@ -410,15 +410,21 @@ class WorkdaySubmitter:
                     from .agent import policy as agent_policy
                     from .agent.loop import LoopResult
 
+                    # Wait for a WIZARD marker, never a generic input: the
+                    # login page has its own email/password inputs, so a
+                    # generic "input" match fired the handoff before sign-in
+                    # navigated and the agent saw a login page and refused it
+                    # (live, 2026-08-27). These controls exist only past the
+                    # sign-in, so their presence is the confirmation of it.
                     driver.wait_for_any(
                         page,
                         (
-                            'input[data-automation-id="file-upload-input-ref"]',
-                            'input[type="file"]',
                             'button[data-automation-id="bottom-navigation-next-button"]',
-                            "input, textarea, select",
+                            'input[data-automation-id="legalNameSection_firstName"]',
+                            'input[data-automation-id="file-upload-input-ref"]',
+                            '[data-automation-id="fileUploadDropZone"]',
                         ),
-                        timeout_ms=30000,
+                        timeout_ms=45000,
                     )
                     walked = LoopResult()
                     agent_loop.walk(

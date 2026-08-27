@@ -80,6 +80,13 @@ class SubmissionContext:
     phone: str = ""
     linkedin_url: str = ""
     location: str = ""
+    #: The candidate's present role, as their own record states it. Workday's
+    #: My Experience step requires Job Title and Company and the agent had no
+    #: token for either, so it correctly refused to invent them and stopped
+    #: mid-wizard (live, Intapp 2026-08-27). Stated fact from the record, the
+    #: same tier as name and phone -- never a model's paraphrase.
+    current_title: str = ""
+    current_company: str = ""
 
     #: The portal login we already hold for this employer's tenant, when there
     #: is one. Workday and Oracle make you register before you can apply, and

@@ -366,6 +366,8 @@ def _candidate_value(ctx: SubmissionContext, key: str) -> str:
         "phone": ctx.phone,
         "linkedin": ctx.linkedin_url,
         "location": ctx.location,
+        "current_title": ctx.current_title,
+        "current_company": ctx.current_company,
     }
     return str(mapping.get(key) or "")
 

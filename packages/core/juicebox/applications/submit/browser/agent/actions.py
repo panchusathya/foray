@@ -31,6 +31,8 @@ CANDIDATE_TOKENS = {
     "candidate.phone": "phone",
     "candidate.linkedin": "linkedin",
     "candidate.location": "location",
+    "candidate.current_title": "current_title",
+    "candidate.current_company": "current_company",
 }
 
 POLICY_DECLINE = "policy.decline"

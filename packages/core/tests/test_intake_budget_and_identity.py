@@ -283,6 +283,34 @@ class TestASpelledAddressIsRead:
 
         assert decode_spoken_email("it is mary-jane at gmail dot com") == "mary-jane@gmail.com"
 
+    def test_the_second_real_call_yields_name_and_corrected_address(self):
+        """The 6:23pm call, as Retell transcribed it. Three prior losses in one:
+
+        the name arrived as "Tushar and then <the email>" with no comma, so the
+        batch splitter never cut it and the four-word cap threw it away; the
+        correction opened "And then t no. It's actually ..." -- connective
+        filler and a transcription stray before the cue; and "actually" sat to
+        the left of the address, which the lead-in list refused.
+        """
+        call = (
+            "Agent: Got it, front-end. Can I get your name and email so I can"
+            " attach this call to your record?\n"
+            "User: Yeah. Tushar and then Tushar thirty one at gmail dot com.\n"
+            "Agent: Let me make sure I have that -- t-u-s-h-a-r-3-1 at gmail"
+            " dot com?\n"
+            "User: And then t no. It's actually t u s h a r three one"
+            " g u p t a at Gmail dot com.\n"
+            "Agent: Got it -- tushar31gupta at gmail dot com. Thanks, Tushar.\n"
+        )
+        assert scan_transcript(call) == ("Tushar", EMAIL)
+
+    def test_a_mid_sentence_no_is_not_a_correction(self):
+        """The filler allowance is bounded: a buried "no" must not reopen an
+        address that was read back and confirmed."""
+        from juicebox.intake.contact import _CORRECTION
+
+        assert not _CORRECTION.match("I think the answer is no on that role")
+
 
 # --------------------------------------------------------------------------
 # the number reaches the record only once something proves it

@@ -74,7 +74,13 @@ MAX_NAME_CHARS = 80
 # One batched question gets one batched answer: "Sathya, 2 yrs, 150k". Only the
 # first segment carrying anything is ever considered for a name -- see
 # ``first_segment``.
-_BATCH_SPLIT = re.compile(r"[,;\n]")
+#
+# ``and`` splits too, because a *spoken* batched answer has no commas: "Tushar
+# and then tushar31 at gmail dot com" arrived as one segment, blew the
+# four-word cap, and the name was thrown away on the very turn that answered
+# the name question. No single person's name contains a bare "and", so the
+# split costs nothing on the field it feeds.
+_BATCH_SPLIT = re.compile(r"[,;\n]|\band\b", re.IGNORECASE)
 
 
 def find_email(body: str) -> str:
@@ -228,12 +234,19 @@ def _assemble(local: str, domain: str) -> str:
 # because there is no way to tell whether the speaker meant "priyaraman" or
 # "priya.raman". It also independently kills "we're hosted at aws dot com",
 # where the word before the match is "we're".
+#
+# The correction openers -- "no", "not", "wrong", "actually", "wait" -- are in
+# here because a caller rejecting a read-back says "No, it's actually
+# tushar31gupta at gmail dot com", and "actually" sitting to the left of the
+# address was enough to refuse the one turn whose whole purpose was to replace
+# a misheard address.
 _LEAD_INS = frozenset(
     """
-    a about address am and at be best contact e-mail email get gmail have here
-    i i'm is it it's its just mail me my number of ok okay on one or put reach
-    right send sends so sure that that's thats the then there this to try um uh
-    use used uses using was we well what which will write yeah yes you your
+    a about actually address am and at be best contact correction e-mail email
+    get gmail have here hmm i i'm is it it's its just mail me my nah no not
+    number of oh ok okay on one or put reach right send sends so sure that
+    that's thats the then there this to try um uh use used uses using wait was
+    we well what which will write wrong yeah yes you your
     """.split()  # noqa: SIM905 - one editable line per topic beats 70 quoted strings
 )
 # Must start with an actual word character. With ``-`` allowed as the *first*
@@ -423,8 +436,15 @@ _NAME_QUESTION = re.compile(
 # How a caller opens the turn that rejects a read-back. Anchored at the start:
 # "no" in the middle of a sentence is ordinary speech, "No, it's ..." is a
 # correction, and only the second may overwrite an address already read.
+#
+# A short run of connective filler may precede the cue -- a real rejection
+# came through as "And then t no. It's actually ...", where "And then" is the
+# caller resuming their own sentence and a transcription stray sits between it
+# and the "no". The filler run is bounded so a "no" buried mid-sentence still
+# does not count as an opener.
 _CORRECTION = re.compile(
-    r"^\s*(?:no\b|nope\b|not\b|nah\b|wrong\b|that'?s\s+wrong|actually\b"
+    r"^\s*(?:(?:and|then|so|well|uh|um|oh|hmm|wait|hold\s+on|[a-z])\b[\s,.']*){0,4}"
+    r"(?:no\b|nope\b|not\b|nah\b|wrong\b|that'?s\s+wrong|actually\b"
     r"|sorry\b|it'?s\s+not\b|almost\b|close\b)",
     re.IGNORECASE,
 )

@@ -92,6 +92,23 @@ echo "===== 11. extractor timeouts in the logs (the cause, if 10 is non-zero) ==
 $C logs api 2>/dev/null | grep -i "llm intake extraction failed" | tail -10   || echo "  none logged"
 
 echo
+echo "===== 11b. post-call extraction: did the worker actually run? ====="
+# A call stuck at status "completed" with "No extraction yet" in the UI means
+# the intake.extract job never finished -- which is a different failure from
+# section 10's mid-call degradation. Three ways it happens: the worker
+# container is down, the job is erroring through its five attempts, or the
+# queue is backed up. This says which.
+$C ps worker
+$C exec -T db psql -U juicebox -c   "select kind, status, count(*), max(attempts) as max_attempts
+     from jobs where kind like 'intake%' group by 1, 2 order by 1, 2;"
+$C exec -T db psql -U juicebox -c   "select id, status, attempts, run_at, left(last_error, 120) as last_error
+     from jobs where kind = 'intake.extract' and status not in ('done')
+    order by run_at desc limit 5;" 2>/dev/null   || $C exec -T db psql -U juicebox -c   "select id, status, attempts, run_at
+     from jobs where kind = 'intake.extract' and status not in ('done')
+    order by run_at desc limit 5;"
+$C logs worker 2>/dev/null | grep -iE "intake.extract|error|traceback" | tail -12   || echo "  no worker log lines"
+
+echo
 if [ -n "$CALLER" ]; then
 echo "===== 12. why was $CALLER not recognised? ====="
 # `resolve_candidate_id` reads candidate_phones and nothing else. So a number

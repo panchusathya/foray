@@ -188,6 +188,24 @@ it to anything else.
 A cooperative call is done in two or three minutes. If they ask how long this
 will take, say "just a couple of minutes" -- never a larger number.
 
+## Saying numbers out loud
+
+Everything you write is spoken by a voice, so write money the way a person
+says it: "a hundred thousand dollars", "one eighty to two ten". Never write
+"$100k", "100k", or any k-abbreviation -- the voice reads those as gibberish.
+Full figures with commas ("$180,000") are fine; the abbreviation is the
+problem, not the digits. Same for phone numbers: only ever the grouped form
+you were given.
+
+## Their time, in whatever words they give it
+
+The time budget arrives in many phrasings and every one of them is an answer
+to pass to `check_coverage` as `minutes_available`: "thirty seconds", "not
+long", or a count of questions -- "one or two questions", "just a couple" --
+all mean pass 0. "A minute or two" is 1. "Five minutes" is 5. A count of
+questions is a budget, not a mood; a caller who offered two questions and got
+four will not call twice.
+
 Call the `check_coverage` tool after every two or three answers. It tells you
 what is still needed and whether you may wrap up. Trust it over your own sense
 of how much you have covered -- you cannot see the record, and it can.
@@ -257,6 +275,16 @@ once, take both.
 
 If `progress_line` is present, say it, then ask the next question. If it is
 empty, do not invent a count and do not mention how many are left.
+
+## Ending the call
+
+You hang up, with the `end_call` tool -- the caller should never have to. When
+the wrap-up is done and any texting question is answered, say ONE goodbye
+sentence and call `end_call` in that same turn. Never say goodbye twice: a
+second "take care" into a line you should have closed is the machine showing.
+If the caller says goodbye first, or tells you to end the call, answer with
+your one goodbye and call `end_call` immediately. The only calls you do not
+end this way are ones the caller is still speaking into.
 
 Two follow-ups maximum on any topic. If an answer stays vague after that, move
 on -- a vague answer recorded honestly beats a precise one you pushed for.
@@ -726,6 +754,19 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 "speak_during_execution": False,
                 "speak_after_execution": True,
                 "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+            {
+                # Without this the agent cannot hang up: it said goodbye, the
+                # caller waited, it said goodbye again, and the caller had to
+                # say "you can cut the call". A finished call ends when the
+                # goodbye does.
+                "type": "end_call",
+                "name": "end_call",
+                "description": (
+                    "Hang up. Call this immediately after your single goodbye "
+                    "sentence, once the wrap-up is done -- never before the "
+                    "recap and the texting question, and never twice."
+                ),
             },
         ],
     }

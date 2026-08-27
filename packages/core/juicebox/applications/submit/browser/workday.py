@@ -394,7 +394,7 @@ class WorkdaySubmitter:
                     # in): there is no credential to type, so signing in again
                     # is not just wasted -- the sign-in block would find no
                     # email box and fail a run that is already authenticated.
-                    already_in = bool(driver.first_match(page, _WIZARD_MARKERS))
+                    already_in = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=0)
                     if already_in:
                         log.step("already signed in; wizard is open")
                     if not already_in and driver.click(
@@ -506,7 +506,12 @@ class WorkdaySubmitter:
                     # navigated and the agent saw a login page and refused it
                     # (live, 2026-08-27). These controls exist only past the
                     # sign-in, so their presence is the confirmation of it.
-                    wizard = driver.wait_for_any(page, _WIZARD_MARKERS, timeout_ms=45000)
+                    # VISIBLE, not merely present: the "Something went wrong"
+                    # shell still carries hidden wizard scaffolding from the
+                    # half-rendered SPA, so a presence check passed, this
+                    # recovery never ran, and the agent got the broken page
+                    # anyway (live, Intapp 2026-08-27).
+                    wizard = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=45000)
                     if not wizard:
                         # Authenticating can land on an error shell still titled
                         # "Sign In" ("Something went wrong", no controls), and a
@@ -539,7 +544,7 @@ class WorkdaySubmitter:
                                 what="apply manually",
                                 wait_ms=15000,
                             )
-                        wizard = driver.wait_for_any(page, _WIZARD_MARKERS, timeout_ms=45000)
+                        wizard = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=45000)
                     if not wizard:
                         # No wizard marker means sign-in did not land -- handing
                         # the page over anyway burned an attempt on an agent

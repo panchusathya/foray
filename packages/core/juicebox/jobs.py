@@ -288,6 +288,21 @@ INTERACTIVE_KINDS = (
     KIND_APPLY_LINK,
 )
 
+# The candidate-facing application pipeline: package builds, submit attempts
+# and their verification second legs, form-spec derivations, and the texts
+# that tell the candidate what happened. Claimed by its own worker
+# (`work --apply-only`) for the same reason intake has one: on 2026-08-27
+# three 👍-applications sat `queued` behind a batch of outreach sends, and
+# "i'm preparing your application" went quiet for ten minutes. The general
+# worker runs `--exclude-apply` so it cannot swallow these into its batches.
+CANDIDATE_APPLY_KINDS = (
+    KIND_APP_PACKAGE,
+    KIND_APP_SUBMIT,
+    KIND_APP_SUBMIT_VERIFY,
+    KIND_JOBS_FORMSPEC_ONE,
+    KIND_THREAD_NOTIFY,
+)
+
 
 def claim(
     db: Session,
@@ -296,6 +311,7 @@ def claim(
     limit: int | None = None,
     now: datetime | None = None,
     kinds: tuple[str, ...] | None = None,
+    exclude: tuple[str, ...] | None = None,
 ) -> list[Job]:
     settings = get_settings()
     now = now or utcnow()
@@ -312,6 +328,8 @@ def claim(
     )
     if kinds is not None:
         stmt = stmt.where(Job.kind.in_(kinds))
+    if exclude:
+        stmt = stmt.where(Job.kind.not_in(exclude))
     bind = db.get_bind()
     if bind is not None and bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)

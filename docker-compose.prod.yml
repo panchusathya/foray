@@ -310,6 +310,12 @@ services:
     build:
       context: .
       dockerfile: packages/core/Dockerfile
+      # Chromium for the browser apply tier. In the args permanently because a
+      # plain `up -d --build` used to rebuild the worker WITHOUT it, and the
+      # browser tier silently vanished until the next submit failed
+      # (AUTO_APPLY_SETUP.md §4 documents the trap; it bit on 2026-08-27).
+      args:
+        INSTALL_PLAYWRIGHT: "true"
     restart: unless-stopped
     logging: *default_logging
     environment: *app_env
@@ -320,13 +326,41 @@ services:
       # once uvicorn is serving, which is only after migrations finished.
       api:
         condition: service_healthy
-    command: python -m juicebox.cli work
+    # --exclude-apply: the candidate application pipeline belongs to
+    # worker-apply below, and exclusion is what makes that real — a kind the
+    # general worker can still claim ends up inside its serial batch behind
+    # outreach sends, which is exactly the ten-quiet-minutes this split fixes.
+    command: python -m juicebox.cli work --exclude-apply
 
     # The core image bakes a HEALTHCHECK that probes uvicorn on :8000 (correct
     # for `api`, which shares this image). The worker runs the queue loop and
     # serves no HTTP, so it inherited a probe that can only ever fail: it has
     # been reporting "unhealthy" in prod while working fine. Nothing depends on
     # worker being healthy, so drop the probe rather than invent a fake one.
+    healthcheck:
+      disable: true
+
+  # The candidate application pipeline: package builds, submit attempts and
+  # their verification legs, form-spec derivations, and the "your application
+  # is ready" texts. Its own process for the same reason worker-intake exists —
+  # on 2026-08-27 three 👍-applications waited ten minutes behind a batch of
+  # outreach sends. Pairs with the general worker's --exclude-apply; deploy
+  # both or neither. Needs Chromium: the browser submit tier runs here.
+  worker-apply:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: "true"
+    restart: unless-stopped
+    logging: *default_logging
+    environment: *app_env
+    volumes:
+      - filedata:/app/data/files
+    depends_on:
+      api:
+        condition: service_healthy
+    command: python -m juicebox.cli work --apply-only
     healthcheck:
       disable: true
 

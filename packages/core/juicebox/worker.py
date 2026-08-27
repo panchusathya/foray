@@ -1669,15 +1669,19 @@ def process_batch(
     worker: str | None = None,
     now=None,
     only: tuple[str, ...] | None = None,
+    exclude: tuple[str, ...] | None = None,
 ) -> int:
-    """Run a batch. ``only`` restricts this process to certain kinds.
+    """Run a batch. ``only`` restricts this process to certain kinds;
+    ``exclude`` keeps it away from kinds another process owns.
 
     Claiming interactive work first is not enough on its own, and the live
     thread proved it: the worker was already ten minutes into a batch of
     `jobs.parse` calls when a text arrived, so the reply landed 284 seconds
     later, at the exact moment the batch drained. Nothing inside one process
     can preempt work already running -- which is why intake gets a process of
-    its own, and this argument is how it is told so.
+    its own, and this argument is how it is told so. ``exclude`` is the other
+    half of that design: a dedicated worker only guarantees latency if the
+    general one cannot claim the same jobs into its own serial batch first.
     """
     now = now or utcnow()
     recover_stale_locks(db, now=now)
@@ -1691,7 +1695,7 @@ def process_batch(
 
     done = 0
     for kinds, limit in claims:
-        jobs = claim(db, worker_id=me, now=now, kinds=kinds, limit=limit)
+        jobs = claim(db, worker_id=me, now=now, kinds=kinds, limit=limit, exclude=exclude)
         # The claim -- and any lock recovery above it -- is committed before the
         # first handler runs, not after the last one. A worker killed mid-batch
         # has to leave its rows visibly `running` for recover_stale_locks to
@@ -1720,7 +1724,10 @@ def drain(db: Session, *, worker: str | None = None, now=None) -> int:
 
 
 def run_loop(
-    *, poll_seconds: float | None = None, only: tuple[str, ...] | None = None
+    *,
+    poll_seconds: float | None = None,
+    only: tuple[str, ...] | None = None,
+    exclude: tuple[str, ...] | None = None,
 ) -> None:
     from .db import session_scope
 
@@ -1728,15 +1735,19 @@ def run_loop(
     delay = settings.worker_poll_seconds if poll_seconds is None else poll_seconds
     wid = worker_id()
     scope = ",".join(only) if only else "all kinds"
+    if exclude:
+        scope += " except " + ",".join(exclude)
     logger.info("worker %s polling every %.1fs (%s)", wid, delay, scope)
     while True:
         try:
             with session_scope() as db:
                 # Only the general worker schedules the recurring ticks. A
                 # second process doing it too would double every sweep.
+                # `exclude` does not change that: the excluding process is
+                # still the general worker.
                 if only is None:
                     ensure_ticks(db)
-                n = process_batch(db, worker=wid, only=only)
+                n = process_batch(db, worker=wid, only=only, exclude=exclude)
         except Exception:
             # A dropped connection, a poisoned session, a bug in a handler's
             # own cleanup: none of it is a reason to take the process down and

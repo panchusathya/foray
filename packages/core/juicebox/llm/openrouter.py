@@ -68,6 +68,35 @@ def estimated_cost_usd(model: str, input_tokens: int, output_tokens: int) -> flo
     return (input_tokens * prompt_price + output_tokens * completion_price) / 1_000_000
 
 
+def _openrouter_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate Anthropic-shaped content blocks to OpenRouter chat parts."""
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+        parts: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                parts.append({"type": "text", "text": str(block.get("text") or "")})
+            elif block.get("type") == "image":
+                source = block.get("source") or {}
+                data = str(source.get("data") or "")
+                media = str(source.get("media_type") or "image/png")
+                if data:
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{media};base64,{data}"},
+                        }
+                    )
+        out.append({**message, "content": parts or message.get("content")})
+    return out
+
+
 def to_openrouter(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Translate internal (Anthropic-shaped) kwargs into an OpenRouter body."""
     output_config = kwargs.get("output_config") or {}
@@ -79,7 +108,7 @@ def to_openrouter(kwargs: dict[str, Any]) -> dict[str, Any]:
     system = kwargs.get("system")
     if system:
         messages.append({"role": "system", "content": system})
-    messages.extend(kwargs.get("messages") or [])
+    messages.extend(_openrouter_messages(kwargs.get("messages") or []))
 
     body: dict[str, Any] = {
         "model": kwargs["model"],

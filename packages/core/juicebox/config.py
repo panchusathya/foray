@@ -701,13 +701,43 @@ class Settings:
     apply_browser_profiles: bool = field(
         default_factory=lambda: _env_bool("APPLY_BROWSER_PROFILES", False)
     )
-    # A managed anti-detect browser's CDP endpoint (Bright Data Scraping
-    # Browser): `wss://brd-customer-...-zone-...:pass@brd.superproxy.io:9222`.
-    # When set it REPLACES the local Chromium and APPLY_PROXY_URL both -- the
-    # remote browser brings its own residential exit, fingerprint and CAPTCHA
-    # solving, which is what a determined anti-bot (Ashby flagged our own
-    # proxied Chromium as spam) actually needs. Empty means drive local
-    # Chromium, the state every deployment starts in.
+    # Browser Use Cloud API key (`bu_...`). When set with APPLY_BROWSER_AGENT
+    # and the deployment ack, live public-form apply creates a managed Chrome
+    # per run (stealth + residential proxy) and drives it over CDP. Empty is
+    # the offline default: public boards hand off. Never log this value.
+    browser_use_api_key: str = field(default_factory=lambda: _env("BROWSER_USE_API_KEY", ""))
+    # The governed browser-agent submitter for public forms. Off until an
+    # operator turns it on; still requires BROWSER_USE_API_KEY and the ack.
+    apply_browser_agent: bool = field(
+        default_factory=lambda: _env_bool("APPLY_BROWSER_AGENT", False)
+    )
+    # Required acknowledgement that screenshots, resume bytes, and persistent
+    # browser state are processed by Browser Use Cloud and the planner model.
+    apply_browser_agent_ack: bool = field(
+        default_factory=lambda: _env_bool("APPLY_BROWSER_AGENT_ACK", False)
+    )
+    # Planner model id. Empty uses the main LLM model. Must accept images.
+    apply_browser_agent_model: str = field(
+        default_factory=lambda: _env("APPLY_BROWSER_AGENT_MODEL", "")
+    )
+    # Session timeout sent to POST /browsers, in minutes. Credits are reserved
+    # for this window up front; 15 is enough for an apply and does not reserve
+    # the vendor's 60-minute default.
+    apply_browser_agent_timeout_min: int = field(
+        default_factory=lambda: _env_int("APPLY_BROWSER_AGENT_TIMEOUT_MIN", 15)
+    )
+    apply_browser_agent_max_steps: int = field(
+        default_factory=lambda: _env_int("APPLY_BROWSER_AGENT_MAX_STEPS", 40)
+    )
+    apply_browser_proxy_country: str = field(
+        default_factory=lambda: _env("APPLY_BROWSER_PROXY_COUNTRY", "us")
+    )
+    apply_browser_agent_recording: bool = field(
+        default_factory=lambda: _env_bool("APPLY_BROWSER_AGENT_RECORDING", False)
+    )
+    # Legacy static CDP endpoint. Live apply creates a Browser Use session
+    # when a key is configured; this remains for tests that inject a fake
+    # CDP URL without standing up Cloud. Not used as the live apply path.
     apply_browser_cdp_url: str = field(default_factory=lambda: _env("APPLY_BROWSER_CDP_URL", ""))
     # A real browser's UA. A residential IP serving the default headless string
     # is still obviously a bot, so the two travel together. This is the always-on

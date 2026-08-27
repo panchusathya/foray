@@ -1,12 +1,8 @@
-"""Derive a ``FormSpec`` from a form nobody mapped.
+"""Historical FormSpec derivation from a page nobody mapped.
 
-The handwritten maps in ``forms.py`` cover the vendors we meet often enough to
-maintain by hand. Everything else -- the employer's own careers page, a niche
-board, the unknown frontier -- used to be a dead end: ``get_submitter`` had no
-adapter, so the posting was never even carded. This module turns the same
-enumeration ``ats-probe`` and package-time discovery already run into an
-adapter, so an unknown board gets the exact treatment a mapped one does:
-``HostedFormSubmitter`` with a spec, filled and confirmed by the same code.
+Public-form filling is the governed browser agent. This module remains so older
+``JobPosting.form_spec`` rows deserialize, leftover ``jobs.formspec.one`` jobs
+skip, and ``identity_key`` stays available to tests. It is not a submitter.
 
 **A derived spec is a claim about a page we read once**, so every guard here
 exists to make the false-positive cost zero rather than to maximise coverage:
@@ -40,7 +36,7 @@ logger = logging.getLogger(__name__)
 #: for "unrecognised" would put a guess where detect keeps facts.
 DERIVED_VENDOR = "derived"
 
-#: Identity labels -> the logical keys ``hosted_form._values`` already fills.
+#: Identity labels -> the logical keys a public-form fill already knows.
 #: ``classify`` says a control IS identity; this says which field. Order
 #: matters where fragments overlap ("first name" before "name").
 _IDENTITY_KEYS: tuple[tuple[str, str], ...] = (

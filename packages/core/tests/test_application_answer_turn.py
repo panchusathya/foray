@@ -55,7 +55,7 @@ def thread(session, account, channel):
 def _asked_application(session, account, thread, *, company="Sourcebot", keys=None):
     """An application that has asked over text and is waiting, as
     ``ask_for_missing`` leaves one."""
-    keys = keys or ["salary_expectation", "work_authorization"]
+    keys = keys or ["work_authorization"]
     posting = _posting(
         session, account["org_id"], company=company, title="Founding Engineer", suffix="ans"
     )
@@ -78,11 +78,24 @@ def _asked_application(session, account, thread, *, company="Sourcebot", keys=No
         source="candidate",
     )
     application.status = "prepared"
-    # The state ask_for_missing leaves behind: asked, and still blank.
-    application.form_answers = [
-        {"key": key, "question": followups.ASKABLE[key], "answer": "", "asked": True}
-        for key in keys
+    answers = [
+        {
+            "key": "salary_expectation",
+            "question": "comp?",
+            "answer": "",
+            "asked": False,
+        }
     ]
+    for key in keys:
+        answers.append(
+            {
+                "key": key,
+                "question": followups.ASKABLE.get(key, key),
+                "answer": "",
+                "asked": True,
+            }
+        )
+    application.form_answers = answers
     session.flush()
     return application, posting
 
@@ -229,10 +242,9 @@ class TestTheReportedSequence:
         answers = {
             item["key"]: item.get("answer") or "" for item in application.form_answers
         }
-        assert answers["salary_expectation"].strip()
         assert answers["work_authorization"].strip()
-        # `asked_blanks`, not `blank_answers`: the latter reads a key that was
-        # never on this form as blank, so it would never report complete.
+        # salary is refilled when they mention a number, but we no longer ask
+        # for it. The asked key is work authorization.
         assert followups.asked_blanks(application) == []
 
     def test_a_partial_answer_asks_only_for_what_is_left(
@@ -343,33 +355,6 @@ class TestAnsweringAdvancesTheApplication:
         assert calls == []
 
 
-class TestGateBlockedCompletionIsHonest:
-    def test_a_gated_send_asks_for_the_approve_tap_instead_of_promising(
-        self, session, account, thread, channel, monkeypatch
-    ):
-        """The gate refused the send: "i'll take it from here" followed by
-        silence is a lie. Live thread, 2026-08-27: the candidate answered
-        "just fire the app looks good" and nothing fired, with no next step
-        named. The completion message must carry the approve link instead."""
-        import juicebox.applications.submission as submission_mod
-
-        thread = _managed_owing_answers(session, thread)
-        _asked_application(session, account, thread, keys=["salary_expectation"])
-        _extracted(session, thread, comp=150000, work_auth="us citizen")
-        monkeypatch.setattr(
-            submission_mod,
-            "auto_submit",
-            lambda db, app: (None, "first application for this candidate: a person reviews it before it goes"),
-        )
-
-        _say(session, thread, "150k works", native_id="gate-1")
-
-        text = channel.bodies[-1]
-        assert "take it from here" not in text
-        assert "approve" in text.lower()
-        assert "/m/" in text, "the approve message must carry the portal link"
-
-
 class TestAcknowledgementWording:
     def _posting_obj(self, session, account):
         return _posting(
@@ -383,18 +368,19 @@ class TestAcknowledgementWording:
     def test_complete_and_nothing_handed_over(self, session, account):
         posting = self._posting_obj(session, account)
         text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["salary_expectation"], "missing": [], "handover": False}
+            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": False}
         )
         assert "Founding Engineer" in text and "Sourcebot" in text
         assert "take it from here" in text
 
-    def test_complete_but_the_portal_still_needs_them(self, session, account):
+    def test_handover_flag_does_not_send_them_to_the_app(self, session, account):
+        """Chat no longer parks on a portal review. Completing work
+        authorization means we take it from here."""
         posting = self._posting_obj(session, account)
         text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["salary_expectation"], "missing": [], "handover": True}
+            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": True}
         )
-        assert "app" in text
-        assert "take it from here" not in text
+        assert "take it from here" in text
 
     def test_no_posting_still_reads_as_english(self):
         text = followups.answer_acknowledgement(

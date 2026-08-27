@@ -24,10 +24,12 @@ When the posting carries its form's own questions (apply-by-link ingest,
 ``JobPosting.form_questions``), those are answered too — under the same
 provenance contract. Two carve-outs are structural, not stylistic:
 self-identification questions (gender, ethnicity, veteran status, ...) are
-carried so the candidate sees the whole form but are **never answered** —
-INTAKE_COMPLIANCE forbids collecting or asserting protected attributes — and
-file questions are skipped because the resume and cover letter are the
-package's own documents.
+never answered with a protected attribute. When the form offers a
+"Prefer not to answer" / "Decline to self-identify" option, that option is
+selected automatically (``generated_by="policy"``). Required self-ID with
+no decline option stays blank and the submitter hands off. File questions
+are skipped because the resume and cover letter are the package's own
+documents.
 """
 
 from __future__ import annotations
@@ -171,10 +173,18 @@ def build_form_answers(
     base: list[dict] = []
     for entry in questions:
         if entry["self_identify"]:
-            # Never answered, whatever the model path says: a protected
-            # attribute asserted in somebody's name is a compliance failure,
-            # not a blank to fill.
-            base.append(_blank(entry, generated_by="policy"))
+            from ..applications.eeo import decline_choice
+
+            choice = decline_choice(entry.get("options") or [])
+            if choice:
+                row = _blank(entry, generated_by="policy")
+                row["answer"] = choice
+                row["provenance"] = "policy:decline"
+                base.append(row)
+            else:
+                # No decline option to select: leave blank. Required ones
+                # become a hand-off; optional ones stay unanswered.
+                base.append(_blank(entry, generated_by="policy"))
             continue
         known = deterministic.get(entry["key"])
         if known is not None:
@@ -190,8 +200,8 @@ def build_form_answers(
 
     lines = []
     for entry in questions:
-        # Self-ID is never answered; NEVER_GENERATED is never even offered to
-        # the model — the preference verbatim or blank.
+        # Self-ID is never offered to the model — Prefer not to answer is
+        # policy, and NEVER_GENERATED is the preference verbatim or blank.
         if entry["self_identify"] or entry["key"] in NEVER_GENERATED:
             continue
         line = f"- {entry['key']}: {entry['question']}"

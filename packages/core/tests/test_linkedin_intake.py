@@ -11,12 +11,10 @@ from juicebox.jobs import KIND_LINKEDIN_SCRAPE
 from juicebox.messaging.channels import WEB, set_channel
 from juicebox.messaging.conversation import (
     ACTION_ASKED,
-    ACTION_GREETED,
     ACTION_HELD,
     run_turn,
 )
 from juicebox.messaging.identity import (
-    CONTACT_EMAIL,
     CONTACT_LINKEDIN,
     find_linkedin,
     link_candidate,

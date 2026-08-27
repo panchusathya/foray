@@ -7,8 +7,8 @@ earlier version of this adapter sent an empty ``key=`` and claimed no
 credential was needed -- it was wrong, and every submission it made would have
 been refused.
 
-Where we hold no key, the hosted form is the candidate's door and
-``browser/hosted_form.py`` drives it.
+Where we hold no key, the hosted form is the candidate's door and the
+browser agent drives it when configured.
 """
 
 from __future__ import annotations

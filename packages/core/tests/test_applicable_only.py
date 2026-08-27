@@ -54,12 +54,12 @@ class TestCanSubmitVendor:
         monkeypatch.setattr(
             registry, "get_settings", lambda: SimpleNamespace(apply_submitter=mode)
         )
-        assert registry.can_submit_vendor("greenhouse")
         assert registry.can_submit_vendor("yc")
-        assert registry.can_submit_vendor("smartrecruiters")
-        assert registry.can_submit_vendor("workable")
         assert registry.can_submit_vendor("email")
-        # Recognised is not submittable: we can name Taleo, not drive it.
+        assert not registry.can_submit_vendor("greenhouse")
+        assert not registry.can_submit_vendor("smartrecruiters")
+        assert not registry.can_submit_vendor("workable")
+        # Recognised is not submittable without the agent: we can name Taleo, not drive it.
         assert not registry.can_submit_vendor("taleo")
         assert not registry.can_submit_vendor("")
 

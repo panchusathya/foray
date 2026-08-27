@@ -24,7 +24,7 @@ from juicebox.jobs import KIND_CONNECTOR_INDEX, KIND_INTAKE_TURN, KIND_LINKEDIN_
 from juicebox.messaging.channels import WEB
 from juicebox.messaging.connect_flow import BATCH_CONNECT
 from juicebox.messaging.connect_links import mint_connect_link
-from juicebox.messaging.conversation import ACTION_ASKED, ACTION_GREETED, ACTION_HELD, run_turn
+from juicebox.messaging.conversation import ACTION_ASKED, ACTION_HELD, run_turn
 from juicebox.messaging.identity import CONTACT_LINKEDIN
 from juicebox.messaging.linkedin_flow import (
     BATCH_CONFIRM,

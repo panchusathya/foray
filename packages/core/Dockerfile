@@ -33,7 +33,7 @@ ARG INSTALL_PLAYWRIGHT=false
 # "Executable doesn't exist ... run playwright install". This env var is read
 # at install time *and* at launch time, which is what makes the two agree.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then       pip install "playwright>=1.40" &&       playwright install --with-deps chromium &&       chmod -R a+rX /ms-playwright;     fi
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then       pip install "playwright>=1.40" "browser-use-sdk>=2.0" &&       playwright install --with-deps chromium &&       chmod -R a+rX /ms-playwright;     fi
 
 # Includes migrations/, which `juicebox migrate` resolves relative to the package.
 COPY packages/core /app/packages/core

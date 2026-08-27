@@ -45,7 +45,14 @@ from juicebox.applications.submit.base import (
 )
 from juicebox.applications.submit.console import MemorySubmitter
 from juicebox.jobs import KIND_APP_SUBMIT
-from juicebox.models import Application, ApplicationSubmission, Candidate, JobPosting, utcnow
+from juicebox.models import (
+    Application,
+    ApplicationSubmission,
+    Candidate,
+    CandidatePreference,
+    JobPosting,
+    utcnow,
+)
 from juicebox.repository import upsert_candidates
 from juicebox.security import alias_token, verify_alias_token
 
@@ -546,34 +553,11 @@ class TestNothingAutomatedIsTheNormalAnswer:
         assert job is None
         assert "hand-off" in reason
 
-    def test_the_first_application_waits_for_a_person(
+    def test_the_first_application_does_not_need_a_second_yes(
         self, session, account, candidate, memory_mode
     ):
-        posting = _posting(session, account["org_id"])
-        detect.resolve_target(session, posting, allow_network=False)
-        # No portal approval yet: nobody has reviewed the built package (a
-        # thread 👍 predates the package existing), so the gate must hold.
-        application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        assert "first application" in first_submission_gate(session, application)
-        job, reason = auto_submit(session, application)
-        assert job is None
-        assert "first application" in reason
-        # Explicitly requested, it still goes -- the portal's "apply for me"
-        # tap stamps the approval it is (routers/portal.py submit_for_me), and
-        # the gate is on the automatic path, not the candidate's own decision.
-        application.approved_at = utcnow()
-        session.flush()
-        assert request_submission(session, application) is not None
-
-    def test_the_candidates_own_approval_is_the_human_look(
-        self, session, account, candidate, memory_mode
-    ):
-        """Portal-approved first package auto-submits: the review happened.
-
-        Live failure this pins (2026-08-27): a candidate approved their first
-        package and the portal answered "Open the application" — the agent
-        asked the person to submit the application it had promised to send.
-        """
+        """Thumbs-up (or a portal apply-for-me tap) is the yes. A dashboard
+        review of the package we just built used to be a second gate."""
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
         application = _ready(session, account["org_id"], candidate, posting)
@@ -581,6 +565,15 @@ class TestNothingAutomatedIsTheNormalAnswer:
         assert first_submission_gate(session, application) == ""
         job, reason = auto_submit(session, application)
         assert job is not None, reason
+
+    def test_no_recorded_yes_still_refuses(self, session, account, candidate, memory_mode):
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting, consent=False)
+        assert first_submission_gate(session, application) == ""
+        job, reason = auto_submit(session, application)
+        assert job is None
+        assert "consent" in reason
 
     def test_console_is_the_default_and_cannot_reach_an_employer(self):
         from juicebox.applications.submit.console import ConsoleSubmitter
@@ -1119,11 +1112,17 @@ class TestTheThreadPath:
         from juicebox.models import Job
         from juicebox.worker import _handle_app_package
 
-        # A prior submission, so the first-application review gate is not what
-        # this test is measuring.
-        earlier = _posting(session, account["org_id"], company="Stripe", suffix="9")
-        prior = _ready(session, account["org_id"], candidate, earlier)
-        transition(session, prior, to_status="submitted", actor="candidate")
+        # Work authorization is the one fact auto_submit still withholds on;
+        # seed it so this test is measuring the queue, not the ask.
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                spec={},
+                work_authorization="US citizen, no sponsorship needed",
+            )
+        )
+        session.flush()
 
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
@@ -1154,16 +1153,48 @@ class TestTheThreadPath:
         ]
         assert len(queued) == 1
 
+    def test_missing_work_authorization_asks_instead_of_queueing(
+        self, session, account, candidate, memory_mode
+    ):
+        from juicebox.jobs import KIND_APP_PACKAGE, enqueue
+        from juicebox.worker import _handle_app_package
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+        application.approved_at = utcnow()
+        session.flush()
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_APP_PACKAGE,
+            idempotency_key="pkg-auth",
+            payload={"application_id": application.id},
+        )
+        result = _handle_app_package(session, job, utcnow())
+        assert "waiting on required form answers" in result["submission"]
+        assert "authorized" in result["submission"].lower() or "sponsor" in result["submission"].lower()
+
     def test_a_handoff_still_tells_the_candidate_their_package_is_ready(
         self, session, account, candidate, memory_mode
     ):
         from juicebox.jobs import KIND_APP_PACKAGE, enqueue
         from juicebox.worker import _handle_app_package
 
-        earlier = _posting(session, account["org_id"], company="Stripe", suffix="9")
-        prior = _ready(session, account["org_id"], candidate, earlier)
-        transition(session, prior, to_status="submitted", actor="candidate")
-
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                spec={},
+                work_authorization="US citizen, no sponsorship needed",
+            )
+        )
+        session.flush()
         posting = _posting(session, account["org_id"], url="https://example.com/careers/1")
         detect.resolve_target(session, posting, allow_network=False)
         application = create_application(
@@ -1375,13 +1406,29 @@ class TestApiVersusForm:
         registry.reset_overrides()
         reset_settings_cache()
 
-    def test_no_key_means_the_hosted_form(self):
-        from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
-
+    def test_no_key_means_a_handoff_without_the_agent(self):
         target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
         chosen = registry.get_submitter(target)
-        assert isinstance(chosen, HostedFormSubmitter)
-        assert chosen.method == "browser"
+        assert chosen is None
+
+    def test_agent_configured_means_the_browser_agent(self, monkeypatch):
+        from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
+        from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
+        from juicebox.config import reset_settings_cache as _reset
+
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT", "true")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT_ACK", "true")
+        _reset()
+        set_cloud_client(FakeCloudClient())
+        try:
+            target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
+            chosen = registry.get_submitter(target)
+            assert isinstance(chosen, BrowserAgentSubmitter)
+            assert chosen.method == "browser"
+        finally:
+            set_cloud_client(None)
+            _reset()
 
     def test_a_stored_key_means_the_api(self):
         from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
@@ -1972,15 +2019,10 @@ class TestTheFieldMapsAreCoherent:
             assert spec.landmark, f"{vendor} has no landmark to prove we reached a form"
 
     def test_the_adapter_can_value_every_field_the_map_declares(self):
-        from juicebox.applications.submit.browser.forms import ASHBY, GREENHOUSE, LEVER
-        from juicebox.applications.submit.browser.hosted_form import _values, specs_for
+        from juicebox.applications.submit.browser.forms import WORKDAY_ACCOUNT, YC_ACCOUNT
 
-        ctx = TestAdapters._ctx("greenhouse", "https://boards.greenhouse.io/x/jobs/1")
-        values = _values(ctx, "/tmp/resume.pdf")
-        for spec in (GREENHOUSE, LEVER, ASHBY):
-            built = specs_for(spec, values)
-            assert {row.key for row in built} == set(spec.fields)
-            # Every required field resolves to something we actually hold.
-            for row in built:
-                if row.required:
-                    assert row.value, f"{spec.vendor}.{row.key} is required but we have no value"
+        for spec in (WORKDAY_ACCOUNT, YC_ACCOUNT):
+            assert spec.fields
+            assert spec.submit
+            for key in spec.required:
+                assert spec.selectors_for(key)

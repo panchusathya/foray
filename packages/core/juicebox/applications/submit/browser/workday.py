@@ -427,7 +427,7 @@ class WorkdaySubmitter:
                             artifacts=artifacts,
                             verification={"run": log.as_payload()},
                         )
-                    # Same gate hosted_form uses: a click during an in-flight
+                    # A click during an in-flight upload is swallowed, and the
                     # upload is swallowed, and the after-screenshot of the same
                     # filled form used to be recorded as submitted.
                     confirmed = driver.confirm_submission(

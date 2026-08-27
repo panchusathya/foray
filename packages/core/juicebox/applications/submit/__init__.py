@@ -15,6 +15,7 @@ from .base import (
     Attachment,
     SubmissionContext,
     SubmissionResult,
+    SubmitDeferred,
     SubmitError,
     Submitter,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "Attachment",
     "SubmissionContext",
     "SubmissionResult",
+    "SubmitDeferred",
     "SubmitError",
     "Submitter",
     "get_submitter",

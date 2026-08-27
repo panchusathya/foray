@@ -47,8 +47,8 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import clean_title, jobcard, render_card, role_line
-from . import cards as cards_media
 from . import apply_link, identity, intents, prompts
+from . import cards as cards_media
 from .channels import OutboundMessage
 from .threads import was_handed_off
 
@@ -216,12 +216,11 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, last: Intak
     body = followups.answer_acknowledgement(application, posting, outcome)
 
     # Answering is what makes an attempt possible, so this is where one is
-    # retried. The first attempt ran at package time, before these answers
-    # existed: a required blank refuses the run before the browser opens, so
-    # without this the candidate answers the question and nothing whatsoever
-    # happens. `auto_submit` reports rather than raises, returns any attempt
-    # already in flight instead of queueing a second, and most postings have no
-    # adapter at all -- so a hand-off stays a hand-off.
+    # retried. Work authorization is withheld at package time; without this
+    # the candidate answers it and nothing happens. `auto_submit` reports
+    # rather than raises, returns any attempt already in flight instead of
+    # queueing a second, and most postings have no adapter at all -- so a
+    # hand-off stays a hand-off.
     submission = ""
     if not outcome["missing"]:
         from ..applications.submission import auto_submit
@@ -232,30 +231,6 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, last: Intak
             application.id,
             submission,
         )
-        if "first application" in submission and outcome.get("next_question") is None:
-            # The gate refused the send the acknowledgement was about to
-            # promise. "i'll take it from here" followed by silence is the
-            # agent lying — a live thread answered "just fire the app looks
-            # good" and nothing fired. Say the one step that actually does.
-            from ..presentation.jobcard import role_line
-
-            link = mint_portal_link(
-                db,
-                org_id=thread.org_id,
-                candidate_id=thread.candidate_id,
-                path=f"/applications/{application.id}",
-                channel=thread.channel,
-            )
-            where = (
-                role_line(posting.title, posting.company)
-                if posting is not None
-                else "your application"
-            )
-            body = (
-                f"that's everything for {where}. one last step since it's your "
-                f"first with me: give it a look and tap approve, and i'll send "
-                f"it — {link}"
-            )
 
     # verbatim: names the role and the employer out of the posting. When the
     # acknowledgement carries the form's next question, the outbound is tagged

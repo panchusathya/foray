@@ -5,9 +5,8 @@ Three claims under test, each the inversion of a live failure:
 * An unknown board with a usable derived spec IS carded, and one without is
   not -- with a derivation queued so the next match has the answer. Before
   this, ``can_submit_vendor("")`` made the unknown frontier invisible.
-* A required form question is asked over text and its answer lands on the
-  form, and no submit attempt is spent while it is blank -- attempt 1 used to
-  burn on a run ``unanswerable_questions`` was guaranteed to refuse.
+* Chat asks only missing work authorization. A required custom essay is not
+  surveyed; the submitter hands off if it cannot fill it.
 * The candidate's browser state is a credential: filtered per run's hosts,
   merged on save, and never handed to a host it was not made on.
 """
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from test_messaging_manager import _managed, _posting, _say
+from test_messaging_manager import _managed, _posting
 
 from juicebox.applications import followups, formspec
 from juicebox.applications.ats import detect
@@ -24,8 +23,7 @@ from juicebox.applications.service import create_application
 from juicebox.applications.submit import registry
 from juicebox.applications.submit.browser.derive import derive_spec
 from juicebox.applications.submit.browser.forms import FormSpec
-from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
-from juicebox.jobs import KIND_APP_SUBMIT, KIND_JOBS_FORMSPEC_ONE
+from juicebox.jobs import KIND_JOBS_FORMSPEC_ONE
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
 from juicebox.messaging.threads import open_thread
 from juicebox.models import Application, AtsAccount, Job, JobMatch, JobPosting, utcnow
@@ -248,52 +246,25 @@ class TestOpeners:
 
 
 class TestRouting:
-    def test_unknown_vendor_with_a_spec_gets_the_hosted_form(self, live_mode):
-        target = detect.ApplyTarget(vendor="", apply_url="https://x.example/jobs/1")
-        submitter = registry.get_submitter(target, derived_spec=_spec())
-        assert isinstance(submitter, HostedFormSubmitter)
-        assert submitter.vendor == "derived"
-
-    def test_unknown_vendor_without_a_spec_stays_a_handoff(self, live_mode):
+    def test_unknown_vendor_without_the_agent_stays_a_handoff(self, live_mode):
         target = detect.ApplyTarget(vendor="", apply_url="https://x.example/jobs/1")
         assert registry.get_submitter(target) is None
+        assert registry.get_submitter(target, derived_spec=_spec()) is None
 
-    def test_account_gated_vendors_never_take_a_derived_spec(self, live_mode):
-        """Workday with a spec still routes to its own adapter; a derived
-        hosted-form run against an account wall is the thing the password
-        guard exists to prevent."""
+    def test_account_gated_vendors_never_take_the_agent(self, live_mode):
         for vendor in registry.ACCOUNT_GATED_VENDORS:
             target = detect.ApplyTarget(vendor=vendor, apply_url="https://x.example")
             submitter = registry.get_submitter(target, derived_spec=_spec())
-            assert not (
-                isinstance(submitter, HostedFormSubmitter)
-                and getattr(submitter, "vendor", "") == "derived"
-            ), vendor
+            from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
 
-    def test_submitter_for_reads_the_spec_off_the_posting(
-        self, session, account, live_mode
-    ):
-        """The real caller: patching get_submitter alone would pass while the
-        feature is broken."""
-        from juicebox.applications.submission import _form_target, submitter_for
-
-        posting = _unknown_posting(session, account["org_id"], suffix="sf", spec=_spec())
-        candidate_id = _seed_candidate(session, account["org_id"])
-        application = _application_for(session, account["org_id"], candidate_id, posting)
-        target = _form_target(posting)
-        submitter, _ = submitter_for(session, application, posting, target)
-        assert isinstance(submitter, HostedFormSubmitter)
-        assert submitter.spec.fields["resume"] == ("#resume",)
+            assert not isinstance(submitter, BrowserAgentSubmitter), vendor
 
     def test_console_mode_does_not_change_the_vendor_answer(self):
-        """can_submit_vendor must not change when an operator flips
-        APPLY_SUBMITTER to rehearse. (The posting-aware carding gate is gone:
-        matches are shown whatever their board, and the submit tier decides
-        what an attempt looks like.)"""
         assert registry.mode() == "console"
         assert not registry.can_submit_vendor("")
         assert not registry.can_submit_vendor("taleo")
-        assert registry.can_submit_vendor("greenhouse")
+        assert not registry.can_submit_vendor("greenhouse")
+        assert registry.can_submit_vendor("yc")
 
 
 def _seed_candidate(session, org_id) -> str:
@@ -365,25 +336,23 @@ class TestCardingGate:
         kept = manager._sendable_postings(session, self._pairs(session, posting), limit=3)
         assert [p.id for _, p in kept] == [posting.id]
 
-    def test_an_unchecked_unknown_is_carded_and_derivation_queued(
+    def test_an_unchecked_unknown_is_carded_and_derivation_is_not_queued(
         self, session, account, monkeypatch
     ):
-        """Shown now, derivable by the time somebody taps apply. Hiding it —
-        the old behaviour — turned every unknown-board book into a dead-end
-        reply repeated verbatim."""
         from juicebox.messaging import manager
 
         monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
         posting = _unknown_posting(session, account["org_id"], suffix="c2")
         kept = manager._sendable_postings(session, self._pairs(session, posting), limit=3)
         assert [p.id for _, p in kept] == [posting.id]
-        job = session.scalar(
-            select(Job).where(
-                Job.org_id == account["org_id"], Job.kind == KIND_JOBS_FORMSPEC_ONE
+        assert (
+            session.scalar(
+                select(Job).where(
+                    Job.org_id == account["org_id"], Job.kind == KIND_JOBS_FORMSPEC_ONE
+                )
             )
+            is None
         )
-        assert job is not None
-        assert job.payload["posting_id"] == posting.id
 
     def test_a_checked_unusable_posting_is_still_carded_and_queues_nothing(
         self, session, account, monkeypatch
@@ -406,24 +375,12 @@ class TestCardingGate:
             is None
         )
 
-    def test_adapter_and_account_gated_vendors_never_queue_a_derivation(
-        self, session, account
-    ):
-        """Greenhouse has an adapter; Workday's logged-out page is a
-        registration wall. Neither takes a derived page-1 spec."""
-        for vendor in ("greenhouse", "workday"):
-            posting = _unknown_posting(session, account["org_id"], suffix=f"c4-{vendor}")
+    def test_derivation_is_gone_for_every_vendor(self, session, account):
+        for vendor in ("greenhouse", "workday", "taleo", ""):
+            posting = _unknown_posting(session, account["org_id"], suffix=f"c4-{vendor or 'none'}")
             posting.ats_vendor = vendor
             session.flush()
             assert formspec.enqueue_derivation(session, posting) is None
-
-    def test_recognised_but_unsupported_vendors_now_derive(self, session, account):
-        """iCIMS/Taleo tenants differ; whether page 1 is fillable is a
-        per-posting fact the derive step records, not a per-vendor ban."""
-        posting = _unknown_posting(session, account["org_id"], suffix="c5")
-        posting.ats_vendor = "taleo"
-        session.flush()
-        assert formspec.enqueue_derivation(session, posting) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -432,79 +389,39 @@ class TestCardingGate:
 
 
 class TestFormspecJob:
-    def _job(self, session, posting) -> Job:
-        job = formspec.enqueue_derivation(session, posting)
-        assert job is not None
-        return job
-
-    def test_a_usable_derivation_lands_on_the_row(self, session, account, monkeypatch):
-        import juicebox.applications.submit.browser.derive as derive_mod
-
+    def test_leftover_jobs_skip(self, session, account):
         posting = _unknown_posting(session, account["org_id"], suffix="j1")
-        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (_spec(), []))
-        result = formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
-        assert result["outcome"] == "usable"
-        assert formspec.usable_spec(posting) is not None
-        assert posting.form_spec_checked_at is not None
-
-    def test_no_form_is_a_definitive_answer(self, session, account, monkeypatch):
-        import juicebox.applications.submit.browser.derive as derive_mod
-
-        posting = _unknown_posting(session, account["org_id"], suffix="j2")
-        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (None, []))
-        result = formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
-        assert result["outcome"] == "unusable"
-        assert formspec.usable_spec(posting) is None
-        assert posting.form_spec == {formspec.UNUSABLE_KEY: "no derivable form"}
-
-    def test_a_transient_failure_stamps_nothing(self, session, account, monkeypatch):
-        """The stamp_on_miss lesson: a 403 from a datacentre IP today must not
-        cache 'no form here' forever. The exception propagates so the queue's
-        backoff owns the retry, and the row stays clean."""
-        import juicebox.applications.submit.browser.derive as derive_mod
-
-        posting = _unknown_posting(session, account["org_id"], suffix="j3")
-
-        def boom(url, **kw):
-            raise RuntimeError("net::ERR_TIMED_OUT")
-
-        monkeypatch.setattr(derive_mod, "inspect_form", boom)
-        with pytest.raises(RuntimeError):
-            formspec.handle_formspec_one(session, self._job(session, posting), utcnow())
-        assert posting.form_spec is None
-        assert posting.form_spec_checked_at is None
-
-    def test_a_vendor_resolved_meanwhile_wins(self, session, account):
-        posting = _unknown_posting(session, account["org_id"], suffix="j4")
-        job = self._job(session, posting)
-        posting.ats_vendor = "greenhouse"
+        job = Job(
+            org_id=account["org_id"],
+            kind=KIND_JOBS_FORMSPEC_ONE,
+            payload={"posting_id": posting.id},
+            idempotency_key=f"formspec:{posting.id}",
+        )
+        session.add(job)
         session.flush()
         result = formspec.handle_formspec_one(session, job, utcnow())
-        assert "vendor greenhouse" in result["skipped"]
+        assert "skipped" in result
 
 
 # ---------------------------------------------------------------------------
-# package-time re-derivation
+# package-time preflight
 # ---------------------------------------------------------------------------
 
 
-class TestPackageTimeRederivation:
-    """The last read before a browser fills it: a board can reshape between
-    carding and applying, so package time re-inspects and refreshes the row."""
-
+class TestPackageTimePreflight:
     def _application(self, session, account, posting):
         candidate_id = _seed_candidate(session, account["org_id"])
         return _application_for(session, account["org_id"], candidate_id, posting)
 
-    def test_the_derived_path_merges_and_refreshes(self, session, account, monkeypatch):
-        import juicebox.applications.submit.browser.derive as derive_mod
+    def test_agent_preflight_merges_questions(self, session, account, monkeypatch):
         from juicebox.applications.questions import augment_with_form_questions
-        from juicebox.applications.submit.browser import driver
+        from juicebox.applications.submit.browser import cloud as browser_cloud
+        from juicebox.applications.submit.browser.agent import preflight
         from juicebox.applications.submit.browser.questions import FormQuestion
 
-        posting = _unknown_posting(session, account["org_id"], suffix="r1", spec=_spec())
+        posting = _unknown_posting(session, account["org_id"], suffix="r1")
         application = self._application(session, account, posting)
-        monkeypatch.setattr(driver, "available", lambda: (True, ""))
+        monkeypatch.setattr(browser_cloud, "agent_configured", lambda: True)
         question = FormQuestion(
             key="q_new01",
             label="What draws you to robotics?",
@@ -513,7 +430,7 @@ class TestPackageTimeRederivation:
             selector="#q_new",
             required=True,
         )
-        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (_spec(), [question]))
+        monkeypatch.setattr(preflight, "discover_questions", lambda ctx: [question])
 
         merged, outcome = augment_with_form_questions(
             session, application=application, posting=posting, answers=[]
@@ -522,38 +439,34 @@ class TestPackageTimeRederivation:
         added = next(item for item in merged if item.get("key") == "q_new01")
         assert added["kind"] == "custom"
         assert added["form_required"] is True
-        assert posting.form_spec_checked_at is not None
 
-    def test_a_board_that_reshaped_away_degrades(self, session, account, monkeypatch):
-        import juicebox.applications.submit.browser.derive as derive_mod
+    def test_unconfigured_agent_degrades_to_the_standard_set(
+        self, session, account, monkeypatch
+    ):
         from juicebox.applications.questions import augment_with_form_questions
-        from juicebox.applications.submit.browser import driver
+        from juicebox.applications.submit.browser import cloud as browser_cloud
 
-        posting = _unknown_posting(session, account["org_id"], suffix="r2", spec=_spec())
+        posting = _unknown_posting(session, account["org_id"], suffix="r2")
         application = self._application(session, account, posting)
-        monkeypatch.setattr(driver, "available", lambda: (True, ""))
-        monkeypatch.setattr(derive_mod, "inspect_form", lambda url, **kw: (None, []))
-
+        monkeypatch.setattr(browser_cloud, "agent_configured", lambda: False)
         answers = [{"key": "salary_expectation", "answer": "$200k"}]
         merged, outcome = augment_with_form_questions(
             session, application=application, posting=posting, answers=answers
         )
-        assert merged == answers, "the standard set is still a complete package"
-        assert outcome == "skipped: form no longer derivable"
-        assert formspec.usable_spec(posting) is None, "the row now says what the page said"
+        assert merged == answers
+        assert "browser agent is not configured" in outcome
 
 
 # ---------------------------------------------------------------------------
-# the ask loop: withhold, ask over text, absorb, submit once
+# the ask loop: work authorization only
 # ---------------------------------------------------------------------------
 
 
 QUESTION = "What interests you about infrastructure?"
 
 
-def _asking_application(session, account, thread) -> tuple[Application, JobPosting]:
-    """Prepared, consented, everything standard answered -- only the form's
-    own required question and one optional attestation are blank."""
+def _asking_application(session, account, thread, *, work_auth="US citizen") -> tuple[Application, JobPosting]:
+    """Prepared, consented; a required custom essay is blank on purpose."""
     posting = _posting(
         session, account["org_id"], company="Nimbus", title="Platform Engineer", suffix="ask"
     )
@@ -561,7 +474,7 @@ def _asking_application(session, account, thread) -> tuple[Application, JobPosti
     application.form_answers = [
         {"key": "salary_expectation", "answer": "$220k", "kind": "standard"},
         {"key": "notice_period", "answer": "2 weeks", "kind": "standard"},
-        {"key": "work_authorization", "answer": "US citizen", "kind": "standard"},
+        {"key": "work_authorization", "answer": work_auth, "kind": "standard"},
         {"key": "why_company", "answer": "drafted words", "kind": "standard", "edited": True},
         {
             "key": "q_infra01",
@@ -586,135 +499,50 @@ def _asking_application(session, account, thread) -> tuple[Application, JobPosti
     return application, posting
 
 
-def _prior_submitted(session, account, candidate_id):
-    """A previously submitted application, so the first-submission human gate
-    does not swallow what these tests actually exercise."""
-    posting = _posting(
-        session, account["org_id"], company="Elsewhere", title="SRE", suffix="prior"
-    )
-    application = _application_for(
-        session, account["org_id"], candidate_id, posting
-    )
-    application.status = "submitted"
-    application.submitted_at = utcnow()
-    session.flush()
-    return application
-
-
 class TestAskLoop:
-    def test_auto_submit_withholds_while_a_required_blank_exists(
+    def test_auto_submit_does_not_withhold_on_a_custom_essay(
         self, session, account, channel, thread, memory_mode
     ):
+        """A required custom blank used to park the send for a chat survey.
+        The submitter hands off if it cannot fill it; chat does not ask."""
         from juicebox.applications.submission import auto_submit
 
         thread = _managed(session, thread)
         application, _ = _asking_application(session, account, thread)
-        _prior_submitted(session, account, thread.candidate_id)
 
         job, reason = auto_submit(session, application)
-        assert job is None
-        assert "waiting on required form answers" in reason
-        assert QUESTION in reason
-        assert (
-            session.scalar(
-                select(Job).where(
-                    Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
-                )
-            )
-            is None
-        ), "no attempt may be spent on a run we already know terminuses"
+        assert job is not None, reason
+        assert reason == "queued"
 
-    def test_the_question_is_asked_and_the_attestation_never_is(
+    def test_chat_does_not_ask_the_custom_essay(
         self, session, account, channel, thread, memory_mode
     ):
         thread = _managed(session, thread)
         application, _ = _asking_application(session, account, thread)
 
         result = followups.ask_for_missing(session, application)
+        assert result.get("skipped") == "package answered everything"
+        assert result.get("sent", 0) == 0
+        assert channel.sent == []
+
+    def test_missing_work_auth_is_asked_once(
+        self, session, account, channel, thread, memory_mode
+    ):
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread, work_auth="")
+
+        result = followups.ask_for_missing(session, application)
+        assert result["asked"] == ["work_authorization"]
         assert result["sent"] == 1
-        body = channel.sent[-1][1].body
-        assert "what interests you about infrastructure" in body.lower()
-        assert "veteran" not in body.lower()
-        assert thread.last_field_asked == "q_infra01"
-        row = next(
-            item
-            for item in application.form_answers
-            if item.get("key") == "q_infra01"
-        )
-        assert row.get("asked_text") is True
+        body = channel.sent[-1][1].body.lower()
+        assert "authoris" in body or "sponsor" in body
+        assert "infrastructure" not in body
+        assert "veteran" not in body
 
-    def test_asking_twice_is_one_ask(self, session, account, channel, thread, memory_mode):
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        followups.ask_for_missing(session, application)
         sent_before = len(channel.sent)
-        result = followups.ask_for_missing(session, application)
+        again = followups.ask_for_missing(session, application)
+        assert again.get("skipped") == "already asked"
         assert len(channel.sent) == sent_before
-        assert result.get("skipped") or result.get("sent") == 0
-
-    def test_the_reply_lands_on_the_form_and_submits_once(
-        self, session, account, channel, thread, memory_mode
-    ):
-        """The whole loop: ask -> reply -> verbatim answer on the row ->
-        exactly one attempt queued, and the acknowledgement names completion
-        rather than inviting a fresh job search."""
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        _prior_submitted(session, account, thread.candidate_id)
-        followups.ask_for_missing(session, application)
-
-        _say(
-            session,
-            thread,
-            "the scheduler work — i spent two years on nomad internals",
-            native_id="d-1",
-        )
-
-        row = next(
-            item
-            for item in application.form_answers
-            if item.get("key") == "q_infra01"
-        )
-        assert "nomad internals" in row["answer"]
-        assert row["provenance"] == "candidate:text"
-        assert row["edited"] is True, "their words survive re-discovery"
-
-        submit_jobs = session.scalars(
-            select(Job).where(
-                Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
-            )
-        ).all()
-        assert len(submit_jobs) == 1
-
-    def test_two_questions_arrive_one_per_message(
-        self, session, account, channel, thread, memory_mode
-    ):
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        answers = [dict(item) for item in application.form_answers]
-        answers.append(
-            {
-                "key": "q_lang01",
-                "question": "Which languages do you write daily?",
-                "answer": "",
-                "kind": "custom",
-                "field_type": "text",
-                "selector": "#langs",
-                "form_required": True,
-            }
-        )
-        application.form_answers = answers
-        session.flush()
-
-        followups.ask_for_missing(session, application)
-        first_body = channel.sent[-1][1].body.lower()
-        assert "what interests you" in first_body
-        assert "languages" not in first_body, "one question per message"
-
-        _say(session, thread, "the scheduler work", native_id="d-2")
-        second_body = channel.sent[-1][1].body.lower()
-        assert "languages" in second_body, "the ack carries the next question"
-        assert thread.last_field_asked == "q_lang01"
 
 
 # ---------------------------------------------------------------------------

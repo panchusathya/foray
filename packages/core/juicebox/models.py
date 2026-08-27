@@ -1023,13 +1023,10 @@ class JobPosting(Base, TimestampMixin):
     ats_resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # A FormSpec derived from the posting's own page (submit/browser/derive),
-    # for boards no handwritten map covers. Two definitive shapes -- a usable
-    # spec (has "fields") or {"unusable": <reason>} -- and None for "never
-    # checked". A transient failure writes NOTHING, the resolve_target
-    # stamp_on_miss lesson: an aggregator 403ing our IP today must not cache
-    # "no form here" forever. checked_at is stamped only with a definitive
-    # answer, for the same reason.
+    # Historical derived FormSpec cache. Public-form filling no longer reads
+    # this; leftover rows deserialize and leftover ``jobs.formspec.one`` jobs
+    # skip. Two definitive shapes -- a usable spec (has "fields") or
+    # {"unusable": <reason>} -- and None for "never checked".
     form_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     form_spec_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2293,7 +2290,7 @@ class AtsBoardCredential(Base, TimestampMixin):
     Holding a key IS the relationship. When we have one, the API is the better
     path: structured errors, a real application id back, no browser. When we do
     not -- the open market, which is most postings -- the candidate's own door
-    is the hosted form, and ``submit/browser/hosted_form.py`` drives it.
+    is the hosted form, and the browser agent drives it.
 
     In practice a key arrives with a mandate: a client whose roles we are
     filling (``JobPosting.project_id`` set) is who you can reasonably ask.
@@ -2441,6 +2438,39 @@ class BrowserProfile(Base, TimestampMixin):
     #: Sticky proxy session token -- one candidate, one egress IP.
     egress_session: Mapped[str] = mapped_column(String(64), default="")
     user_agent: Mapped[str] = mapped_column(String(400), default="")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BrowserCloudProfile(Base, TimestampMixin):
+    """One Browser Use Cloud profile per candidate per apply origin.
+
+    The vendor model is one profile per end user. Ours is stricter: never share
+    across candidates **or** apply origins, so a Greenhouse session on candidate
+    A cannot ride along to a Lever form, and cannot leak onto candidate B.
+    ``user_id`` is ``{candidate_id}:{origin}``, which is what we send to
+    ``POST /profiles``. The returned UUID is what we pass as ``profileId`` on
+    ``POST /browsers``.
+    """
+
+    __tablename__ = "browser_cloud_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "candidate_id", "origin", name="uq_browser_cloud_profile_origin"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(40), primary_key=True, default=lambda: new_id("bcprof")
+    )
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    #: ``https://boards.greenhouse.io`` — scheme + host, never a path.
+    origin: Mapped[str] = mapped_column(String(300), default="")
+    #: What we sent Browser Use as ``userId``.
+    user_id: Mapped[str] = mapped_column(String(255), default="")
+    cloud_profile_id: Mapped[str] = mapped_column(String(80), default="")
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

@@ -159,6 +159,17 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
             str(item.get("question") or item.get("key")) for item in waiting[:3]
         )
         return None, f"waiting on required form answers: {named}"
+
+    # Account-gated boards wait for a candidate-chosen vault credential before
+    # any attempt (model B2): the agent registers with the candidate's
+    # password, never one it minted behind an unreadable email loop. Prompt
+    # the vault once and hold; the vault save re-queues this.
+    posting = db.get(JobPosting, application.job_posting_id)
+    target = detect.target_of(posting) if posting is not None else None
+    if target and candidate_credential_needed(db, application, target):
+        prompt_vault_credential(db, application, target)
+        return None, f"waiting on a vault credential for {target.vendor}"
+
     try:
         return request_submission(db, application, requested_by="candidate"), "queued"
     except NotSubmittable as exc:
@@ -849,7 +860,7 @@ def build_context(
     documents = current_documents(db, application)
     from_address, reply_to = alias.sending_identity(db, candidate, application)
     first, _, last = (candidate.full_name or "").strip().partition(" ")
-    portal_username, portal_password = _portal_account(db, candidate, target)
+    portal_username, portal_password, portal_verified = _portal_account(db, candidate, target)
 
     return SubmissionContext(
         application_id=application.id,
@@ -866,6 +877,7 @@ def build_context(
         location=_location(candidate),
         portal_username=portal_username,
         portal_password=portal_password,
+        portal_account_verified=portal_verified,
         resume=_attachment(documents.get("resume_generated") or documents.get("resume_uploaded")),
         cover_letter=_attachment(documents.get("cover_letter")),
         answers=list(application.form_answers or []),
@@ -896,24 +908,65 @@ def _account_tenant(target) -> str:
     return target.tenant
 
 
-def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str]:
-    """The login we hold for this tenant, for the adapter that needs it.
+def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str, bool]:
+    """``(username, password, verified)`` for this tenant's stored login.
 
     Read here rather than in the adapter for the reason ``_remember_account``
     writes here: the seam is a plain value object, and an adapter holding a
     ``Session`` is one refactor away from moving the pursuit itself.
+    ``verified`` tells the adapter whether to sign in (True) or register with
+    the stored password (False -- a candidate-picked vault credential).
     """
     if target.vendor not in _REGISTERING_VENDORS:
-        return "", ""
+        return "", "", False
+    from .candidate_credentials import account_state
     from .submit.browser.workday import stored_account
 
     try:
-        return stored_account(
+        username = stored_account(
+            db, candidate_id=candidate.id, vendor=target.vendor, tenant=_account_tenant(target)
+        )[0]
+        password, verified = account_state(
             db, candidate_id=candidate.id, vendor=target.vendor, tenant=_account_tenant(target)
         )
+        return username, password, verified
     except Exception as exc:  # noqa: BLE001 - a missing login is registering again
         logger.warning("could not read the stored portal account: %s", exc)
-        return "", ""
+        return "", "", False
+
+
+def candidate_credential_needed(db: Session, application: Application, target) -> bool:
+    """Whether an account-gated board is waiting on a candidate-chosen login.
+
+    Model B2 (operator decision, 2026-08-27): the candidate picks the password
+    in the vault and the agent registers the account with it, rather than the
+    agent minting one and self-registering behind an email-verification loop we
+    cannot reliably read. A fresh account-gated pursuit therefore waits for
+    that credential instead of proceeding.
+    """
+    from .submit.registry import ACCOUNT_GATED_VENDORS
+
+    if target.vendor not in ACCOUNT_GATED_VENDORS:
+        return False
+    from .candidate_credentials import account_state
+
+    password, _verified = account_state(
+        db, candidate_id=application.candidate_id, vendor=target.vendor, tenant=_account_tenant(target)
+    )
+    return not password
+
+
+def prompt_vault_credential(db: Session, application: Application, target) -> None:
+    """Ask the candidate, once, to set a vault password for this employer."""
+    from ..messaging.notify import EVENT_VAULT_NEEDED, notify_candidate
+
+    notify_candidate(
+        db,
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        event=EVENT_VAULT_NEEDED,
+        subject_id=application.id,
+    )
 
 
 def _attachment(document: CandidateDocument | None) -> Attachment | None:

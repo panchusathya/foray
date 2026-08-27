@@ -124,10 +124,9 @@ class YCSubmitter:
                 ),
             )
 
-        # An account we already hold skips registration entirely -- no new
-        # signup means no verification mail, and parking on one that will
-        # never arrive is how a pursuit ages out in `submitting`.
-        if ctx.portal_password:
+        # A verified account we already hold skips registration entirely -- no
+        # new signup, no verification mail, so leg two is the whole of it.
+        if ctx.portal_password and ctx.portal_account_verified:
             return self.resume(
                 ctx,
                 {
@@ -136,8 +135,18 @@ class YCSubmitter:
                 },
             )
 
-        password = secrets.token_urlsafe(18)
-        username = _mint_username(ctx)
+        # Model B2: register with the candidate's vault-chosen password. The
+        # gate prompts the vault and holds, so no stored password means a path
+        # that skipped it -- refuse rather than self-register in their name.
+        if not ctx.portal_password:
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error="no vault credential for workatastartup; awaiting the candidate's password",
+            )
+        password = ctx.portal_password
+        username = ctx.portal_username or _mint_username(ctx)
         log = RunLog()
         try:
             with driver.session(log=log) as page:

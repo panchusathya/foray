@@ -1273,10 +1273,39 @@ def save_vault_account(
             db, org_id=principal.org_id, candidate_id=principal.candidate_id,
             vendor=payload.vendor.strip(), tenant=payload.tenant.strip(), username=payload.username,
             password=payload.password, origin=payload.origin,
+            # A vault-entered credential is one we have not registered on the
+            # employer yet: the agent registers with it (model B2), so the
+            # account is pending_verification until that lands.
+            registered=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    _resume_after_credential(db, principal, row)
     return {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username, "status": row.status}
+
+
+def _resume_after_credential(db: Session, principal: CandidatePrincipal, account) -> None:
+    """Queue any account-gated pursuit that was waiting on this login.
+
+    The candidate just supplied the vault password the apply-time gate paused
+    for; this is what turns that into a submission without a second tap.
+    """
+    from ..applications.ats import detect
+    from ..applications.submission import auto_submit
+
+    pending = db.scalars(
+        select(Application).where(
+            Application.org_id == principal.org_id,
+            Application.candidate_id == principal.candidate_id,
+            Application.status.in_(("prepared", "awaiting_consent")),
+        )
+    ).all()
+    for application in pending:
+        posting = db.get(JobPosting, application.job_posting_id)
+        target = detect.target_of(posting) if posting is not None else None
+        if not target or target.vendor != account.vendor:
+            continue
+        auto_submit(db, application)
 
 
 @router.delete("/vault/accounts/{account_id}", status_code=204)

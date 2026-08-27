@@ -1840,6 +1840,7 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         ctx = TestAdapters._ctx("workday", self._URL)
         ctx.portal_username = "anna+abc@goforay.io"
         ctx.portal_password = "stored-pw"
+        ctx.portal_account_verified = True  # a login we already registered
         result = _Reusing().submit(ctx)
 
         assert result.ok
@@ -1890,7 +1891,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         workday_mod = self._fake_browser(
             monkeypatch, fills={"email": "anna+abc@goforay.io", "password": "<redacted>"}
         )
-        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+        ctx = TestAdapters._ctx("workday", self._URL)
+        ctx.portal_password = "candidate-pick"  # vault credential, not yet registered
+        result = workday_mod.WorkdaySubmitter().submit(ctx)
 
         assert not result.needs_verification
         assert result.needs_human
@@ -1908,7 +1911,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
                 "terms": "1",
             },
         )
-        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+        ctx = TestAdapters._ctx("workday", self._URL)
+        ctx.portal_password = "candidate-pick"  # vault credential we register with
+        result = workday_mod.WorkdaySubmitter().submit(ctx)
 
         assert result.needs_verification
         assert result.verification["stage"] == "account_created"
@@ -2026,3 +2031,50 @@ class TestTheFieldMapsAreCoherent:
             assert spec.submit
             for key in spec.required:
                 assert spec.selectors_for(key)
+
+
+class TestAccountGatedWaitsForVault:
+    """Model B2: Workday/YC hold for a candidate-chosen vault password rather
+    than self-registering behind an email loop we cannot read."""
+
+    _WD = "https://acme.wd1.myworkdayjobs.com/en-US/acme/job/US/Analyst_R99"
+
+    def test_no_credential_prompts_the_vault_and_does_not_submit(
+        self, session, account, candidate, memory_mode, monkeypatch
+    ):
+        from juicebox.applications import submission as sub
+        from juicebox.applications.ats import detect
+
+        posting = _posting(session, account["org_id"], company="Acme", url=self._WD, suffix="wd")
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+
+        prompted: list = []
+        monkeypatch.setattr(
+            sub, "prompt_vault_credential", lambda db, app, target: prompted.append(app.id)
+        )
+        job, reason = sub.auto_submit(session, application)
+
+        assert job is None
+        assert "vault credential" in reason
+        assert prompted == [application.id]
+
+    def test_a_stored_credential_lets_it_proceed(
+        self, session, account, candidate, memory_mode
+    ):
+        from juicebox.applications import submission as sub
+        from juicebox.applications.ats import detect
+        from juicebox.applications.candidate_credentials import save_password
+
+        posting = _posting(session, account["org_id"], company="Acme", url=self._WD, suffix="wd2")
+        target = detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        save_password(
+            session, org_id=account["org_id"], candidate_id=candidate.id,
+            vendor=target.vendor, tenant=sub._account_tenant(target),
+            username="anna+x@goforay.io", password="candidate-pick", origin="candidate_supplied",
+            registered=False,
+        )
+
+        job, reason = sub.auto_submit(session, application)
+        assert job is not None, reason

@@ -47,8 +47,8 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import clean_title, jobcard, render_card, role_line
-from . import cards as cards_media
 from . import apply_link, identity, intents, prompts
+from . import cards as cards_media
 from .channels import OutboundMessage
 from .threads import was_handed_off
 

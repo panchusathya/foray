@@ -283,7 +283,7 @@ class TestLinkedInIntroSendsOnce:
         assert linq_channel.bodies.count(intro) == 1
         # The re-asked profile question is never the byte-identical bubble
         # twice in a row (`conversation._unrepeated`).
-        for earlier, later in zip(linq_channel.bodies, linq_channel.bodies[1:]):
+        for earlier, later in zip(linq_channel.bodies, linq_channel.bodies[1:], strict=False):
             assert earlier != later
 
 

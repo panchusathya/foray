@@ -222,6 +222,68 @@ class TestIngest:
         assert posting.location == "US CA Palo Alto"
         assert "acquisitions" in posting.jd_text
 
+    def test_a_js_shell_falls_back_to_llm_extraction(self, session, account):
+        """No adapter matched and the markup strips to nothing — before
+        refusing a link the candidate is looking at in their own browser, a
+        model reads the raw HTML (the content usually sits in script JSON)."""
+        from juicebox.llm.client import FakeTransport, LLMClient, set_llm
+
+        shell_url = "https://jobs.fruitcompany.example/careers/12345"
+        shell_html = (
+            "<html><head><title>Careers</title></head><body>"
+            '<script type="application/json">{"job":{"title":"Machine Learning Engineer",'
+            '"company":"Fruit Company","location":"Cupertino, CA",'
+            '"description":"Build on-device models for a billion phones. '
+            'You will own training pipelines end to end and ship quarterly."}}'
+            "</script></body></html>"
+        )
+        extracted = {
+            "is_job_posting": True,
+            "title": "Machine Learning Engineer",
+            "company": "Fruit Company",
+            "location": "Cupertino, CA",
+            "jd_text": (
+                "Build on-device models for a billion phones. You will own "
+                "training pipelines end to end and ship quarterly."
+            ),
+        }
+        set_llm(LLMClient(transport=FakeTransport(default=extracted), enabled=True))
+        try:
+            posting, created = ingest_posting_from_url(
+                session, org_id=account["org_id"], url=shell_url,
+                transport=fake_transport({shell_url: shell_html}),
+            )
+        finally:
+            set_llm(None)
+        assert created
+        assert posting.title == "Machine Learning Engineer"
+        assert posting.company == "Fruit Company"
+        assert "on-device models" in posting.jd_text
+
+    def test_a_js_shell_without_a_model_still_refuses_honestly(self, session, account):
+        shell_url = "https://jobs.fruitcompany.example/careers/12345"
+        with pytest.raises(LinkUnreachable):
+            ingest_posting_from_url(
+                session, org_id=account["org_id"], url=shell_url,
+                transport=fake_transport({shell_url: "<html><script>1</script></html>"}),
+            )
+
+    def test_the_model_saying_not_a_posting_still_refuses(self, session, account):
+        """A login wall or error page must not become an application."""
+        from juicebox.llm.client import FakeTransport, LLMClient, set_llm
+
+        shell_url = "https://jobs.fruitcompany.example/careers/expired"
+        refusal = {"is_job_posting": False, "title": "", "company": "", "location": "", "jd_text": ""}
+        set_llm(LLMClient(transport=FakeTransport(default=refusal), enabled=True))
+        try:
+            with pytest.raises(LinkUnreachable):
+                ingest_posting_from_url(
+                    session, org_id=account["org_id"], url=shell_url,
+                    transport=fake_transport({shell_url: "<html><script>1</script></html>"}),
+                )
+        finally:
+            set_llm(None)
+
     def test_the_same_link_twice_is_one_posting(self, session, account):
         transport = fake_transport({GH_API: GH_JOB})
         first, created_first = ingest_posting_from_url(

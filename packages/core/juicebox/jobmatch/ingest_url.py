@@ -346,12 +346,69 @@ def _ingest_generic(url: str, transport: FetchTransport | None) -> dict:
 
     text = strip_html(page.text)
     if len(text) < MIN_JD_CHARS:
+        # Too thin to be a job page as markup — most often a JS shell whose
+        # real content sits in script-embedded JSON (the Workday shell strips
+        # to zero characters). A model can read the raw HTML wherever the
+        # content lives; refusing a link the candidate is looking at in their
+        # own browser reads as broken, so this runs before we ever say
+        # "couldn't open it".
+        extracted = _llm_extract(page)
+        if extracted is not None:
+            return extracted
         raise LinkUnreachable("the page didn't have a readable job description")
     return {
         "company": company,
         "title": title,
         "location": "",
         "jd_text": text,
+        "form_questions": [],
+    }
+
+
+#: Floor for a model-extracted description: below this the model has found a
+#: heading, not a job posting, and building a package on it would answer
+#: "why this company" from nothing.
+_MIN_LLM_JD_CHARS = 80
+
+
+def _llm_extract(page: FetchedPage) -> dict | None:
+    """A model's reading of the raw page, or ``None`` to fall through.
+
+    Deterministic paths first, always: this runs only after every adapter
+    refused the URL and the stripped markup came up empty. The output is
+    validated rather than trusted — extraction claims about a page we hold
+    are checkable in shape (a posting has a title and a real description),
+    and a result that fails the shape falls back to the honest refusal.
+    """
+    from ..llm.client import get_llm
+    from ..llm.prompts import (
+        JOB_PAGE_PARSE_SCHEMA,
+        JOB_PAGE_PARSE_SYSTEM,
+        job_page_parse_prompt,
+    )
+
+    llm = get_llm()
+    if not llm.available:
+        return None
+    try:
+        result = llm.json(
+            system=JOB_PAGE_PARSE_SYSTEM,
+            prompt=job_page_parse_prompt(url=page.url, html=page.text),
+            schema=JOB_PAGE_PARSE_SCHEMA,
+        )
+    except Exception as exc:  # noqa: BLE001 - the canned refusal ships instead
+        logger.warning("llm page extraction failed for %s: %s", page.url, exc)
+        return None
+    data = result.data or {}
+    title = str(data.get("title") or "").strip()
+    jd_text = str(data.get("jd_text") or "").strip()
+    if not data.get("is_job_posting") or not title or len(jd_text) < _MIN_LLM_JD_CHARS:
+        return None
+    return {
+        "company": str(data.get("company") or "").strip() or _company_from_host(page.url),
+        "title": title,
+        "location": str(data.get("location") or "").strip(),
+        "jd_text": jd_text,
         "form_questions": [],
     }
 

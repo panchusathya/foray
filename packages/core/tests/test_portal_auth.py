@@ -205,7 +205,7 @@ class TestVaultStepUp:
         payload = {
             "vendor": "workday",
             "tenant": "acme",
-            "password": "correct horse battery staple",
+            "password": "Horse-Battery9!",
         }
         created = client.post("/v1/portal/vault/accounts", headers=headers, json=payload)
         assert created.status_code == 201, created.text
@@ -213,6 +213,20 @@ class TestVaultStepUp:
         assert "password" not in body
         assert body["username"]  # derived server-side
         assert body["status"] == "pending_verification"
+
+    def test_a_weak_password_is_refused_with_the_missing_rules(self, client, session, account, candidate):
+        """The employer's complexity rule is enforced at the door so a
+        registration never fails on it later."""
+        session.commit()
+        headers = self._session_headers(account, candidate)
+        weak = client.post(
+            "/v1/portal/vault/accounts",
+            headers=headers,
+            json={"vendor": "workday", "tenant": "acme", "password": "alllowercase"},
+        )
+        assert weak.status_code == 422
+        detail = weak.json()["detail"].lower()
+        assert "uppercase" in detail and "number" in detail and "special" in detail
 
 
 class TestPortalSender:

@@ -123,12 +123,14 @@ def _account_fields(email: str, password: str) -> list[FieldSpec]:
             selectors=('input[data-automation-id="password"]',),
             value=password,
             required=True,
+            kind="password",
             secret=True,
         ),
         FieldSpec(
             key="verify_password",
             selectors=('input[data-automation-id="verifyPassword"]',),
             value=password,
+            kind="password",
             secret=True,
         ),
         FieldSpec(
@@ -291,6 +293,38 @@ class WorkdaySubmitter:
                         method=self.method,
                         needs_human=True,
                         error="the registration form has no submit control we recognise",
+                        artifacts=artifacts,
+                        verification=log.as_payload(),
+                    )
+
+                # "Clicked submit" is not "account created". A blank/invalid
+                # password submitted silently, the form stayed put, and the
+                # run still parked needs_verification for a mail that was never
+                # sent (live, Intapp 2026-08-27). Registration succeeds only
+                # when the account form leaves the screen -- the email box is
+                # gone, or a wizard step / check-your-mail notice replaced it.
+                # Still on it means Workday rejected the form.
+                page.wait_for_timeout(3000)
+                after = driver.snapshot(
+                    page,
+                    org_id=ctx.org_id,
+                    application_id=ctx.application_id,
+                    label="workday-registered",
+                    log=log,
+                )
+                artifacts += [p for p in [after] if p]
+                still_on_form = driver.wait_for_any(
+                    page, ('input[data-automation-id="password"]',), timeout_ms=1500
+                )
+                if still_on_form:
+                    return SubmissionResult(
+                        ok=False,
+                        method=self.method,
+                        needs_human=True,
+                        error=(
+                            "workday rejected the account form (still showing after submit) -- "
+                            "likely a password that fails the tenant's complexity rule"
+                        ),
                         artifacts=artifacts,
                         verification=log.as_payload(),
                     )

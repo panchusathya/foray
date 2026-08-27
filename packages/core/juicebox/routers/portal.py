@@ -1276,6 +1276,9 @@ def save_vault_account(
 
     vendor = payload.vendor.strip()
     tenant = payload.tenant.strip()
+    weak = _password_shortfall(payload.password or "")
+    if weak:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=weak)
     username = payload.username.strip() or _vault_username_for(db, principal, vendor)
     try:
         row = save_password(
@@ -1291,6 +1294,23 @@ def save_vault_account(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     _resume_after_credential(db, principal, row)
     return {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username, "status": row.status}
+
+
+def _password_shortfall(password: str) -> str:
+    """Empty when the password clears every ATS complexity rule we've met,
+    otherwise a candidate-facing reason. Workday/Oracle/YC each demand some
+    subset of upper/lower/digit/special/length; asking for all of them once,
+    at 10+ characters, gets a login through any of them on the first try
+    rather than after a rejected registration."""
+    checks = [
+        (len(password) >= 10, "at least 10 characters"),
+        (any(c.islower() for c in password), "a lowercase letter"),
+        (any(c.isupper() for c in password), "an uppercase letter"),
+        (any(c.isdigit() for c in password), "a number"),
+        (any(not c.isalnum() for c in password), "a special character"),
+    ]
+    missing = [label for ok, label in checks if not ok]
+    return ("password needs " + ", ".join(missing)) if missing else ""
 
 
 def _vault_username_for(db: Session, principal: CandidatePrincipal, vendor: str) -> str:

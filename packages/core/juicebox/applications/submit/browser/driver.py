@@ -66,7 +66,7 @@ class FieldSpec:
     selectors: tuple[str, ...]
     value: str = ""
     required: bool = False
-    kind: str = "text"  # text | file | select | check
+    kind: str = "text"  # text | file | select | check | password | radio
     #: A credential. The run log records that the field was filled and never
     #: what went into it -- see ``_recorded``.
     secret: bool = False
@@ -100,7 +100,9 @@ def _recorded(spec: FieldSpec) -> str:
     """What goes in ``RunLog.filled`` for a field we just filled."""
     if spec.kind == "file":
         return "<file>"
-    return REDACTED if spec.secret else spec.value
+    if spec.kind == "password" or spec.secret:
+        return REDACTED
+    return spec.value
 
 
 def available() -> tuple[bool, str]:
@@ -313,6 +315,19 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
                 located.select_option(spec.value)
             elif spec.kind == "check":
                 located.check()
+            elif spec.kind == "password":
+                # Workday's password box is a React component that ignores a
+                # set value -- `fill` reported success while the field stayed
+                # empty and Create Account submitted blank (live, Intapp
+                # 2026-08-27). Type it as real keystrokes, then confirm the
+                # value actually took (length only; the value is a secret).
+                located.click()
+                located.press_sequentially(spec.value, delay=25)
+                got = (located.input_value() or "")
+                if len(got) != len(spec.value):
+                    raise RuntimeError(
+                        f"password field did not accept the value ({len(got)}/{len(spec.value)} chars)"
+                    )
             else:
                 located.fill(spec.value)
         except Exception as exc:  # noqa: BLE001 - one field, not the run

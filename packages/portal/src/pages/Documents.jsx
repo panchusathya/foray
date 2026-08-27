@@ -63,6 +63,10 @@ export function DocumentsPage() {
     }
   };
 
+  const pw = credential.password;
+  const passwordStrong = pw.length >= 10
+    && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw);
+
   const saveCredential = async (event) => {
     event.preventDefault();
     try {
@@ -214,8 +218,9 @@ export function DocumentsPage() {
               <input required value={credential.tenant} onChange={(event) => setCredential({ ...credential, tenant: event.target.value })} placeholder="Employer tenant" aria-label="Employer tenant" />
             </>
           )}
-          <input required type="password" minLength="8" value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} placeholder="Password" aria-label="Password" />
-          <button type="submit" className="btn small">{askedCompany ? 'Save and apply' : 'Save credential'}</button>
+          <input required type="password" minLength="10" value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} placeholder="Password" aria-label="Password" />
+          <p className="tiny">Use 10+ characters with an uppercase letter, a lowercase letter, a number, and a special character — the employer's site requires all of these.</p>
+          <button type="submit" className="btn small" disabled={!passwordStrong}>{askedCompany ? 'Save and apply' : 'Save credential'}</button>
         </form>
         {vaultNote ? <p className="tiny">{vaultNote}</p> : null}
       </section>

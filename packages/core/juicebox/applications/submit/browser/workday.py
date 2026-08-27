@@ -250,7 +250,12 @@ class WorkdaySubmitter:
                     _settle(page, log=log, expect=_CREATE_ACCOUNT + _ACCOUNT_EMAIL, timeout_ms=30000)
                 driver.click(page, _CREATE_ACCOUNT, log=log, what="create account")
                 driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=20000)
-                missing = driver.fill(page, _account_fields(ctx.from_address, password), log=log)
+                # The account is registered under the candidate's own email
+                # (ctx.portal_username, set from the vault credential) so the
+                # verification link reaches them -- not the alias, whose inbox
+                # we cannot read. The alias still fronts the application.
+                account_email = ctx.portal_username or ctx.from_address
+                missing = driver.fill(page, _account_fields(account_email, password), log=log)
                 shot = driver.snapshot(
                     page,
                     org_id=ctx.org_id,
@@ -331,9 +336,9 @@ class WorkdaySubmitter:
         except BrowserUnavailable as exc:
             return SubmissionResult(ok=False, method=self.method, error=str(exc))
 
-        # Parked: Workday has sent a verification mail to the alias. The
-        # password rides along on the attempt row -- it is ours, generated for
-        # this tenant, and leg two cannot sign in without it.
+        # Parked: Workday emailed a verification link to the candidate's own
+        # inbox (the account email), which they click. The password rides the
+        # attempt row so leg two can sign in once they have.
         return SubmissionResult(
             ok=False,
             method=self.method,
@@ -342,7 +347,7 @@ class WorkdaySubmitter:
             artifacts=list(log.artifacts),
             verification={
                 "stage": "account_created",
-                "username": ctx.from_address,
+                "username": ctx.portal_username or ctx.from_address,
                 "password": password,
                 "tenant": ctx.target.tenant,
                 "run": log.as_payload(),
@@ -355,7 +360,7 @@ class WorkdaySubmitter:
         if not ok:
             return SubmissionResult(ok=False, method=self.method, error=reason)
         password = str(verification.get("password") or "")
-        username = str(verification.get("username") or ctx.from_address)
+        username = str(verification.get("username") or ctx.portal_username or ctx.from_address)
         if not password:
             return SubmissionResult(
                 ok=False,

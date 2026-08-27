@@ -12,6 +12,29 @@ Phase 5 below is delivered by slice 3. Open decision 2 is closed: the agent
 is **Vivian**, AI disclosure retained, firm name Foray. SMS is not built
 here; that belongs to `feat/messaging-intake`.
 
+**End-of-call match teasers shipped (2026-08-26).** A finished intake no
+longer closes on "a recruiter will be in touch": the agent calls a new
+`preview_matches` tool once the gate closes, and the server ranks the open
+jobs book against what the caller just said they wanted — the preference term
+only, never a candidate evaluation — and hands back two or three composed
+sentences (company, role, location, the posting's own pay range), a composed
+count of the rest, and feedback guidance. If the caller likes the preview and
+explicitly requests details by text, the live agent sends a **verification**
+message before hangup through a new Linq chat (`POST /v3/chats` via
+`linq.start_chat`, iMessage-capable numbers only, `LINQ_ENABLED`-gated). The
+agent asks the caller to reply “hey” or “hello”; any real inbound reply proves
+the address and only then queues `KIND_INTAKE_MATCH_TEXT` for the full job
+cards. An unwanted preview is refined and re-run (bounded to two retries).
+Failures park on the review queue (`intake.match_text.parked`) so the promise
+lands on a human. New pieces:
+`intake/teasers.py`, `messaging/voice_handoff.py`, `/v1/intake/matches`,
+`linq.start_chat` / `linq.check_imessage`, `intake_calls.matches_offered`,
+settings `INTAKE_TEASERS_ENABLED` / `INTAKE_TEASER_COUNT` /
+`INTAKE_TEASER_MIN_SCORE`, `tests/test_intake_teasers.py` /
+`tests/test_voice_handoff.py`, and two new prompt guards in
+`deploy/tests/check_agent_prompts.py`. Compliance reasoning in
+`INTAKE_COMPLIANCE.md` §5–6.
+
 **Phase 0 (recon) complete.** Findings below changed five things in the original plan.
 
 **Phase 1 complete.** Provider is **Retell**. Schema, models, migration and

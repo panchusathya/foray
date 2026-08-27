@@ -60,7 +60,9 @@ from .providers import (
 )
 from .records import EXTENSION_FIELDS, merge_record, record_from_preference
 from .schema import (
+    CORE_KEYS,
     FIELDS,
+    GATE_PRIORITY,
     SCHEMA_VERSION,
     coverage,
     deferred_required,
@@ -79,6 +81,14 @@ STATUS_FAILED = "failed"
 # and the reader cannot drift into two different strings -- the same rule
 # ``messaging.identity.UNATTRIBUTED_REASON`` records.
 UNIDENTIFIED_REASON = "caller not identified"
+
+# Written by messaging.voice_handoff when the wrap-up pitched roles and the
+# caller opted into texts, but nothing can deliver the promised list -- no
+# standing thread, Linq disabled or the handle not iMessage-capable. The
+# promise was made on a recorded call, so it lands on the review queue for a
+# human rather than evaporating. Defined here (not in voice_handoff) so intake
+# owns the review-reason vocabulary alongside UNIDENTIFIED_REASON.
+TEXT_PROMISE_REASON = "match list promised by text; no channel can send it -- follow up manually"
 
 # The number is what the caller's *device* claims, and ANI is spoofable. So a
 # call matched to a person by the email they spoke is attributed -- the record
@@ -405,6 +415,10 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         call.review_needed = True
         call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
+    # A match list is never delivered merely because it was offered. The live
+    # Linq verification reply is the second half of the handoff; if it arrived
+    # before extraction completed, this schedules its already-confirmed send.
+    _schedule_match_text(db, call)
     write_field_answers(db, call=call, result=result)
 
     record_event(
@@ -436,6 +450,21 @@ def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
         call.contact_name = result.contact_name[:240]
     if result.contact_email and not call.contact_email:
         call.contact_email = result.contact_email[:255]
+
+
+def _schedule_match_text(db: Session, call: IntakeCall) -> None:
+    """Queue delivery of the match list the wrap-up pitch promised.
+
+    Only after the caller has both requested a text and replied to the live
+    verification message. The reply is what proves the currently-held number;
+    it is deliberately stronger than a spoken number or caller ID alone.
+    """
+    if call.text_verification_status != "confirmed" or not (call.matches_offered or []):
+        return
+    # Late import: messaging imports intake, so the reverse must stay lazy.
+    from ..messaging.voice_handoff import schedule_match_text
+
+    schedule_match_text(db, call)
 
 
 def link_caller(db: Session, call: IntakeCall) -> str | None:
@@ -841,6 +870,28 @@ def _join_reasons(existing: str, addition: str) -> str:
     return "; ".join(parts)[:400]
 
 
+def join_reasons(existing: str, addition: str) -> str:
+    """Public name for ``_join_reasons``, for callers outside this module."""
+    return _join_reasons(existing, addition)
+
+
+def drop_reason(existing: str, reason: str) -> str:
+    """Remove one reason from a joined list, leaving the rest intact.
+
+    The mirror of ``_join_reasons``, and the reason every constant here is
+    forbidden from containing the separator: a reason has to survive a
+    round trip through the join to be findable again.
+
+    It exists because a reason can stop being true. ``UNVERIFIED_NUMBER_REASON``
+    records that we declined to write the calling number onto a record because
+    caller ID is not proof -- and a reply sent *from that number* is the proof
+    it was waiting for. Leaving the note behind parks a settled call on the
+    review queue forever, which is how a queue stops being read.
+    """
+    parts = [p.strip() for p in (existing or "").split("; ") if p.strip()]
+    return "; ".join(p for p in parts if p != reason)[:400]
+
+
 # --------------------------------------------------------------------------
 # who is ringing
 # --------------------------------------------------------------------------
@@ -1209,6 +1260,139 @@ def progress_line(questions_left: int) -> str:
     return f"{words[questions_left]} more quick ones and I'll let you go."
 
 
+# How long one question and the answer to it actually take. Fifteen seconds is
+# what the demo calls ran at once the agent stopped reading answers back --
+# short questions, short answers, no recap. It is deliberately not tuned finer:
+# the number exists to turn "I have thirty seconds" into a count of questions,
+# and a count that is out by one is a far smaller error than the eight-question
+# interrogation a thirty-second caller used to get.
+SECONDS_PER_EXCHANGE = 15
+
+# `minutes_available` is an integer, so every answer under a minute -- "thirty
+# seconds", "a moment", "I'm about to walk into something" -- arrives as 0.
+# Treating that as no time at all would leave the gate empty; treating it as a
+# whole minute spends time the caller said they did not have.
+SUB_MINUTE_SECONDS = 30
+
+# The longest a call can actually be. Retell hangs up at fifteen minutes --
+# `MAX_CALL_DURATION_MS` in `deploy/retell_agents.py`, which this module cannot
+# import because `deploy/` is stdlib-only by design.
+#
+# It is used here as a plausibility bound, not a timer. `started_at` comes off
+# a webhook payload, and a payload can carry a timestamp from a replayed event,
+# a skewed clock, or a row that has been sitting around since last year. A
+# reading past this ceiling is not a long call, it is a timestamp we should not
+# be doing arithmetic with -- and believing it would silently shrink a full
+# intake to its single most valuable question, which is the quietest possible
+# way to stop asking people things.
+MAX_PLAUSIBLE_CALL_SECONDS = 15 * 60
+
+
+def budget_seconds(minutes_available: int | None) -> int | None:
+    """A stated budget in seconds. ``None`` when nothing was stated."""
+    if minutes_available is None:
+        return None
+    if minutes_available <= 0:
+        return SUB_MINUTE_SECONDS
+    return minutes_available * 60
+
+
+def gate_keys_for(
+    minutes_available: int | None, elapsed_seconds: int = 0
+) -> tuple[str, ...] | None:
+    """The questions a stated budget can still afford, best first.
+
+    ``None`` means the full required set: nothing was stated, or the budget is
+    long enough to cover everything. A budget may only ever narrow the gate --
+    the same rule ``core_only`` followed, kept because a caller saying they have
+    an hour must not be asked more than a caller who says nothing.
+
+    Sized against the clock rather than the stated total, because the stated
+    total is a prediction and the clock is not. A caller who says "two minutes"
+    and then spends ninety seconds on the first answer has one question left,
+    not seven, and the old binary trim could not express that -- which is how a
+    thirty-second call ran to eight questions and a comp read-back.
+
+    Never returns an empty gate. When the time is gone the gate is the single
+    most valuable question, so a call that has overrun closes on the next
+    answer instead of being cut off mid-sentence with nothing recorded.
+
+    ``intake_core_only_minutes`` still caps the whole thing. Sizing was added
+    underneath that rule, not in place of it: a budget at or below the core
+    threshold can only ever buy the core set, and the clock may cut it shorter
+    still. Without the cap, arithmetic alone would hand a three-minute caller
+    twelve questions -- more than the four they got before any of this existed,
+    which is a stated budget *widening* the gate.
+    """
+    total = budget_seconds(minutes_available)
+    if total is None:
+        return None
+    ceiling = len(CORE_KEYS) if core_only_for(minutes_available) else len(GATE_PRIORITY)
+    affordable = remaining_seconds(minutes_available, elapsed_seconds) // SECONDS_PER_EXCHANGE
+    count = max(1, min(ceiling, affordable))
+    if count >= len(GATE_PRIORITY):
+        return None
+    return GATE_PRIORITY[:count]
+
+
+def effective_gate_keys(call: IntakeCall) -> tuple[str, ...] | None:
+    """Which required fields this call actually closed on. ``None`` for all.
+
+    Asked after the fact, by anything that needs to know whether the intake is
+    finished -- the match pitch above all. It cannot re-derive the gate from the
+    budget, because by then the elapsed clock covers the whole call and would
+    shrink the answer to one question.
+
+    ``deferred_fields`` is the record of what a trim skipped, written when the
+    trimmed gate closed, so its complement is the gate that closed. When it is
+    empty there was either no trim or nothing left over, and the honest answer
+    is whatever ``gate_mode`` said -- which keeps a call from before this
+    existed reading the same way it always did.
+    """
+    deferred = {key for key in (call.deferred_fields or []) if key in set(GATE_PRIORITY)}
+    if deferred:
+        return tuple(key for key in GATE_PRIORITY if key not in deferred)
+    return tuple(CORE_KEYS) if call.gate_mode == "core" else None
+
+
+def remaining_seconds(minutes_available: int | None, elapsed_seconds: int = 0) -> int | None:
+    """What is left of a stated budget. ``None`` when nothing was stated."""
+    total = budget_seconds(minutes_available)
+    if total is None:
+        return None
+    return max(0, total - max(0, elapsed_seconds))
+
+
+def has_room_for_another_question(minutes_available: int | None, elapsed_seconds: int = 0) -> bool:
+    """Is there time to start one more question?
+
+    Only ever ``False`` for a caller who stated a budget and has spent it. It
+    gates the *optional* topics, which is the difference between a short call
+    ending well and the moment on the demo call where a caller who had just
+    said "I have to go" was asked what project he was proudest of. Required
+    questions are not affected: those are what the gate is for, and the call
+    closes when they are covered rather than when the clock says so.
+    """
+    left = remaining_seconds(minutes_available, elapsed_seconds)
+    return left is None or left >= SECONDS_PER_EXCHANGE
+
+
+def elapsed_seconds(call: IntakeCall | None) -> int:
+    """How long this call has been running, or 0 when we cannot tell.
+
+    Zero is the safe answer for every uncertain case, because zero elapsed
+    means the gate is sized on the stated budget alone -- the behaviour from
+    before there was a clock in this at all.
+    """
+    if call is None or call.started_at is None:
+        return 0
+    started = _aware(call.started_at)
+    seconds = int((utcnow() - started).total_seconds())
+    if seconds < 0 or seconds > MAX_PLAUSIBLE_CALL_SECONDS:
+        return 0
+    return seconds
+
+
 def core_only_for(minutes_available: int | None) -> bool:
     """A stated budget may only narrow the gate. None is today's full set."""
     if minutes_available is None:
@@ -1254,7 +1438,13 @@ def _question(key: str) -> dict[str, str]:
     return {"topic": spec.key, "ask_about": spec.asks, "why_it_matters": spec.client_question}
 
 
-def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None) -> dict[str, Any]:
+def _snapshot(
+    state,
+    *,
+    covered_count: int,
+    record: dict[str, Any] | None = None,
+    allow_optional: bool = True,
+) -> dict[str, Any]:
     """Render a coverage state for a language model to act on.
 
     ``still_needed`` is required-tier only. Once the gate closes it goes empty
@@ -1262,13 +1452,20 @@ def _snapshot(state, *, covered_count: int, record: dict[str, Any] | None = None
     "needed" would keep a finished call alive, which is the exact failure the
     tiering exists to prevent.
 
+    ``allow_optional`` is false once a stated budget is spent. Enrichment is by
+    definition the part we can do without, so offering it to somebody whose
+    time has run out buys a nice-to-have with the goodwill of the person who
+    told us how long they had. On the demo call it read as "one last one --
+    what's a project you're proudest of?" to a caller who had just said he had
+    to go.
+
     ``progress_line`` is the exact sentence to speak, or empty. Composed here
     so the agent cannot invent a count.
     """
     complete = state.required_complete
     needed = [] if complete else list(state.required_missing[:COVERAGE_QUESTION_LIMIT])
     optional: list[str] = []
-    if complete:
+    if complete and allow_optional:
         # Under a core trim, ask must-have skills first if they never landed —
         # strongest retrieval signal, but not allowed to keep the gate open.
         if record is not None:
@@ -1491,7 +1688,9 @@ def coverage_snapshot(
     if call is not None:
         apply_budget(call, minutes_available)
         minutes_available = call.minutes_available
-    core_only = core_only_for(minutes_available)
+    # Sized to the time actually left, not to a binary "short call" flag.
+    spent = elapsed_seconds(call)
+    gate = gate_keys_for(minutes_available, spent)
     # `live_call`: this runs while the caller sits in silence, so it takes the
     # voice budget rather than the general one. See `llm_voice_timeout_seconds`.
     result = extract_intake(transcript, known=known, fast=fast, live_call=True)
@@ -1507,16 +1706,21 @@ def coverage_snapshot(
     # Merged for the *gate* only. Never written to call.extracted: that record
     # is evidence about this conversation.
     seeded = merge_record(prior, result.record) if prior else result.record
-    state = coverage(seeded, core_only=core_only)
-    if call is not None and core_only and state.required_complete:
-        skipped = list(deferred_required(seeded))
+    state = coverage(seeded, gate_keys=gate)
+    if call is not None and gate is not None and state.required_complete:
+        skipped = list(deferred_required(seeded, gate_keys=gate))
         call.deferred_fields = skipped
         if skipped:
             call.review_needed = True
             call.review_reason = _join_reasons(
-                call.review_reason, "core-mode trim, deferred fields unasked"
+                call.review_reason, "budget trim, deferred fields unasked"
             )
-    return _snapshot(state, covered_count=len(state.covered), record=seeded)
+    return _snapshot(
+        state,
+        covered_count=len(state.covered),
+        record=seeded,
+        allow_optional=has_room_for_another_question(minutes_available, spent),
+    )
 
 
 def empty_coverage(prior: dict[str, Any] | None = None) -> dict[str, Any]:

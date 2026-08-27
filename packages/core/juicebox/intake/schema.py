@@ -267,6 +267,48 @@ FIELDS: tuple[IntakeField, ...] = (
 FIELDS_BY_KEY: dict[str, IntakeField] = {f.key: f for f in FIELDS}
 REQUIRED_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_REQUIRED)
 CORE_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.core)
+
+# Required fields, most valuable to a client first. Two things read this and
+# both used to read declaration order instead, which is authoring order and
+# means nothing to a caller:
+#
+# * ``coverage`` orders ``required_missing`` by it, so the two questions the
+#   agent is handed mid-call are the two worth asking rather than the two
+#   declared first. On a real call that difference showed up as work
+#   authorisation being asked before the caller had said what job they wanted.
+# * ``gate_keys_for`` slices it to fit a stated time budget, so "I have thirty
+#   seconds" spends those seconds at the top of this list.
+#
+# Titles and locations lead because a role nobody can fill and a city nobody
+# will move to disqualify everything after them. Compensation is third for the
+# same reason -- it is a hard filter, not a nicety. ``ok_to_share_with_clients``
+# is last deliberately: it is the closing question, and asking permission to
+# share a record before there is a record in it is the wrong order.
+GATE_PRIORITY: tuple[str, ...] = (
+    "spec.job_titles",
+    "spec.locations",
+    "compensation",
+    "spec.remote_ok",
+    "work_authorization",
+    "spec.seniority",
+    "spec.must_have_skills",
+    "timeline",
+    "employment_status",
+    "active_processes",
+    "ok_to_share_with_clients",
+)
+
+# A required field missing from the ranking would silently sort last and never
+# be picked by a trimmed gate. Checked at import so the failure is a stack
+# trace on boot rather than a question nobody gets asked.
+_REQUIRED_KEYS = frozenset(f.key for f in FIELDS if f.tier == TIER_REQUIRED)
+assert frozenset(GATE_PRIORITY) == _REQUIRED_KEYS, (
+    "GATE_PRIORITY must rank exactly the required fields: "
+    f"missing={sorted(_REQUIRED_KEYS - frozenset(GATE_PRIORITY))} "
+    f"unknown={sorted(frozenset(GATE_PRIORITY) - _REQUIRED_KEYS)}"
+)
+
+_PRIORITY_INDEX = {key: i for i, key in enumerate(GATE_PRIORITY)}
 ENRICHMENT_KEYS: tuple[str, ...] = tuple(f.key for f in FIELDS if f.tier == TIER_ENRICHMENT)
 
 # Messaging LinkedIn-first flow. Voice is unchanged.
@@ -422,31 +464,39 @@ def coverage(
             enrichment_missing.append(spec.key)
 
     return Coverage(
-        required_missing=tuple(required_missing),
+        # Ranked, not declaration-ordered: `_snapshot` hands the agent the
+        # first two and they should be the two that matter.
+        required_missing=tuple(sorted(required_missing, key=_PRIORITY_INDEX.__getitem__)),
         enrichment_missing=tuple(enrichment_missing),
         declined=tuple(sorted(declined)),
         covered=tuple(covered),
     )
 
 
-def deferred_required(record: Mapping[str, Any]) -> tuple[str, ...]:
-    """Required keys left unasked by a core-mode trim, not forgotten.
+def deferred_required(
+    record: Mapping[str, Any], *, gate_keys: Collection[str] | None = None
+) -> tuple[str, ...]:
+    """Required keys left unasked by a trimmed gate, not forgotten.
 
     Distinct from ``required_missing`` on a full-gate ``coverage()``: those are
     still owed. These were deliberately skipped so a short call could close.
+
+    ``gate_keys`` is the trim that actually ran. It defaults to ``CORE_KEYS``
+    for the callers that predate a sized budget; passing the real gate is what
+    keeps the review queue honest once a thirty-second call trims harder than
+    core mode does.
     """
-    state = coverage(record, core_only=True)
+    gate = set(CORE_KEYS if gate_keys is None else gate_keys)
+    state = coverage(record, gate_keys=gate)
     if not state.required_complete:
         return ()
     skipped = []
     declined = set(state.declined)
     covered = set(state.covered)
-    for spec in FIELDS:
-        if spec.tier != TIER_REQUIRED or spec.core:
+    for key in GATE_PRIORITY:
+        if key in gate or key in declined or key in covered:
             continue
-        if spec.key in declined or spec.key in covered:
-            continue
-        skipped.append(spec.key)
+        skipped.append(key)
     return tuple(skipped)
 
 

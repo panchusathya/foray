@@ -130,6 +130,44 @@ def check_inbound_branches_on_caller_known() -> None:
         "{{caller_first_name}}" in INBOUND_PROMPT,
         "inbound prompt must greet a known caller by the name we already have",
     )
+    # The branch condition has to be *interpolated*, not merely named. Retell
+    # substitutes `{{var}}` and nothing else, so prose like "the answer is in
+    # `caller_known`" hands the model the field name and never the value -- and
+    # a model told to branch on something it cannot see picks one. This check
+    # exists because that shipped: for weeks the rendered prompt carried a
+    # single slot, `{{caller_first_name}}`, while eight variables were being
+    # supplied. Every caller got guessed at, and the guess came out "known",
+    # so strangers were greeted as regulars and read a record invented to fit.
+    _must(
+        "{{caller_known}}" in INBOUND_PROMPT,
+        "inbound prompt must interpolate {{caller_known}}, not just name it -- "
+        "a branch condition the model cannot read is a branch it guesses",
+    )
+
+
+def check_every_supplied_variable_reaches_the_model() -> None:
+    """Anything we send must appear as a slot, or we never actually sent it.
+
+    The webhook resolves eight caller variables while the phone is ringing and
+    hands them to Retell. A variable the prompt does not interpolate is work
+    done for nobody: it costs a database read at ring time and arrives nowhere.
+    Worse, the prompt goes on to instruct against it by name -- "tell them
+    anything in `caller_on_file`" -- which reads as an instruction to produce
+    the contents of something invisible.
+
+    `caller_greeting` is the one exception: it is the whole of `begin_message`
+    and deliberately never appears in the prompt body, because the agent speaks
+    it before the first turn rather than reading it mid-call.
+    """
+    supplied = set(DEFAULT_DYNAMIC_VARIABLES) - {"caller_greeting"}
+    interpolated = set(re.findall(r"\{\{(caller_[a-z_]+)\}\}", INBOUND_PROMPT))
+    orphaned = sorted(supplied - interpolated)
+    _must(
+        not orphaned,
+        f"the webhook supplies {orphaned} but the inbound prompt never "
+        "interpolates them -- the model cannot see a variable it is only told "
+        "the name of",
+    )
 
 
 def check_inbound_can_read_the_record_back() -> None:
@@ -212,6 +250,22 @@ def check_recording_consent_survives_both_branches() -> None:
         "the call is recorded" in OUTBOUND,
         "outbound prompt must still disclose recording",
     )
+    # A returning caller gets a shorter, warmer version of the ask -- "quick
+    # reminder ... all good?" instead of a formality. Shorter is fine; dropping
+    # the question is not. Consent is per call because California and a dozen
+    # other states are two-party, so a reminder the caller never answers leaves
+    # `consent_recording` false and the recording unconsented. This pins the
+    # question mark, which is the part that is tempting to lose while making
+    # the line sound natural.
+    _must(
+        "all good?" in INBOUND,
+        "the returning-caller recording reminder must still end in a question",
+    )
+    _must(
+        "consent is per call, not per person" in INBOUND,
+        "the inbound prompt must say why the reminder is still asked, or the "
+        "next edit that shortens it will drop the ask entirely",
+    )
 
 
 def check_every_slot_has_a_default() -> None:
@@ -222,8 +276,11 @@ def check_every_slot_has_a_default() -> None:
     saying "caller first name" out loud.
     """
     used = set(re.findall(r"\{\{(caller_[a-z_]+)\}\}", INBOUND_PROMPT))
-    # Referenced by name in prose as well as interpolated; both need defaults,
-    # because the prose ones are the branch conditions.
+    # Prose references count too, so a variable discussed by name but not yet
+    # interpolated still needs a default. It should not stay that way --
+    # `check_every_supplied_variable_reaches_the_model` is the check that says
+    # so -- but the default is what keeps an unanswered webhook from putting
+    # literal braces in the agent's mouth either way.
     used |= {name for name in DEFAULT_DYNAMIC_VARIABLES if name in INBOUND}
     missing = sorted(used - set(DEFAULT_DYNAMIC_VARIABLES))
     _must(
@@ -235,6 +292,74 @@ def check_every_slot_has_a_default() -> None:
         "the default for caller_known must be false -- an unanswered webhook "
         "must degrade to a first intake, never to a claimed relationship",
     )
+
+
+def check_the_pitch_reads_only_composed_lines() -> None:
+    """The wrap-up pitch must stay a read-back, never an improvisation.
+
+    ``preview_matches`` hands the agent finished sentences precisely so a
+    company name, a pay figure, or a count of roles can never be invented on a
+    recorded call. The prompt has to keep saying so, in both agents, or the
+    model will helpfully embellish -- and it must keep framing the lines as a
+    match with what the candidate ASKED FOR, because a fit judgement of the
+    candidate is the thing the intake channel must never emit.
+    """
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            "preview_matches" in prompt,
+            f"{name} prompt no longer calls preview_matches at wrap-up",
+        )
+        _must(
+            "exactly as written" in prompt,
+            f"{name} prompt must require the pitch lines be read as written",
+        )
+        _must(
+            "never as a judgement of the candidate" in prompt
+            or "never how good the candidate is" in prompt
+            or "never as a judgement" in prompt,
+            f"{name} prompt must frame the pitch as preference fit, not a verdict "
+            "on the candidate",
+        )
+        _must(
+            "close the way `check_coverage`'s `guidance` told you to" in prompt,
+            f"{name} prompt must keep the no-lines fallback: close normally and "
+            "mention no roles",
+        )
+
+
+def check_the_live_text_verification_flow_is_pinned() -> None:
+    """Cards must wait for a genuine reply from the number we just texted."""
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            "start_text_verification" in prompt,
+            f"{name} prompt lost the live text-verification tool",
+        )
+        _must(
+            'reply "hey" or "hello"' in prompt,
+            f"{name} prompt must ask for the verification reply",
+        )
+        # The phrase, not one exact sentence. The consent ask carries the
+        # longer TCPA wording -- "an explicit, unambiguous yes is a yes;
+        # hesitation, 'I guess', silence, or 'email is better' is a no" -- and
+        # pinning a single sentence made restoring that wording look like a
+        # regression when it was the opposite.
+        _must(
+            "explicit, unambiguous yes" in prompt,
+            f"{name} prompt must not allow a vague answer to trigger a text",
+        )
+        _must(
+            '"email is better"' in prompt and "re-ask or reframe" in prompt,
+            f"{name} prompt must say what is NOT consent and forbid re-asking "
+            "until a yes appears",
+        )
+        _must(
+            "never say the detailed role list was texted yet" in prompt,
+            f"{name} prompt must hold cards until the reply arrives",
+        )
+        _must(
+            "`preview_matches` again" in prompt,
+            f"{name} prompt must support refining an unwanted first preview",
+        )
 
 
 def check_outbound_is_unchanged_in_posture() -> None:
@@ -259,12 +384,15 @@ def main() -> int:
     checks = (
         check_inbound_does_not_ask_who_it_is_talking_to,
         check_inbound_branches_on_caller_known,
+        check_every_supplied_variable_reaches_the_model,
         check_inbound_can_read_the_record_back,
         check_nothing_in_the_record_is_held_back_from_its_owner,
         check_the_identify_tool_is_gone,
         check_unknown_callers_still_get_a_clean_first_intake,
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,
+        check_the_pitch_reads_only_composed_lines,
+        check_the_live_text_verification_flow_is_pinned,
         check_outbound_is_unchanged_in_posture,
     )
     failed = 0

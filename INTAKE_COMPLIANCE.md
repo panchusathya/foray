@@ -60,9 +60,45 @@ Act classifies employment-screening AI as high-risk. Keep the intake channel
 evaluation-free, and give the matching engine its own review before it drives
 decisions rather than suggestions.
 
+**The wrap-up pitch stays on the right side of that boundary, by
+construction.** `preview_matches` (`intake/teasers.py`) names open roles at
+the end of a finished intake — a deliberate product change from "never mention
+roles" — and every part of it keeps the channel evaluation-free:
+
+- Selection ranks postings by the *preference* term only: the caller's own
+  stated titles, locations, comp floor and exclusions, against posting facts.
+  No candidate-fact scoring is computed for it, and no score, rank, or fit
+  judgment of the person is spoken. What the caller hears is "this matches
+  what you said you wanted" — a statement about the role, not about them.
+- Every speakable sentence is composed server-side and read verbatim. The
+  prompt forbids the agent to name a company, quote pay, or count roles on
+  its own, and forbids grading the candidate even around composed lines
+  (`check_agent_prompts.py` pins both).
+- Pay is quoted only as the posting itself publishes it — pay transparency,
+  never a promise — and only in the posting's own currency. Companies are
+  named only on open-market postings; a `project` mandate stays unnamed, so
+  "never name a client" still holds. "Never promise a role, an interview, or
+  an introduction" still binds.
+- What was pitched is stored verbatim on the call row
+  (`intake_calls.matches_offered`), so "what was this caller told" is always
+  answerable from the evidence record.
+
 ## 6. SMS — TCPA consent, captured now, used later
 
-The agent asks at wrap-up, verbatim: *"Can I text you updates at this number?"*
+After a role preview, the agent asks whether the caller wants the details by
+text. Only an explicit yes authorises the one immediate verification message:
+*"Hi — it's Vivian with Go4A... Reply 'hey' or 'hello' so I know this is the
+right number."* The tool invocation and recorded transcript are evidence of
+that request; `sms_opt_in` is latched at send time. The requested “hey” is
+for the human experience, but any real non-STOP inbound reply proves control
+of the address.
+
+Only that verified reply unlocks the job cards. This makes the outbound-initiate
+Linq path (`messaging/voice_handoff.py`) candidate-directed and mechanically
+bound to the caller's current number, rather than cold outreach. A STOP or
+suppression that arrives after the send still wins; numbers Linq cannot vouch
+for as iMessage are not sent to; and failures park on review
+(`intake.match_text.parked`) for a recruiter.
 
 - Only an explicit, unambiguous yes counts. Hesitation, "I guess", or "email
   is better" is recorded as no. The agent never re-asks or reframes to convert

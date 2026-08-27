@@ -80,6 +80,7 @@ from ..messaging.threads import (
     open_thread,
     record_inbound,
 )
+from ..messaging.voice_handoff import confirm_text_verification
 from ..models import IntakeMessage, IntakeThread, Org, utcnow
 from ..presentation.contactavatar import CONTENT_TYPE as AVATAR_CONTENT_TYPE
 from ..presentation.contactavatar import render_avatar_png
@@ -805,6 +806,19 @@ def linq_webhook(
 
     if not inbound.body.strip():
         return {"status": "accepted", "ignored": True, "message_id": message.id}
+
+    # A live voice handoff sends only a number-verification prompt. Any real
+    # reply (the agent asks for "hey" or "hello") proves that the caller owns
+    # this address and unlocks the job cards. It must happen before the normal
+    # conversation turn, or a generic manager reply could race the cards.
+    verified = confirm_text_verification(db, thread=thread)
+    if verified is not None:
+        return {
+            "status": "accepted",
+            "verification_confirmed": True,
+            "message_id": message.id,
+            **verified,
+        }
 
     enqueue(
         db,

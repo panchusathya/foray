@@ -95,10 +95,34 @@ const CLAUSES = [
     note: 'Nothing is written to a candidate record until somebody attributes this.',
   },
   {
-    match: /^core-mode trim; deferred fields unasked$/,
+    // Was `/^core-mode trim; deferred fields unasked$/` — a semicolon the
+    // server never wrote, and the one character this list splits on, so the
+    // pattern could not have matched a segment even in principle. Reasons
+    // carry commas precisely because the semicolon is the separator.
+    match: /^budget trim, deferred fields unasked$/,
     title: 'Short call, by request',
     tone: '',
-    note: 'They gave us a few minutes, so the optional questions were skipped.',
+    note: 'They told us how long they had, so the rest of the questions were skipped.',
+  },
+  {
+    match: /^caller matched by email, number not added$/,
+    title: 'Matched by email, not by number',
+    tone: 'partial',
+    note:
+      'The call is on the right record. The number they rang from is not, because '
+      + 'caller ID can be spoofed — it goes on once they reply to a text.',
+  },
+  {
+    match: /^caller gave a name but no email$/,
+    title: 'No email, so no record',
+    tone: 'miss',
+    note: 'Without an address there is nobody to attach this to. Attribute it by hand.',
+  },
+  {
+    match: /^caller identified but nothing was captured$/,
+    title: 'An address and nothing else',
+    tone: 'miss',
+    note: 'Not enough of a conversation to create a candidate from.',
   },
   {
     match: /^newer call (\S+) disagrees with a confirmed record$/,

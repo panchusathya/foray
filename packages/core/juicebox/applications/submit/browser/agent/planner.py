@@ -71,23 +71,30 @@ def plan(
     allow_submit: bool,
     approved_answer_keys: tuple[str, ...] = (),
     approved_answers: dict[str, str] | None = None,
+    questions: dict[str, str] | None = None,
     planner=None,
     feedback: str = "",
 ) -> Action | None:
     klass = page_class(obs)
     legal = sorted(allowed_actions(klass, allow_submit=allow_submit))
     steer = f"your_last_proposal_was_refused: {feedback}\n" if feedback.strip() else ""
-    # The VALUES, not just the keys. A required Yes/No radio ("have you
-    # previously been employed here?") is answered by choosing which control
-    # to check, and a planner shown only key names was guessing at a factual
-    # claim in the candidate's name (live, Intapp 2026-08-27). These are the
-    # candidate's own approved answers; resolve_token hands them to the page
-    # regardless, so showing them here adds no exposure and removes the guess.
-    answers = {
-        key: str(value)[:120]
+    # The VALUES, not just the keys, and the QUESTION each one answers. A
+    # required Yes/No is answered by choosing which control to act on, and a
+    # planner shown only key names was guessing at a factual claim in the
+    # candidate's name (live, Intapp 2026-08-27); shown keys and values but no
+    # question text, it still has to guess which key a given question maps to.
+    # These are the candidate's own approved answers, which resolve_token
+    # hands to the page regardless, so this adds no exposure and removes the
+    # guess. ``question`` may be blank for legacy rows.
+    answers = [
+        {
+            "token": f"answer.{key}",
+            "question": str((questions or {}).get(key) or "")[:160],
+            "answer": str(value)[:160],
+        }
         for key, value in (approved_answers or {}).items()
         if str(value or "").strip()
-    }
+    ]
     prompt = (
         f"page_class={klass}\n"
         f"legal_actions={legal}\n"

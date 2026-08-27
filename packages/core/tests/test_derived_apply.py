@@ -416,8 +416,8 @@ class TestPackageTimePreflight:
 
     def test_agent_preflight_merges_questions(self, session, account, monkeypatch):
         from juicebox.applications.questions import augment_with_form_questions
-        from juicebox.applications.submit.browser.agent import preflight
         from juicebox.applications.submit.browser import cloud as browser_cloud
+        from juicebox.applications.submit.browser.agent import preflight
         from juicebox.applications.submit.browser.questions import FormQuestion
 
         posting = _unknown_posting(session, account["org_id"], suffix="r1")

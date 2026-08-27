@@ -11,15 +11,14 @@ import logging
 import tempfile
 from pathlib import Path
 
-from ....config import get_settings
+from .....config import get_settings
 from ...base import SubmissionContext, SubmitDeferred
 from .. import cloud as browser_cloud
 from .. import driver
 from ..driver import RunLog
 from . import execute as execute_mod
 from . import planner as planner_mod
-from . import policy
-from . import trace
+from . import policy, trace
 from .actions import Action
 from .observe import Control, Observation, observe
 from .policy import PAGE_RECEIPT, Decision, page_class, required_blanks
@@ -155,7 +154,7 @@ def run(
                 result.error = "step cap reached"
         result.artifacts.extend(log.artifacts)
     except browser_cloud.TooManySessions:
-        raise SubmitDeferred("too many concurrent Browser Use sessions")
+        raise SubmitDeferred("too many concurrent Browser Use sessions") from None
     except browser_cloud.CloudError as exc:
         result.needs_human = True
         result.error = str(exc)[:400]

@@ -93,14 +93,21 @@ def _two_leg_submitter(vendor: str) -> Submitter | None:
     return built() if built is not None else None
 
 
+def _agent_ready() -> bool:
+    try:
+        from .browser.cloud import agent_configured
+    except ImportError:
+        return False
+    return agent_configured()
+
+
 def _agent_submitter(vendor: str) -> Submitter | None:
+    if not _agent_ready():
+        return None
     try:
         from .browser.agent import BrowserAgentSubmitter
-        from .browser.cloud import agent_configured
     except ImportError as exc:
         logger.debug("browser agent unavailable: %s", exc)
-        return None
-    if not agent_configured():
         return None
     return BrowserAgentSubmitter(vendor=vendor or "public")
 
@@ -148,6 +155,13 @@ def get_submitter(
     del derived_spec
     if target.vendor in _overrides:
         return _overrides[target.vendor]
+
+    # Unrecognised board (empty vendor): only a configured agent can drive it.
+    # Console/memory doubles exist to exercise adapters we have, not to invent
+    # one for Taleo -- without this, APPLY_SUBMITTER=memory would queue a
+    # capture-submit for every unknown URL and the hand-off tests would lie.
+    if not target.vendor and not _agent_ready():
+        return None
 
     current = mode()
     if current == MODE_MEMORY:
@@ -201,8 +215,4 @@ def can_submit_vendor(vendor: str) -> bool:
         return True
     if vendor in ACCOUNT_GATED_VENDORS:
         return False
-    try:
-        from .browser.cloud import agent_configured
-    except ImportError:
-        return False
-    return agent_configured()
+    return _agent_ready()

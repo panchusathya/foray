@@ -80,3 +80,20 @@ class TestRegistryCutover:
         target = detect.ApplyTarget(vendor="", apply_url="https://careers.tesla.com/x")
         assert registry.get_submitter(target) is None
         assert not registry.can_submit_vendor("")
+
+    def test_unknown_board_is_handoff_even_in_memory_mode(self, monkeypatch):
+        """The capture double is not a submitter for Taleo.
+
+        APPLY_SUBMITTER=memory must not queue an attempt for a URL we cannot
+        actually apply to; the package path still tells the candidate their
+        materials are ready and leaves a hand-off.
+        """
+        monkeypatch.setenv("APPLY_SUBMITTER", "memory")
+        reset_settings_cache()
+        registry.reset_overrides()
+        try:
+            target = detect.ApplyTarget(vendor="", apply_url="https://example.com/careers/1")
+            assert registry.get_submitter(target) is None
+        finally:
+            registry.reset_overrides()
+            reset_settings_cache()

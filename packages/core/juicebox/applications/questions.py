@@ -75,8 +75,8 @@ def augment_with_form_questions(
         )
         return answers, f"skipped: vendor {target.vendor} is account-gated"
 
-    from .submit.browser.agent.preflight import discover_questions, merge_discovered
     from .submit.base import SubmissionContext
+    from .submit.browser.agent.preflight import discover_questions, merge_discovered
 
     ctx = SubmissionContext(
         application_id=application.id,

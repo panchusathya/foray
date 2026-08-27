@@ -244,10 +244,10 @@ def _sent_screenshot(db: Session, thread, application) -> tuple:
     on the succeeded attempt — never a before-submit or unconfirmed shot.
     """
     from .. import storage
+    from ..applications.submit.browser.agent.loop import confirmation_artifact
     from ..models import ApplicationSubmission
     from .cards import wants_image
-    from .linq import OutboundMedia, LinqSendError, upload_attachment
-    from ..applications.submit.browser.agent.loop import confirmation_artifact
+    from .linq import LinqSendError, OutboundMedia, upload_attachment
 
     if not wants_image(thread):
         return ()

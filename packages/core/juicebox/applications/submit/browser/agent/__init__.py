@@ -5,7 +5,7 @@ Browser Use Cloud Chrome. The hosted Browser Use agent product (``POST /runs``)
 is out of scope — Juicebox keeps the wheel.
 """
 
-from .submitter import BrowserAgentSubmitter
 from .preflight import discover_questions, merge_discovered
+from .submitter import BrowserAgentSubmitter
 
 __all__ = ["BrowserAgentSubmitter", "discover_questions", "merge_discovered"]

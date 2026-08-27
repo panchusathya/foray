@@ -22,7 +22,7 @@ from .actions import (
     answer_key,
     is_answer_token,
 )
-from .observe import Control, Observation, PAGE_APPLICATION, PAGE_RECEIPT
+from .observe import PAGE_APPLICATION, PAGE_RECEIPT, Control, Observation
 
 PAGE_LOGIN = "login"
 PAGE_CAPTCHA = "captcha"
@@ -267,9 +267,7 @@ def _forbidden_control(control: Control) -> bool:
         return True
     if _SELF_ID.search(blob):
         return True
-    if _SIGNATURE.search(blob) and control.field_type in {"text", "checkbox"}:
-        return True
-    return False
+    return bool(_SIGNATURE.search(blob) and control.field_type in {"text", "checkbox"})
 
 
 def _self_id_required(obs: Observation, blob: str) -> bool:
@@ -289,9 +287,9 @@ def _looks_like_application(obs: Observation) -> bool:
             return True
         if "file" in types:
             return True
-    if obs.controls and any(_NEXT.search(c.label) or _SUBMIT.search(c.label) for c in obs.controls):
-        return True
-    return False
+    return bool(
+        obs.controls and any(_NEXT.search(c.label) or _SUBMIT.search(c.label) for c in obs.controls)
+    )
 
 
 def _blob(obs: Observation) -> str:

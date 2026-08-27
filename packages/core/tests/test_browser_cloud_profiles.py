@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from juicebox.applications.submit.browser.cloud import FakeCloudClient, ProfileQuota, set_cloud_client
+from juicebox.applications.submit.browser.cloud import (
+    FakeCloudClient,
+    ProfileQuota,
+    set_cloud_client,
+)
 from juicebox.applications.submit.browser.profiles import cloud_profile_for
 from juicebox.config import reset_settings_cache
 from juicebox.models import BrowserCloudProfile, Candidate

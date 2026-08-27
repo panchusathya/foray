@@ -16,7 +16,7 @@ shape so tests can inject a fake without the package. Hosted agent runs
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ....config import get_settings

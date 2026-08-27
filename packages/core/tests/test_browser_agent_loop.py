@@ -9,7 +9,7 @@ from juicebox.applications.ats.detect import ApplyTarget
 from juicebox.applications.submit.base import SubmissionContext
 from juicebox.applications.submit.browser.agent import loop
 from juicebox.applications.submit.browser.agent.actions import Action
-from juicebox.applications.submit.browser.agent.observe import Control, Observation
+from juicebox.applications.submit.browser.agent.observe import Control
 from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
 from juicebox.config import reset_settings_cache
 
@@ -142,8 +142,9 @@ def cloud(monkeypatch):
 
 
 def _patch_driver(monkeypatch, page: FakePage):
-    from juicebox.applications.submit.browser import driver
     import contextlib
+
+    from juicebox.applications.submit.browser import driver
 
     @contextlib.contextmanager
     def fake_session(*, log, profile=None, cdp_url="", cloud_stop_id=""):
@@ -208,9 +209,7 @@ class TestLoop:
     def test_preflight_collects_questions_without_an_attempt(self, cloud, monkeypatch):
         page = FakePage(
             url="https://boards.greenhouse.io/x/jobs/1",
-            controls=CONTROLS + (
-                Control(id="c010", label="How did you hear about us?", field_type="text", required=True),
-            ),
+            controls=(*CONTROLS, Control(id="c010", label="How did you hear about us?", field_type="text", required=True)),
         )
         _patch_driver(monkeypatch, page)
         planner = ScriptedPlanner([Action(type="stop", reason="preflight done")])

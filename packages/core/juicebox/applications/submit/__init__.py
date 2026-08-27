@@ -15,8 +15,8 @@ from .base import (
     Attachment,
     SubmissionContext,
     SubmissionResult,
-    SubmitError,
     SubmitDeferred,
+    SubmitError,
     Submitter,
 )
 from .registry import get_submitter, memory_submitter, reset_overrides, set_submitter, submittable
@@ -30,8 +30,8 @@ __all__ = [
     "Attachment",
     "SubmissionContext",
     "SubmissionResult",
-    "SubmitError",
     "SubmitDeferred",
+    "SubmitError",
     "Submitter",
     "get_submitter",
     "memory_submitter",

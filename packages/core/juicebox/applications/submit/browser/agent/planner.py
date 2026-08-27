@@ -7,8 +7,8 @@ here — a submit click is not a latency budget.
 
 from __future__ import annotations
 
-from ....config import get_settings
-from ....llm import client as llm_mod
+from .....config import get_settings
+from .....llm import client as llm_mod
 from .actions import ACTION_SCHEMA, Action, parse_action
 from .observe import Observation
 from .policy import allowed_actions, page_class

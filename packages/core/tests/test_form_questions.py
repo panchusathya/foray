@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from juicebox.applications.submit.base import SubmissionContext
 from juicebox.applications.questions import unanswerable_questions
+from juicebox.applications.submit.base import SubmissionContext
 from juicebox.applications.submit.browser.questions import (
     KIND_ATTESTATION,
     KIND_CUSTOM,
@@ -214,8 +214,8 @@ class TestAugment:
 
         from juicebox.applications import questions as questions_mod
         from juicebox.applications.ats import detect
-        from juicebox.applications.submit.browser.agent import preflight
         from juicebox.applications.submit.browser import cloud as browser_cloud
+        from juicebox.applications.submit.browser.agent import preflight
 
         monkeypatch.setattr(
             detect,
@@ -325,8 +325,8 @@ class TestAugment:
 
         from juicebox.applications import questions as questions_mod
         from juicebox.applications.ats import detect
-        from juicebox.applications.submit.browser.agent import preflight
         from juicebox.applications.submit.browser import cloud as browser_cloud
+        from juicebox.applications.submit.browser.agent import preflight
 
         monkeypatch.setattr(
             detect, "target_of",

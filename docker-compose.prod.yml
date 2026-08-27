@@ -244,12 +244,23 @@ x-app-env: &app_env
   APPLY_ALIAS_RELAY: ${APPLY_ALIAS_RELAY:-true}
   APPLY_MAX_ATTEMPTS: ${APPLY_MAX_ATTEMPTS:-3}
   APPLY_BROWSER_HEADLESS: ${APPLY_BROWSER_HEADLESS:-true}
-  # Residential proxy for the apply browser -- employer anti-bot flags
-  # this datacentre's IP. `http://user:pass@gate:port`. Empty = direct.
+  # Browser Use Cloud. Live public-form apply creates a managed Chrome per
+  # run (stealth + residential proxy) and drives it over CDP. Empty key is
+  # the offline default: public boards hand off. Agent stays off until both
+  # APPLY_BROWSER_AGENT and APPLY_BROWSER_AGENT_ACK are true -- the ack is
+  # that screenshots, resume bytes, and profile state go to Browser Use and
+  # the vision model.
+  BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+  APPLY_BROWSER_AGENT: ${APPLY_BROWSER_AGENT:-false}
+  APPLY_BROWSER_AGENT_ACK: ${APPLY_BROWSER_AGENT_ACK:-false}
+  APPLY_BROWSER_AGENT_MODEL: ${APPLY_BROWSER_AGENT_MODEL:-}
+  APPLY_BROWSER_AGENT_TIMEOUT_MIN: ${APPLY_BROWSER_AGENT_TIMEOUT_MIN:-15}
+  APPLY_BROWSER_AGENT_MAX_STEPS: ${APPLY_BROWSER_AGENT_MAX_STEPS:-40}
+  APPLY_BROWSER_PROXY_COUNTRY: ${APPLY_BROWSER_PROXY_COUNTRY:-us}
+  APPLY_BROWSER_AGENT_RECORDING: ${APPLY_BROWSER_AGENT_RECORDING:-false}
+  # Local-Chromium only (Workday/YC two-leg, and tests). Live apply uses
+  # Browser Use's pool; these do not replace it.
   APPLY_PROXY_URL: ${APPLY_PROXY_URL:-}
-  # Managed anti-detect browser (Bright Data Scraping Browser) CDP endpoint.
-  # Set it and the browser tier drives that instead of local Chromium; it
-  # brings its own residential exit + fingerprint + CAPTCHA. Empty = local.
   APPLY_BROWSER_CDP_URL: ${APPLY_BROWSER_CDP_URL:-}
   APPLY_BROWSER_USER_AGENT: ${APPLY_BROWSER_USER_AGENT:-}
   APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}

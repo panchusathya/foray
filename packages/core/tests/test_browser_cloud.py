@@ -65,7 +65,8 @@ class TestDriverStopsOwnedSession:
             pass
 
         class FakeContext:
-            pages = []
+            def __init__(self):
+                self.pages = []
 
             def set_default_timeout(self, _):
                 pass
@@ -77,7 +78,8 @@ class TestDriverStopsOwnedSession:
                 return FakePage()
 
         class FakeBrowser:
-            contexts = [FakeContext()]
+            def __init__(self):
+                self.contexts = [FakeContext()]
 
             def close(self):
                 pass

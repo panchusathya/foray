@@ -87,8 +87,10 @@ class TestPageClass:
 
     def test_optional_self_id_is_not_a_handoff_page(self):
         obs = _obs(
-            controls=_app_controls()
-            + (Control(id="c099", label="Gender (optional)", field_type="select", required=False),)
+            controls=(
+                *_app_controls(),
+                Control(id="c099", label="Gender (optional)", field_type="select", required=False),
+            )
         )
         assert page_class(obs) == PAGE_APPLICATION
 
@@ -139,8 +141,10 @@ class TestPolicyCheck:
     def test_password_control_is_forbidden(self):
         obs = _obs(
             url="https://boards.greenhouse.io/x",
-            controls=_app_controls()
-            + (Control(id="c010", label="Password", field_type="password", name="password"),),
+            controls=(
+                *_app_controls(),
+                Control(id="c010", label="Password", field_type="password", name="password"),
+            ),
         )
         # Password on the page is a login page, which is a hand-off.
         action = parse_action({"type": "fill", "control_id": "c010", "value_token": "candidate.email"})
@@ -222,8 +226,10 @@ class TestPolicyCheck:
 
     def test_optional_self_id_is_left_blank(self):
         obs = _obs(
-            controls=_app_controls()
-            + (Control(id="c099", label="Gender (optional)", field_type="select", required=False),)
+            controls=(
+                *_app_controls(),
+                Control(id="c099", label="Gender (optional)", field_type="select", required=False),
+            )
         )
         action = parse_action({"type": "select", "control_id": "c099", "value_token": "candidate.email"})
         decision = check(
@@ -235,8 +241,10 @@ class TestPolicyCheck:
 
     def test_captcha_field_is_a_handoff_page(self):
         obs = _obs(
-            controls=_app_controls()
-            + (Control(id="c020", label="reCAPTCHA", field_type="text", name="g-recaptcha-response"),)
+            controls=(
+                *_app_controls(),
+                Control(id="c020", label="reCAPTCHA", field_type="text", name="g-recaptcha-response"),
+            )
         )
         action = parse_action({"type": "fill", "control_id": "c002", "value_token": "candidate.email"})
         decision = check(
@@ -257,8 +265,10 @@ class TestPolicyCheck:
 
     def test_signature_blocks_final_submit(self):
         obs = _obs(
-            controls=_app_controls()
-            + (Control(id="c030", label="I agree and electronically sign", field_type="checkbox"),)
+            controls=(
+                *_app_controls(),
+                Control(id="c030", label="I agree and electronically sign", field_type="checkbox"),
+            )
         )
         action = parse_action({"type": "final_submit", "control_id": "c004"})
         decision = check(

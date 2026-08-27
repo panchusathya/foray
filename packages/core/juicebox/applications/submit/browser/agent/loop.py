@@ -8,6 +8,7 @@ fresh cloud session after answers exist.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -60,6 +61,33 @@ def form_route(url: str) -> str:
     return url
 
 
+_LOADING_RE = re.compile(
+    r"fetching application form|loading[.…]|please wait", re.IGNORECASE
+)
+
+
+def _settled_observe(page, *, timeout_ms: int = 30000):
+    """Observe once the client-rendered form actually exists.
+
+    ``domcontentloaded`` fires on the shell; Ashby then shows "Fetching
+    application form" while the controls stream in, and the planner read that
+    screen as a formless page and stopped (live, Forerunner 2026-08-27).
+    Every iteration settles — a click_next on a multi-step form navigates and
+    re-renders the same way the first load does. Waiting is deterministic
+    loop code, never a planner judgment; on timeout the last observation is
+    returned and the planner says what it honestly sees.
+    """
+    waited = 0
+    obs = observe(page)
+    while waited < timeout_ms:
+        if obs.controls and not _LOADING_RE.search(obs.body_text or ""):
+            return obs
+        page.wait_for_timeout(500)
+        waited += 500
+        obs = observe(page)
+    return obs
+
+
 def run(
     ctx: SubmissionContext,
     *,
@@ -96,7 +124,7 @@ def run(
             max_steps = max(1, int(settings.apply_browser_agent_max_steps or 40))
             submitted = False
             for _ in range(max_steps):
-                obs = observe(page)
+                obs = _settled_observe(page)
                 klass = page_class(obs)
                 result.page_class = klass
                 _collect_questions(result, obs)

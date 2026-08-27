@@ -228,6 +228,15 @@ def walk(
         )
         feedback = ""
         if action is None:
+            # A transient planner miss (empty/non-JSON model response) is not
+            # a dead end -- re-observe and ask again, bounded, the same as any
+            # other fault. One flaky call used to kill a run mid-wizard (live,
+            # Intapp 2026-08-27).
+            if planner_faults < 5:
+                planner_faults += 1
+                _trace(result, obs, None, None, "planner-retry")
+                page.wait_for_timeout(1500)
+                continue
             result.needs_human = True
             result.error = "planner returned no action"
             _trace(result, obs, None, None, "none")

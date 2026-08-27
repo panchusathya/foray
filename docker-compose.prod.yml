@@ -310,6 +310,12 @@ services:
     build:
       context: .
       dockerfile: packages/core/Dockerfile
+      # Chromium for the browser apply tier. In the args permanently because a
+      # plain `up -d --build` used to rebuild the worker WITHOUT it, and the
+      # browser tier silently vanished until the next submit failed
+      # (AUTO_APPLY_SETUP.md §4 documents the trap; it bit on 2026-08-27).
+      args:
+        INSTALL_PLAYWRIGHT: "true"
     restart: unless-stopped
     logging: *default_logging
     environment: *app_env

@@ -116,7 +116,13 @@ def available() -> tuple[bool, str]:
 #: one IP -- a page loaded from IP A and submitted from IP B is a tell. A token
 #: fixed for the life of one browser run gives each application its own stable
 #: IP without pinning every application to a single one.
-_SESSION_PROXY_HOSTS = ("superproxy.io",)
+#:
+#: Decodo (ex-Smartproxy): verified live 2026-08-27 — with the username
+#: configured as ``user-<account>``, appending ``-session-<token>`` pins one
+#: IP per token and overrides the gateway's port-based pin, so every run gets
+#: its own residential IP. Two calls with one token returned one IP; a second
+#: token returned another.
+_SESSION_PROXY_HOSTS = ("superproxy.io", "decodo.com")
 
 
 def _proxy_config(url: str, *, session_token: str = "") -> dict | None:

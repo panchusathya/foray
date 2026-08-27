@@ -236,11 +236,60 @@ def _ingest_lever(url: str, transport: FetchTransport | None) -> dict | None:
     }
 
 
+_LOCALE_RE = re.compile(r"^[a-z]{2}(-[A-Z]{2})?$")
+
+
+def _workday_plan(url: str) -> str | None:
+    """The cxs JSON URL when this is a Workday posting, else ``None``.
+
+    A Workday job page is a JS shell — ``strip_html`` of it is zero visible
+    characters (measured live, 2026-08-27: a pasted Workday link got "couldn't
+    open the job link" twice for exactly this). The shell's own data source is
+    public and unauthenticated:
+    ``https://<tenant>.wd<N>.myworkdayjobs.com/<locale?>/<site>/job/<...>/<slug>``
+    maps to ``https://<host>/wday/cxs/<tenant>/<site>/job/<slug>``.
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(":")[0]
+    if ".myworkdayjobs.com" not in host:
+        return None
+    tenant = host.split(".")[0]
+    parts = [p for p in parsed.path.split("/") if p]
+    if parts and _LOCALE_RE.match(parts[0]):
+        parts = parts[1:]
+    # <site>/job/<location-ish...>/<slug>
+    if len(parts) < 3 or parts[1] != "job":
+        return None
+    site, slug = parts[0], parts[-1]
+    return f"https://{host}/wday/cxs/{tenant}/{site}/job/{slug}"
+
+
+def _ingest_workday(url: str, transport: FetchTransport | None) -> dict | None:
+    cxs = _workday_plan(url)
+    if cxs is None:
+        return None
+    data = _fetch_json(cxs, transport)
+    info = data.get("jobPostingInfo") or {}
+    if not isinstance(info, dict) or not str(info.get("title") or "").strip():
+        raise LinkUnreachable("the job board answered unreadably")
+    company = str((data.get("hiringOrganization") or {}).get("name") or "").strip()
+    return {
+        "company": company or _company_from_host(url) or "the company",
+        "title": str(info.get("title") or ""),
+        "location": str(info.get("location") or ""),
+        "jd_text": strip_html(str(info.get("jobDescription") or "")),
+        # Workday's form questions sit behind the account wall; the package
+        # answers the standard set and the browser adapter meets the rest.
+        "form_questions": [],
+    }
+
+
 #: Order matters only in that the first match wins; each adapter refuses URLs
 #: that are not its own, so a new ATS is one function appended here.
 _ATS_ADAPTERS: tuple[Callable[[str, FetchTransport | None], dict | None], ...] = (
     _ingest_greenhouse,
     _ingest_lever,
+    _ingest_workday,
 )
 
 
@@ -297,12 +346,69 @@ def _ingest_generic(url: str, transport: FetchTransport | None) -> dict:
 
     text = strip_html(page.text)
     if len(text) < MIN_JD_CHARS:
+        # Too thin to be a job page as markup — most often a JS shell whose
+        # real content sits in script-embedded JSON (the Workday shell strips
+        # to zero characters). A model can read the raw HTML wherever the
+        # content lives; refusing a link the candidate is looking at in their
+        # own browser reads as broken, so this runs before we ever say
+        # "couldn't open it".
+        extracted = _llm_extract(page)
+        if extracted is not None:
+            return extracted
         raise LinkUnreachable("the page didn't have a readable job description")
     return {
         "company": company,
         "title": title,
         "location": "",
         "jd_text": text,
+        "form_questions": [],
+    }
+
+
+#: Floor for a model-extracted description: below this the model has found a
+#: heading, not a job posting, and building a package on it would answer
+#: "why this company" from nothing.
+_MIN_LLM_JD_CHARS = 80
+
+
+def _llm_extract(page: FetchedPage) -> dict | None:
+    """A model's reading of the raw page, or ``None`` to fall through.
+
+    Deterministic paths first, always: this runs only after every adapter
+    refused the URL and the stripped markup came up empty. The output is
+    validated rather than trusted — extraction claims about a page we hold
+    are checkable in shape (a posting has a title and a real description),
+    and a result that fails the shape falls back to the honest refusal.
+    """
+    from ..llm.client import get_llm
+    from ..llm.prompts import (
+        JOB_PAGE_PARSE_SCHEMA,
+        JOB_PAGE_PARSE_SYSTEM,
+        job_page_parse_prompt,
+    )
+
+    llm = get_llm()
+    if not llm.available:
+        return None
+    try:
+        result = llm.json(
+            system=JOB_PAGE_PARSE_SYSTEM,
+            prompt=job_page_parse_prompt(url=page.url, html=page.text),
+            schema=JOB_PAGE_PARSE_SCHEMA,
+        )
+    except Exception as exc:  # noqa: BLE001 - the canned refusal ships instead
+        logger.warning("llm page extraction failed for %s: %s", page.url, exc)
+        return None
+    data = result.data or {}
+    title = str(data.get("title") or "").strip()
+    jd_text = str(data.get("jd_text") or "").strip()
+    if not data.get("is_job_posting") or not title or len(jd_text) < _MIN_LLM_JD_CHARS:
+        return None
+    return {
+        "company": str(data.get("company") or "").strip() or _company_from_host(page.url),
+        "title": title,
+        "location": str(data.get("location") or "").strip(),
+        "jd_text": jd_text,
         "form_questions": [],
     }
 

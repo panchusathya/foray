@@ -551,14 +551,36 @@ class TestNothingAutomatedIsTheNormalAnswer:
     ):
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
-        application = _ready(session, account["org_id"], candidate, posting)
+        # No portal approval yet: nobody has reviewed the built package (a
+        # thread 👍 predates the package existing), so the gate must hold.
+        application = _ready(session, account["org_id"], candidate, posting, consent=False)
         assert "first application" in first_submission_gate(session, application)
         job, reason = auto_submit(session, application)
         assert job is None
         assert "first application" in reason
-        # Explicitly requested, it still goes -- the gate is on the automatic
-        # path, not on the candidate's own decision.
+        # Explicitly requested, it still goes -- the portal's "apply for me"
+        # tap stamps the approval it is (routers/portal.py submit_for_me), and
+        # the gate is on the automatic path, not the candidate's own decision.
+        application.approved_at = utcnow()
+        session.flush()
         assert request_submission(session, application) is not None
+
+    def test_the_candidates_own_approval_is_the_human_look(
+        self, session, account, candidate, memory_mode
+    ):
+        """Portal-approved first package auto-submits: the review happened.
+
+        Live failure this pins (2026-08-27): a candidate approved their first
+        package and the portal answered "Open the application" — the agent
+        asked the person to submit the application it had promised to send.
+        """
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        assert application.approved_at is not None
+        assert first_submission_gate(session, application) == ""
+        job, reason = auto_submit(session, application)
+        assert job is not None, reason
 
     def test_console_is_the_default_and_cannot_reach_an_employer(self):
         from juicebox.applications.submit.console import ConsoleSubmitter

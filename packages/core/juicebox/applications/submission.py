@@ -130,7 +130,18 @@ def first_submission_gate(db: Session, application: Application) -> str:
     before it goes. Not because the second is safer in itself, but because the
     first is the one where a bad resume parse, a wrong name or an answer nobody
     recognises is still systematically wrong for everything that follows.
+
+    ``approved_at`` satisfies the gate outright: it is stamped in exactly two
+    places, both portal taps made while looking at the built package — which
+    IS the human look this gate exists to guarantee. Without this, a candidate
+    who reviewed and approved their first package was answered "Open the
+    application" and left to apply themselves — the agent promising "i'll
+    apply for you" and then handing the form back is the flow inverted. The
+    thread's 👍 (``consenting_message_id``) deliberately does NOT satisfy it:
+    that yes predates the package, so nothing had been reviewed yet.
     """
+    if application.approved_at is not None:
+        return ""
     prior = db.scalar(
         select(Application).where(
             Application.candidate_id == application.candidate_id,

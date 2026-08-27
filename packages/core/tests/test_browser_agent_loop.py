@@ -293,3 +293,26 @@ class TestConfirmationArtifact:
     def test_ignores_unconfirmed_and_before(self):
         assert loop.confirmation_artifact(["org/applications/a/before-submit.png"]) == ""
         assert loop.confirmation_artifact(["org/applications/a/unconfirmed.png"]) == ""
+
+
+class TestFormRoute:
+    """Boards that split overview from form get the form route, deterministically."""
+
+    def test_ashby_overview_gets_the_application_route(self):
+        from juicebox.applications.submit.browser.agent.loop import form_route
+
+        assert form_route(
+            "https://jobs.ashbyhq.com/forerunner/1a9c649b-dd5b?ref=reactjobs.io"
+        ) == "https://jobs.ashbyhq.com/forerunner/1a9c649b-dd5b/application"
+
+    def test_an_ashby_application_route_is_left_alone(self):
+        from juicebox.applications.submit.browser.agent.loop import form_route
+
+        url = "https://jobs.ashbyhq.com/forerunner/1a9c649b-dd5b/application"
+        assert form_route(url) == url
+
+    def test_other_hosts_are_untouched(self):
+        from juicebox.applications.submit.browser.agent.loop import form_route
+
+        url = "https://careers.example.com/jobs/5?utm=x"
+        assert form_route(url) == url

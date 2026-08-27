@@ -200,6 +200,8 @@ def walk(
     # Forerunner 2026-08-27). The refusal reasons steer ("control c015 is a
     # button — use check"); this is what finally shows them to the model.
     feedback = ""
+    last_action_key = ""
+    repeat_count = 0
     for _ in range(max_steps):
         obs = _settled_observe(page)
         klass = page_class(obs)
@@ -257,6 +259,30 @@ def walk(
             result.error = action.reason or f"stopped on {klass}"
             _trace(result, obs, action, decision, "stop")
             break
+        # Loop-breaker. Workday's inputs render their value through a custom
+        # component that reports no `.value`, so the planner never sees a
+        # field as filled and re-proposes the same fill forever (live, Intapp
+        # 2026-08-27: fill c026 38 times to the step cap). A repeated
+        # identical field action means "done, move on" -- steer the planner
+        # off it, and if it will not move, stop rather than burn the budget.
+        action_key = f"{action.type}:{action.control_id}"
+        if action.type in {"fill", "select", "check", "upload"} and action_key == last_action_key:
+            repeat_count += 1
+            if repeat_count >= 4:
+                result.needs_human = True
+                result.error = f"stuck repeating {action_key}; the wizard did not advance"
+                _trace(result, obs, action, decision, "loop")
+                break
+            feedback = (
+                f"you already did {action.type} on {action.control_id} "
+                f"{repeat_count} time(s); it is set. Do NOT choose it again -- "
+                "fill a different empty field, or click Save and Continue / Next."
+            )
+            _trace(result, obs, action, decision, "loop-steer")
+            continue
+        if action_key != last_action_key:
+            repeat_count = 0
+        last_action_key = action_key
         if action.type == "final_submit":
             result.final_submit_requested_at = trace.utcstamp()
             _checkpoint(ctx, result)

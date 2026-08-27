@@ -31,6 +31,15 @@ _PLANNER_MAX_OPTIONS = 12
 
 _ENUMERATE_JS = """() => {
   const ATTR = 'data-juicebox-id';
+  // A monotonic per-page counter, NOT the row index. Workday's React
+  // replaces nodes between observations, and an index-based id restarted at
+  // 1 each pass: a fresh node took an id a surviving node still carried, the
+  // locator then resolved to whichever came first in the DOM, and the fill
+  // landed on the wrong element while the planner watched its field stay
+  // empty and re-proposed forever (live, Intapp 2026-08-27). Ids must be
+  // unique for the life of the page; the counter resets only on navigation,
+  // which clears every attribute with it.
+  if (typeof window.__jbControlSeq !== 'number') window.__jbControlSeq = 0;
   const seen = new Set();
   // role=option / promptOption: Workday has no native selects -- every
   // dropdown is a button that opens a listbox of option rows, and a list the
@@ -65,11 +74,11 @@ _ENUMERATE_JS = """() => {
     if (!visible(el)) continue;
     if (el.type === 'hidden') continue;
     let id = el.getAttribute(ATTR);
-    if (!id) {
-      id = 'c' + String(out.length + 1).padStart(3, '0');
+    if (!id || seen.has(id)) {
+      // No id yet, or a duplicate that must not silently drop this control.
+      id = 'c' + String(++window.__jbControlSeq).padStart(3, '0');
       el.setAttribute(ATTR, id);
     }
-    if (seen.has(id)) continue;
     seen.add(id);
     const tag = (el.tagName || '').toLowerCase();
     const type = isOption(el) ? 'option' : (el.getAttribute('type') || tag || 'text').toLowerCase();
@@ -278,4 +287,18 @@ def observe(page) -> Observation:
 
 
 def locator(page, control_id: str):
-    return page.locator(f'[data-juicebox-id="{control_id}"]').first
+    """The element this control id names, preferring a visible match.
+
+    Ids are unique per page (see the counter in _ENUMERATE_JS), but a React
+    re-render can leave a detached-then-reattached twin behind; acting on a
+    hidden one silently does nothing.
+    """
+    found = page.locator(f'[data-juicebox-id="{control_id}"]')
+    try:
+        for index in range(min(found.count(), 5)):
+            node = found.nth(index)
+            if node.is_visible():
+                return node
+    except Exception:  # noqa: BLE001 - fall back to the plain first match
+        pass
+    return found.first

@@ -129,7 +129,15 @@ def teaser_snapshot(
     try:
         result = extract_intake(transcript, known=known, fast=True)
         record = merge_record(prior, result.record) if prior else result.record
-        if not coverage(record, core_only=call.gate_mode == "core").required_complete:
+        # Judged against the gate this call actually closed on, not against the
+        # core set. Once a budget can buy fewer than four questions, "complete"
+        # for a thirty-second caller means the two they were asked -- and
+        # measuring them against core instead would refuse to pitch anything to
+        # exactly the callers the pitch is shortest and most useful for.
+        from .service import effective_gate_keys
+
+        gate = effective_gate_keys(call)
+        if not coverage(record, gate_keys=gate).required_complete:
             return empty_teasers(GUIDANCE_NOT_READY)
 
         ranked = rank_postings(

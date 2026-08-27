@@ -1321,6 +1321,26 @@ def gate_keys_for(
     return GATE_PRIORITY[:count]
 
 
+def effective_gate_keys(call: IntakeCall) -> tuple[str, ...] | None:
+    """Which required fields this call actually closed on. ``None`` for all.
+
+    Asked after the fact, by anything that needs to know whether the intake is
+    finished -- the match pitch above all. It cannot re-derive the gate from the
+    budget, because by then the elapsed clock covers the whole call and would
+    shrink the answer to one question.
+
+    ``deferred_fields`` is the record of what a trim skipped, written when the
+    trimmed gate closed, so its complement is the gate that closed. When it is
+    empty there was either no trim or nothing left over, and the honest answer
+    is whatever ``gate_mode`` said -- which keeps a call from before this
+    existed reading the same way it always did.
+    """
+    deferred = {key for key in (call.deferred_fields or []) if key in set(GATE_PRIORITY)}
+    if deferred:
+        return tuple(key for key in GATE_PRIORITY if key not in deferred)
+    return tuple(CORE_KEYS) if call.gate_mode == "core" else None
+
+
 def remaining_seconds(minutes_available: int | None, elapsed_seconds: int = 0) -> int | None:
     """What is left of a stated budget. ``None`` when nothing was stated."""
     total = budget_seconds(minutes_available)

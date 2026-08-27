@@ -98,7 +98,12 @@ def start_text_verification(db: Session, call: IntakeCall) -> dict[str, Any]:
         return _verification_unavailable(db, call, reason=OPTED_OUT_REASON)
 
     greeting = _greeting(db, call)
-    thread = find_active_thread(db, channel=LINQ, from_address=key)
+    # `org_id` is required, and this call site predates it: the voice handoff
+    # was written before `find_active_thread` grew the argument, and the two
+    # branches merged without a textual conflict. Without it a caller with an
+    # open thread at another agency would have had this org's verification
+    # text written into that agency's conversation.
+    thread = find_active_thread(db, org_id=call.org_id, channel=LINQ, from_address=key)
     try:
         if thread is not None:
             if thread.candidate_id and call.candidate_id and thread.candidate_id != call.candidate_id:

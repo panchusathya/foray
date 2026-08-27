@@ -141,6 +141,46 @@ class TestOptionalTopicsStopWhenTheTimeIsGone:
         assert without["optional_topics"] == []
 
 
+class TestTheGateACallClosedOnIsRecoverable:
+    """The match pitch asks after the fact, and must not re-derive from the clock."""
+
+    def test_no_trim_means_the_full_set(self):
+        from juicebox.intake.service import effective_gate_keys
+
+        assert effective_gate_keys(IntakeCall(gate_mode="full", deferred_fields=[])) is None
+
+    def test_a_short_call_is_judged_on_what_it_asked(self):
+        """Otherwise the pitch refuses exactly the callers it is most useful for.
+
+        A thirty-second caller closes on two questions. Measured against the
+        core set instead, the intake reads as incomplete and no roles are
+        offered -- to the person with the least patience for a follow-up call.
+        """
+        from juicebox.intake.service import effective_gate_keys
+
+        call = IntakeCall(
+            gate_mode="core",
+            deferred_fields=[
+                "compensation",
+                "spec.remote_ok",
+                "work_authorization",
+                "spec.seniority",
+                "spec.must_have_skills",
+                "timeline",
+                "employment_status",
+                "active_processes",
+                "ok_to_share_with_clients",
+            ],
+        )
+        assert effective_gate_keys(call) == ("spec.job_titles", "spec.locations")
+
+    def test_a_core_call_with_nothing_deferred_reads_as_it_always_did(self):
+        from juicebox.intake.service import effective_gate_keys
+
+        gate = effective_gate_keys(IntakeCall(gate_mode="core", deferred_fields=[]))
+        assert set(gate or ()) == set(CORE_KEYS)
+
+
 class TestElapsedIsOnlyTrustedWhenPlausible:
     def test_no_start_timestamp_reads_as_zero(self):
         assert elapsed_seconds(None) == 0

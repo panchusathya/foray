@@ -69,7 +69,10 @@ x-app-env: &app_env
   # Baked into tracking links in outbound email — must be the public origin.
   BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. app.goforay.io}
   SECRET_KEY: ${SECRET_KEY:?generate with secrets.token_urlsafe(48) - see .env.production.example}
-  CORS_ORIGINS: https://${APP_DOMAIN}
+  # Defaults to the app itself. Set CORS_ORIGINS in .env to add others --
+  # the marketing site calls /v1/intake/chat from its own origin, so it has
+  # to be listed here or the browser blocks the preflight.
+  CORS_ORIGINS: ${CORS_ORIGINS:-https://${APP_DOMAIN}}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # The app's AI (sequence drafting, personalisation, reply drafts) runs through
   # OpenRouter here: there is no Anthropic key on this host, and without these

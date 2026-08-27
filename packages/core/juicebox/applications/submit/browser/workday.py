@@ -131,18 +131,37 @@ _ERROR_SHELL = re.compile(
 )
 
 
+#: A healthy wizard page is titled with the job ("Corporate Development
+#: Associate"). A title of Sign In / Create Account on an apply route means
+#: sign-in did not land, whatever the DOM still contains.
+_SIGNED_OUT_TITLE = re.compile(r"sign\s*in|create account", re.I)
+
+
 def _error_shell(page) -> bool:
+    # 6000 chars, not 2000: the phrase sat past the first 2000 on the real
+    # page, so the check passed and the recovery never ran (live, Intapp
+    # 2026-08-27, twice).
     try:
-        return bool(_ERROR_SHELL.search((page.inner_text("body") or "")[:2000]))
+        return bool(_ERROR_SHELL.search((page.inner_text("body") or "")[:6000]))
     except Exception:  # noqa: BLE001 - a mid-navigation read is not evidence
         return False
 
 
 def _in_wizard(page, *, timeout_ms: int) -> bool:
-    """A visible wizard marker AND no error text. Both, or it is not a wizard."""
-    return driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=timeout_ms) and not (
-        _error_shell(page)
-    )
+    """A visible wizard marker, no error text, and not a signed-out title.
+
+    All three: Workday renders its failure page INSIDE the apply-flow chrome,
+    so a marker alone is not evidence, and the same page keeps the sign-in
+    title it navigated from.
+    """
+    if not driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=timeout_ms):
+        return False
+    if _error_shell(page):
+        return False
+    try:
+        return not _SIGNED_OUT_TITLE.search(page.title() or "")
+    except Exception:  # noqa: BLE001 - unreadable title is not disqualifying
+        return True
 
 
 def _settle(page, *, log: RunLog, expect: tuple[str, ...], timeout_ms: int = 45000) -> str:
@@ -543,7 +562,7 @@ class WorkdaySubmitter:
                     # both (live, Intapp 2026-08-27). Twice, because the reload
                     # can serve the same error shell again. Deterministic
                     # recovery, so the agent never sees the broken page.
-                    for attempt in range(2):
+                    for attempt in range(3):
                         if wizard:
                             break
                         log.step(f"no wizard after sign in; reloading the posting ({attempt + 1})")

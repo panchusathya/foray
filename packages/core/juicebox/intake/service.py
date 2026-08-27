@@ -903,7 +903,7 @@ CALLER_UNKNOWN = {
     # practice the caller says "hello?" into silence and has to prompt it. The
     # greeting is composed here because only this side knows whether there is a
     # name to use.
-    "caller_greeting": "Hi, this is Vivian at Foray -- thanks for calling.",
+    "caller_greeting": "Hi, this is Foray -- thanks for calling.",
 }
 
 # Long enough to hold a full preference read-back, short enough that Retell
@@ -1016,7 +1016,7 @@ def _greeting_for(first_name: str) -> str:
     which is what made the old opener sound like a compliance script.
 
     The persona name is read from settings rather than written in, so renaming
-    her does not leave one greeting still saying Vivian. Imported inside the
+    it does not leave one greeting still saying the old name. Imported inside the
     function for the same reason line 256 does: `intake` must not take a module
     -level dependency on `messaging`.
     """

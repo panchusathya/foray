@@ -46,6 +46,16 @@ KEYED_API_VENDORS = (
     detect.VENDOR_ASHBY,
 )
 
+#: Vendors that gate applying behind an account. Their two-leg flows are
+#: handwritten for a reason, and a derived spec must never run against them:
+#: their logged-out page is a registration form, and "filling" it types a
+#: fresh password into a sign-in wall.
+ACCOUNT_GATED_VENDORS = (
+    detect.VENDOR_WORKDAY,
+    detect.VENDOR_ORACLE,
+    detect.VENDOR_YC,
+)
+
 
 def _api_submitter(vendor: str, board_key: str) -> Submitter | None:
     from .ashby import AshbySubmitter
@@ -115,14 +125,35 @@ def mode() -> str:
     return configured if configured in {MODE_CONSOLE, MODE_MEMORY, MODE_LIVE} else MODE_CONSOLE
 
 
-def get_submitter(target: detect.ApplyTarget, *, board_key: str = "") -> Submitter | None:
+def _derived_submitter(spec) -> Submitter | None:
+    """A hosted-form run over a spec derived from the page itself.
+
+    Same optional-Playwright contract as ``_browser_submitter``: an install
+    without the browser extra still runs every other tier.
+    """
+    try:
+        from .browser.hosted_form import HostedFormSubmitter
+    except ImportError as exc:
+        logger.debug("derived submitter unavailable: %s", exc)
+        return None
+    return HostedFormSubmitter(spec)
+
+
+def get_submitter(
+    target: detect.ApplyTarget, *, board_key: str = "", derived_spec=None
+) -> Submitter | None:
     """The adapter for this target, or ``None`` for a Tier-0 hand-off.
 
     ``board_key`` is the employer's own API key for this board, when we hold
     one -- ``applications/credentials.board_key`` is where it comes from and
     empty is the ordinary case.
+
+    ``derived_spec`` is the posting's own derived ``FormSpec``, when one is
+    cached (``applications/formspec.usable_spec``). It is strictly the
+    fallback: every handwritten adapter, keyed API and the email path win
+    first, and an account-gated vendor never takes one.
     """
-    if not target.vendor:
+    if not target.vendor and derived_spec is None:
         return None
     if target.vendor in _overrides:
         return _overrides[target.vendor]
@@ -139,9 +170,17 @@ def get_submitter(target: detect.ApplyTarget, *, board_key: str = "") -> Submitt
         return EmailSubmitter()
     if board_key and target.vendor in KEYED_API_VENDORS:
         return _api_submitter(target.vendor, board_key)
-    submitter = _browser_submitter(target.vendor)
+    submitter = _browser_submitter(target.vendor) if target.vendor else None
+    if (
+        submitter is None
+        and derived_spec is not None
+        and target.vendor not in ACCOUNT_GATED_VENDORS
+    ):
+        submitter = _derived_submitter(derived_spec)
     if submitter is None:
-        logger.info("no live submitter for %s; staying a hand-off", target.vendor)
+        logger.info(
+            "no live submitter for %s; staying a hand-off", target.vendor or "this board"
+        )
     return submitter
 
 
@@ -177,3 +216,23 @@ def can_submit_vendor(vendor: str) -> bool:
     operator flips APPLY_SUBMITTER to rehearse.
     """
     return bool(vendor) and (vendor == detect.VENDOR_EMAIL or vendor in BROWSER_VENDORS)
+
+
+def can_apply(posting, target: detect.ApplyTarget) -> bool:
+    """``can_submit_vendor``, plus the posting's own derived spec.
+
+    The posting-aware sibling the carding gate needs: an unknown board with a
+    usable derived spec is applicable, and one without is not. Same
+    mode-independence contract as ``can_submit_vendor`` -- flipping
+    ``APPLY_SUBMITTER`` to rehearse changes neither answer.
+    """
+    if can_submit_vendor(target.vendor):
+        return True
+    if target.vendor:
+        # Recognised but unsupported (iCIMS, Taleo, Oracle): a wizard or an
+        # account wall, and a derived page-1 spec would card a promise the
+        # one-page submitter cannot keep.
+        return False
+    from ..formspec import usable_spec
+
+    return usable_spec(posting) is not None

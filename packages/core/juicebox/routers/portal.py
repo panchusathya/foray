@@ -43,6 +43,7 @@ from ..models import (
     Application,
     ApplicationMessage,
     ApplicationSubmission,
+    AtsAccount,
     Candidate,
     CandidateDocument,
     CandidatePreference,
@@ -983,3 +984,93 @@ def tracker_reply(
     application = db.get(Application, row.application_id) if row.application_id else None
     posting = db.get(JobPosting, application.job_posting_id) if application else None
     return _message_out(sent, posting)
+
+
+# ---------------------------------------------------------------------------
+# ATS portal accounts: what exists in your name, and taking one over
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts")
+def list_ats_accounts(
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> list[dict]:
+    """The employer-portal accounts registered in this candidate's name.
+
+    The username is the alias -- an address, not a secret. The password is
+    never in any response body: taking the account over goes through the
+    board's own reset (the mail arrives at the alias and is relayed), so the
+    credential the candidate ends up with is one we have never seen.
+    """
+    rows = db.scalars(
+        select(AtsAccount)
+        .where(
+            AtsAccount.org_id == principal.org_id,
+            AtsAccount.candidate_id == principal.candidate_id,
+        )
+        .order_by(AtsAccount.created_at.desc())
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "vendor": row.vendor,
+            "tenant": row.tenant,
+            "username": row.username,
+            "status": row.status,
+            "created_at": row.created_at,
+            "handed_over": row.handed_over_at is not None,
+        }
+        for row in rows
+    ]
+
+
+@router.post("/accounts/{account_id}/handover")
+def hand_over_ats_account(
+    account_id: str,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Give the candidate sole control of one portal account.
+
+    Marks the row handed over -- ``stored_account`` stops offering it to
+    submit runs immediately -- and tells them how to claim it: run the
+    board's own "forgot password" against the username shown, and the reset
+    mail lands at the alias, which relays to their real address. No secret
+    moves through this response, and the password they set is theirs alone.
+
+    Idempotent: handing over twice is the same handover.
+    """
+    row = db.scalar(
+        select(AtsAccount).where(
+            AtsAccount.id == account_id,
+            AtsAccount.org_id == principal.org_id,
+            AtsAccount.candidate_id == principal.candidate_id,
+        )
+    )
+    if row is None:
+        raise _NOT_FOUND
+    if row.handed_over_at is None:
+        row.handed_over_at = utcnow()
+        db.flush()
+        record_event(
+            db,
+            org_id=principal.org_id,
+            type="ats_account.handed_over",
+            subject_type="ats_account",
+            subject_id=row.id,
+            payload={"vendor": row.vendor, "tenant": row.tenant},
+        )
+    return {
+        "id": row.id,
+        "vendor": row.vendor,
+        "tenant": row.tenant,
+        "username": row.username,
+        "handed_over": True,
+        "next_step": (
+            "use the board's own 'forgot password' with this username -- the "
+            "reset email arrives at your managed address and we'll forward it "
+            "to you. the password you set is yours; we never see it and we "
+            "stop using this account."
+        ),
+    }

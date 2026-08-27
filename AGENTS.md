@@ -116,6 +116,44 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   miss leaves `ats_resolved_at` NULL on purpose — that is what lets the later
   follow happen. Recognising a vendor is not the same as having an adapter for
   it; `registry.get_submitter` returning `None` means Tier 0, not an error.
+- **An unrecognised board is a question, not a verdict** (`submit/browser/
+  derive.py`, `applications/formspec.py`). The carding gate (`registry.can_apply`)
+  queues one `jobs.formspec.one` derivation — a read-only page view — for a
+  bar-passing match on a board detect.py cannot name; a usable derived
+  `FormSpec` lands on `JobPosting.form_spec` and makes the posting cardable,
+  with `HostedFormSubmitter` running it exactly like a handwritten map. Four
+  refusals are load-bearing: no resume-shaped file input (a newsletter has an
+  email field), any `type=password` control (an account wall — the two-leg
+  vendors stay handwritten and `ACCOUNT_GATED_VENDORS` never take a derived
+  spec), a field with no selector is dropped (email or resume dropped kills the
+  spec), and a *recognised* vendor never derives (a wizard's page 1 cards a
+  promise the one-page submitter cannot keep). A transient derivation failure
+  stamps **nothing** — same lesson as `stamp_on_miss` — and package time
+  re-inspects the page, refreshing the cached spec, because a board can
+  reshape between carding and applying.
+- **`auto_submit` withholds while a required form question is blank**
+  (`followups.required_form_blanks`). The attempt used to run at package time,
+  before the answers existed, and burned attempt 1 on a run
+  `unanswerable_questions` was guaranteed to refuse. Required *custom*
+  questions are asked over text, one per message, tagged with their `q_*` key
+  via `asked_field` (`asked_text` on the row is the direct-ask flag — legacy
+  batch `asked` was a portal hand-off and must never capture a reply); the
+  reply is written onto `form_answers` verbatim with `edited=True`, and the
+  acknowledgement carries the next question. Attestations stay counted,
+  never quoted, never absorbed over SMS.
+- **Warm browser profiles are dark by default** (`APPLY_BROWSER_PROFILES=false`;
+  `submit/browser/profiles.py`, `browser_profiles` table). On: encrypted
+  storage_state per candidate, sticky egress token (one candidate, one IP),
+  pinned UA — and the state is **origin-filtered per run**, so a profile
+  holding a session for host A releases nothing to a run against host B; the
+  filter is the custody control, encryption is the floor. Saves merge over the
+  stored jar, never replace it. The CDP Scraping Browser path ignores profiles
+  entirely — it owns its own fingerprint.
+- **A handed-over ATS account is dead to us** (`ats_accounts.handed_over_at`,
+  `POST /v1/portal/accounts/{id}/handover`). The candidate claims the account
+  through the board's own password reset against the alias; no password ever
+  appears in a portal response, and `stored_account` stops offering the row to
+  submit runs the moment the stamp lands.
 - **Alias mail never reaches the recruiter-reply path.** `integrations/sync.py`
   routes anything addressed to `anna+<token>@goforay.io` into
   `applications/inbox.py` and returns. Intent classification, reply drafting and
@@ -589,8 +627,8 @@ just said they wanted, then the offer to text the full list. Non-obvious rules:
 
 ### Cheap models cannot be trusted with easy-looking work
 
-The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`
-for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
+The deployment runs cheap open-source models through OpenRouter
+(`z-ai/glm-5.3-flash` for reasoning, `openai/gpt-oss-120b` for `json_fast`). Two measurements from the
 intake extractor, five runs each, that generalise past this subsystem:
 
 - **Bucketing is not a model's job.** On "two weeks if the right thing came up",

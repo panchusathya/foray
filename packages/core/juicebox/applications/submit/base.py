@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ..ats.detect import ApplyTarget
 
@@ -84,6 +84,10 @@ class SubmissionContext:
     #: Loaded by the service, because an adapter must not reach the database.
     portal_username: str = ""
     portal_password: str = ""
+
+    #: A ``profiles.ProfileState`` when warm profiles are on, else None. A
+    #: value object: the origin-filtered slice in, the saved state back out.
+    browser_profile: Any = None
 
     resume: Attachment | None = None
     cover_letter: Attachment | None = None

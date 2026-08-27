@@ -1017,6 +1017,17 @@ class JobPosting(Base, TimestampMixin):
     ats_resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # A FormSpec derived from the posting's own page (submit/browser/derive),
+    # for boards no handwritten map covers. Two definitive shapes -- a usable
+    # spec (has "fields") or {"unusable": <reason>} -- and None for "never
+    # checked". A transient failure writes NOTHING, the resolve_target
+    # stamp_on_miss lesson: an aggregator 403ing our IP today must not cache
+    # "no form here" forever. checked_at is stamped only with a definitive
+    # answer, for the same reason.
+    form_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    form_spec_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     fee_bearing: Mapped[bool] = mapped_column(Boolean, default=False)
     fee_terms: Mapped[str] = mapped_column(String(240), default="")
@@ -2335,6 +2346,50 @@ class AtsAccount(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="pending_verification")
     error: Mapped[str] = mapped_column(String(400), default="")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when the candidate took the account over (portal "take over this
+    # account"): the stored credential stops being offered to submit runs, and
+    # whatever password they set through the board's own reset is theirs --
+    # never seen, never stored.
+    handed_over_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class BrowserProfile(Base, TimestampMixin):
+    """One candidate's warm apply-browser identity.
+
+    A cold context is a bot tell: no cookies, no history, a fresh IP per run.
+    This row keeps the three things that make a browser look returning --
+    Playwright ``storage_state`` (encrypted with ``integrations/crypto.py``,
+    the OAuth-token treatment), the sticky proxy session token so the same
+    candidate egresses from the same IP, and the UA the profile was born with
+    so the fingerprint does not drift between runs.
+
+    A persisted state holding a live session IS a credential, and anything the
+    browsing agent can reach is reachable by an instruction injected into a
+    page it loads -- so the state is origin-filtered at load time to the hosts
+    one run actually needs (``submit/browser/profiles.py``), and encryption at
+    rest is the floor, not the control.
+    """
+
+    __tablename__ = "browser_profiles"
+    __table_args__ = (
+        UniqueConstraint("org_id", "candidate_id", name="uq_browser_profile_candidate"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(40), primary_key=True, default=lambda: new_id("bprof")
+    )
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    #: Encrypted Playwright storage_state JSON, "" until the first run saves.
+    storage_state: Mapped[str] = mapped_column(Text, default="")
+    #: Sticky proxy session token -- one candidate, one egress IP.
+    egress_session: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(400), default="")
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

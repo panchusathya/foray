@@ -92,10 +92,33 @@ def _find(page, selectors: tuple[str, ...]) -> str:
 
 
 def probe(url: str, *, org_id: str = "probe", spec: FormSpec | None = None) -> ProbeReport:
-    """Navigate one posting and report on its form. Read-only."""
+    """Navigate one posting and report on its form. Read-only.
+
+    A URL no handwritten map covers is derived on the spot -- the same
+    ``inspect_form`` a real derivation job runs -- so ``ats-probe`` on an
+    unknown board reports the map a submission would actually use, instead of
+    "no field map". A recognised vendor without a probeable map (Oracle's
+    account wall) still refuses: deriving against a sign-in page reads a
+    registration form as an application.
+    """
     target = detect_target(url)
     spec = spec or PROBEABLE.get(target.vendor)
     report = ProbeReport(url=url, vendor=target.vendor)
+    if spec is None and not target.vendor:
+        from .derive import inspect_form
+
+        try:
+            spec, _ = inspect_form(url)
+        except driver.BrowserUnavailable as exc:
+            report.error = str(exc)
+            return report
+        except Exception as exc:  # noqa: BLE001 - a probe never raises at the caller
+            report.error = f"{type(exc).__name__}: {exc}"
+            return report
+        if spec is None:
+            report.error = "no derivable application form on this page"
+            return report
+        report.vendor = spec.vendor
     if spec is None:
         report.error = f"no field map for {target.vendor or 'this URL'}"
         return report

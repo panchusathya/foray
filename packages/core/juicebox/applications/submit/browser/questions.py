@@ -215,6 +215,28 @@ _ENUMERATE_JS = """
   const selectorFor = (el) => {
     if (el.id) return `#${CSS.escape(el.id)}`;
     if (el.name) return `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`;
+    // React boards routinely render controls with neither id nor name. An
+    // attribute the page itself uses to address the element is the next best
+    // handle -- without one the control is real but unfillable, and a derived
+    // spec that keeps it would stall the run on a selector that matches nothing.
+    const tag = el.tagName.toLowerCase();
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.trim()) return `${tag}[aria-label="${CSS.escape(aria.trim())}"]`;
+    const testid = el.getAttribute('data-testid');
+    if (testid) return `${tag}[data-testid="${CSS.escape(testid)}"]`;
+    const placeholder = el.getAttribute('placeholder');
+    if (placeholder && placeholder.trim()) {
+      return `${tag}[placeholder="${CSS.escape(placeholder.trim())}"]`;
+    }
+    // A drag-drop uploader's real input routinely has no attribute at all
+    // (seen live on mindpal.co). When it is the page's ONLY file input, the
+    // bare type selector is unambiguous -- and when it is not, returning ''
+    // stays correct: a guess between two file inputs is the Ashby autofill
+    // trap with extra steps.
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'file' && document.querySelectorAll("input[type='file']").length === 1) {
+      return "input[type='file']";
+    }
     return '';
   };
 
@@ -266,6 +288,7 @@ _ENUMERATE_JS = """
       : type === 'select' ? 'select'
       : type === 'file' ? 'file'
       : type === 'checkbox' ? 'checkbox'
+      : type === 'password' ? 'password'
       : 'text';
     const options = type === 'select'
       ? Array.from(el.options).map((o) => o.label.trim()).filter(Boolean)
@@ -308,9 +331,24 @@ def discover(url: str, *, vendor: str = "") -> list[FormQuestion]:
             driver.reach_form(page, landmark=spec.landmark, open_form=spec.open_form, log=log)
         raw = page.evaluate(_ENUMERATE_JS)
 
+    return questions_from_raw(raw, url)
+
+
+def questions_from_raw(raw: list[dict], url: str) -> list[FormQuestion]:
+    """The post-processing half of ``discover``, shared with ``derive``.
+
+    Password controls are dropped here rather than surfaced: a password is
+    never the employer's question, and letting one through would classify it
+    as custom and put "Password" in front of a candidate as something to
+    answer over text. The *presence* of one still matters — ``derive`` reads
+    it off the raw list as proof of an account wall.
+    """
     questions: list[FormQuestion] = []
     seen_keys: set[str] = set()
     for item in raw:
+        if str(item.get("fieldType") or "") == "password":
+            logger.info("password control on %s skipped", url)
+            continue
         label = _clean_label(str(item.get("label") or ""))
         if label.lower() in _OPTION_LABELS:
             # The label walk found an option ("Yes"), not the question. A

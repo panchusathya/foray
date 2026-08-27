@@ -34,6 +34,7 @@ from .jobs import (
     KIND_INTAKE_REFERRAL,
     KIND_INTAKE_TURN,
     KIND_JOBS_DISCOVER_ONE,
+    KIND_JOBS_FORMSPEC_ONE,
     KIND_JOBS_MATCH,
     KIND_JOBS_MATCH_ONE,
     KIND_JOBS_PARSE,
@@ -447,6 +448,12 @@ def _handle_jobs_scrape_one(db: Session, job: Job, now) -> dict[str, Any]:
     from .jobmatch.scrape import handle_scrape_one
 
     return handle_scrape_one(db, job, now)
+
+
+def _handle_jobs_formspec_one(db: Session, job: Job, now) -> dict[str, Any]:
+    from .applications.formspec import handle_formspec_one
+
+    return handle_formspec_one(db, job, now)
 
 
 def _handle_crm_discovery(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1527,6 +1534,7 @@ HANDLERS = {
     KIND_JOBS_DISCOVER_ONE: _handle_jobs_discover_one,
     KIND_JOBS_SCRAPE: _handle_jobs_scrape,
     KIND_JOBS_SCRAPE_ONE: _handle_jobs_scrape_one,
+    KIND_JOBS_FORMSPEC_ONE: _handle_jobs_formspec_one,
     KIND_INTAKE_TURN: _handle_intake_turn,
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_INTAKE_ATTACHMENT: _handle_intake_attachment,

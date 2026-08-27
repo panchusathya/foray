@@ -47,6 +47,50 @@ class FormSpec:
     def selectors_for(self, key: str) -> tuple[str, ...]:
         return self.fields.get(key, ())
 
+    def to_dict(self) -> dict:
+        """JSON-safe form, for the derived specs cached on a posting row.
+
+        Tuples and frozensets do not survive a JSON column; this is the seam
+        that keeps the dataclass itself honest while the storage stays plain.
+        """
+        return {
+            "vendor": self.vendor,
+            "fields": {key: list(selectors) for key, selectors in self.fields.items()},
+            "required": sorted(self.required),
+            "submit": list(self.submit),
+            "landmark": list(self.landmark),
+            "open_form": list(self.open_form),
+            "files": sorted(self.files),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> FormSpec | None:
+        """The cached form back into a spec, or ``None`` for anything unusable.
+
+        Deliberately forgiving: a row written by an older shape of ``to_dict``
+        must degrade to "no derived spec" rather than a 500 on every package
+        build that touches the posting.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("fields"), dict):
+            return None
+        fields = {
+            str(key): tuple(str(s) for s in selectors)
+            for key, selectors in data["fields"].items()
+            if isinstance(selectors, (list, tuple)) and selectors
+        }
+        submit = tuple(str(s) for s in data.get("submit") or [])
+        if not fields or not submit:
+            return None
+        return cls(
+            vendor=str(data.get("vendor") or "derived"),
+            fields=fields,
+            required=frozenset(str(k) for k in data.get("required") or []),
+            submit=submit,
+            landmark=tuple(str(s) for s in data.get("landmark") or []),
+            open_form=tuple(str(s) for s in data.get("open_form") or []),
+            files=frozenset(str(k) for k in data.get("files") or []),
+        )
+
 
 GREENHOUSE = FormSpec(
     vendor="greenhouse",

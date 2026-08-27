@@ -46,6 +46,7 @@ _EFFORTS = {"low", "medium", "high"}
 # a cost for the call. An unknown slug yields 0.0 rather than a wrong number.
 PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
     "z-ai/glm-5.2": (0.50, 3.15),
+    "z-ai/glm-5.3-flash": (0.075, 0.25),
     "z-ai/glm-4.6": (0.43, 1.75),
     "openai/gpt-oss-120b": (0.05, 0.25),
 }

@@ -403,6 +403,12 @@ def stored_account(
     )
     if row is None or not row.token_blob:
         return "", ""
+    if row.handed_over_at is not None:
+        # The candidate took this account over (portal handover): whatever
+        # password they set through the board's own reset is theirs, and the
+        # one we generated is dead. Signing in with it would either fail or,
+        # worse, work against their expectation of sole control.
+        return "", ""
     from ....integrations.crypto import decrypt_json
 
     try:

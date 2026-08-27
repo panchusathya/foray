@@ -50,7 +50,7 @@ x-staging-app-env: &staging_app_env
   # a real generation against staging.
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   JUICEBOX_LLM_PROVIDER: ${JUICEBOX_LLM_PROVIDER:-openrouter}
-  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-z-ai/glm-5.2}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-z-ai/glm-5.3-flash}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hashing}
   VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
 

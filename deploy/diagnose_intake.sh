@@ -5,8 +5,16 @@
 # sha256 prefix so it can be compared against the workspace key without either
 # side pasting it. Everything here answers a question that cannot be answered
 # from outside the box.
+#
+# Optional argument: a phone number in E.164. Passing one adds section 12,
+# which answers "why was this caller not recognised?" end to end. Without it
+# every other section still runs.
+#
+#     ./deploy/diagnose_intake.sh
+#     ./deploy/diagnose_intake.sh +12134317465
 set -uo pipefail
 C="docker compose -f docker-compose.prod.yml"
+CALLER="${1:-}"
 
 echo "===== 1. Retell key fingerprint (compare, do not paste the key) ====="
 $C exec -T api python - <<'PY'
@@ -84,4 +92,67 @@ echo "===== 11. extractor timeouts in the logs (the cause, if 10 is non-zero) ==
 $C logs api 2>/dev/null | grep -i "llm intake extraction failed" | tail -10   || echo "  none logged"
 
 echo
+if [ -n "$CALLER" ]; then
+echo "===== 12. why was $CALLER not recognised? ====="
+# `resolve_candidate_id` reads candidate_phones and nothing else. So a number
+# sitting in the `candidates.phones` JSON column but absent from the projection
+# is a caller the dial-in line can never place -- and the two most common ways
+# that happens are both silent: `sync_candidate_phones` skips a number another
+# row already claimed (first writer wins), and `link_caller` deliberately never
+# writes the number when it matched the caller by email. This section shows
+# which of those it is rather than leaving it to be guessed at.
+$C exec -T api python - "$CALLER" <<'PY'
+import sys
+
+from juicebox.db import get_session_factory
+from juicebox.intake.phones import lookup_key
+
+raw = sys.argv[1]
+key = lookup_key(raw)
+print(f"  raw input   : {raw}")
+print(f"  lookup_key  : {key or '(none -- unmatchable, so never recognised)'}")
+if not key:
+    raise SystemExit(0)
+
+db = get_session_factory()()
+from sqlalchemy import select, text  # noqa: E402
+
+from juicebox.models import Candidate, CandidatePhone  # noqa: E402
+
+rows = db.scalars(select(CandidatePhone).where(CandidatePhone.phone == key)).all()
+print(f"  candidate_phones rows for that key: {len(rows)}")
+for row in rows:
+    person = db.get(Candidate, row.candidate_id)
+    name = person.full_name if person else "(missing candidate row)"
+    print(f"     -> {row.candidate_id}  {name}  org={row.org_id}")
+if not rows:
+    print("     NOBODY CLAIMS IT. The dial-in line will treat this caller as new.")
+
+owners = db.execute(
+    text(
+        "select id, full_name, org_id, phones::text from candidates "
+        "where phones::text like :needle limit 10"
+    ),
+    {"needle": f"%{key[-10:]}%"},
+).all()
+print(f"  candidates whose phones JSON mentions it: {len(owners)}")
+for cid, name, org, phones in owners:
+    claimed = any(r.candidate_id == cid for r in rows)
+    flag = "projected" if claimed else "NOT PROJECTED  <-- this is the bug"
+    print(f"     -> {cid}  {name}  org={org}  {phones}  [{flag}]")
+
+calls = db.execute(
+    text(
+        "select id, candidate_id, status, review_reason, contact_email, created_at "
+        "from intake_calls where from_number = :n order by created_at desc limit 5"
+    ),
+    {"n": raw},
+).all()
+print(f"  recent calls from that number: {len(calls)}")
+for cid, cand, status, reason, email, when in calls:
+    print(f"     -> {when}  {cid}  candidate={cand or '(none)'}  {status}")
+    print(f"        email={email or '(none captured)'}  reason={reason or '(none)'}")
+PY
+echo
+fi
 echo "===== done ====="

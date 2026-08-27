@@ -40,7 +40,11 @@ _NAME_OPENER = (
     r"|sorry|thanks|thank\s+you|please"
 )
 _NAME_LEAD = re.compile(
-    rf"^\s*(?:(?:{_NAME_OPENER})\b[,\s]*)*"
+    # ``[,.;:!\s-]`` rather than ``[,\s]``: people put a full stop after the
+    # filler. "Yeah. My name is Tushar" stripped to nothing under the
+    # comma-only class, so a caller who answered the name question with an
+    # ordinary two-sentence reply had no name read off the call at all.
+    rf"^\s*(?:(?:{_NAME_OPENER})\b[,.;:!\s-]*)*"
     r"(?:(?:my\s+name\s+is|i\s*am|i'm|its|it's|this\s+is|name)\s*[:\-]?\s*)?",
     re.IGNORECASE,
 )
@@ -232,7 +236,12 @@ _LEAD_INS = frozenset(
     use used uses using was we well what which will write yeah yes you your
     """.split()  # noqa: SIM905 - one editable line per topic beats 70 quoted strings
 )
-_TRAILING_WORD = re.compile(r"([A-Za-z0-9'\-]+)\s*$")
+# Must start with an actual word character. With ``-`` allowed as the *first*
+# character too, the dash in "I've got that -- t-u-s-h-a-r at gmail dot com"
+# was captured as the preceding "word", found not to be a lead-in, and the
+# address refused -- the exact opposite of what ``_admissible_start`` documents
+# for punctuation, which is that a dash means the address is being introduced.
+_TRAILING_WORD = re.compile(r"([A-Za-z0-9][A-Za-z0-9'\-]*)\s*$")
 
 
 def _admissible_start(text: str, start: int) -> bool:
@@ -245,6 +254,106 @@ def _admissible_start(text: str, start: int) -> bool:
         # Punctuation, a colon, a dash: the address is being introduced.
         return True
     return match.group(1).lower() in _LEAD_INS
+
+
+# Spoken digits, and the two-word compounds people say for a number in an
+# address. "tushar three one gupta" and "tushar thirty one gupta" are the same
+# mailbox said two ways, and neither survives a decoder that only reads [a-z0-9]
+# tokens.
+_UNITS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
+_TEENS = {
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19",
+}
+_TENS = {
+    "twenty": "2", "thirty": "3", "forty": "4", "fifty": "5",
+    "sixty": "6", "seventy": "7", "eighty": "8", "ninety": "9",
+}
+
+# How TTS and dictation split the handful of consumer domains that cover most
+# candidates. "at g mail dot com" is not a rare mishearing -- it is what the
+# words sound like -- and without this the domain match starts at "mail" and
+# quietly yields somebody@mail.com.
+_SPOKEN_DOMAINS = (
+    ("g mail", "gmail"), ("hot mail", "hotmail"), ("out look", "outlook"),
+    ("i cloud", "icloud"), ("proton mail", "protonmail"), ("ya hoo", "yahoo"),
+    ("y mail", "ymail"), ("fast mail", "fastmail"), ("live mail", "livemail"),
+)
+
+def _spoken_numbers(text: str) -> str:
+    """"thirty one" and "three one" both become "31"."""
+    words = text.split(" ")
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        bare = word.strip(".,;:!?").lower()
+        if bare in _TENS:
+            nxt = words[i + 1].strip(".,;:!?").lower() if i + 1 < len(words) else ""
+            if nxt in _UNITS and nxt != "oh":
+                out.append(_TENS[bare] + _UNITS[nxt])
+                i += 2
+                continue
+            out.append(_TENS[bare] + "0")
+        elif bare in _TEENS:
+            out.append(_TEENS[bare])
+        elif bare in _UNITS:
+            out.append(_UNITS[bare])
+        else:
+            out.append(word)
+        i += 1
+    return " ".join(out)
+
+
+def _collapse_spelling(text: str) -> str:
+    """Join a run of spelled-out characters back into the word it spells.
+
+    "t u s h a r three one g u p t a" is one local part, said the way this
+    system's own prompt asks for it -- the agent is told to have the caller
+    spell the part before the @. Before this, the run was read as thirteen
+    separate words, no separator between any of them, and the decoder matched
+    only the last one: "t u s h a r at gmail dot com" came out as
+    ``r@gmail.com``. A stranger's mailbox on a candidate record is the exact
+    failure this module exists to prevent, and it was being produced by the
+    one input the prompt actively solicits.
+
+    Two consecutive single characters are enough to count as spelling. Nobody
+    means two separate words by "j p"; they mean "jp".
+
+    Hyphens spell too, and want a longer run before they count. "t-u-s-h-a-r-3-1"
+    is somebody spelling; "mary-jane" is a name and "x-1" could be either, so a
+    hyphen run needs three characters where a space run needs two. This matters
+    because the *agent* spells with hyphens -- the read-back it is required to
+    perform arrives in the transcript as "t-u-s-h-a-r-3-1-g-u-p-t-a at gmail
+    dot com", and that turn is what tells the scanner the next one is about an
+    address.
+    """
+    spaced = re.sub(
+        r"(?<![a-z0-9])(?:[a-z0-9] ){1,}[a-z0-9](?![a-z0-9])",
+        lambda m: m.group(0).replace(" ", ""),
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?<![a-z0-9-])(?:[a-z0-9]-){2,}[a-z0-9](?![a-z0-9-])",
+        lambda m: m.group(0).replace("-", ""),
+        spaced,
+        flags=re.IGNORECASE,
+    )
+
+
+def _normalise_spoken(text: str) -> str:
+    """Put a spoken address into the shape the decoder's grammar expects."""
+    out = " ".join((text or "").split())
+    out = _spoken_numbers(out)
+    out = _collapse_spelling(out)
+    for spoken, written in _SPOKEN_DOMAINS:
+        out = re.sub(rf"(?<![a-z0-9]){re.escape(spoken)}(?![a-z0-9])", written, out, flags=re.IGNORECASE)
+    return out
 
 
 def decode_spoken_email(text: str) -> str:
@@ -264,7 +373,7 @@ def decode_spoken_email(text: str) -> str:
     ``email_in_turn``'s job, and keeping the two apart makes the decoding
     testable on its own.
     """
-    lowered = (text or "").lower()
+    lowered = _normalise_spoken(text).lower()
     pos = 0
     while True:
         match = _SPOKEN_EMAIL.search(lowered, pos)
@@ -309,6 +418,21 @@ _NAME_QUESTION = re.compile(
     r"|what name|may i (?:take|have) your name|can i (?:take|have) your name)\b",
     re.IGNORECASE,
 )
+
+
+# How a caller opens the turn that rejects a read-back. Anchored at the start:
+# "no" in the middle of a sentence is ordinary speech, "No, it's ..." is a
+# correction, and only the second may overwrite an address already read.
+_CORRECTION = re.compile(
+    r"^\s*(?:no\b|nope\b|not\b|nah\b|wrong\b|that'?s\s+wrong|actually\b"
+    r"|sorry\b|it'?s\s+not\b|almost\b|close\b)",
+    re.IGNORECASE,
+)
+
+
+def _states_an_address(text: str) -> bool:
+    """Does this turn actually contain an address, written or spoken?"""
+    return bool(find_email(text) or decode_spoken_email(text))
 
 
 def _turns(transcript: str) -> list[tuple[bool, str]]:
@@ -361,10 +485,24 @@ def scan_transcript(transcript: str) -> tuple[str, str]:
             # An agent turn can ask for both at once, which is exactly what the
             # inbound prompt does: "your name and the email you use with us".
             asked_name = bool(_NAME_QUESTION.search(text))
-            asked_email = mentions_an_email(text)
+            # Reading an address back is a question *about* that address, even
+            # with no cue word in it. The shared rules make the read-back
+            # mandatory -- spell the local part, wait for a yes -- so the turn
+            # answering it is the likeliest place a corrected address appears,
+            # and it was the one turn the cue rule refused to read.
+            asked_email = mentions_an_email(text) or _states_an_address(text)
             continue
         if not email:
             email = email_in_turn(text, cued=asked_email)
+        elif asked_email and _CORRECTION.match(text):
+            # First-wins is right for a caller repeating themselves and wrong
+            # for one saying "no, it's ...". The read-back exists precisely to
+            # catch a mishearing, so the turn that rejects it has to be able to
+            # win -- otherwise the record keeps the address the agent got
+            # wrong, which is the misattribution this module exists to stop.
+            corrected = email_in_turn(text, cued=True)
+            if corrected:
+                email = corrected
         if not name and asked_name:
             name = find_name(first_segment(text))
         # A question is answered once. Leaving the flags set would let the

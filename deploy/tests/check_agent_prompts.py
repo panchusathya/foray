@@ -250,6 +250,22 @@ def check_recording_consent_survives_both_branches() -> None:
         "the call is recorded" in OUTBOUND,
         "outbound prompt must still disclose recording",
     )
+    # A returning caller gets a shorter, warmer version of the ask -- "quick
+    # reminder ... all good?" instead of a formality. Shorter is fine; dropping
+    # the question is not. Consent is per call because California and a dozen
+    # other states are two-party, so a reminder the caller never answers leaves
+    # `consent_recording` false and the recording unconsented. This pins the
+    # question mark, which is the part that is tempting to lose while making
+    # the line sound natural.
+    _must(
+        "all good?" in INBOUND,
+        "the returning-caller recording reminder must still end in a question",
+    )
+    _must(
+        "consent is per call, not per person" in INBOUND,
+        "the inbound prompt must say why the reminder is still asked, or the "
+        "next edit that shortens it will drop the ask entirely",
+    )
 
 
 def check_every_slot_has_a_default() -> None:
@@ -322,9 +338,19 @@ def check_the_live_text_verification_flow_is_pinned() -> None:
             'reply "hey" or "hello"' in prompt,
             f"{name} prompt must ask for the verification reply",
         )
+        # The phrase, not one exact sentence. The consent ask carries the
+        # longer TCPA wording -- "an explicit, unambiguous yes is a yes;
+        # hesitation, 'I guess', silence, or 'email is better' is a no" -- and
+        # pinning a single sentence made restoring that wording look like a
+        # regression when it was the opposite.
         _must(
-            "only an explicit, unambiguous yes counts" in prompt,
+            "explicit, unambiguous yes" in prompt,
             f"{name} prompt must not allow a vague answer to trigger a text",
+        )
+        _must(
+            '"email is better"' in prompt and "re-ask or reframe" in prompt,
+            f"{name} prompt must say what is NOT consent and forbid re-asking "
+            "until a yes appears",
         )
         _must(
             "never say the detailed role list was texted yet" in prompt,

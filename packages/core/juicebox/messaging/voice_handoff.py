@@ -194,6 +194,7 @@ def confirm_text_verification(db: Session, *, thread: IntakeThread) -> dict[str,
     thread.mode = MODE_MANAGING
     if call.candidate_id and not thread.candidate_id:
         thread.candidate_id = call.candidate_id
+    _attach_verified_number(db, call)
     schedule_match_text(db, call)
     record_event(
         db,
@@ -204,6 +205,59 @@ def confirm_text_verification(db: Session, *, thread: IntakeThread) -> dict[str,
         payload={"thread_id": thread.id},
     )
     return {"call_id": call.id, "thread_id": thread.id}
+
+
+def _attach_verified_number(db: Session, call: IntakeCall) -> None:
+    """Write the calling number onto the record, now that it is proven.
+
+    ``link_caller`` deliberately refuses to do this. A caller matched to a
+    person by the email they spoke is that person's record, but the *number* is
+    only what their handset claimed, and ANI is spoofable -- so a match by email
+    attributes the call and leaves ``UNVERIFIED_NUMBER_REASON`` on the review
+    queue for a human to promote. That is the right default and it stays.
+
+    A reply to the verification text closes exactly that gap. Whoever holds the
+    handset sent a message from it, inbound, which is the one assertion caller
+    ID cannot make and the same evidence ``attribute_call`` relies on a
+    recruiter to supply by hand. So the number goes on the record here, and the
+    note that was waiting on this evidence comes off.
+
+    Silent when there is no candidate yet: an unattributed call has nothing to
+    write to, and ``link_caller`` will not create anybody from a number alone.
+    """
+    from ..intake.service import UNVERIFIED_NUMBER_REASON, drop_reason, join_reasons
+    from ..repository import merge_contact_details
+
+    if not call.candidate_id:
+        return
+    number = counterparty_number(call)
+    if not number:
+        return
+    candidate = db.get(Candidate, call.candidate_id)
+    if candidate is None or candidate.org_id != call.org_id:
+        return
+    merged = merge_contact_details(db, candidate, phone=number)
+    if merged.conflicts:
+        # Somebody else already owns this number. That is a real collision and
+        # wants a human, not a silent overwrite -- the same rule
+        # ``attribute_call`` follows.
+        call.review_needed = True
+        call.review_reason = join_reasons(
+            call.review_reason, f"already owned by somebody else: {', '.join(merged.conflicts)}"
+        )
+        return
+    remaining = drop_reason(call.review_reason, UNVERIFIED_NUMBER_REASON)
+    call.review_reason = remaining
+    if not remaining:
+        call.review_needed = False
+    record_event(
+        db,
+        org_id=call.org_id,
+        type="intake.number_verified",
+        subject_type="intake_call",
+        subject_id=call.id,
+        payload={"candidate_id": candidate.id},
+    )
 
 
 def handle_match_text(db: Session, job: Job, now) -> dict[str, Any]:

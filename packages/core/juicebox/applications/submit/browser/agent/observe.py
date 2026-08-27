@@ -60,10 +60,29 @@ _ENUMERATE_JS = """() => {
       const byFor = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
       if (byFor) return (byFor.innerText || '').trim().slice(0, 160);
     }
-    return (el.getAttribute('aria-label') || el.getAttribute('placeholder')
-      || el.getAttribute('name') || el.innerText || '').trim().slice(0, 160);
+    const own = (el.getAttribute('aria-label') || el.getAttribute('placeholder')
+      || el.getAttribute('name') || el.innerText || '').trim();
+    if (own) return own.slice(0, 160);
+    if ((el.getAttribute('type') || '').toLowerCase() === 'file') {
+      // A hidden file input usually carries no label of its own; the
+      // surrounding dropzone or its button is what a person reads.
+      const zone = el.closest('[data-automation-id="fileUploadDropZone"]')
+        || el.closest('[class*="ropZone"]') || el.parentElement;
+      const text = ((zone && zone.innerText) || '').trim();
+      return (text || 'file upload').slice(0, 160);
+    }
+    return '';
+  }
+  function isFile(el) {
+    return (el.getAttribute('type') || '').toLowerCase() === 'file';
   }
   function visible(el) {
+    // A file input is invisible BY DESIGN on every modern uploader: the page
+    // shows a "Select files" button and hides the real input behind it. Left
+    // out of the inventory, the planner can only aim upload at the button,
+    // which policy refuses forever (live, Intapp 2026-08-27, the resume step).
+    // set_input_files works on a hidden input, so it belongs in the inventory.
+    if (isFile(el)) return true;
     const style = window.getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
     const box = el.getBoundingClientRect();

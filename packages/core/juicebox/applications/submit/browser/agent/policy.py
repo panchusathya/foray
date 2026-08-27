@@ -287,7 +287,17 @@ def resolve_token(
             return "", "", "no decline option on this control"
         return choice, "", ""
     if token in CANDIDATE_TOKENS:
-        return _candidate_value(ctx, CANDIDATE_TOKENS[token]), "", ""
+        value = _candidate_value(ctx, CANDIDATE_TOKENS[token])
+        if token == "candidate.phone" and control is not None and "phone" in control.label.lower():
+            # Workday keeps the country code in its own control, so the number
+            # field wants national digits: +15134333227 sat in the box looking
+            # filled while the page answered "Enter a valid format for Phone
+            # Number" to every Save and Continue (live, Intapp 2026-08-27).
+            digits = re.sub(r"\D", "", value)
+            if len(digits) == 11 and digits.startswith("1"):
+                digits = digits[1:]
+            value = digits or value
+        return value, "", ""
     if token in DOC_TOKENS:
         which = DOC_TOKENS[token]
         path = resume_path if which == "resume" else cover_path

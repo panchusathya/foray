@@ -1812,6 +1812,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
             def goto(self, url, **kwargs):
                 return None
 
+            def wait_for_timeout(self, ms):
+                return None
+
         @contextlib.contextmanager
         def fake_session(*, log):
             yield _Page()
@@ -1827,6 +1830,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         monkeypatch.setattr(workday_mod.driver, "fill", fake_fill)
         monkeypatch.setattr(workday_mod.driver, "click", lambda *a, **k: True)
         monkeypatch.setattr(workday_mod.driver, "snapshot", lambda *a, **k: "")
+        # `_settle` polls the real page for the SPA render; the fake page has
+        # no clock, and the "page" here is whatever `fills` describes anyway.
+        monkeypatch.setattr(workday_mod.driver, "wait_for_any", lambda *a, **k: "")
         return workday_mod
 
     def test_a_sign_in_page_is_not_reported_as_an_account_created(self, monkeypatch):

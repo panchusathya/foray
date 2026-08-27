@@ -64,6 +64,31 @@ _SUBMIT = (
     'button:has-text("Submit")',
 )
 
+#: Workday's consent overlay, which paints over the first render and can
+#: swallow the Apply click.
+_COOKIE_BUTTONS = (
+    'button[data-automation-id="legalNoticeAcceptButton"]',
+    'button:has-text("Accept Cookies")',
+)
+
+#: The registration/sign-in form's own fields, for waiting on route changes.
+_ACCOUNT_EMAIL = ('input[data-automation-id="email"]', 'input[type="email"]')
+
+
+def _settle(page, *, log: RunLog, expect: tuple[str, ...], timeout_ms: int = 45000) -> str:
+    """Wait for the SPA to actually render, then clear the cookie overlay.
+
+    ``domcontentloaded`` fires on Workday's empty shell; the page itself
+    arrives seconds later — measured at ~9s through a residential proxy — and
+    the first live run clicked into the blank, filled nothing, and
+    screenshotted a white page. Every navigation or client-side route change
+    settles here before anything is clicked or filled.
+    """
+    hit = driver.wait_for_any(page, expect, timeout_ms=timeout_ms)
+    if driver.click(page, _COOKIE_BUTTONS, log=log, what="cookie banner"):
+        page.wait_for_timeout(300)
+    return hit
+
 
 def _account_fields(email: str, password: str) -> list[FieldSpec]:
     return [
@@ -171,8 +196,13 @@ class WorkdaySubmitter:
         try:
             with driver.session(log=log) as page:
                 page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
+                _settle(page, log=log, expect=_APPLY_BUTTONS)
                 driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
+                # Apply routes to sign-in on some tenants and straight to the
+                # registration form on others — wait for either shape.
+                _settle(page, log=log, expect=_CREATE_ACCOUNT + _ACCOUNT_EMAIL, timeout_ms=30000)
                 driver.click(page, _CREATE_ACCOUNT, log=log, what="create account")
+                driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=20000)
                 missing = driver.fill(page, _account_fields(ctx.from_address, password), log=log)
                 shot = driver.snapshot(
                     page,
@@ -269,6 +299,9 @@ class WorkdaySubmitter:
             try:
                 with driver.session(log=log) as page:
                     page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
+                    _settle(page, log=log, expect=_APPLY_BUTTONS + _ACCOUNT_EMAIL)
+                    driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
+                    driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=30000)
                     driver.fill(
                         page,
                         [
@@ -309,6 +342,18 @@ class WorkdaySubmitter:
                         )
                         driver.click(page, _SIGN_IN, log=log, what="submit code")
 
+                    # Signing in routes into the wizard; give it the same
+                    # render courtesy every other step gets before reading a
+                    # blank page as a dead field map.
+                    driver.wait_for_any(
+                        page,
+                        (
+                            'input[data-automation-id="file-upload-input-ref"]',
+                            'input[type="file"]',
+                            'button[data-automation-id="bottom-navigation-next-button"]',
+                        ),
+                        timeout_ms=30000,
+                    )
                     missing = driver.fill(page, _application_fields(ctx, str(resume_path)), log=log)
                     before = driver.snapshot(
                         page,

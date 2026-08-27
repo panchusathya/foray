@@ -131,13 +131,17 @@ WORKDAY_APPLICATION = FormSpec(
 
 YC_ACCOUNT = FormSpec(
     vendor="yc",
-    # Unprobed starting point. Work at a Startup runs on the unified YC
-    # account (account.ycombinator.com); a logged-out Apply lands on its
-    # sign-up form. Same two-leg shape as Workday: register, park on the
-    # verification mail, and browser/yc.py signs in for the application leg.
+    # Probed live 2026-08-27 against account.ycombinator.com (the unified YC
+    # account; a logged-out Apply lands on its sign-up form with
+    # defaults[signUpActive]=true). The name inputs carry NO attributes at
+    # all — no name, id, placeholder or autocomplete — so they are reachable
+    # only by layout, anchored on their floating labels. Username is required
+    # and has the only stable ids on the page (#ycid-input, #password-input).
+    # Same two-leg shape as Workday: register, park on the verification mail,
+    # and browser/yc.py signs in for the application leg.
     landmark=(
         "input[name='password']",
-        "input[id='sign-up-password']",
+        "input[id='password-input']",
         "form[action*='sign' i]",
     ),
     open_form=(
@@ -147,12 +151,21 @@ YC_ACCOUNT = FormSpec(
         "button:has-text('Apply')",
     ),
     fields={
-        "first_name": ("input[name='first_name']", "input[id*='first' i]"),
-        "last_name": ("input[name='last_name']", "input[id*='last' i]"),
+        "first_name": (
+            "input[name='first_name']",
+            "input[id*='first' i]",
+            'input:below(:text("First Name"))',
+        ),
+        "last_name": (
+            "input[name='last_name']",
+            "input[id*='last' i]",
+            'input:below(:text("Last Name"))',
+        ),
         "email": ("input[name='email']", "input[type='email']"),
-        "password": ("input[name='password']", "input[type='password']"),
+        "username": ("input[name='username']", "#ycid-input"),
+        "password": ("#password-input", "input[name='password']", "input[type='password']"),
     },
-    required=frozenset({"email", "password"}),
+    required=frozenset({"email", "username", "password"}),
     submit=(
         "button[type='submit']",
         "button:has-text('Sign up')",

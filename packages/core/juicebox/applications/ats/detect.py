@@ -372,13 +372,18 @@ def follow(url: str, *, client: httpx.Client | None = None) -> ApplyTarget:
         except httpx.HTTPError as exc:
             logger.debug("could not read %s to find its ATS: %s", url, exc)
             return ApplyTarget()
-        if response.status_code >= 400:
-            logger.debug("no ATS from %s: HTTP %s", url, response.status_code)
-            return ApplyTarget()
-        # A redirect may have landed us on the form itself.
+        # A redirect may have landed us on the form itself — and the landing
+        # URL is the answer even when the landing PAGE refuses us. Work at a
+        # Startup answers 406 to non-browser clients, so an aggregator link
+        # that 302s onto it resolved to nothing while the resolved URL sat in
+        # response.url the whole time (live: zerogtalent -> workatastartup,
+        # 2026-08-27). Only the body scan needs a readable page.
         landed = detect_target(str(response.url))
         if landed:
             return landed
+        if response.status_code >= 400:
+            logger.debug("no ATS from %s: HTTP %s", url, response.status_code)
+            return ApplyTarget()
         return _vendor_links(response.text[:MAX_BYTES], base=str(response.url))
     finally:
         if owns:

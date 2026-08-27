@@ -81,16 +81,30 @@ def store_thread_resume(
         source=source,
         thread_id=thread.id,
     )
-    db.execute(
-        CandidateDocument.__table__.update()
-        .where(
+    protected = db.scalar(
+        select(CandidateDocument).where(
             CandidateDocument.candidate_id == candidate_id,
             CandidateDocument.kind == "resume_uploaded",
             CandidateDocument.is_default.is_(True),
+            CandidateDocument.protected_default.is_(True),
         )
-        .values(is_default=False)
     )
-    doc.is_default = True
+    if source == "connector" and protected is not None:
+        # A discovered attachment is a useful option, not permission to
+        # replace a resume the candidate explicitly chose.
+        doc.is_default = False
+    else:
+        db.execute(
+            CandidateDocument.__table__.update()
+            .where(
+                CandidateDocument.candidate_id == candidate_id,
+                CandidateDocument.kind == "resume_uploaded",
+                CandidateDocument.is_default.is_(True),
+            )
+            .values(is_default=False, protected_default=False)
+        )
+        doc.is_default = True
+        doc.protected_default = source != "connector"
     db.add(doc)
     db.flush()
 

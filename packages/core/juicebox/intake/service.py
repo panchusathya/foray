@@ -570,30 +570,23 @@ def upsert_preference(
     ``declined`` accumulates -- and it is exactly the rule that makes this safe.
     ``intake.records`` now owns it and both paths call it.
 
-    The confirmed-row rule is unchanged and is deliberately *not* the text
-    channel's rule. A thread is the candidate's own words, which outrank a
-    recruiter's transcription, so it writes and clears the confirmation. A call
-    is a machine reading of audio, so it defers: the record stays on the call
-    and the row is flagged. A recruiter correcting a record and watching a
-    re-run undo it is how people stop trusting the system.
+    Both channels now keep the same conservative confirmation rule: a later
+    transcript may enrich the durable row, but it clears the legacy row-level
+    confirmation and records field-level provenance for review.  A recruiter
+    correction must never be silently attested by a value they did not see.
     """
     state = result.coverage
     row = db.scalar(
         select(CandidatePreference).where(CandidatePreference.candidate_id == call.candidate_id)
     )
+    previous = record_from_preference(row) if row is not None else {}
+    invalidated = row is not None and row.confirmed_at is not None
     if row is None:
         row = CandidatePreference(org_id=call.org_id, candidate_id=call.candidate_id)
         db.add(row)
         merged = merge_record(None, result.record)
-    elif row.confirmed_at is not None:
-        row.review_needed = True
-        row.review_reason = _join_reasons(
-            row.review_reason, f"newer call {call.id} disagrees with a confirmed record"
-        )
-        db.flush()
-        return row
     else:
-        merged = merge_record(record_from_preference(row), result.record)
+        merged = merge_record(previous, result.record)
 
     row.source_call_id = call.id
     # Exactly one provenance link is set. The *content* still merges, so
@@ -610,8 +603,29 @@ def upsert_preference(
     row.fields_missing = list(state.required_missing)
     row.review_needed = result.review_needed
     row.review_reason = result.review_reason[:400]
+    if invalidated:
+        # This mirrors the text path.  Per-field facts retain the precise
+        # provenance; the legacy row-level flag must not attest to a changed
+        # machine reading of a later call.
+        row.confirmed_at = None
+        row.confirmed_by = ""
+        row.review_needed = True
+        row.review_reason = _join_reasons(
+            row.review_reason, f"newer call {call.id} changed a confirmed record"
+        )
     row.captured_at = call.ended_at or utcnow()
     db.flush()
+    from .facts import sync_preference_facts
+
+    sync_preference_facts(
+        db,
+        preference=row,
+        previous=previous,
+        current=merged,
+        source_call_id=call.id,
+        direct_candidate_statement=True,
+        low_confidence=list(result.low_confidence or []),
+    )
     _enqueue_preference_match(db, call, preference=row)
     return row
 

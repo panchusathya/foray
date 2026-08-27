@@ -46,12 +46,13 @@ def persist_preference(
         select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
     )
     created = pref is None
+    previous = record_from_preference(pref) if pref is not None else {}
     if pref is None:
         pref = CandidatePreference(org_id=thread.org_id, candidate_id=candidate_id)
         db.add(pref)
         merged = merge_record(None, thread.record)
     else:
-        merged = merge_record(record_from_preference(pref), thread.record)
+        merged = merge_record(previous, thread.record)
 
     invalidated = pref.confirmed_at is not None
     pref.source_thread_id = thread.id
@@ -59,7 +60,10 @@ def persist_preference(
     pref.spec = merged["spec"]
     pref.schema_version = merged.get("schema_version") or SCHEMA_VERSION
     for name in EXTENSION_FIELDS:
-        setattr(pref, name, merged[name])
+        value = merged[name]
+        if name == "work_authorization":
+            value = (value or "")[:120]
+        setattr(pref, name, value)
     pref.declined = merged["declined"]
     pref.low_confidence = list(thread.low_confidence or [])
     pref.fields_missing = list(thread.fields_missing or [])
@@ -77,6 +81,17 @@ def persist_preference(
         )
     pref.captured_at = utcnow()
     db.flush()
+    from ..intake.facts import sync_preference_facts
+
+    sync_preference_facts(
+        db,
+        preference=pref,
+        previous=previous,
+        current=merged,
+        source_thread_id=thread.id,
+        direct_candidate_statement=True,
+        low_confidence=list(thread.low_confidence or []),
+    )
 
     record_event(
         db,

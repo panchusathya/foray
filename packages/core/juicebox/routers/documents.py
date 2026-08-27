@@ -128,9 +128,13 @@ async def upload_document(
                 CandidateDocument.kind == "resume_uploaded",
                 CandidateDocument.is_default.is_(True),
             )
-            .values(is_default=False)
+            .values(is_default=False, protected_default=False)
         )
         doc.is_default = True
+        # A recruiter-side upload is useful material, but it is not a
+        # candidate selection.  Only the candidate portal and a candidate's
+        # own inbound attachment may establish a protected default.
+        doc.protected_default = False
     db.add(doc)
     db.flush()
 

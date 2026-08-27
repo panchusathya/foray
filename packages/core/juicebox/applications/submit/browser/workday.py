@@ -392,31 +392,9 @@ def stored_account(
     """
     if not vendor:
         return "", ""
-    row = (
-        db.query(AtsAccount)
-        .filter(
-            AtsAccount.candidate_id == candidate_id,
-            AtsAccount.vendor == vendor,
-            AtsAccount.tenant == tenant,
-        )
-        .one_or_none()
-    )
-    if row is None or not row.token_blob:
-        return "", ""
-    if row.handed_over_at is not None:
-        # The candidate took this account over (portal handover): whatever
-        # password they set through the board's own reset is theirs, and the
-        # one we generated is dead. Signing in with it would either fail or,
-        # worse, work against their expectation of sole control.
-        return "", ""
-    from ....integrations.crypto import decrypt_json
+    from ...candidate_credentials import read_password
 
-    try:
-        password = str(decrypt_json(row.token_blob).get("password") or "")
-    except ValueError as exc:
-        logger.warning("stored portal account %s could not be read: %s", row.id, exc)
-        return "", ""
-    return (row.username or ""), password
+    return read_password(db, candidate_id=candidate_id, vendor=vendor, tenant=tenant)
 
 
 def remember_account(
@@ -434,26 +412,15 @@ def remember_account(
     The password is encrypted with the same helper that protects mailbox OAuth
     tokens; nothing here should ever be readable from a database dump.
     """
-    from ....integrations.crypto import encrypt_json
+    from ...candidate_credentials import save_password
 
-    existing = (
-        db.query(AtsAccount)
-        .filter(
-            AtsAccount.candidate_id == candidate_id,
-            AtsAccount.vendor == vendor,
-            AtsAccount.tenant == tenant,
-        )
-        .one_or_none()
+    return save_password(
+        db,
+        org_id=org_id,
+        candidate_id=candidate_id,
+        vendor=vendor,
+        tenant=tenant,
+        username=username,
+        password=password,
+        origin="generated",
     )
-    if existing is None:
-        existing = AtsAccount(
-            org_id=org_id,
-            candidate_id=candidate_id,
-            vendor=vendor,
-            tenant=tenant,
-        )
-        db.add(existing)
-    existing.username = username
-    existing.token_blob = encrypt_json({"password": password})
-    db.flush()
-    return existing

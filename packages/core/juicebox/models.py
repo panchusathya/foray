@@ -1322,6 +1322,44 @@ class CandidatePreference(Base, TimestampMixin):
     captured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class CandidatePreferenceFact(Base, TimestampMixin):
+    """Audit metadata for one reusable preference field.
+
+    The typed value remains on ``CandidatePreference``.  This row answers
+    where its current value came from and whether that statement is safe to
+    reuse, without turning preference storage into unqueryable free-form
+    memory.
+    """
+
+    __tablename__ = "candidate_preference_facts"
+    __table_args__ = (
+        UniqueConstraint("candidate_preference_id", "field_key", name="uq_candidate_preference_fact"),
+        Index("ix_candidate_preference_facts_candidate", "candidate_id", "field_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cpfact"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True)
+    candidate_preference_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate_preferences.id", ondelete="CASCADE"), index=True
+    )
+    field_key: Mapped[str] = mapped_column(String(64))
+    source_call_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_calls.id", ondelete="SET NULL"), nullable=True
+    )
+    source_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_threads.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("intake_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    value_revision: Mapped[str] = mapped_column(String(64), default="")
+    direct_candidate_statement: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    declined: Mapped[bool] = mapped_column(Boolean, default=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IntakeFieldAnswer(Base, TimestampMixin):
     """Per-field provenance for one call. Not a second source of truth.
 
@@ -2035,6 +2073,10 @@ class CandidateDocument(Base, TimestampMixin):
     # resume_uploaded | resume_generated | cover_letter | other
     kind: Mapped[str] = mapped_column(String(32), default="other")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A candidate-selected resume may not be silently replaced by a connector
+    # import or an inbound attachment.  Explicit candidate/recruiter selection
+    # is the only writer that may set this flag.
+    protected_default: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # The original upload name, display only -- storage paths are id-built and
     # never touch this.
@@ -2320,18 +2362,21 @@ class AtsAccount(Base, TimestampMixin):
     tenant: Mapped[str] = mapped_column(String(120), default="")
     username: Mapped[str] = mapped_column(String(255), default="")
     token_blob: Mapped[str] = mapped_column(Text, default="")
-    # pending_verification | active | locked
+    # pending_verification | active | locked | needs_reentry | revoked
     status: Mapped[str] = mapped_column(String(32), default="pending_verification")
     error: Mapped[str] = mapped_column(String(400), default="")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Set when the candidate took the account over (portal "take over this
-    # account"): the stored credential stops being offered to submit runs, and
-    # whatever password they set through the board's own reset is theirs --
-    # never seen, never stored.
+    # Legacy compatibility only.  New rows use ``revoked_at``: a prior
+    # handover is migrated to ``needs_reentry`` because its reset password was
+    # deliberately never stored and cannot be recovered.
     handed_over_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # generated | candidate_supplied | legacy_handover.  Passwords themselves
+    # never leave token_blob.
+    credential_origin: Mapped[str] = mapped_column(String(32), default="generated")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class BrowserProfile(Base, TimestampMixin):

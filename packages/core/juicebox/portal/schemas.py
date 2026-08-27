@@ -143,6 +143,7 @@ class PortalDocumentOut(BaseModel):
     application_id: str | None
     kind: str
     is_default: bool
+    protected_default: bool = False
     filename: str
     content_type: str
     size_bytes: int

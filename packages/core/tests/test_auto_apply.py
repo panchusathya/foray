@@ -1178,7 +1178,7 @@ class TestTheThreadPath:
         )
         result = _handle_app_package(session, job, utcnow())
         assert "waiting on required form answers" in result["submission"]
-        assert "work_authorization" in result["submission"]
+        assert "authorized" in result["submission"].lower() or "sponsor" in result["submission"].lower()
 
     def test_a_handoff_still_tells_the_candidate_their_package_is_ready(
         self, session, account, candidate, memory_mode

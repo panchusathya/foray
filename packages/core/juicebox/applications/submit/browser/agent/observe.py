@@ -25,6 +25,7 @@ PAGE_RECEIPT = "receipt"
 _SCREENSHOT_MAX_DIM = 1024
 _PLANNER_MAX_CONTROLS = 60
 _PLANNER_LABEL_CHARS = 120
+_PLANNER_QUESTION_CHARS = 200
 _PLANNER_VALUE_CHARS = 60
 _PLANNER_OPTION_CHARS = 60
 _PLANNER_MAX_OPTIONS = 12
@@ -73,6 +74,21 @@ _ENUMERATE_JS = """() => {
     }
     return '';
   }
+  function questionFor(el) {
+    // The wrapper's text, which is where the actual question lives. Workday
+    // labels a required dropdown only "Select One Required" -- the question
+    // ("Are you legally permitted to work in the country where this job is
+    // located?") sits in the enclosing formField, so an inventory of control
+    // labels alone left the planner guessing which question it was answering
+    // (live, Intapp 2026-08-27: it picked Yes on its own).
+    const grp = el.closest('[data-automation-id^="formField-"]')
+      || el.closest('fieldset') || el.closest('[role="group"]');
+    if (!grp) return '';
+    const own = (el.innerText || '').trim();
+    let text = (grp.innerText || '').trim();
+    if (own && text.startsWith(own)) text = text.slice(own.length).trim();
+    return text.slice(0, 200);
+  }
   function isFile(el) {
     return (el.getAttribute('type') || '').toLowerCase() === 'file';
   }
@@ -106,6 +122,7 @@ _ENUMERATE_JS = """() => {
     out.push({
       id,
       label: labelFor(el),
+      question: questionFor(el),
       fieldType: type,
       role,
       name: el.getAttribute('name') || '',
@@ -128,6 +145,10 @@ _ENUMERATE_JS = """() => {
 class Control:
     id: str
     label: str = ""
+    #: The question this control answers, read off its wrapper. Workday labels
+    #: a required dropdown only "Select One Required"; the question text is the
+    #: only thing that says WHICH question it is.
+    question: str = ""
     field_type: str = "text"
     role: str = ""
     name: str = ""
@@ -196,6 +217,11 @@ class Observation:
                 {
                     "id": c.id,
                     "label": c.label[:_PLANNER_LABEL_CHARS],
+                    **(
+                        {"question": c.question[:_PLANNER_QUESTION_CHARS]}
+                        if c.question and c.question[:40] != c.label[:40]
+                        else {}
+                    ),
                     "field_type": c.field_type,
                     "role": c.role,
                     "required": c.required,
@@ -286,6 +312,7 @@ def observe(page) -> Observation:
             Control(
                 id=cid,
                 label=str(item.get("label") or "").strip(),
+                question=str(item.get("question") or "").strip(),
                 field_type=str(item.get("fieldType") or "text").strip().lower() or "text",
                 role=str(item.get("role") or "").strip().lower(),
                 name=str(item.get("name") or "").strip(),

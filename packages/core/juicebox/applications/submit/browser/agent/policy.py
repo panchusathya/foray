@@ -207,6 +207,17 @@ def check(
     if control is None:
         return Decision(False, reason="unknown control_id", page_class=klass, replan=True)
     mismatch = _action_type_mismatch(action.type, control)
+    if mismatch and action.type == "upload" and control.field_type != "file":
+        # Point at the real input rather than only rejecting the button. The
+        # planner aimed upload at "Select files" five times running because the
+        # refusal never said which control WAS the file input (live, Intapp
+        # 2026-08-27).
+        target = next((c for c in obs.controls if c.field_type == "file"), None)
+        if target is not None:
+            mismatch = (
+                f"control {control.id} is a {control.field_type}, not the file input -- "
+                f"upload to control {target.id} ({target.label[:40]!r}) instead"
+            )
     if mismatch:
         # The model answered a Yes/No *button* with fill and Playwright threw
         # mid-run (live, Forerunner 2026-08-27). Wrong-verb-for-control is a

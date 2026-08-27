@@ -345,14 +345,19 @@ def _collapse_spelling(text: str) -> str:
     dot com", and that turn is what tells the scanner the next one is about an
     address.
     """
+    # The apostrophe is in both boundaries because contractions end in a real
+    # letter: without it, "It's t u s h a r ..." matched from the trailing "s"
+    # of "It's" and the collapse produced "It'stushar..." -- one glued token
+    # the address grammar can never match, on the exact phrasing callers use
+    # to introduce a spelling.
     spaced = re.sub(
-        r"(?<![a-z0-9])(?:[a-z0-9] ){1,}[a-z0-9](?![a-z0-9])",
+        r"(?<![a-z0-9'])(?:[a-z0-9] ){1,}[a-z0-9](?![a-z0-9])",
         lambda m: m.group(0).replace(" ", ""),
         text,
         flags=re.IGNORECASE,
     )
     return re.sub(
-        r"(?<![a-z0-9-])(?:[a-z0-9]-){2,}[a-z0-9](?![a-z0-9-])",
+        r"(?<![a-z0-9'-])(?:[a-z0-9]-){2,}[a-z0-9](?![a-z0-9-])",
         lambda m: m.group(0).replace("-", ""),
         spaced,
         flags=re.IGNORECASE,
@@ -455,6 +460,16 @@ def _states_an_address(text: str) -> bool:
     return bool(find_email(text) or decode_spoken_email(text))
 
 
+# A turn that accepts a read-back and nothing else. Anchored and short on
+# purpose: "yes, and my number is..." still opens with acceptance, while a turn
+# that opens with anything else is answering some other question.
+_AFFIRMATION = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|correct|right|exactly|perfect|that's\s+right"
+    r"|that\s+is\s+right|that's\s+it|sounds\s+right|sure)\b",
+    re.IGNORECASE,
+)
+
+
 def _turns(transcript: str) -> list[tuple[bool, str]]:
     """``(is_agent, text)`` per line, blank lines dropped."""
     turns: list[tuple[bool, str]] = []
@@ -500,6 +515,7 @@ def scan_transcript(transcript: str) -> tuple[str, str]:
     email = ""
     asked_name = False
     asked_email = False
+    read_back = ""
     for is_agent, text in _turns(transcript):
         if is_agent:
             # An agent turn can ask for both at once, which is exactly what the
@@ -510,9 +526,18 @@ def scan_transcript(transcript: str) -> tuple[str, str]:
             # mandatory -- spell the local part, wait for a yes -- so the turn
             # answering it is the likeliest place a corrected address appears,
             # and it was the one turn the cue rule refused to read.
-            asked_email = mentions_an_email(text) or _states_an_address(text)
+            read_back = email_in_turn(text, cued=True)
+            asked_email = mentions_an_email(text) or bool(read_back)
             continue
-        if not email:
+        if read_back and _AFFIRMATION.match(text) and not _CORRECTION.match(text):
+            # The agent spelt an address and the caller said yes. That
+            # confirmed spelling outranks what the caller's own turn transcribed
+            # to, because ASR mangles the caller far more than it mangles us:
+            # on a real call "tushar" arrived as "Ishara", the agent read back
+            # the right address, the caller confirmed it -- and the scanner,
+            # reading caller turns only, was about to store the garbled one.
+            email = read_back
+        elif not email:
             email = email_in_turn(text, cued=asked_email)
         elif asked_email and _CORRECTION.match(text):
             # First-wins is right for a caller repeating themselves and wrong
@@ -529,6 +554,7 @@ def scan_transcript(transcript: str) -> tuple[str, str]:
         # caller's third sentence supply a name for a question two turns back.
         asked_name = False
         asked_email = False
+        read_back = ""
     return name, email
 
 

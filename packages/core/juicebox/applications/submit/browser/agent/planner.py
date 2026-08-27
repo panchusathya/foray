@@ -25,7 +25,8 @@ from the inventory and a value_token from the allowed list.
 
 Allowed value_token values: candidate.full_name, candidate.first_name,
 candidate.last_name, candidate.email, candidate.phone, candidate.linkedin,
-candidate.location, doc.resume, doc.cover_letter, policy.decline (only on
+candidate.location, candidate.current_title, candidate.current_company,
+doc.resume, doc.cover_letter, policy.decline (only on
 voluntary self-identification controls that offer Prefer not to answer),
 and answer.<key> for keys listed as approved answers.
 

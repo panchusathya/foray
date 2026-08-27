@@ -875,6 +875,8 @@ def build_context(
         phone=_primary_phone(candidate),
         linkedin_url=candidate.linkedin_url or "",
         location=_location(candidate),
+        current_title=candidate.current_title or "",
+        current_company=candidate.current_company or "",
         portal_username=portal_username,
         portal_password=portal_password,
         portal_account_verified=portal_verified,

@@ -41,6 +41,25 @@ class LoopResult:
         self.page_class = ""
 
 
+def form_route(url: str) -> str:
+    """The route where the form actually lives, for boards that split it.
+
+    Ashby's job URL is an overview page — the application form is its
+    ``/application`` sub-route, and the agent has no navigate action on
+    purpose, so it inventoried zero controls on the overview and stopped
+    (live, Forerunner 2026-08-27). Deterministic and vendor-stated, never the
+    planner's guess.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.netloc.lower() == "jobs.ashbyhq.com":
+        path = parsed.path.rstrip("/")
+        if path and not path.endswith("/application"):
+            return parsed._replace(path=path + "/application", query="", fragment="").geturl()
+    return url
+
+
 def run(
     ctx: SubmissionContext,
     *,
@@ -50,7 +69,7 @@ def run(
 ) -> LoopResult:
     result = LoopResult()
     settings = get_settings()
-    url = start_url or ctx.target.apply_url or ctx.posting_url
+    url = form_route(start_url or ctx.target.apply_url or ctx.posting_url or "")
     if not url:
         result.needs_human = True
         result.error = "no apply url"

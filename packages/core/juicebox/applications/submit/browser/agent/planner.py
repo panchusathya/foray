@@ -8,6 +8,7 @@ here — a submit click is not a latency budget.
 from __future__ import annotations
 
 import logging
+import time
 
 from .....config import get_settings
 from .....llm import client as llm_mod
@@ -59,25 +60,42 @@ def plan(
     llm = planner if planner is not None else _llm()
     if llm is None:
         return None
-    try:
-        result = llm.json(
-            system=_SYSTEM,
-            prompt=prompt,
-            schema=ACTION_SCHEMA,
-            effort="medium",
-            max_tokens=800,
-            model=_model(),
-            image=obs.screenshot or None,
-        )
-    except Exception as exc:  # noqa: BLE001 - planner miss is a stop, not a crash
-        logger.warning("planner call failed: %s", str(exc)[:300])
-        return None
-    action = parse_action(result.data if result is not None else None)
-    if action is None:
+    # An empty model response raises from the client's decode step, AFTER its
+    # transport retry loop, so the client never retries it -- this loop is the
+    # only second chance. Intermittent empties on the larger wizard pages cost
+    # a re-observe and a fault-budget tick each (live, Intapp 2026-08-27);
+    # three tries with short backoff absorb them where they happen.
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            result = llm.json(
+                system=_SYSTEM,
+                prompt=prompt,
+                schema=ACTION_SCHEMA,
+                effort="medium",
+                max_tokens=800,
+                model=_model(),
+                image=obs.screenshot or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - planner miss is a stop, not a crash
+            logger.warning(
+                "planner call failed (attempt %d/%d): %s", attempt + 1, attempts, str(exc)[:300]
+            )
+            if attempt + 1 < attempts:
+                time.sleep(1.0 * (attempt + 1))
+            continue
+        action = parse_action(result.data if result is not None else None)
+        if action is not None:
+            return action
         logger.warning(
-            "planner returned unparseable action: %r", str(result.data)[:300] if result else None
+            "planner returned unparseable action (attempt %d/%d): %r",
+            attempt + 1,
+            attempts,
+            str(result.data)[:300] if result else None,
         )
-    return action
+        if attempt + 1 < attempts:
+            time.sleep(1.0 * (attempt + 1))
+    return None
 
 
 def available() -> bool:

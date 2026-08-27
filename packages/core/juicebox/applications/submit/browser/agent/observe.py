@@ -7,10 +7,27 @@ observation; it never invents a selector.
 from __future__ import annotations
 
 import hashlib
+import io
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 PAGE_APPLICATION = "application"
 PAGE_RECEIPT = "receipt"
+
+#: Planner payload bounds. The screenshot is visual context, not the source of
+#: truth (the control inventory is), so it can be small; and a large wizard
+#: page must not grow the text payload without limit. Oversized payloads came
+#: back as empty model responses on the bigger Workday wizard steps while the
+#: same planner answered 40 calls in a row on the small ones (live, Intapp
+#: 2026-08-27) -- size, not provider.
+_SCREENSHOT_MAX_DIM = 1024
+_PLANNER_MAX_CONTROLS = 60
+_PLANNER_LABEL_CHARS = 120
+_PLANNER_VALUE_CHARS = 60
+_PLANNER_OPTION_CHARS = 60
+_PLANNER_MAX_OPTIONS = 12
 
 _ENUMERATE_JS = """() => {
   const ATTR = 'data-juicebox-id';
@@ -103,23 +120,63 @@ class Observation:
         return hashlib.sha256(material.encode()).hexdigest()[:16]
 
     def for_planner(self) -> dict:
+        controls = self.controls
+        if len(controls) > _PLANNER_MAX_CONTROLS:
+            # Fields first: dropping the tail of a long page must not drop the
+            # inputs still to fill in favour of yet more chrome links.
+            chrome = {"button", "submit", "reset", "image", "a", "link"}
+            fields = [c for c in controls if c.field_type not in chrome]
+            rest = [c for c in controls if c.field_type in chrome]
+            controls = tuple((fields + rest)[:_PLANNER_MAX_CONTROLS])
         return {
             "url": self.url,
             "title": self.title,
             "controls": [
                 {
                     "id": c.id,
-                    "label": c.label,
+                    "label": c.label[:_PLANNER_LABEL_CHARS],
                     "field_type": c.field_type,
                     "role": c.role,
                     "required": c.required,
-                    "current_value": c.value,
+                    "current_value": c.value[:_PLANNER_VALUE_CHARS],
                     "checked": c.checked,
-                    "options": list(c.options)[:12],
+                    "options": [
+                        o[:_PLANNER_OPTION_CHARS] for o in c.options[:_PLANNER_MAX_OPTIONS]
+                    ],
                 }
-                for c in self.controls
+                for c in controls
             ],
         }
+
+
+def _downscale(png: bytes) -> bytes:
+    """Bound the planner screenshot to _SCREENSHOT_MAX_DIM on its long side.
+
+    Best effort: no Pillow, or a bytes blob Pillow cannot read, means the
+    original image -- a full-size screenshot degrades the call, a raised
+    exception would kill the observation.
+    """
+    if not png:
+        return png
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(png)) as img:
+            width, height = img.size
+            longest = max(width, height)
+            if longest <= _SCREENSHOT_MAX_DIM:
+                return png
+            scale = _SCREENSHOT_MAX_DIM / longest
+            resized = img.convert("RGB").resize(
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                Image.LANCZOS,
+            )
+            out = io.BytesIO()
+            resized.save(out, format="PNG", optimize=True)
+            return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("screenshot downscale failed, sending original: %s", str(exc)[:200])
+        return png
 
 
 def observe(page) -> Observation:
@@ -150,7 +207,7 @@ def observe(page) -> Observation:
         # control inventory below is enumerated from the whole DOM regardless
         # of what is scrolled into view, so completeness does not depend on
         # the image -- it is visual context, and a bounded viewport is enough.
-        screenshot = page.screenshot(full_page=False) or b""
+        screenshot = _downscale(page.screenshot(full_page=False) or b"")
     except Exception:  # noqa: BLE001
         screenshot = b""
     controls = []

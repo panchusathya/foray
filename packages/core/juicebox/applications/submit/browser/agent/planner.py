@@ -7,11 +7,15 @@ here — a submit click is not a latency budget.
 
 from __future__ import annotations
 
+import logging
+
 from .....config import get_settings
 from .....llm import client as llm_mod
 from .actions import ACTION_SCHEMA, Action, parse_action
 from .observe import Observation
 from .policy import allowed_actions, page_class
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM = """You are filling a public job-application form on behalf of a candidate.
 You propose exactly one next action. You never invent text, selectors, URLs,
@@ -65,9 +69,15 @@ def plan(
             model=_model(),
             image=obs.screenshot or None,
         )
-    except Exception:  # noqa: BLE001 - planner miss is a stop, not a crash
+    except Exception as exc:  # noqa: BLE001 - planner miss is a stop, not a crash
+        logger.warning("planner call failed: %s", str(exc)[:300])
         return None
-    return parse_action(result.data if result is not None else None)
+    action = parse_action(result.data if result is not None else None)
+    if action is None:
+        logger.warning(
+            "planner returned unparseable action: %r", str(result.data)[:300] if result else None
+        )
+    return action
 
 
 def available() -> bool:

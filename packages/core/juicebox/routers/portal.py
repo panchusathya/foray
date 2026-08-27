@@ -1314,26 +1314,16 @@ def _password_shortfall(password: str) -> str:
 
 
 def _vault_username_for(db: Session, principal: CandidatePrincipal, vendor: str) -> str:
-    """The address the account will be registered under, so a later sign-in
-    matches: the alias of a waiting pursuit for this vendor, else the
-    candidate's own email."""
-    from ..applications import alias
-    from ..applications.ats import detect
+    """The candidate's own email — the address the ATS account is registered
+    under, so the employer's verification link reaches the candidate to click.
 
-    candidate = _candidate(db, principal)
-    pending = db.scalars(
-        select(Application).where(
-            Application.org_id == principal.org_id,
-            Application.candidate_id == principal.candidate_id,
-            Application.status.in_(("prepared", "awaiting_consent")),
-        )
-    ).all()
-    for application in pending:
-        posting = db.get(JobPosting, application.job_posting_id)
-        target = detect.target_of(posting) if posting is not None else None
-        if target and target.vendor == vendor:
-            return alias.sending_identity(db, candidate, application)[0]
-    return alias.primary_email(candidate)
+    Deliberately NOT the application alias: the alias inbox is a mailbox we
+    cannot reliably read (verification mail never arrived tonight), and an ATS
+    login is genuinely the candidate's own. The alias still fronts the
+    application itself; only the account registration uses the real address."""
+    from ..applications import alias
+
+    return alias.primary_email(_candidate(db, principal))
 
 
 def _resume_after_credential(db: Session, principal: CandidatePrincipal, account) -> None:

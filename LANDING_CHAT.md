@@ -53,9 +53,11 @@ so double-taps cannot double-extract.
 1. **Mint the token once** as any recruiter user of the Foray org:
    `GET /v1/intake/widget-token` → embed the returned value as `data-token`.
    Rotating `SECRET_KEY` invalidates it; re-mint and redeploy the site.
-2. **CORS**: the landing page is a different origin, so add it to the API
-   service environment: `CORS_ORIGINS=https://goforay.io,https://www.goforay.io,…`
-   (config already reads this; no code change).
+2. **CORS**: the landing page is a different origin, so it has to be allowed.
+   Set it in the production `.env` **and redeploy** —
+   `CORS_ORIGINS=https://app.goforay.io,https://goforay.io,https://www.goforay.io`.
+   List the app domain explicitly: the variable replaces the default rather
+   than adding to it, so omitting it locks the app out of its own API.
 3. **Serve the file**: ships automatically with the next web image build.
 4. **Landing site**: replace the scripted demo's send handler with the embed,
    or load the embed as the floating chat and keep the hero mock as pure

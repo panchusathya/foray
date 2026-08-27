@@ -65,22 +65,37 @@ _LOADING_RE = re.compile(
     r"fetching application form|loading[.…]|please wait", re.IGNORECASE
 )
 
+#: Enumeration counts page chrome — nav links, cookie buttons — so "controls
+#: exist" is not "the form exists". A spinner page with a nav bar passed the
+#: first version of this gate in 0ms while the spinner text sat in a
+#: pseudo-element that ``inner_text`` cannot see (the planner read it off the
+#: screenshot). Only these field types are chrome; anything else is a form.
+_CHROME_TYPES = frozenset({"button", "submit", "reset", "image", "a", "link"})
+
+
+def _has_form_controls(obs) -> bool:
+    return any(c.field_type not in _CHROME_TYPES for c in obs.controls)
+
 
 def _settled_observe(page, *, timeout_ms: int = 30000):
     """Observe once the client-rendered form actually exists.
 
     ``domcontentloaded`` fires on the shell; Ashby then shows "Fetching
     application form" while the controls stream in, and the planner read that
-    screen as a formless page and stopped (live, Forerunner 2026-08-27).
-    Every iteration settles — a click_next on a multi-step form navigates and
-    re-renders the same way the first load does. Waiting is deterministic
-    loop code, never a planner judgment; on timeout the last observation is
-    returned and the planner says what it honestly sees.
+    screen as a formless page and stopped (live, Forerunner 2026-08-27,
+    twice). Every iteration settles — a click_next on a multi-step form
+    re-renders the same way the first load does. The gate is a *form-ish*
+    control (chrome buttons and links do not count), with a receipt page
+    returned immediately — a thank-you page never grows an input. Waiting is
+    deterministic loop code, never a planner judgment; on timeout the last
+    observation is returned and the planner says what it honestly sees.
     """
     waited = 0
     obs = observe(page)
     while waited < timeout_ms:
-        if obs.controls and not _LOADING_RE.search(obs.body_text or ""):
+        if page_class(obs) == PAGE_RECEIPT:
+            return obs
+        if _has_form_controls(obs) and not _LOADING_RE.search(obs.body_text or ""):
             return obs
         page.wait_for_timeout(500)
         waited += 500

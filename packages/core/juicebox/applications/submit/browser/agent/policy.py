@@ -82,7 +82,13 @@ def page_class(obs: Observation) -> str:
     blob = _blob(obs)
     if _CAPTCHA.search(blob) or any(_CAPTCHA.search(c.identity) for c in obs.controls):
         return PAGE_CAPTCHA
-    if any(c.field_type == "password" for c in obs.controls) or _LOGIN.search(blob):
+    # A login page has a PASSWORD field. Text alone is too broad: Workday
+    # (and many ATSes) keep a "Sign In" link in the header of every page,
+    # including the signed-in application wizard, so a text-only trigger
+    # classified the whole wizard as login and the agent refused every step
+    # (live, Intapp 2026-08-27). The "sign in" wording only counts as login
+    # when a password field is actually on the page to back it up.
+    if any(c.field_type == "password" for c in obs.controls):
         return PAGE_LOGIN
     if _PAYMENT.search(blob):
         return PAGE_PAYMENT

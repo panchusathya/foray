@@ -378,6 +378,15 @@ class WorkdaySubmitter:
                         log=log,
                     )
                     driver.click(page, _SIGN_IN, log=log, what="sign in")
+                    # Sign-in is a navigation. Wait for the password field to
+                    # actually leave before handing off, or the agent observes
+                    # the still-present login form and refuses it.
+                    try:
+                        page.locator('input[data-automation-id="password"]').first.wait_for(
+                            state="detached", timeout=30000
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.step(f"password field still present after sign in: {str(exc)[:80]}")
 
                     # Some tenants verify by emailing a code rather than a link.
                     # `applications/inbox.py` parked it on the attempt; this is

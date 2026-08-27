@@ -119,6 +119,7 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         # verbatim copy names companies and roles read out of the database --
         # rewriting it risks changing a fact, so only the conversational lines
         # go through the composer.
+        canned = body
         if not verbatim:
             from .conversation import humanize
 
@@ -126,6 +127,10 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         row = _deliver(
             db, thread=thread, message=OutboundMessage(body=body, verbatim=verbatim)
         )
+        if row is not None and not verbatim:
+            # Which template this bubble came from, for `_fresh`: the stored
+            # body is a model rewrite, so comparing surfaces never matches.
+            row.raw = {**(row.raw or {}), "canned": canned}
         return TurnResult(action, thread, state, sent=[r for r in [row] if r])
 
     if intent.kind == intents.INTENT_APPLY_LINK:
@@ -656,12 +661,14 @@ def _fresh(db, thread, first: str, second: str) -> str:
     """
     from .threads import OUTBOUND, messages_of
 
-    # Case-insensitive: the channel voice lowercases outbound copy before it
-    # is stored, so comparing against the constant as written never matches.
+    # Compared against the template the last bubble was written FROM (stashed
+    # on the row by `_say`), not its surface text: with a model key the stored
+    # body is a rewrite and never string-equals the constant. Case-insensitive
+    # for the keyless path, where the channel voice lowercases the constant.
     for message in reversed(messages_of(db, thread)):
         if message.direction != OUTBOUND:
             continue
-        said = (message.body or "").strip().lower()
+        said = str((message.raw or {}).get("canned") or message.body or "").strip().lower()
         return second if said == first.strip().lower() else first
     return first
 

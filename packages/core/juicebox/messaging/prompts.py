@@ -286,20 +286,6 @@ HELP_REPLY = (
 # the recruiting-manager modes (CANDIDATE_AGENT_PLAN + the candidate agent)
 # ---------------------------------------------------------------------------
 
-# The first message of a candidate-agent thread. A shared number means the
-# candidate cannot recognise the sender, so this still names the org and
-# discloses the AI in the first breath. The STOP/HELP recital it used to carry
-# is gone -- see the note above ``greeting_for`` and INTAKE_COMPLIANCE.md
-# section 6a. The keywords themselves still work on this thread like any other.
-MANAGER_GREETING = (
-    "Hi — I'm the AI recruiting assistant for {org}. I can find roles that fit "
-    "you, prepare applications for your review, and keep you posted — all here."
-)
-
-ASK_EMAIL_MANAGER = "First — what's the best email to reach you on?"
-
-ASK_NAME_MANAGER = "And what name should I put on things?"
-
 # The resume nudge: the flexibility is the feature (either works), the nudge
 # is the resume — it carries more than a profile scrape does.
 ASK_LINKEDIN = (
@@ -341,11 +327,6 @@ ATTACHMENT_UNREADABLE = (
 ATTACHMENT_FAILED = (
     "That file didn't come through, sorry. Mind uploading it here instead: "
     "{upload_link} — or just send your LinkedIn URL."
-)
-
-PROFILE_INGEST_ACK = (
-    "Got it — pulling your profile together now. A couple of quick questions "
-    "while that runs."
 )
 
 MANAGING_READY = (
@@ -551,6 +532,27 @@ PRESENT_TAIL = (
     "reply with a number if you want more first. "
     "everything in flight, any time: {link}"
 )
+
+# The last line of the never-repeat guard (`conversation._unrepeated`): the
+# turn produced the byte-identical bubble it sent last time, and the model's
+# one job is to say the same thing differently and move the conversation
+# somewhere. Same validation posture as COMPOSE: the output is checked, not
+# trusted.
+REPEAT_SYSTEM = """You rewrite one text message for a recruiting assistant.
+
+The assistant is about to send the EXACT same message it sent last time, \
+which reads as a bot stuck in a loop. Rewrite it so it says the same thing \
+in different words, acknowledging in passing that nothing has changed since \
+last time.
+
+Hard rules:
+- Always lowercase. No capital letters except inside URLs.
+- Keep every fact, name, number and URL from the original, verbatim.
+- Do not add any new question, promise, or fact.
+- Keep it under 480 characters. It is a text message.
+- No greeting, no sign-off, no markdown, no emoji, no bullet points.
+"""
+
 
 INTENT_SYSTEM = """\
 You classify one inbound text from a job candidate talking to their recruiting

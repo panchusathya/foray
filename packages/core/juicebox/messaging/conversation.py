@@ -604,6 +604,79 @@ def humanize(
     return written
 
 
+_REPEAT_VARIANTS = (
+    "still the same as my last text — {body}",
+    "no change since you last asked — {body}",
+)
+
+
+def _unrepeated(db: Session, *, thread: IntakeThread, body: str, verbatim: bool) -> str:
+    """Never send the byte-identical bubble twice in a row.
+
+    The last line of defence, on the one chokepoint every send crosses. The
+    per-callsite mechanisms (paired "again" variants, ``manager._fresh``,
+    ``humanize``) each cover their own callers; the live thread that answered
+    every message with the same canned line for an afternoon proves a guard
+    per callsite is a guard with gaps.
+
+    An LLM rewrite says the same thing in different words; without a model (or
+    for verbatim/URL-bearing copy, where a rewrite risks a fact) a canned
+    preface makes the bubble different and names the repetition honestly. The
+    comparison window is the last three outbound bubbles so the preface cannot
+    itself alternate into a period-two loop. If every variant has also been
+    said, the original goes out — a repeat is still better than silence.
+    """
+    candidate = (body or "").strip()
+    if not candidate:
+        return body
+    recent: list[str] = []
+    last_inbound = ""
+    for message in reversed(messages_of(db, thread)):
+        if message.direction == OUTBOUND and message.status != "failed" and len(recent) < 3:
+            recent.append((message.body or "").strip().lower())
+        elif message.direction == INBOUND and not last_inbound:
+            last_inbound = message.body or ""
+        if len(recent) >= 3 and last_inbound:
+            break
+    if not recent or candidate.lower() != recent[0]:
+        return body
+    if not verbatim and "http" not in candidate.lower():
+        rewritten = _rewrite_repeat(body=body, last_inbound=last_inbound)
+        if rewritten and rewritten.strip().lower() not in recent:
+            return rewritten
+    for template in _REPEAT_VARIANTS:
+        variant = template.format(body=body)
+        if variant.strip().lower() not in recent:
+            return variant
+    return body
+
+
+def _rewrite_repeat(*, body: str, last_inbound: str) -> str:
+    """One model pass to unstick a repeat; empty string when it cannot help."""
+    llm = get_llm()
+    if not llm.available:
+        return ""
+    try:
+        result = llm.json_fast(
+            system=prompts.REPEAT_SYSTEM,
+            prompt=(
+                f"The message about to repeat:\n{body}\n\n"
+                f"They just said: {last_inbound.strip() or '(nothing)'}"
+            ),
+            schema=prompts.COMPOSE_SCHEMA,
+        )
+        written = str((result.data or {}).get("message") or "").strip()
+    except Exception as exc:  # noqa: BLE001 - the canned variant ships instead
+        logger.warning("repeat rewrite failed: %s", exc)
+        return ""
+    if not prompts.valid_question(written, batched=True):
+        return ""
+    if written.count("?") > body.count("?"):
+        # An invented question gets a real answer nobody wanted.
+        return ""
+    return written
+
+
 def _deliver(
     db: Session, *, thread: IntakeThread, message: OutboundMessage, origin: str = "reply"
 ) -> IntakeMessage | None:
@@ -614,6 +687,7 @@ def _deliver(
     and a channel does not have a session.
     """
     body = message.body if message.verbatim else prompts.lowercase_outbound(message.body)
+    body = _unrepeated(db, thread=thread, body=body, verbatim=message.verbatim)
     lowered = replace(message, body=body)
     channel = get_channel(thread.channel)
     if not channel.is_configured():

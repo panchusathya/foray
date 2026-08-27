@@ -262,7 +262,9 @@ class TestLinkedInIntroSendsOnce:
         candidate who replied "who is this?" without an email got the whole
         greeting again, on that reply and on every one after it."""
         _say(session, linq_thread, "hey", native_id="i-1")
-        intro = linq_channel.bodies[-1]
+        # The intro turn is two bubbles now (greeting, then the profile ask);
+        # the greeting is the one that must never repeat.
+        intro = linq_channel.bodies[0]
         assert intro
 
         _receipts_for(session, linq_thread)
@@ -274,11 +276,15 @@ class TestLinkedInIntroSendsOnce:
         self, session, linq_thread, linq_channel
     ):
         _say(session, linq_thread, "hey", native_id="j-1")
-        intro = linq_channel.bodies[-1]
+        intro = linq_channel.bodies[0]
         for index, body in enumerate(("who is this?", "sorry, who?", "??")):
             _receipts_for(session, linq_thread)
             _say(session, linq_thread, body, native_id=f"j-{index + 2}")
         assert linq_channel.bodies.count(intro) == 1
+        # The re-asked profile question is never the byte-identical bubble
+        # twice in a row (`conversation._unrepeated`).
+        for earlier, later in zip(linq_channel.bodies, linq_channel.bodies[1:]):
+            assert earlier != later
 
 
 class TestNudgeBudgetSurvivesReceipts:

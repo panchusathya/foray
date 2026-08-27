@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from juicebox.cli import cmd_reset_thread
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
-from juicebox.messaging.conversation import ACTION_GREETED, run_turn
+from juicebox.messaging.conversation import ACTION_ASKED, run_turn
 from juicebox.messaging.linkedin_flow import FLOW_LINKEDIN_SHORT
 from juicebox.messaging.threads import open_thread, record_inbound
 from juicebox.models import (
@@ -116,14 +116,17 @@ def test_the_next_message_gets_the_intro(session, account, channel):
     record_inbound(session, thread=fresh, body="hey", provider_native_id="n0")
     result = run_turn(session, thread=fresh)
 
-    assert result.action == ACTION_GREETED
-    intro = channel.bodies[-1]
+    assert result.action == ACTION_ASKED
+    # The intro turn is two bubbles (greeting, then the profile ask); the
+    # greeting is the first.
+    intro = channel.bodies[0]
     # A reset really does start over: the full intro, not a mid-conversation
     # message. Asserted on the disclosures it still carries rather than on the
     # opt-out recital it no longer does (INTAKE_COMPLIANCE.md section 6a).
     assert "acme talent" in intro.lower()
     assert "ai" in intro.lower()
-    assert "email" in intro.lower(), "back to the first question"
+    # Back to the first ask too: the profile question rides the same turn.
+    assert "resume" in channel.bodies[-1].lower() or "linkedin" in channel.bodies[-1].lower()
 
 
 def test_keep_candidate_leaves_the_crm_record(session, account, channel):

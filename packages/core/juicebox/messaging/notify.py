@@ -44,6 +44,9 @@ EVENT_PACKAGE_READY = "package.ready"
 EVENT_APPLICATION_SENT = "application.sent"
 EVENT_STATUS_CHANGED = "status.changed"
 EVENT_REFERRAL_CONFIRMED = "referral.confirmed"
+# An account-gated board (Workday/Oracle/YC) needs a login before the agent
+# can apply. Subject-keyed on the application so one prompt goes out per role.
+EVENT_VAULT_NEEDED = "vault.needed"
 # Apply-by-link dead ends, subject-keyed on the link message so a retried
 # job cannot text the same refusal twice.
 EVENT_LINK_PROBLEM = "link.problem"
@@ -205,6 +208,38 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             thread=thread,
             message=OutboundMessage(body=_LINK_EVENT_BODIES[event]),
             origin="proactive",
+        )
+        return {"event": event, "sent": 1 if row is not None else 0}
+
+    if event == EVENT_VAULT_NEEDED:
+        application = db.get(Application, job.payload.get("subject_id") or "")
+        if application is None or application.candidate_id != thread.candidate_id:
+            return {"skipped": "application not found for this thread"}
+        posting = db.get(JobPosting, application.job_posting_id)
+        company = (posting.company if posting else "") or "this employer"
+        # The vault page prefills the vendor/tenant from the query, so the
+        # saved credential is scoped to exactly the account we will register.
+        from ..applications.ats import detect
+        from urllib.parse import urlencode
+
+        target = detect.target_of(posting) if posting is not None else None
+        query = urlencode(
+            {
+                "vault": (target.vendor if target else "") or "",
+                "tenant": (target.tenant if target else "") or "",
+                "company": company,
+            }
+        )
+        link = mint_portal_link(
+            db,
+            org_id=thread.org_id,
+            candidate_id=application.candidate_id,
+            path=f"/documents?{query}",
+            channel=thread.channel,
+        )
+        body = prompts.NOTIFY_VAULT_NEEDED.format(company=company, link=link)
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body), origin="proactive"
         )
         return {"event": event, "sent": 1 if row is not None else 0}
 

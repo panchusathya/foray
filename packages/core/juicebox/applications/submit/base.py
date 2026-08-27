@@ -88,6 +88,12 @@ class SubmissionContext:
     #: Loaded by the service, because an adapter must not reach the database.
     portal_username: str = ""
     portal_password: str = ""
+    #: Whether the stored portal login has been confirmed to exist on the
+    #: employer (a prior successful registration + verification). False means
+    #: the candidate picked this password in the vault and the account still
+    #: has to be REGISTERED with it, not signed into. The register-vs-sign-in
+    #: fork keys on this, never on password presence alone.
+    portal_account_verified: bool = False
 
     #: A ``profiles.ProfileState`` when warm profiles are on, else None. A
     #: value object: the origin-filtered slice in, the saved state back out.

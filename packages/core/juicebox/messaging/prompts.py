@@ -420,6 +420,14 @@ NOTIFY_APPLICATION_SENT = (
 
 NOTIFY_STATUS_CHANGED = "Update on your applications: {summary}"
 
+# Account-gated board: the candidate picks a password, we register the account
+# with it and apply. Names the employer, and the link opens the vault scoped
+# to exactly that account.
+NOTIFY_VAULT_NEEDED = (
+    "{company} makes you create an account to apply. pick a password here and "
+    "i'll set it up and finish your application — {link}"
+)
+
 # ---------------------------------------------------------------------------
 # group-chat referrals (messaging/referrals.py)
 # ---------------------------------------------------------------------------

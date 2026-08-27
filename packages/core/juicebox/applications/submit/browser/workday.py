@@ -29,7 +29,6 @@ deliberately boring, and growing it is a code change with a reviewer.
 from __future__ import annotations
 
 import logging
-import secrets
 import tempfile
 from pathlib import Path
 
@@ -199,11 +198,9 @@ class WorkdaySubmitter:
                 ),
             )
 
-        # Second role at a tenant we already registered for. No new account is
-        # being made, so no verification mail is coming; parking on one would
-        # leave the pursuit in `submitting` until it aged out. Leg two is the
-        # whole of the work from here.
-        if ctx.portal_password:
+        # A verified account we already hold: no new account, no verification
+        # mail, so leg two (sign in and apply) is the whole of the work.
+        if ctx.portal_password and ctx.portal_account_verified:
             return self.resume(
                 ctx,
                 {
@@ -212,7 +209,18 @@ class WorkdaySubmitter:
                 },
             )
 
-        password = secrets.token_urlsafe(18)
+        # Model B2: register with the candidate's vault-chosen password, never
+        # a minted one. The gate in `auto_submit` prompts the vault and holds
+        # the pursuit, so a run with no stored password is a path that skipped
+        # it — refuse rather than self-register in the candidate's name.
+        if not ctx.portal_password:
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error="no vault credential for this workday tenant; awaiting the candidate's password",
+            )
+        password = ctx.portal_password
         log = RunLog()
         try:
             with driver.session(log=log) as page:

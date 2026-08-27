@@ -269,29 +269,40 @@ def absorb_text_answers(
     admitting we did not understand it -- the two replies a bare "noted,
     thanks" was collapsing into one.
 
-    ``asked_key`` is ``thread.last_field_asked``: when it names a form
-    question we asked directly, the reply body is the answer, written onto the
-    row **verbatim** -- never through the preference extractor, which knows
-    nothing about ``q_*`` keys. Their words, same standing as a portal PATCH,
-    so ``edited`` shields them from re-discovery exactly the same way.
+    ``asked_key`` is ``thread.last_field_asked``: when it names a question we
+    asked directly -- a form's own ``q_*`` key or one of the standard set --
+    the reply body is the answer, written onto the row **verbatim** when the
+    extractor pass left it blank. Their words, same standing as a portal
+    PATCH, so ``edited`` shields them from re-discovery exactly the same way.
     """
     filled = refill_from_preference(db, application)
-    if asked_key and reply_body.strip():
+    reply = reply_body.strip()
+    if asked_key and reply and not reply.endswith("?"):
+        # A directly-asked question owns its reply, standard keys included.
+        # The preference extractor gets first shot (refill above) because it
+        # also feeds matching — but when it fails, the candidate's own words
+        # land verbatim rather than evaporating. A live thread answered "when
+        # could you start?" four ways ("November 2026", "11/26", ...) while
+        # the extractor's model timed out, and every answer vanished into a
+        # re-ask loop. A reply that itself ends in a question mark is the
+        # candidate asking us something, never an answer to bind.
         answers = [dict(item) for item in (application.form_answers or [])]
         for item in answers:
-            if (
-                str(item.get("key")) == asked_key
-                and item.get("kind") == "custom"
-                and item.get("asked_text")
-                and not str(item.get("answer") or "").strip()
-            ):
-                item["answer"] = reply_body.strip()
-                item["provenance"] = "candidate:text"
-                item["edited"] = True
-                application.form_answers = answers
-                db.flush()
-                filled = [*filled, asked_key]
+            if str(item.get("key")) != asked_key:
+                continue
+            if str(item.get("answer") or "").strip():
                 break
+            askable = str(item.get("key")) in ASKABLE
+            custom = item.get("kind") == "custom" and item.get("asked_text")
+            if not (askable or custom):
+                break
+            item["answer"] = reply
+            item["provenance"] = "candidate:text"
+            item["edited"] = True
+            application.form_answers = answers
+            db.flush()
+            filled = [*filled, asked_key]
+            break
     return {
         "filled": filled,
         "missing": asked_blanks(application),

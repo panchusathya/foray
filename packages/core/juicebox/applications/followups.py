@@ -113,6 +113,64 @@ def form_question_blanks(application: Application) -> list[dict]:
     return sorted(blanks, key=lambda item: not item.get("form_required"))
 
 
+def textable_form_blanks(application: Application) -> list[dict]:
+    """Required custom blanks a text conversation may ask directly.
+
+    Custom only, never attestations: a form's own question ("what interests
+    you about infra?") is answerable in a reply, and the reply is the
+    candidate's own words -- the same standing a portal PATCH has. Self-ID
+    stays off SMS entirely, whatever the form marks it.
+    """
+    return [
+        item
+        for item in (application.form_answers or [])
+        if item.get("kind") == "custom"
+        and item.get("form_required")
+        and not str(item.get("answer") or "").strip()
+    ]
+
+
+def required_form_blanks(application: Application) -> list[dict]:
+    """Required form questions nobody has answered -- the submit withhold.
+
+    Custom and attestation both: ``hosted_form.unanswerable_questions`` will
+    refuse the run on exactly this set, so queueing an attempt while it is
+    non-empty spends attempt 1 on a run we already know terminuses.
+    """
+    return [
+        item
+        for item in (application.form_answers or [])
+        if item.get("kind") in ("custom", "attestation")
+        and item.get("form_required")
+        and not str(item.get("answer") or "").strip()
+    ]
+
+
+def next_text_question(application: Application) -> dict | None:
+    """The next required custom question to ask over text, or ``None``.
+
+    ``asked_text`` is the direct-ask flag, distinct from ``asked`` (named once
+    in a batch message, historically as "answer in the app"): only a question
+    put to the candidate directly may capture their next reply, and legacy
+    rows whose ``asked`` was a hand-off must never do that.
+    """
+    for item in textable_form_blanks(application):
+        if not item.get("asked_text"):
+            return item
+    return None
+
+
+def mark_text_asked(db: Session, application: Application, key: str) -> None:
+    """Record that one form question went out as a direct text question."""
+    answers = [dict(item) for item in (application.form_answers or [])]
+    for item in answers:
+        if str(item.get("key")) == key:
+            item["asked_text"] = True
+            item["asked"] = True
+    application.form_answers = answers
+    db.flush()
+
+
 def attestation_count(application: Application) -> int:
     """Unanswered self-ID questions. Counted, never quoted: race and disability
     do not belong in an SMS, even as a question."""
@@ -128,7 +186,12 @@ def followup_message(application: Application, posting: JobPosting | None) -> st
     missing = blank_answers(application)
     mine = portal_only_blanks(application)
     drafted = drafted_for_review(application)
-    form_blanks = form_question_blanks(application)
+    # Required customs are asked directly over text now (one per message, via
+    # the answer loop), so naming them here as "answer in the app" would
+    # promise the wrong venue. Only the optional ones are handed to the portal.
+    form_blanks = [
+        item for item in form_question_blanks(application) if not item.get("form_required")
+    ]
     attestations = attestation_count(application)
     if not missing and not mine and not drafted and not form_blanks and not attestations:
         return ""
@@ -230,11 +293,12 @@ def awaiting_text_answers(
         answers = application.form_answers or []
         for item in answers:
             key = str(item.get("key") or "")
-            if (
-                key in ASKABLE
-                and item.get("asked")
-                and not str(item.get("answer") or "").strip()
-            ):
+            blank = not str(item.get("answer") or "").strip()
+            if key in ASKABLE and item.get("asked") and blank:
+                return application
+            # A form question put to them directly (``asked_text``, never the
+            # legacy batch ``asked``, which was a portal hand-off).
+            if item.get("kind") == "custom" and item.get("asked_text") and blank:
                 return application
     return None
 
@@ -263,23 +327,53 @@ def asked_blanks(application: Application) -> list[str]:
     ]
 
 
-def absorb_text_answers(db: Session, application: Application) -> dict:
+def absorb_text_answers(
+    db: Session, application: Application, *, reply_body: str = "", asked_key: str = ""
+) -> dict:
     """Fold what the candidate just said into this application, and report.
 
-    Returns ``{"filled": [...], "missing": [...], "handover": bool}``.
-    ``filled`` is what this turn resolved, which is what makes the difference
-    between confirming an answer and admitting we did not understand it -- the
-    two replies a bare "noted, thanks" was collapsing into one.
+    Returns ``{"filled": [...], "missing": [...], "handover": bool,
+    "next_question": dict | None}``. ``filled`` is what this turn resolved,
+    which is what makes the difference between confirming an answer and
+    admitting we did not understand it -- the two replies a bare "noted,
+    thanks" was collapsing into one.
+
+    ``asked_key`` is ``thread.last_field_asked``: when it names a form
+    question we asked directly, the reply body is the answer, written onto the
+    row **verbatim** -- never through the preference extractor, which knows
+    nothing about ``q_*`` keys. Their words, same standing as a portal PATCH,
+    so ``edited`` shields them from re-discovery exactly the same way.
     """
     filled = refill_from_preference(db, application)
+    if asked_key and reply_body.strip():
+        answers = [dict(item) for item in (application.form_answers or [])]
+        for item in answers:
+            if (
+                str(item.get("key")) == asked_key
+                and item.get("kind") == "custom"
+                and item.get("asked_text")
+                and not str(item.get("answer") or "").strip()
+            ):
+                item["answer"] = reply_body.strip()
+                item["provenance"] = "candidate:text"
+                item["edited"] = True
+                application.form_answers = answers
+                db.flush()
+                filled = [*filled, asked_key]
+                break
     return {
         "filled": filled,
         "missing": asked_blanks(application),
         "handover": bool(
             portal_only_blanks(application)
-            or form_question_blanks(application)
+            or [
+                item
+                for item in form_question_blanks(application)
+                if not item.get("form_required")
+            ]
             or attestation_count(application)
         ),
+        "next_question": next_text_question(application),
     }
 
 
@@ -308,6 +402,13 @@ def answer_acknowledgement(
         asks = " ".join(ASKABLE[key] for key in missing)
         return f"got it, thanks. one more for {where}: {asks}"
 
+    next_question = outcome.get("next_question")
+    if next_question is not None:
+        # Their inbound earns one outbound; the acknowledgement and the next
+        # form question share it rather than spending two.
+        question = str(next_question.get("question") or "").strip().rstrip("?")
+        return f'got it. their form also asks: "{question}?"'
+
     if outcome.get("handover"):
         # Everything answerable over text is in. What is left is deliberately
         # not askable here -- their own words, the form's own questions, and
@@ -317,6 +418,20 @@ def answer_acknowledgement(
             "yours to fill in — they're waiting in the app."
         )
     return f"perfect, that's {where} complete. i'll take it from here."
+
+
+def custom_question_message(
+    application: Application, posting: JobPosting | None, item: dict
+) -> str:
+    """One form question, quoted, named to its role."""
+    where = role_phrase(posting)
+    question = str(item.get("question") or "").strip().rstrip("?")
+    head = (
+        f"{where} has one more question on the form"
+        if where
+        else "one more question on the application form"
+    )
+    return f'{head}: "{question}?"'
 
 
 def thread_for(db: Session, application: Application) -> IntakeThread | None:
@@ -352,10 +467,11 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     """
     missing = blank_answers(application)
     # Everything the message hands over rather than asks: the write-it-yourself
-    # keys, drafts awaiting the candidate's eyes, this form's own questions,
-    # and the self-ID entries. The self-ID ones are named here only so the
-    # ask-once flag lands on their rows -- the rendered message carries them
-    # as a count, never by name.
+    # keys, drafts awaiting the candidate's eyes, the form's *optional*
+    # questions, and the self-ID entries. Required customs are deliberately
+    # absent -- they are asked directly, one per message, below. The self-ID
+    # ones are named here only so the ask-once flag lands on their rows -- the
+    # rendered message carries them as a count, never by name.
     mine = (
         portal_only_blanks(application)
         + [str(item.get("key")) for item in drafted_for_review(application)]
@@ -364,17 +480,33 @@ def ask_for_missing(db: Session, application: Application) -> dict:
             for item in (application.form_answers or [])
             if item.get("kind") in ("custom", "attestation")
             and not str(item.get("answer") or "").strip()
+            and not (item.get("kind") == "custom" and item.get("form_required"))
         ]
     )
-    if not missing and not mine:
+    next_custom = next_text_question(application)
+    if not missing and not mine and next_custom is None:
         return {"asked": [], "skipped": "package answered everything"}
+
+    # A question already put to them directly and still unanswered holds
+    # everything: the conversation is mid-loop, and a handover batch (or the
+    # same question again) on top of an open question is the double-text that
+    # makes the agent read as not listening.
+    pending = [
+        item
+        for item in (application.form_answers or [])
+        if item.get("kind") == "custom"
+        and item.get("asked_text")
+        and not str(item.get("answer") or "").strip()
+    ]
+    if pending:
+        return {"asked": [], "skipped": "waiting on a texted answer"}
 
     # "Have we asked?" is recorded on the answer rows themselves rather than a
     # new column: they are already JSON on this application, and a flag that
     # travels with the answer cannot drift from it.
     answers = [dict(item) for item in (application.form_answers or [])]
     already = {str(i.get("key")) for i in answers if i.get("asked")}
-    if set(missing) | set(mine) <= already:
+    if set(missing) | set(mine) <= already and next_custom is None:
         return {"asked": [], "skipped": "already asked"}
 
     thread = thread_for(db, application)
@@ -382,19 +514,42 @@ def ask_for_missing(db: Session, application: Application) -> dict:
         return {"asked": [], "skipped": "no standing thread"}
 
     posting = db.get(JobPosting, application.job_posting_id)
-    body = followup_message(application, posting)
-    if not body:
-        return {"asked": [], "skipped": "nothing to say"}
 
     from ..messaging.channels import OutboundMessage
     from ..messaging.conversation import deliver
 
+    if not missing and next_custom is not None:
+        # The form's own required question goes out alone, tagged so the reply
+        # lands on its row -- the same asked_field mechanics identity
+        # questions use. One per message; the answer loop asks the next one in
+        # the acknowledgement, and the hand-over line (portal-only blanks,
+        # drafts, self-ID) arrives in the completion ack once the loop drains
+        # -- a batch sent first would leave this question waiting on an event
+        # that may never come.
+        key = str(next_custom.get("key"))
+        body = custom_question_message(application, posting, next_custom)
+        row = deliver(
+            db, thread=thread, message=OutboundMessage(body=body, asked_field=key)
+        )
+        if row is not None:
+            mark_text_asked(db, application, key)
+        return {
+            "asked": [key] if row is not None else [],
+            "handed_off": [],
+            "sent": 1 if row is not None else 0,
+        }
+
+    body = followup_message(application, posting)
+    if not body:
+        return {"asked": [], "skipped": "nothing to say"}
+
     row = deliver(db, thread=thread, message=OutboundMessage(body=body))
-    for item in answers:
-        if str(item.get("key")) in set(missing) | set(mine):
-            item["asked"] = True
-    application.form_answers = answers
-    db.flush()
+    if row is not None:
+        for item in answers:
+            if str(item.get("key")) in set(missing) | set(mine):
+                item["asked"] = True
+        application.form_answers = answers
+        db.flush()
     # `asked` stays the questions we actually asked. A portal-only blank was
     # named, not asked, and a caller counting questions should not see it --
     # but the row still carries `asked` so it is not named twice.

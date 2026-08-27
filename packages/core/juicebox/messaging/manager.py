@@ -155,7 +155,7 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     # "what should we put for comp expectations?" got "noted, thanks. anything
     # else you want me looking for?", which named no role and invited a fresh
     # job search, and a following "no" then read as declining one.
-    answered = _absorb_application_answer(db, thread=thread, state=state)
+    answered = _absorb_application_answer(db, thread=thread, last=last, state=state)
     if answered is not None:
         return answered
 
@@ -168,7 +168,7 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
     return _say(_fresh(db, thread, prompts.MANAGER_FALLBACK, prompts.MANAGER_FALLBACK_AGAIN))
 
 
-def _absorb_application_answer(db: Session, *, thread: IntakeThread, state):
+def _absorb_application_answer(db: Session, *, thread: IntakeThread, last: IntakeMessage, state):
     """Fold a reply into the application that asked, or return None.
 
     ``None`` means no application was waiting, and the caller carries on with
@@ -194,7 +194,12 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, state):
     if application is None:
         return None
 
-    outcome = followups.absorb_text_answers(db, application)
+    outcome = followups.absorb_text_answers(
+        db,
+        application,
+        reply_body=last.body or "",
+        asked_key=thread.last_field_asked or "",
+    )
     posting = db.get(JobPosting, application.job_posting_id)
     body = followups.answer_acknowledgement(application, posting, outcome)
 
@@ -216,8 +221,19 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, state):
             submission,
         )
 
-    # verbatim: names the role and the employer out of the posting.
-    row = _deliver(db, thread=thread, message=OutboundMessage(body=body, verbatim=True))
+    # verbatim: names the role and the employer out of the posting. When the
+    # acknowledgement carries the form's next question, the outbound is tagged
+    # with its key so the reply lands on that row -- identity-question
+    # mechanics, reused.
+    next_question = outcome.get("next_question")
+    asked_field = str(next_question.get("key")) if next_question else ""
+    row = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, verbatim=True, asked_field=asked_field),
+    )
+    if row is not None and asked_field:
+        followups.mark_text_asked(db, application, asked_field)
     result = TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
     logger.info(
         "application %s absorbed answers %s (still missing %s)",
@@ -619,8 +635,9 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
     under it. Returns ``(kept, unsupported_dropped)`` so the caller can tell
     "everything was taken down" from "nothing here is applicable".
     """
+    from ..applications import formspec
     from ..applications.ats import detect as ats_detect
-    from ..applications.submit.registry import can_submit_vendor
+    from ..applications.submit.registry import can_apply
     from ..jobmatch.liveness import is_gone
 
     kept: list = []
@@ -633,12 +650,20 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
             logger.info("closed dead posting %s before proposing it", posting.id)
             continue
         target = ats_detect.resolve_target(db, posting, stamp_on_miss=False)
-        if not can_submit_vendor(target.vendor):
+        if not can_apply(posting, target):
             unsupported += 1
+            # A board nobody mapped is not a verdict, it is an unanswered
+            # question -- queue one derivation (a read-only page view) so the
+            # NEXT time this posting comes up the answer is on the row. Only
+            # here, on a bar-passing match somebody would have been shown:
+            # deriving the whole book would be a page view per posting for
+            # postings nobody ever sees.
+            queued = formspec.enqueue_derivation(db, posting)
             logger.info(
-                "not carding posting %s: no submit adapter (vendor=%r)",
+                "not carding posting %s: not applicable (vendor=%r)%s",
                 posting.id,
                 target.vendor,
+                "; derivation queued" if queued is not None else "",
             )
             continue
         kept.append((match, posting))

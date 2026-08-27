@@ -137,7 +137,7 @@ class Settings:
         default_factory=lambda: _env("JUICEBOX_LLM_PROVIDER", "auto").lower()
     )
     openrouter_model: str = field(
-        default_factory=lambda: _env("OPENROUTER_MODEL", "z-ai/glm-5.2")
+        default_factory=lambda: _env("OPENROUTER_MODEL", "z-ai/glm-5.3-flash")
     )
     # Deliberately empty by default: the per-provider default is chosen at
     # runtime, because hardcoding an Anthropic slug here would follow the
@@ -671,6 +671,14 @@ class Settings:
     # it: `http://user:pass@gate.provider.com:7777`. Empty means direct, which
     # is the state every deployment starts in.
     apply_proxy_url: str = field(default_factory=lambda: _env("APPLY_PROXY_URL", ""))
+    # Warm per-candidate browser profiles (storage_state + sticky egress +
+    # pinned UA), dark by default. Local-Chromium only: the Scraping Browser
+    # owns its own fingerprint and cannot take a persisted state, so with
+    # APPLY_BROWSER_CDP_URL set this flag is ignored. Off, the apply browser
+    # is byte-for-byte its proven cold-context self.
+    apply_browser_profiles: bool = field(
+        default_factory=lambda: _env_bool("APPLY_BROWSER_PROFILES", False)
+    )
     # A managed anti-detect browser's CDP endpoint (Bright Data Scraping
     # Browser): `wss://brd-customer-...-zone-...:pass@brd.superproxy.io:9222`.
     # When set it REPLACES the local Chromium and APPLY_PROXY_URL both -- the

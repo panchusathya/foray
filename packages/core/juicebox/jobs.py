@@ -43,6 +43,13 @@ KIND_JOBS_MATCH_ONE = "jobs.match.one"
 KIND_JOBS_SCRAPE = "jobs.scrape"
 KIND_JOBS_SCRAPE_ONE = "jobs.scrape.one"
 KIND_JOBS_DISCOVER_ONE = "jobs.discover.one"
+# Deriving a FormSpec from one unrecognised posting's own page (a browser page
+# view, read-only). Enqueued by the carding gate when a bar-passing match hits
+# a board nobody mapped -- never on ensure_ticks, because the book is far
+# larger than the set anyone is ever shown and each derivation is a real page
+# view through the proxy. Idempotent per posting; a failed row is revived by
+# the next candidate match, which is the retry story.
+KIND_JOBS_FORMSPEC_ONE = "jobs.formspec.one"
 
 # Contact discovery mirrors the sync split: a per-org dispatcher fans out
 # one job per mailbox. It is never added to ensure_ticks -- reading a year

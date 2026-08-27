@@ -26,6 +26,52 @@ from juicebox.applications.submit.browser.questions import (
 )
 
 
+class TestIdentityKey:
+    """classify says a control IS identity; identity_key says which field."""
+
+    @pytest.mark.parametrize(
+        ("label", "field_type", "key"),
+        [
+            ("First Name", "text", "first_name"),
+            ("Given name", "text", "first_name"),
+            ("Last Name", "text", "last_name"),
+            ("Surname", "text", "last_name"),
+            ("Full name", "text", "full_name"),
+            ("Name", "text", "full_name"),
+            ("Email Address", "text", "email"),
+            ("E-mail", "text", "email"),
+            ("Phone number", "text", "phone"),
+            ("Mobile", "text", "phone"),
+            ("LinkedIn profile", "text", "linkedin"),
+            ("Location", "text", "location"),
+            ("City", "text", "location"),
+            ("Resume/CV", "file", "resume"),
+            ("Upload your resume here (PDF preferred)", "file", "resume"),
+            ("Curriculum Vitae", "file", "resume"),
+            ("Cover letter", "file", "cover_letter"),
+        ],
+    )
+    def test_the_table(self, label, field_type, key):
+        from juicebox.applications.submit.browser.derive import identity_key
+
+        assert identity_key(label, field_type) == key
+
+    @pytest.mark.parametrize(
+        ("label", "field_type"),
+        [
+            # A file input whose label names something we do not hold is not
+            # the resume, whatever position it renders in.
+            ("Upload your portfolio deck", "file"),
+            ("", "text"),
+            ("Favorite colour", "text"),
+        ],
+    )
+    def test_unmappable_stays_empty(self, label, field_type):
+        from juicebox.applications.submit.browser.derive import identity_key
+
+        assert identity_key(label, field_type) == ""
+
+
 class TestClassify:
     @pytest.mark.parametrize(
         "label",
@@ -501,14 +547,21 @@ class TestFollowupNamesTheFormsQuestions:
         ]
         return SimpleNamespace(form_answers=answers)
 
-    def test_a_required_custom_question_is_quoted(self):
+    def test_a_required_custom_question_is_left_for_the_direct_ask(self):
+        """Required customs are asked over text now (one per message, via the
+        answer loop), so naming them here as "answer in the app" would promise
+        the wrong venue. Optional ones are still the portal's."""
         from juicebox.applications.followups import followup_message
 
         body = followup_message(
-            self._app([_entry(question="How did you hear about us?", form_required=True)]),
+            self._app([
+                _entry(key="q_req", question="How did you hear about us?", form_required=True),
+                _entry(key="q_opt", question="Optional trivia?"),
+            ]),
             self._Posting(),
         )
-        assert '"How did you hear about us?"' in body
+        assert "How did you hear about us" not in body
+        assert '"Optional trivia?"' in body
         assert "answer in the app" in body
 
     def test_attestations_are_counted_never_quoted(self):
@@ -540,7 +593,7 @@ class TestFollowupNamesTheFormsQuestions:
         assert body.count("their form asks") == MAX_NAMED_FORM_QUESTIONS
         assert "plus 3 more of their questions" in body
 
-    def test_required_questions_are_named_before_optional_ones(self):
+    def test_required_questions_never_ride_the_batch(self):
         from juicebox.applications.followups import followup_message
 
         body = followup_message(
@@ -550,7 +603,8 @@ class TestFollowupNamesTheFormsQuestions:
             ]),
             self._Posting(),
         )
-        assert body.index("Required essay") < body.index("Optional trivia")
+        assert "Required essay" not in body
+        assert "Optional trivia" in body
 
     def test_everything_answered_is_still_silent(self):
         from juicebox.applications.followups import followup_message

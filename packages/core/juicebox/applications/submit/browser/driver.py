@@ -165,8 +165,21 @@ def _proxy_config(url: str, *, session_token: str = "") -> dict | None:
 
 
 @contextlib.contextmanager
-def session(*, log: RunLog):
-    """A paced, serialised browser context. Closes whatever it opened."""
+def session(*, log: RunLog, profile=None):
+    """A paced, serialised browser context. Closes whatever it opened.
+
+    ``profile`` is a ``profiles.ProfileState`` when warm profiles are on: its
+    (already origin-filtered) storage_state seeds the context, its sticky
+    egress token replaces the per-run one so the candidate keeps one IP across
+    runs, and its UA pins the fingerprint the profile was born with. On a
+    clean close the context's storage_state is written back onto
+    ``profile.saved_state`` for the caller to persist -- the driver itself
+    never touches the database.
+
+    Ignored entirely on the CDP branch: the Scraping Browser owns its
+    fingerprint, and seeding it with our cookies would make the identity it
+    was built to present inconsistent.
+    """
     ok, reason = available()
     if not ok:
         raise BrowserUnavailable(reason)
@@ -181,11 +194,19 @@ def session(*, log: RunLog):
 
         settings = get_settings()
         # A fresh sticky-session token per run: one IP for this whole form
-        # fill, a different one for the next application.
+        # fill, a different one for the next application. A warm profile pins
+        # it instead -- one candidate, one IP, run after run.
         import secrets
 
-        session_token = secrets.token_hex(6)
+        session_token = (
+            profile.egress_session
+            if profile is not None and profile.egress_session
+            else secrets.token_hex(6)
+        )
         cdp_url = settings.apply_browser_cdp_url.strip()
+        if cdp_url and profile is not None:
+            log.step("profile ignored: scraping browser owns the fingerprint")
+            profile = None
         with sync_playwright() as playwright:
             if cdp_url:
                 # Bright Data Scraping Browser: a real, managed browser on their
@@ -220,9 +241,18 @@ def session(*, log: RunLog):
                     context = browser.new_context(
                         viewport={"width": 1440, "height": 900},
                         accept_downloads=False,
-                        user_agent=settings.apply_browser_user_agent or None,
+                        user_agent=(
+                            (profile.user_agent if profile is not None else "")
+                            or settings.apply_browser_user_agent
+                            or None
+                        ),
                         locale="en-US",
                         timezone_id="America/Los_Angeles",
+                        storage_state=(
+                            profile.storage_state
+                            if profile is not None and profile.storage_state
+                            else None
+                        ),
                     )
                     # navigator.webdriver stays true even with the launch flag on
                     # some Chromium builds; this removes it before any page script
@@ -237,6 +267,13 @@ def session(*, log: RunLog):
                         "browser opened" + (" via proxy" if settings.apply_proxy_url else "")
                     )
                 yield page
+                if profile is not None:
+                    # Only after a clean yield: a run that raised may have a
+                    # half-authenticated jar, and persisting that would make
+                    # the next run inherit the breakage.
+                    with contextlib.suppress(Exception):
+                        profile.saved_state = context.storage_state()
+                        log.step("profile state captured")
             finally:
                 with contextlib.suppress(Exception):
                     browser.close()

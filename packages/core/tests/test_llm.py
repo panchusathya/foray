@@ -223,7 +223,7 @@ class TestProviderResolution:
     def test_openrouter_key_alone_picks_openrouter_and_its_model(self, monkeypatch):
         settings = self._settings(monkeypatch, OPENROUTER_API_KEY="or-test")
         assert settings.resolved_llm_provider == "openrouter"
-        assert settings.resolved_llm_model == "z-ai/glm-5.2"
+        assert settings.resolved_llm_model == "z-ai/glm-5.3-flash"
 
     def test_both_keys_prefer_anthropic_so_dev_setups_are_unchanged(self, monkeypatch):
         settings = self._settings(
@@ -239,7 +239,7 @@ class TestProviderResolution:
             JUICEBOX_LLM_PROVIDER="openrouter",
         )
         assert settings.resolved_llm_provider == "openrouter"
-        assert settings.resolved_llm_model == "z-ai/glm-5.2"
+        assert settings.resolved_llm_model == "z-ai/glm-5.3-flash"
 
     def test_model_override_wins_over_the_provider_default(self, monkeypatch):
         settings = self._settings(

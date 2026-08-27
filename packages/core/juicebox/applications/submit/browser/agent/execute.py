@@ -12,7 +12,21 @@ def execute(page, action: Action, decision: Decision) -> str:
     if action.type == "stop":
         return "stop"
     if action.type == "fill":
-        locator(page, action.control_id).fill(decision.resolved_value)
+        loc = locator(page, action.control_id)
+        # Real keystrokes, not a programmatic set: Workday's multiselect
+        # search boxes open their suggestion popup on key events, so .fill()
+        # typed the text, no popup ever opened, the value never committed and
+        # the planner re-filled the same box to the fault budget (live,
+        # Intapp 2026-08-27) -- the same lesson the password field taught.
+        # Plain inputs type fine either way; the popup then gets a beat to
+        # open so the NEXT observation can see its option rows.
+        try:
+            loc.click()
+            loc.fill("")
+            loc.press_sequentially(decision.resolved_value, delay=25)
+            page.wait_for_timeout(1200)
+        except Exception:  # noqa: BLE001 - a widget that refuses keystrokes gets the plain set
+            loc.fill(decision.resolved_value)
         return f"fill:{action.control_id}"
     if action.type == "select":
         loc = locator(page, action.control_id)

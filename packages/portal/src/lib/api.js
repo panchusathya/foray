@@ -258,17 +258,13 @@ export const api = {
 
   makeDefaultDocument: (id) => request(`/documents/${id}/make-default`, { method: 'POST' }),
 
-  vaultStepUpRequest: () => request('/vault/step-up/request', { method: 'POST' }),
-
-  vaultStepUp: (code) => request('/vault/step-up', { method: 'POST', body: { code } }),
-
   vaultAccounts: () => request('/vault/accounts'),
 
-  saveVaultAccount: (payload, grant) =>
-    request('/vault/accounts', { method: 'POST', body: payload, extraHeaders: { 'X-Vault-Grant': grant } }),
+  saveVaultAccount: (payload) =>
+    request('/vault/accounts', { method: 'POST', body: payload }),
 
-  revokeVaultAccount: (id, grant) =>
-    request(`/vault/accounts/${id}`, { method: 'DELETE', extraHeaders: { 'X-Vault-Grant': grant } }),
+  revokeVaultAccount: (id) =>
+    request(`/vault/accounts/${id}`, { method: 'DELETE' }),
 
   documentUrl: (id) => request(`/documents/${id}/download-url`, { method: 'POST' }),
 

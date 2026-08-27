@@ -97,7 +97,10 @@ class VaultStepUpIn(BaseModel):
 class VaultCredentialIn(BaseModel):
     vendor: str
     tenant: str
-    username: str
+    # Optional: for the texted vault-needed flow the candidate types only a
+    # password, and the username is derived server-side as the alias the
+    # account will be registered under (so leg-two sign-in matches).
+    username: str = ""
     password: str
     origin: str = "candidate_supplied"
 
@@ -1261,17 +1264,23 @@ def list_vault_accounts(
 @router.post("/vault/accounts", status_code=201)
 def save_vault_account(
     payload: VaultCredentialIn,
-    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    _consume_vault_grant(db, principal, vault_grant)
+    # No step-up here: the candidate already authenticated to reach the portal
+    # (a single-use texted magic link, or an email/Google sign-in). A second
+    # OTP on top rode the same mail path that is currently unreliable, which
+    # made the vault unreachable; the credential is write-only and never shown
+    # back, so the session is the authorization.
     from ..applications.candidate_credentials import save_password
 
+    vendor = payload.vendor.strip()
+    tenant = payload.tenant.strip()
+    username = payload.username.strip() or _vault_username_for(db, principal, vendor)
     try:
         row = save_password(
             db, org_id=principal.org_id, candidate_id=principal.candidate_id,
-            vendor=payload.vendor.strip(), tenant=payload.tenant.strip(), username=payload.username,
+            vendor=vendor, tenant=tenant, username=username,
             password=payload.password, origin=payload.origin,
             # A vault-entered credential is one we have not registered on the
             # employer yet: the agent registers with it (model B2), so the
@@ -1282,6 +1291,29 @@ def save_vault_account(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     _resume_after_credential(db, principal, row)
     return {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username, "status": row.status}
+
+
+def _vault_username_for(db: Session, principal: CandidatePrincipal, vendor: str) -> str:
+    """The address the account will be registered under, so a later sign-in
+    matches: the alias of a waiting pursuit for this vendor, else the
+    candidate's own email."""
+    from ..applications import alias
+    from ..applications.ats import detect
+
+    candidate = _candidate(db, principal)
+    pending = db.scalars(
+        select(Application).where(
+            Application.org_id == principal.org_id,
+            Application.candidate_id == principal.candidate_id,
+            Application.status.in_(("prepared", "awaiting_consent")),
+        )
+    ).all()
+    for application in pending:
+        posting = db.get(JobPosting, application.job_posting_id)
+        target = detect.target_of(posting) if posting is not None else None
+        if target and target.vendor == vendor:
+            return alias.sending_identity(db, candidate, application)[0]
+    return alias.primary_email(candidate)
 
 
 def _resume_after_credential(db: Session, principal: CandidatePrincipal, account) -> None:
@@ -1311,11 +1343,10 @@ def _resume_after_credential(db: Session, principal: CandidatePrincipal, account
 @router.delete("/vault/accounts/{account_id}", status_code=204)
 def revoke_vault_account(
     account_id: str,
-    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> Response:
-    _consume_vault_grant(db, principal, vault_grant)
+    # Same reasoning as save: the portal session is the authorization.
     row = db.scalar(select(AtsAccount).where(AtsAccount.id == account_id, AtsAccount.org_id == principal.org_id, AtsAccount.candidate_id == principal.candidate_id))
     if row is None:
         raise _NOT_FOUND

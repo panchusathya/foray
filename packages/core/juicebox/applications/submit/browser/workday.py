@@ -97,6 +97,29 @@ _COOKIE_BUTTONS = (
 #: The registration/sign-in form's own fields, for waiting on route changes.
 _ACCOUNT_EMAIL = ('input[data-automation-id="email"]', 'input[type="email"]')
 
+#: A posting we already have a draft on offers "Continue Application" where an
+#: untouched one offers "Apply" (live, Intapp 2026-08-27 — Candidate Home
+#: showed Active (1)). Every retry after the first partial fill lands here, so
+#: without this the run clicks a button that is not on the page any more.
+_CONTINUE_APPLICATION = (
+    'a:has-text("Continue Application")',
+    'button:has-text("Continue Application")',
+    'a[data-automation-id="adventureButton"]:has-text("Continue")',
+)
+
+#: Controls that exist only inside the signed-in wizard. Presence of any is
+#: the confirmation that sign-in landed; a generic input is not (the login
+#: page has those too).
+_WIZARD_MARKERS = (
+    '[data-automation-id="applyFlowPage"]',
+    'button[data-automation-id="pageFooterNextButton"]',
+    '[data-automation-id="progressBar"]',
+    'button[data-automation-id="bottom-navigation-next-button"]',
+    'input[data-automation-id="legalNameSection_firstName"]',
+    'input[data-automation-id="file-upload-input-ref"]',
+    '[data-automation-id="fileUploadDropZone"]',
+)
+
 
 def _settle(page, *, log: RunLog, expect: tuple[str, ...], timeout_ms: int = 45000) -> str:
     """Wait for the SPA to actually render, then clear the cookie overlay.
@@ -349,44 +372,65 @@ class WorkdaySubmitter:
             try:
                 with driver.session(log=log) as page:
                     page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
-                    _settle(page, log=log, expect=_APPLY_BUTTONS + _ACCOUNT_EMAIL)
-                    driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
                     _settle(
                         page,
                         log=log,
-                        expect=_APPLY_MANUALLY + _ACCOUNT_EMAIL,
+                        expect=_CONTINUE_APPLICATION + _APPLY_BUTTONS + _ACCOUNT_EMAIL,
+                    )
+                    # A warm profile may arrive already signed in, where the
+                    # posting offers Continue Application instead of Apply.
+                    if not driver.click(
+                        page, _CONTINUE_APPLICATION, log=log, what="continue application"
+                    ):
+                        driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
+                    _settle(
+                        page,
+                        log=log,
+                        expect=_APPLY_MANUALLY + _ACCOUNT_EMAIL + _WIZARD_MARKERS,
                         timeout_ms=30000,
                     )
-                    if driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually"):
+                    # Already inside the wizard (a warm profile whose session is
+                    # still good, or a Continue Application that went straight
+                    # in): there is no credential to type, so signing in again
+                    # is not just wasted -- the sign-in block would find no
+                    # email box and fail a run that is already authenticated.
+                    already_in = bool(driver.first_match(page, _WIZARD_MARKERS))
+                    if already_in:
+                        log.step("already signed in; wizard is open")
+                    if not already_in and driver.click(
+                        page, _APPLY_MANUALLY, log=log, what="apply manually"
+                    ):
                         _settle(page, log=log, expect=_EMAIL_ROUTE + _ACCOUNT_EMAIL, timeout_ms=30000)
-                    # wait_ms: the settle above returns on PRESENCE, and Workday
-                    # paints the chooser a beat after it renders the nodes -- an
-                    # instant click missed the visible-only check and the whole
-                    # sign-in fell through to clicking the header's Sign In
-                    # (live, Intapp 2026-08-27).
-                    driver.click(
-                        page, _EMAIL_ROUTE, log=log, what="sign in with email", wait_ms=15000
-                    )
-                    driver.wait_for_visible(page, _ACCOUNT_EMAIL, timeout_ms=30000)
-                    missing = driver.fill(
-                        page,
-                        [
-                            FieldSpec(
-                                key="email",
-                                selectors=('input[data-automation-id="email"]',),
-                                value=username,
-                                required=True,
-                            ),
-                            FieldSpec(
-                                key="password",
-                                selectors=('input[data-automation-id="password"]',),
-                                value=password,
-                                required=True,
-                                secret=True,
-                            ),
-                        ],
-                        log=log,
-                    )
+                    missing: list[str] = []
+                    if not already_in:
+                        # wait_ms: the settle above returns on PRESENCE, and
+                        # Workday paints the chooser a beat after it renders the
+                        # nodes -- an instant click missed the visible-only check
+                        # and the whole sign-in fell through to clicking the
+                        # header's Sign In (live, Intapp 2026-08-27).
+                        driver.click(
+                            page, _EMAIL_ROUTE, log=log, what="sign in with email", wait_ms=15000
+                        )
+                        driver.wait_for_visible(page, _ACCOUNT_EMAIL, timeout_ms=30000)
+                        missing = driver.fill(
+                            page,
+                            [
+                                FieldSpec(
+                                    key="email",
+                                    selectors=('input[data-automation-id="email"]',),
+                                    value=username,
+                                    required=True,
+                                ),
+                                FieldSpec(
+                                    key="password",
+                                    selectors=('input[data-automation-id="password"]',),
+                                    value=password,
+                                    required=True,
+                                    secret=True,
+                                ),
+                            ],
+                            log=log,
+                        )
                     if missing:
                         # Without both boxes there is nothing to sign in WITH,
                         # and the text-fallback Sign In click lands on the
@@ -411,16 +455,19 @@ class WorkdaySubmitter:
                             artifacts=[p for p in [shot] if p],
                             verification={"run": log.as_payload()},
                         )
-                    driver.click(page, _SIGN_IN, log=log, what="sign in")
-                    # Sign-in is a navigation. Wait for the password field to
-                    # actually leave before handing off, or the agent observes
-                    # the still-present login form and refuses it.
-                    try:
-                        page.locator('input[data-automation-id="password"]').first.wait_for(
-                            state="detached", timeout=30000
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.step(f"password field still present after sign in: {str(exc)[:80]}")
+                    if not already_in:
+                        driver.click(page, _SIGN_IN, log=log, what="sign in")
+                        # Sign-in is a navigation. Wait for the password field to
+                        # actually leave before handing off, or the agent observes
+                        # the still-present login form and refuses it.
+                        try:
+                            page.locator('input[data-automation-id="password"]').first.wait_for(
+                                state="detached", timeout=30000
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.step(
+                                f"password field still present after sign in: {str(exc)[:80]}"
+                            )
 
                     # Some tenants verify by emailing a code rather than a link.
                     # `applications/inbox.py` parked it on the attempt; this is
@@ -459,24 +506,40 @@ class WorkdaySubmitter:
                     # navigated and the agent saw a login page and refused it
                     # (live, 2026-08-27). These controls exist only past the
                     # sign-in, so their presence is the confirmation of it.
-                    wizard = driver.wait_for_any(
-                        page,
-                        (
-                            # This generation of the flow (live DOM dump, Intapp
-                            # 2026-08-27): the whole wizard sits in applyFlowPage,
-                            # Save and Continue is pageFooterNextButton, and the
-                            # step rail is progressBar. The older ids below stay
-                            # for tenants still on the previous generation.
-                            '[data-automation-id="applyFlowPage"]',
-                            'button[data-automation-id="pageFooterNextButton"]',
-                            '[data-automation-id="progressBar"]',
-                            'button[data-automation-id="bottom-navigation-next-button"]',
-                            'input[data-automation-id="legalNameSection_firstName"]',
-                            'input[data-automation-id="file-upload-input-ref"]',
-                            '[data-automation-id="fileUploadDropZone"]',
-                        ),
-                        timeout_ms=45000,
-                    )
+                    wizard = driver.wait_for_any(page, _WIZARD_MARKERS, timeout_ms=45000)
+                    if not wizard:
+                        # Authenticating can land on an error shell still titled
+                        # "Sign In" ("Something went wrong", no controls), and a
+                        # posting we already drafted offers Continue Application
+                        # rather than Apply. Reloading the posting as a signed-in
+                        # user clears both (live, Intapp 2026-08-27). Deterministic
+                        # recovery, so the agent never sees the broken shell.
+                        log.step("no wizard after sign in; reloading the posting")
+                        page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
+                        _settle(
+                            page,
+                            log=log,
+                            expect=_CONTINUE_APPLICATION + _APPLY_BUTTONS,
+                            timeout_ms=30000,
+                        )
+                        if not driver.click(
+                            page,
+                            _CONTINUE_APPLICATION,
+                            log=log,
+                            what="continue application",
+                            wait_ms=15000,
+                        ):
+                            driver.click(
+                                page, _APPLY_BUTTONS, log=log, what="apply", wait_ms=10000
+                            )
+                            driver.click(
+                                page,
+                                _APPLY_MANUALLY,
+                                log=log,
+                                what="apply manually",
+                                wait_ms=15000,
+                            )
+                        wizard = driver.wait_for_any(page, _WIZARD_MARKERS, timeout_ms=45000)
                     if not wizard:
                         # No wizard marker means sign-in did not land -- handing
                         # the page over anyway burned an attempt on an agent

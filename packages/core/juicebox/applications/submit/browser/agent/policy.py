@@ -62,6 +62,9 @@ class Decision:
     resolved_value: str = ""
     resolved_file: str = ""
     page_class: str = ""
+    # The control the action actually acts on, when policy resolved it itself
+    # (final_submit never trusts the model's id for the irreversible click).
+    resolved_control_id: str = ""
 
 
 def origin_of(url: str) -> str:
@@ -139,14 +142,19 @@ def check(
             )
         if any(_SIGNATURE.search(c.identity) for c in obs.controls):
             return Decision(False, reason="legal signature is a hand-off", page_class=klass)
-        control = _control(obs, action.control_id) if action.control_id else _submit_control(obs)
+        # The model's control_id is never trusted for the one irreversible
+        # click: it invented a ">FINAL" placeholder live (Forerunner,
+        # 2026-08-27) while the real "Submit Application" button sat in the
+        # inventory. The model decides WHETHER to submit; which button is the
+        # send control is checkable page truth, resolved here.
+        control = _submit_control(obs)
         if control is None:
             return Decision(False, reason="no submit control on this page", page_class=klass)
         if _CREATE_ACCOUNT.search(control.label) or _CREATE_ACCOUNT.search(control.identity):
             return Decision(
                 False, reason="submit control looks like account creation", page_class=klass
             )
-        return Decision(True, page_class=klass)
+        return Decision(True, page_class=klass, resolved_control_id=control.id)
 
     control = _control(obs, action.control_id)
     if control is None:

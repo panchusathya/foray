@@ -133,9 +133,9 @@ def textable_form_blanks(application: Application) -> list[dict]:
 def required_form_blanks(application: Application) -> list[dict]:
     """Required form questions nobody has answered -- the submit withhold.
 
-    Custom and attestation both: ``hosted_form.unanswerable_questions`` will
-    refuse the run on exactly this set, so queueing an attempt while it is
-    non-empty spends attempt 1 on a run we already know terminuses.
+    Custom and attestation both: the browser-agent policy will refuse the
+    run on exactly this set, so queueing an attempt while it is non-empty
+    spends attempt 1 on a run we already know terminuses.
     """
     return [
         item

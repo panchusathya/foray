@@ -9,9 +9,9 @@ each publish an apply API and each authenticates with a key the *employer*
 issues from their own account. Holding one is the relationship, so when
 ``board_key`` is present the API adapter runs -- structured errors, a real
 application id back. When it is absent, which is the open market and therefore
-most postings, the candidate's own door is the hosted form and the browser
-adapter drives it. Neither is a fallback for the other; they are two different
-situations.
+most postings, the candidate's own door is the hosted form. A configured
+browser agent drives that form; without the agent the posting is a hand-off.
+Neither is a fallback for the other; they are two different situations.
 
 **The global default is never a real sender.** ``APPLY_SUBMITTER`` gates the
 whole feature: ``console`` (the default) exercises the path without touching an
@@ -47,12 +47,19 @@ KEYED_API_VENDORS = (
 )
 
 #: Vendors that gate applying behind an account. Their two-leg flows are
-#: handwritten for a reason, and a derived spec must never run against them:
-#: their logged-out page is a registration form, and "filling" it types a
+#: handwritten for a reason, and the public-form agent must never run against
+#: them: their logged-out page is a registration form, and "filling" it types a
 #: fresh password into a sign-in wall.
 ACCOUNT_GATED_VENDORS = (
     detect.VENDOR_WORKDAY,
     detect.VENDOR_ORACLE,
+    detect.VENDOR_YC,
+)
+
+#: Two-leg adapters we actually ship. Oracle is account-gated but has no
+#: submitter yet, so it stays a hand-off.
+TWO_LEG_VENDORS = (
+    detect.VENDOR_WORKDAY,
     detect.VENDOR_YC,
 )
 
@@ -70,32 +77,32 @@ def _api_submitter(vendor: str, board_key: str) -> Submitter | None:
     return built(board_key=board_key) if built is not None else None
 
 
-def _browser_submitter(vendor: str) -> Submitter | None:
+def _two_leg_submitter(vendor: str) -> Submitter | None:
     """Playwright is an optional extra, so an install without it still runs
     every other tier rather than failing to import."""
     try:
-        from .browser.hosted_form import (
-            AshbyFormSubmitter,
-            GreenhouseFormSubmitter,
-            LeverFormSubmitter,
-            SmartRecruitersFormSubmitter,
-            WorkableFormSubmitter,
-        )
         from .browser.workday import WorkdaySubmitter
         from .browser.yc import YCSubmitter
     except ImportError as exc:
-        logger.debug("browser submitters unavailable: %s", exc)
+        logger.debug("two-leg browser submitters unavailable: %s", exc)
         return None
     built = {
-        detect.VENDOR_GREENHOUSE: GreenhouseFormSubmitter,
-        detect.VENDOR_LEVER: LeverFormSubmitter,
-        detect.VENDOR_ASHBY: AshbyFormSubmitter,
         detect.VENDOR_WORKDAY: WorkdaySubmitter,
         detect.VENDOR_YC: YCSubmitter,
-        detect.VENDOR_SMARTRECRUITERS: SmartRecruitersFormSubmitter,
-        detect.VENDOR_WORKABLE: WorkableFormSubmitter,
     }.get(vendor)
     return built() if built is not None else None
+
+
+def _agent_submitter(vendor: str) -> Submitter | None:
+    try:
+        from .browser.agent import BrowserAgentSubmitter
+        from .browser.cloud import agent_configured
+    except ImportError as exc:
+        logger.debug("browser agent unavailable: %s", exc)
+        return None
+    if not agent_configured():
+        return None
+    return BrowserAgentSubmitter(vendor=vendor or "public")
 
 
 def memory_submitter() -> MemorySubmitter:
@@ -125,20 +132,6 @@ def mode() -> str:
     return configured if configured in {MODE_CONSOLE, MODE_MEMORY, MODE_LIVE} else MODE_CONSOLE
 
 
-def _derived_submitter(spec) -> Submitter | None:
-    """A hosted-form run over a spec derived from the page itself.
-
-    Same optional-Playwright contract as ``_browser_submitter``: an install
-    without the browser extra still runs every other tier.
-    """
-    try:
-        from .browser.hosted_form import HostedFormSubmitter
-    except ImportError as exc:
-        logger.debug("derived submitter unavailable: %s", exc)
-        return None
-    return HostedFormSubmitter(spec)
-
-
 def get_submitter(
     target: detect.ApplyTarget, *, board_key: str = "", derived_spec=None
 ) -> Submitter | None:
@@ -148,13 +141,11 @@ def get_submitter(
     one -- ``applications/credentials.board_key`` is where it comes from and
     empty is the ordinary case.
 
-    ``derived_spec`` is the posting's own derived ``FormSpec``, when one is
-    cached (``applications/formspec.usable_spec``). It is strictly the
-    fallback: every handwritten adapter, keyed API and the email path win
-    first, and an account-gated vendor never takes one.
+    ``derived_spec`` is accepted and ignored. Public-form maps and page-1
+    derivation as a fill path are gone; the argument stays so callers that
+    still pass a cached spec do not break while they are unwound.
     """
-    if not target.vendor and derived_spec is None:
-        return None
+    del derived_spec
     if target.vendor in _overrides:
         return _overrides[target.vendor]
 
@@ -170,13 +161,12 @@ def get_submitter(
         return EmailSubmitter()
     if board_key and target.vendor in KEYED_API_VENDORS:
         return _api_submitter(target.vendor, board_key)
-    submitter = _browser_submitter(target.vendor) if target.vendor else None
-    if (
-        submitter is None
-        and derived_spec is not None
-        and target.vendor not in ACCOUNT_GATED_VENDORS
-    ):
-        submitter = _derived_submitter(derived_spec)
+    if target.vendor in TWO_LEG_VENDORS:
+        return _two_leg_submitter(target.vendor)
+    if target.vendor in ACCOUNT_GATED_VENDORS:
+        logger.info("no live submitter for account-gated %s; staying a hand-off", target.vendor)
+        return None
+    submitter = _agent_submitter(target.vendor)
     if submitter is None:
         logger.info(
             "no live submitter for %s; staying a hand-off", target.vendor or "this board"
@@ -190,22 +180,6 @@ def submittable(target: detect.ApplyTarget, *, board_key: str = "") -> bool:
     return get_submitter(target, board_key=board_key) is not None
 
 
-#: Vendors a live deployment can actually submit to, browser tier included.
-#: Kept as data rather than derived from ``_browser_submitter`` so the answer
-#: does not depend on whether Playwright happens to be installed in *this*
-#: process: the question "can Foray apply here" is about the product, and the
-#: web container asking it has no Chromium while the worker that submits does.
-BROWSER_VENDORS = (
-    detect.VENDOR_GREENHOUSE,
-    detect.VENDOR_LEVER,
-    detect.VENDOR_ASHBY,
-    detect.VENDOR_WORKDAY,
-    detect.VENDOR_YC,
-    detect.VENDOR_SMARTRECRUITERS,
-    detect.VENDOR_WORKABLE,
-)
-
-
 def can_submit_vendor(vendor: str) -> bool:
     """Whether *some* adapter exists for this vendor, regardless of mode.
 
@@ -214,12 +188,21 @@ def can_submit_vendor(vendor: str) -> bool:
     accepts everything. This answers the question the proposal gate needs --
     "should we promise to apply to this role" -- which must not change when an
     operator flips APPLY_SUBMITTER to rehearse.
+
+    A configured browser agent makes any non-account-gated public board
+    eligible, including an unrecognised vendor. Workday and YC stay on their
+    handwritten two-leg adapters. Without the agent, public forms are a
+    hand-off (a stored board key still selects the API adapter at submit time,
+    which this gate cannot see).
     """
-    return bool(vendor) and (vendor == detect.VENDOR_EMAIL or vendor in BROWSER_VENDORS)
-
-
-# ``can_apply`` — the posting-aware carding gate — is gone. Matches are shown
-# whatever their board; applying is attempted with whatever tier exists, and
-# a posting nothing automated can send still becomes a ready-to-review package
-# with the direct link in the portal. Hiding a match behind vendor support
-# turned every unsupported-board book into a dead-end reply.
+    if vendor == detect.VENDOR_EMAIL:
+        return True
+    if vendor in TWO_LEG_VENDORS:
+        return True
+    if vendor in ACCOUNT_GATED_VENDORS:
+        return False
+    try:
+        from .browser.cloud import agent_configured
+    except ImportError:
+        return False
+    return agent_configured()

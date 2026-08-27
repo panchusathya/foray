@@ -30,6 +30,7 @@ from typing import Any
 from .... import storage
 from ....config import get_settings
 from ..base import REDACTED
+from . import cloud as browser_cloud
 
 logger = logging.getLogger(__name__)
 
@@ -171,20 +172,19 @@ def _proxy_config(url: str, *, session_token: str = "") -> dict | None:
 
 
 @contextlib.contextmanager
-def session(*, log: RunLog, profile=None):
+def session(*, log: RunLog, profile=None, cdp_url: str = "", cloud_stop_id: str = ""):
     """A paced, serialised browser context. Closes whatever it opened.
 
-    ``profile`` is a ``profiles.ProfileState`` when warm profiles are on: its
-    (already origin-filtered) storage_state seeds the context, its sticky
-    egress token replaces the per-run one so the candidate keeps one IP across
-    runs, and its UA pins the fingerprint the profile was born with. On a
-    clean close the context's storage_state is written back onto
-    ``profile.saved_state`` for the caller to persist -- the driver itself
-    never touches the database.
+    ``cdp_url`` is an already-open Cloud (or test) session the caller owns.
+    When it is empty and Browser Use is configured, this context creates a
+    session, connects, and **always** PATCH-stops it -- Playwright close does
+    not end cloud billing. Callers that must reconnect after a crash (the
+    agent, at the final-submit checkpoint) pass their own ``cdp_url`` and
+    stop themselves.
 
-    Ignored entirely on the CDP branch: the Scraping Browser owns its
-    fingerprint, and seeding it with our cookies would make the identity it
-    was built to present inconsistent.
+    ``profile`` is a ``profiles.ProfileState`` when warm *local* profiles are
+    on. Ignored on every CDP path: the managed browser owns the fingerprint,
+    and overlaying UA / webdriver hacks is the tell.
     """
     ok, reason = available()
     if not ok:
@@ -199,9 +199,6 @@ def session(*, log: RunLog, profile=None):
         _LAST_RUN_AT = time.monotonic()
 
         settings = get_settings()
-        # A fresh sticky-session token per run: one IP for this whole form
-        # fill, a different one for the next application. A warm profile pins
-        # it instead -- one candidate, one IP, run after run.
         import secrets
 
         session_token = (
@@ -209,40 +206,39 @@ def session(*, log: RunLog, profile=None):
             if profile is not None and profile.egress_session
             else secrets.token_hex(6)
         )
-        cdp_url = settings.apply_browser_cdp_url.strip()
-        if cdp_url and profile is not None:
-            log.step("profile ignored: scraping browser owns the fingerprint")
+        owned_cloud_id = cloud_stop_id
+        remote = (cdp_url or "").strip()
+        if not remote and browser_cloud.configured():
+            cloud = browser_cloud.create_session()
+            remote = cloud.cdp_url
+            owned_cloud_id = cloud.id
+            log.step(f"browser-use session {cloud.id}")
+        if not remote:
+            remote = settings.apply_browser_cdp_url.strip()
+        if remote and profile is not None:
+            log.step("local profile ignored: managed browser owns the fingerprint")
             profile = None
         with sync_playwright() as playwright:
-            if cdp_url:
-                # Bright Data Scraping Browser: a real, managed browser on their
-                # side that owns the fingerprint, proxy, CAPTCHA and rotation.
-                # We drive it over CDP and add none of our own stealth -- a UA
-                # override or a webdriver-delete would only make the fingerprint
-                # it was built to present inconsistent, which is the tell.
+            if remote:
+                # Managed Chrome (Browser Use Cloud, or a legacy scraping
+                # browser). Drive the context it already has; do not overlay
+                # stealth -- that is the tell against a fingerprint they built.
                 browser = playwright.chromium.connect_over_cdp(
-                    cdp_url, timeout=CDP_CONNECT_TIMEOUT_MS
+                    remote, timeout=CDP_CONNECT_TIMEOUT_MS
                 )
             else:
                 browser = playwright.chromium.launch(
                     headless=settings.apply_browser_headless,
                     proxy=_proxy_config(settings.apply_proxy_url, session_token=session_token),
-                    # Two flags that most cheaply separate "real Chrome" from
-                    # "automation" for a fingerprinter: the AutomationControlled
-                    # blink feature is what sets navigator.webdriver, and the
-                    # default headless UA names "HeadlessChrome" outright.
                     args=["--disable-blink-features=AutomationControlled"],
                 )
             try:
-                if cdp_url:
-                    # The managed browser ships a context already; reuse it so
-                    # the fingerprint stays the one it was built with, and drive
-                    # its existing page rather than opening a second.
+                if remote:
                     context = browser.contexts[0] if browser.contexts else browser.new_context()
                     context.set_default_timeout(ACTION_TIMEOUT_MS)
                     context.set_default_navigation_timeout(CDP_NAV_TIMEOUT_MS)
                     page = context.pages[0] if context.pages else context.new_page()
-                    log.step("browser opened (scraping browser)")
+                    log.step("browser opened (managed chrome)")
                 else:
                     context = browser.new_context(
                         viewport={"width": 1440, "height": 900},
@@ -260,9 +256,6 @@ def session(*, log: RunLog, profile=None):
                             else None
                         ),
                     )
-                    # navigator.webdriver stays true even with the launch flag on
-                    # some Chromium builds; this removes it before any page script
-                    # on the employer's form can read it.
                     context.add_init_script(
                         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                     )
@@ -274,15 +267,15 @@ def session(*, log: RunLog, profile=None):
                     )
                 yield page
                 if profile is not None:
-                    # Only after a clean yield: a run that raised may have a
-                    # half-authenticated jar, and persisting that would make
-                    # the next run inherit the breakage.
                     with contextlib.suppress(Exception):
                         profile.saved_state = context.storage_state()
                         log.step("profile state captured")
             finally:
                 with contextlib.suppress(Exception):
                     browser.close()
+                if owned_cloud_id:
+                    browser_cloud.stop_session(owned_cloud_id)
+                    log.step(f"browser-use session {owned_cloud_id} stopped")
                 log.step("browser closed")
 
 

@@ -12,10 +12,7 @@ from __future__ import annotations
 import pytest
 
 from juicebox.applications.submit.base import SubmissionContext
-from juicebox.applications.submit.browser.hosted_form import (
-    discovered_specs,
-    unanswerable_questions,
-)
+from juicebox.applications.questions import unanswerable_questions
 from juicebox.applications.submit.browser.questions import (
     KIND_ATTESTATION,
     KIND_CUSTOM,
@@ -209,47 +206,6 @@ class TestUnanswerableQuestions:
         assert unanswerable_questions(ctx) == []
 
 
-class TestDiscoveredSpecs:
-    def test_an_answered_custom_question_becomes_a_fillable_spec(self):
-        specs = discovered_specs(_ctx([_entry(answer="A friend at the company.")]))
-        assert len(specs) == 1
-        assert specs[0].selectors == ("#q_abc",)
-        assert specs[0].value == "A friend at the company."
-        assert specs[0].kind == "text"
-
-    def test_a_candidate_answered_attestation_is_filled_verbatim(self):
-        """Their portal edit is the one hand allowed to write these."""
-        specs = discovered_specs(
-            _ctx([_entry(kind="attestation", answer="I am not a veteran",
-                         field_type="radio", selector="input[type=radio][name=vet]")])
-        )
-        assert len(specs) == 1
-        assert specs[0].kind == "radio"
-
-    def test_field_types_map_to_driver_kinds(self):
-        specs = discovered_specs(
-            _ctx([
-                _entry(key="a", selector="#a", field_type="textarea", answer="x"),
-                _entry(key="b", selector="#b", field_type="select", answer="Yes"),
-                _entry(key="c", selector="#c", field_type="checkbox", answer="yes"),
-            ])
-        )
-        assert [s.kind for s in specs] == ["text", "select", "check"]
-
-    def test_a_custom_file_upload_is_never_ours_to_fill(self):
-        specs = discovered_specs(_ctx([_entry(field_type="file", answer="whatever")]))
-        assert specs == []
-
-    def test_no_selector_means_no_spec(self):
-        assert discovered_specs(_ctx([_entry(selector="", answer="x")])) == []
-
-    def test_standard_entries_are_left_to_the_vendor_spec(self):
-        specs = discovered_specs(
-            _ctx([{"key": "why_company", "answer": "Because.", "selector": "#w"}])
-        )
-        assert specs == []
-
-
 class TestAugment:
     """The merge is pure given a stubbed discovery; the browser is not needed."""
 
@@ -258,8 +214,8 @@ class TestAugment:
 
         from juicebox.applications import questions as questions_mod
         from juicebox.applications.ats import detect
-        from juicebox.applications.submit.browser import driver
-        from juicebox.applications.submit.browser import questions as browser_q
+        from juicebox.applications.submit.browser.agent import preflight
+        from juicebox.applications.submit.browser import cloud as browser_cloud
 
         monkeypatch.setattr(
             detect,
@@ -272,11 +228,15 @@ class TestAugment:
                 tier=2,
             ),
         )
-        monkeypatch.setattr(driver, "available", lambda: (available, "" if available else "no playwright"))
-        monkeypatch.setattr(browser_q, "discover", lambda url, vendor="": discovered)
+        monkeypatch.setattr(browser_cloud, "agent_configured", lambda: available)
+        monkeypatch.setattr(preflight, "discover_questions", lambda ctx: discovered)
 
-        application = SimpleNamespace(id="app_x", form_answers=answers)
-        posting = SimpleNamespace(id="jpost_x")
+        application = SimpleNamespace(
+            id="app_x", org_id="org_x", candidate_id="cand_x", form_answers=answers
+        )
+        posting = SimpleNamespace(
+            id="jpost_x", apply_url="https://jobs.ashbyhq.com/x/y", source_url=""
+        )
         merged, _outcome = questions_mod.augment_with_form_questions(
             session, application=application, posting=posting, answers=answers
         )
@@ -365,24 +325,24 @@ class TestAugment:
 
         from juicebox.applications import questions as questions_mod
         from juicebox.applications.ats import detect
-        from juicebox.applications.submit.browser import driver
-        from juicebox.applications.submit.browser import questions as browser_q
+        from juicebox.applications.submit.browser.agent import preflight
+        from juicebox.applications.submit.browser import cloud as browser_cloud
 
         monkeypatch.setattr(
             detect, "target_of",
             lambda posting: SimpleNamespace(vendor="ashby", apply_url="https://x", tenant="", external_job_id="", tier=2),
         )
-        monkeypatch.setattr(driver, "available", lambda: (True, ""))
+        monkeypatch.setattr(browser_cloud, "agent_configured", lambda: True)
 
-        def boom(url, vendor=""):
+        def boom(ctx):
             raise RuntimeError("page timed out")
 
-        monkeypatch.setattr(browser_q, "discover", boom)
+        monkeypatch.setattr(preflight, "discover_questions", boom)
         answers = [{"key": "why_company", "question": "Why?", "answer": ""}]
         merged, outcome = questions_mod.augment_with_form_questions(
             session,
-            application=SimpleNamespace(id="app_x", form_answers=answers),
-            posting=SimpleNamespace(id="jpost_x"),
+            application=SimpleNamespace(id="app_x", org_id="o", candidate_id="c", form_answers=answers),
+            posting=SimpleNamespace(id="jpost_x", apply_url="https://x", source_url=""),
             answers=answers,
         )
         assert merged is answers

@@ -4,7 +4,7 @@
 a Job Board API key generated inside **that employer's** Greenhouse account.
 There is no key that spans boards. For any posting where we hold none -- which
 is the whole open market -- the candidate's door is the hosted form and
-``browser/hosted_form.py`` is what drives it. This adapter is only reached when
+the browser agent drives it when configured. This adapter is only reached when
 ``credentials.board_key`` returned something.
 
 Two ids matter and they are not interchangeable: the board token (the employer's

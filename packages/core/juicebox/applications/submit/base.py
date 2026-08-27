@@ -41,6 +41,10 @@ class SubmitError(Exception):
     records the verdict rather than an exception string."""
 
 
+class SubmitDeferred(SubmitError):
+    """Provider capacity, not a form problem. Requeue; do not keep the attempt."""
+
+
 @dataclass(frozen=True)
 class Attachment:
     filename: str
@@ -98,6 +102,12 @@ class SubmissionContext:
     company: str = ""
     title: str = ""
     posting_url: str = ""
+
+    #: Service callback. The browser agent calls this before an irreversible
+    #: submit click (and when a cloud session id is first known) so a crashed
+    #: worker can reconnect instead of clicking Submit again. ``None`` in
+    #: tests that do not persist.
+    persist_checkpoint: Any = None
 
     def answer(self, key: str) -> str:
         for entry in self.answers:

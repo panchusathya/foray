@@ -16,6 +16,7 @@ from .base import (
     SubmissionContext,
     SubmissionResult,
     SubmitError,
+    SubmitDeferred,
     Submitter,
 )
 from .registry import get_submitter, memory_submitter, reset_overrides, set_submitter, submittable
@@ -30,6 +31,7 @@ __all__ = [
     "SubmissionContext",
     "SubmissionResult",
     "SubmitError",
+    "SubmitDeferred",
     "Submitter",
     "get_submitter",
     "memory_submitter",

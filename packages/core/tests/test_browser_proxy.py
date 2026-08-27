@@ -190,7 +190,7 @@ class TestScrapingBrowserMode:
         )
         assert calls["connect_over_cdp"] == "wss://brd-customer-x-zone-sb:pw@brd.superproxy.io:9222"
         assert calls["launch"] is None
-        assert any("scraping browser" in s for s in log.steps)
+        assert any("managed chrome" in s for s in log.steps)
 
     def test_no_cdp_url_launches_local(self, monkeypatch):
         calls, _ = self._run_session(monkeypatch, cdp_url="", proxy_url="")

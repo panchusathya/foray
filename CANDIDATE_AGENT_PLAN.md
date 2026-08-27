@@ -312,13 +312,15 @@ most embarrassing thing in this plan. Tier it, and ship from the bottom.
 | **0 — Assisted** | We prepare everything: tailored summary, the answer set, the link. The candidate presses submit | **Build first.** Most of the value, almost none of the liability |
 | **1 — Apply by email** | Postings with an application address. Reuses `outreach` and `MailProvider` wholesale | Build second. Small |
 | **2 — Known ATS APIs** | Greenhouse, Lever, Ashby have documented job-board and application endpoints | Real automation, bounded and testable |
-| **3 — Per-ATS browser adapters** | Workday, Oracle, iCIMS, Taleo: a deterministic script per vendor form template | **Built (Phase F).** See the reversal note below |
+| **3 — Governed browser agent** | Public forms: typed-action planner + policy, Playwright on Browser Use Cloud. Workday/YC stay handwritten two-leg | **Built.** See the reversal note below |
 
 Worth saying plainly, because it is the example in the brief: **Tesla's careers
-portal is custom, not one of the Tier-2 ATSs.** For that request the honest
-product is Tier 0 — we find the roles, score them, explain the fit, prepare the
-application, and hand it over. We do not auto-submit to Tesla, and the messaging
-copy must not imply we did.
+portal is custom, not one of the Tier-2 ATSs.** Without the browser agent
+configured, the honest product is still Tier 0 — we find the roles, score them,
+explain the fit, prepare the application, and hand it over. With the agent on,
+the same governed planner that fills Greenhouse public forms runs here too, and
+a login wall, CAPTCHA, or required self-ID still hands off rather than
+improvising. The messaging copy must not imply a send that did not happen.
 
 ### The Tier-3 reversal, and what it is not
 
@@ -327,26 +329,40 @@ site terms, and a malformed submission under someone's name cannot be
 withdrawn.* Two of those three still stand. What changed is the reading of the
 first one, and the change is narrow enough to be worth stating precisely.
 
-**What is out of scope is a general-purpose browser agent** — one model
-navigating arbitrary career sites, deciding for itself what a field means and
-what to type in it. That is what "brittle" was about, and it is still refused.
+**What is out of scope is a model that types free-form answers on arbitrary
+sites** — deciding for itself what a field means and what to type in it,
+whether that model runs in our worker or as a hosted Browser Use `POST /runs`
+agent. That is what "brittle" was about, and it is still refused.
 
-**What is in scope is a script per ATS.** Workday's form is Workday's form
-across every tenant that runs it, down to the `data-automation-id` attributes.
-That makes an adapter a field map and a step order — reviewable, testable
-against a fixture, and diff-able when it breaks. The same properties the Tier-2
-adapters have, reached by a worse road.
+**What is in scope is a typed-action planner with a policy layer.** The model
+proposes one next action (`fill` / `select` / `upload` / `check` / `click_next`
+/ `dismiss` / `final_submit` / `stop`) naming a Juicebox-issued control id and
+an opaque value token. A non-model policy resolves tokens from
+`SubmissionContext`, refuses invented text, credentials, CAPTCHA, payment,
+required self-ID, off-origin navigation, and a submit click that has not
+cleared consent / blanks / page-class `application`. Playwright executes the
+approved action on a Browser Use Cloud Chrome over CDP. Workday and YC stay
+handwritten two-leg adapters until a later replacement.
+
+Keyed ATS APIs (when we hold a board key) and email (`mailto:`) stay HTTP.
+`APPLY_SUBMITTER=console` remains the default. Public Greenhouse / Lever /
+Ashby / SmartRecruiters / Workable FormSpec maps and `HostedFormSubmitter`
+are gone.
 
 Three things make the difference load-bearing rather than rhetorical:
 
-- **A required field we cannot find ends the run.** `needs_human` is a terminus,
-  not a retry. There is no "click the most likely button" path, and an unmapped
-  question is never answered by a model improvising from the JD.
-- **Every run leaves evidence.** The final screenshot and the exact field map
-  that was filled, on the attempt row. A submission nobody can reconstruct is
-  one we cannot answer for — which is the honest form of "cannot be withdrawn".
-- **Growing the field map is a code change with a reviewer.** Not a prompt, and
-  not a config row somebody edits at 2am.
+- **A required field we cannot fill from an approved token ends the run.**
+  `needs_human` is a terminus, not a retry. There is no "click the most likely
+  button" path, and an unmapped question is never answered by a model
+  improvising from the JD.
+- **Every run leaves evidence.** The confirmation screenshot, the redacted
+  step trace, and the provider session id, on the attempt row. A submission
+  nobody can reconstruct is one we cannot answer for — which is the honest
+  form of "cannot be withdrawn". After one guarded submit, a receipt is
+  success; anything else is a hand-off, never a retry-click.
+- **Growing what the agent may type is a code change with a reviewer.** New
+  tokens and page-class rules land in `applications/submit/browser/agent/`,
+  not a prompt, and not a config row somebody edits at 2am.
 
 The identity question came with it. Every one of these portals makes you
 register, and registration gates on an email you can read — so Tier 3 and the

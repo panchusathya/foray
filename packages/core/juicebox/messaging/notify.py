@@ -156,10 +156,13 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             link=link,
         )
         # verbatim: names the company and role from the posting.
+        media = ()
+        if event == EVENT_APPLICATION_SENT:
+            media = _sent_screenshot(db, thread, application)
         row = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(body=body, verbatim=True),
+            message=OutboundMessage(body=body, media=media, verbatim=True),
             origin="proactive",
         )
         reacted = False
@@ -231,6 +234,65 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
         return {"event": event, "sent": 1 if row is not None else 0}
 
     return {"skipped": f"unknown event {event!r}"}
+
+
+def _sent_screenshot(db: Session, thread, application) -> tuple:
+    """Confirmation PNG for a succeeded browser submit, or empty.
+
+    Same media contract as job cards: iMessage/RCS only, body always kept,
+    any failure stays text-only. The path is the one labelled ``confirmation``
+    on the succeeded attempt — never a before-submit or unconfirmed shot.
+    """
+    from .. import storage
+    from ..models import ApplicationSubmission
+    from .cards import wants_image
+    from .linq import OutboundMedia, LinqSendError, upload_attachment
+    from ..applications.submit.browser.agent.loop import confirmation_artifact
+
+    if not wants_image(thread):
+        return ()
+    attempt = db.scalar(
+        select(ApplicationSubmission).where(
+            ApplicationSubmission.application_id == application.id,
+            ApplicationSubmission.status == "succeeded",
+        )
+    )
+    if attempt is None:
+        return ()
+    artifacts = list(attempt.artifacts or [])
+    run = (attempt.verification or {}).get("run") or {}
+    artifacts.extend(run.get("artifacts") or [])
+    relpath = confirmation_artifact(artifacts)
+    if not relpath:
+        return ()
+    try:
+        data = storage.read_bytes(relpath)
+    except Exception as exc:  # noqa: BLE001 - text still goes
+        logger.info("confirmation screenshot unreadable for %s: %s", application.id, exc)
+        return ()
+    if not data:
+        return ()
+    try:
+        attachment_id = upload_attachment(
+            filename="application-sent.png",
+            content_type="image/png",
+            data=data,
+        )
+    except LinqSendError as exc:
+        logger.info("confirmation screenshot upload refused for %s: %s", application.id, exc)
+        return ()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("confirmation screenshot upload failed for %s: %s", application.id, exc)
+        return ()
+    if not attachment_id:
+        return ()
+    return (
+        OutboundMedia(
+            content_type="image/png",
+            attachment_id=attachment_id,
+            filename="application-sent.png",
+        ),
+    )
 
 
 def notify_candidate(

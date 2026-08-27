@@ -49,106 +49,76 @@ def augment_with_form_questions(
     log), so the portal presented our generic four as the employer's form and
     nothing anywhere said so.
     """
-    from . import formspec
     from .ats import detect
-    from .submit.browser import driver
-    from .submit.browser.forms import DISCOVERABLE
+    from .submit.browser.cloud import agent_configured
 
     target = detect.target_of(posting)
-    derived = formspec.usable_spec(posting) if not target.vendor else None
-    if derived is None:
-        if not target or not target.apply_url:
-            logger.info("form questions skipped for %s: no apply target", application.id)
-            return answers, "skipped: no apply target"
-        if target.vendor not in DISCOVERABLE:
-            # DISCOVERABLE, not PROBEABLE: an account-gated vendor (Workday, YC)
-            # is probeable but its logged-out page is a registration form, and
-            # reading questions off that would surface "password" as the
-            # employer's.
-            logger.info(
-                "form questions skipped for %s: vendor %r has no reachable form",
-                application.id,
-                target.vendor,
-            )
-            return answers, f"skipped: vendor {target.vendor} has no reachable form"
-    ok, reason = driver.available()
-    if not ok:
-        logger.info("form questions skipped for %s: %s", application.id, reason)
-        return answers, f"skipped: {reason}"
+    if not agent_configured():
+        logger.info(
+            "form questions skipped for %s: browser agent is not configured",
+            application.id,
+        )
+        return answers, "skipped: browser agent is not configured"
+    url = (posting.apply_url or posting.source_url or target.apply_url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        logger.info("form questions skipped for %s: no apply target", application.id)
+        return answers, "skipped: no apply target"
+    if target.vendor in {
+        detect.VENDOR_WORKDAY,
+        detect.VENDOR_ORACLE,
+        detect.VENDOR_YC,
+    }:
+        logger.info(
+            "form questions skipped for %s: vendor %r is account-gated",
+            application.id,
+            target.vendor,
+        )
+        return answers, f"skipped: vendor {target.vendor} is account-gated"
 
-    from .submit.browser.questions import KIND_ATTESTATION, KIND_CUSTOM, discover
+    from .submit.browser.agent.preflight import discover_questions, merge_discovered
+    from .submit.base import SubmissionContext
 
+    ctx = SubmissionContext(
+        application_id=application.id,
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        target=target or detect.ApplyTarget(apply_url=url, tier=detect.TIER_BROWSER),
+        answers=list(answers),
+        posting_url=url,
+    )
     try:
-        if derived is not None:
-            # A board nobody mapped: re-inspect the page the derived spec came
-            # from. One page view answers both halves -- the questions for this
-            # package, and a fresh spec on the posting, because a board can
-            # reshape between carding and applying and this is the last read
-            # before a browser fills it.
-            from .submit.browser.derive import inspect_form
-
-            url = (posting.apply_url or posting.source_url or "").strip()
-            refreshed, discovered = inspect_form(url)
-            formspec.record_spec(db, posting, refreshed)
-            if refreshed is None:
-                logger.info(
-                    "form questions: posting %s no longer derivable", posting.id
-                )
-                return answers, "skipped: form no longer derivable"
-        else:
-            discovered = discover(target.apply_url, vendor=target.vendor)
+        discovered = discover_questions(ctx)
     except Exception as exc:  # noqa: BLE001 - the standard set is a complete package
         logger.warning("form discovery failed for %s: %s", application.id, exc)
         return answers, f"skipped: discovery failed ({exc})"
-
-    merged = [dict(item) for item in answers]
-    existing = {str(item.get("key")): item for item in merged}
-    added = 0
-    for question in discovered:
-        if question.kind not in (KIND_CUSTOM, KIND_ATTESTATION):
-            # Identity fields the adapter fills; standard ones the set already
-            # carries. Either way there is nothing to add — but a standard
-            # question the form marks required is worth stamping, so the
-            # submit-time required check reflects the form rather than us.
-            if question.standard_key in existing and question.required:
-                existing[question.standard_key]["form_required"] = True
-            continue
-        held = existing.get(question.key)
-        if held is not None:
-            # Re-discovery after an edit: their answer wins, the DOM facts
-            # (selector, options, required) refresh to what the form says now.
-            held.update(
-                selector=question.selector,
-                field_type=question.field_type,
-                options=list(question.options),
-                form_required=question.required,
-            )
-            continue
-        merged.append(
-            {
-                "key": question.key,
-                "question": question.label,
-                "answer": "",
-                "provenance": "none",
-                "generated_by": "form",
-                "edited": False,
-                "origin": ORIGIN_FORM,
-                "kind": question.kind,
-                "field_type": question.field_type,
-                "selector": question.selector,
-                "options": list(question.options),
-                "form_required": question.required,
-            }
-        )
-        added += 1
+    merged = merge_discovered(answers, discovered)
+    added = max(0, len(merged) - len(answers))
     if added:
         logger.info(
             "form added %d question(s) to application %s (%s)",
             added,
             application.id,
-            target.vendor or "derived",
+            target.vendor or "public",
         )
     return merged, "ran"
+
+
+def unanswerable_questions(ctx) -> list[str]:
+    """Labels of required discovered questions nobody has answered.
+
+    Checked before the browser ever opens: a required custom or attestation
+    with no approved answer parks the run. An optional attestation left blank
+    IS an answer (declining to self-identify).
+    """
+    labels: list[str] = []
+    for entry in getattr(ctx, "answers", None) or []:
+        if entry.get("kind") not in ("custom", "attestation"):
+            continue
+        if str(entry.get("answer") or "").strip():
+            continue
+        if entry.get("form_required"):
+            labels.append(str(entry.get("question") or entry.get("key")))
+    return labels
 
 
 def custom_blanks(application: Application) -> list[dict]:

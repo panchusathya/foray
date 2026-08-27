@@ -274,9 +274,7 @@ class FakeTransport:
         if isinstance(item, LLMResult):
             return item
         text = json.dumps(item) if isinstance(item, dict | list) else str(item)
-        prompt = "".join(
-            str(message.get("content", "")) for message in kwargs.get("messages", [])
-        )
+        prompt = "".join(_prompt_text(message.get("content")) for message in kwargs.get("messages", []))
         return LLMResult(
             text=text,
             data=None,
@@ -310,6 +308,21 @@ class FakeTransport:
 # --------------------------------------------------------------------------
 # retry classification
 # --------------------------------------------------------------------------
+
+
+def _prompt_text(content: Any) -> str:
+    """Flatten a user message's content (string or multimodal list) for tests."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif isinstance(block, dict) and block.get("type") == "image":
+                parts.append("[image]")
+        return "".join(parts)
+    return str(content or "")
 
 
 def _is_unparseable(exc: BaseException) -> bool:
@@ -443,16 +456,32 @@ class LLMClient:
         effort: str,
         max_tokens: int,
         timeout: float | None = None,
+        image: bytes | None = None,
     ) -> dict[str, Any]:
         output_config: dict[str, Any] = {"effort": effort}
         if schema is not None:
             output_config["format"] = {"type": "json_schema", "schema": schema}
+        content: Any = prompt
+        if image:
+            import base64
+
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64.b64encode(image).decode("ascii"),
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ]
         kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "system": system,
             "output_config": output_config,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if timeout is not None:
             # Read per-request by the transports. to_openrouter() builds its body
@@ -595,6 +624,7 @@ class LLMClient:
         model: str | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        image: bytes | None = None,
     ) -> LLMResult:
         build = dict(
             model=model or self.model,
@@ -603,6 +633,7 @@ class LLMClient:
             effort=effort,
             max_tokens=max_tokens,
             timeout=timeout,
+            image=image,
         )
         try:
             return self._decode(

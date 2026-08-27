@@ -1375,13 +1375,29 @@ class TestApiVersusForm:
         registry.reset_overrides()
         reset_settings_cache()
 
-    def test_no_key_means_the_hosted_form(self):
-        from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
-
+    def test_no_key_means_a_handoff_without_the_agent(self):
         target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
         chosen = registry.get_submitter(target)
-        assert isinstance(chosen, HostedFormSubmitter)
-        assert chosen.method == "browser"
+        assert chosen is None
+
+    def test_agent_configured_means_the_browser_agent(self, monkeypatch):
+        from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
+        from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
+        from juicebox.config import reset_settings_cache as _reset
+
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT", "true")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT_ACK", "true")
+        _reset()
+        set_cloud_client(FakeCloudClient())
+        try:
+            target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
+            chosen = registry.get_submitter(target)
+            assert isinstance(chosen, BrowserAgentSubmitter)
+            assert chosen.method == "browser"
+        finally:
+            set_cloud_client(None)
+            _reset()
 
     def test_a_stored_key_means_the_api(self):
         from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
@@ -1972,15 +1988,10 @@ class TestTheFieldMapsAreCoherent:
             assert spec.landmark, f"{vendor} has no landmark to prove we reached a form"
 
     def test_the_adapter_can_value_every_field_the_map_declares(self):
-        from juicebox.applications.submit.browser.forms import ASHBY, GREENHOUSE, LEVER
-        from juicebox.applications.submit.browser.hosted_form import _values, specs_for
+        from juicebox.applications.submit.browser.forms import WORKDAY_ACCOUNT, YC_ACCOUNT
 
-        ctx = TestAdapters._ctx("greenhouse", "https://boards.greenhouse.io/x/jobs/1")
-        values = _values(ctx, "/tmp/resume.pdf")
-        for spec in (GREENHOUSE, LEVER, ASHBY):
-            built = specs_for(spec, values)
-            assert {row.key for row in built} == set(spec.fields)
-            # Every required field resolves to something we actually hold.
-            for row in built:
-                if row.required:
-                    assert row.value, f"{spec.vendor}.{row.key} is required but we have no value"
+        for spec in (WORKDAY_ACCOUNT, YC_ACCOUNT):
+            assert spec.fields
+            assert spec.submit
+            for key in spec.required:
+                assert spec.selectors_for(key)

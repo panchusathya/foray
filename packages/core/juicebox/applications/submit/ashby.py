@@ -11,8 +11,8 @@ here would mean telling a candidate we applied when we had not, which is the
 worst failure available to this module -- so the body is checked and its
 validation errors are what the attempt row records.
 
-Where we hold no key, the hosted form is the candidate's door and
-``browser/hosted_form.py`` drives it.
+Where we hold no key, the hosted form is the candidate's door and the
+browser agent drives it when configured.
 """
 
 from __future__ import annotations

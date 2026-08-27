@@ -666,10 +666,10 @@ def _fresh(db, thread, first: str, second: str) -> str:
     return first
 
 
-def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, int]:
-    """Walk best-first and keep the first ``limit`` we can honestly card.
+def _sendable_postings(db: Session, pairs: list, *, limit: int) -> list:
+    """Walk best-first and keep the first ``limit`` still worth carding.
 
-    Two checks per posting, both at the last moment before a person acts on it:
+    One check per posting, at the last moment before a person acts on it:
 
     **Still up.** Freshness elsewhere means "recently seen", which is not the
     same as still existing -- a live thread was sent a Rippling role whose page
@@ -677,26 +677,21 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
     skipping it: `eligible_matches` only reads open postings, so a dead role
     removed here does not come back on the next request.
 
-    **On a vendor we can submit to.** The card says "👍 and i'll apply for
-    you", so a role with no submit adapter is a promise we cannot keep -- the
-    first live run carded three roles (YC, DigitalHire, a scraper mirror) and
-    could apply to none of them. The vendor check is `can_submit_vendor`, not
-    `submittable`: under APPLY_SUBMITTER=console the latter says yes to
-    everything. Resolution runs with ``stamp_on_miss=False`` so an aggregator
-    403ing our IP today does not cache "unrecognised" forever.
-
-    Walking a longer eligible list and stopping at ``limit`` is what keeps a
-    high-scoring unsupported role from starving the supported ones ranked
-    under it. Returns ``(kept, unsupported_dropped)`` so the caller can tell
-    "everything was taken down" from "nothing here is applicable".
+    The vendor gate that used to live here is gone on purpose. Hiding a match
+    because its board has no adapter turned every unsupported-board book into
+    "i'm not going to show you roles i can't act on", repeated verbatim
+    forever. A match is shown; applying is attempted with whatever tier exists
+    (handwritten adapter, keyed API, derived form spec), and a posting nothing
+    automated can send becomes a ready-to-review package with the direct link
+    in the portal -- an outcome, not a refusal. Derivation is still queued
+    here for postings with no spec yet, so the answer is on the row by the
+    time somebody taps apply.
     """
     from ..applications import formspec
     from ..applications.ats import detect as ats_detect
-    from ..applications.submit.registry import can_apply
     from ..jobmatch.liveness import is_gone
 
     kept: list = []
-    unsupported = 0
     for match, posting in pairs:
         url = (posting.source_url or "").strip()
         if url and is_gone(url):
@@ -704,27 +699,17 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
             db.flush()
             logger.info("closed dead posting %s before proposing it", posting.id)
             continue
-        target = ats_detect.resolve_target(db, posting, stamp_on_miss=False)
-        if not can_apply(posting, target):
-            unsupported += 1
-            # A board nobody mapped is not a verdict, it is an unanswered
-            # question -- queue one derivation (a read-only page view) so the
-            # NEXT time this posting comes up the answer is on the row. Only
-            # here, on a bar-passing match somebody would have been shown:
-            # deriving the whole book would be a page view per posting for
-            # postings nobody ever sees.
-            queued = formspec.enqueue_derivation(db, posting)
-            logger.info(
-                "not carding posting %s: not applicable (vendor=%r)%s",
-                posting.id,
-                target.vendor,
-                "; derivation queued" if queued is not None else "",
-            )
-            continue
+        # Resolution with ``stamp_on_miss=False`` so an aggregator 403ing our
+        # IP today does not cache "unrecognised" forever. A board with no spec
+        # yet gets one derivation queued (a read-only page view) -- only here,
+        # on a bar-passing match somebody is about to be shown: deriving the
+        # whole book would be a page view per posting nobody ever sees.
+        ats_detect.resolve_target(db, posting, stamp_on_miss=False)
+        formspec.enqueue_derivation(db, posting)
         kept.append((match, posting))
         if len(kept) >= limit:
             break
-    return kept, unsupported
+    return kept
 
 
 def _identity_request(thread) -> tuple[str, str]:
@@ -775,25 +760,27 @@ def present_matches(
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
-    # Over-fetched: the sendable filter below drops dead pages and roles with
-    # no submit adapter, and a filter over exactly three would let one
-    # high-scoring unapplicable role shrink the batch rather than yield to the
-    # supported role ranked under it.
+    # Over-fetched: the liveness filter below drops dead pages, and a filter
+    # over exactly three would let one taken-down role shrink the batch rather
+    # than yield to the live one ranked under it.
     pairs = eligible_matches(
         db,
         org_id=thread.org_id,
         candidate_id=candidate_id,
         limit=MAX_CARDS_PER_MESSAGE * 3,
     )
+    if pairs:
+        pairs = _sendable_postings(db, pairs, limit=MAX_CARDS_PER_MESSAGE)
     if not pairs:
         if quiet:
             return None
-        # Asked directly and holding nothing: go and look before answering.
-        # Reading the book we happen to have is the whole of what "find me
-        # roles" used to do, so a candidate whose spec had never been searched
-        # -- or whose spec was searched once, at handover, before any of it was
-        # parsed -- got "nothing clears the bar" from a search that had never
-        # run. Capped at one billed sweep per candidate per day.
+        # Asked directly and holding nothing (or holding only roles whose
+        # pages are gone): go and look before answering. Reading the book we
+        # happen to have is the whole of what "find me roles" used to do, so a
+        # candidate whose spec had never been searched -- or whose spec was
+        # searched once, at handover, before any of it was parsed -- got
+        # "nothing clears the bar" from a search that had never run. Capped at
+        # one billed sweep per candidate per day.
         searching = _request_discovery(db, thread=thread, candidate_id=candidate_id)
         body = (
             "Looking now — I'll text you as soon as something worth your time turns up."
@@ -808,11 +795,14 @@ def present_matches(
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
 
+    # The budget check runs AFTER the liveness filter: "I'll send them
+    # tomorrow" must be a promise about roles that still exist, and the daily
+    # cap must not be spent on postings about to be dropped as dead.
     decision = limits.may_propose(
         db,
         org_id=thread.org_id,
         candidate_id=candidate_id,
-        count=min(len(pairs), MAX_CARDS_PER_MESSAGE),
+        count=len(pairs),
     )
     if not decision:
         if quiet:
@@ -823,30 +813,6 @@ def present_matches(
             message=OutboundMessage(
                 body="I've got roles lined up — I'll send them tomorrow so I'm not flooding you."
             ),
-            origin=origin,
-        )
-        return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
-
-    pairs, unsupported = _sendable_postings(db, pairs, limit=MAX_CARDS_PER_MESSAGE)
-    if not pairs:
-        if quiet:
-            return None
-        # Two honest empties, told apart so neither lies: everything was taken
-        # down, or everything left is a role we cannot apply to. The second is
-        # said once per request rather than never -- silence on an explicit
-        # "find me roles" reads as a dead line.
-        body = (
-            prompts.NOTHING_APPLICABLE
-            if unsupported
-            else (
-                "the roles i had lined up have already been taken down. "
-                "i'll keep looking and text you when something lands."
-            )
-        )
-        row = _deliver(
-            db,
-            thread=thread,
-            message=OutboundMessage(body=body),
             origin=origin,
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])

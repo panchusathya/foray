@@ -69,16 +69,21 @@ def record_spec(db: Session, posting: JobPosting, spec, *, reason: str = "") -> 
 def enqueue_derivation(db: Session, posting: JobPosting) -> Job | None:
     """Queue one derivation for a posting worth deriving, or ``None``.
 
-    Only an *unrecognised* board qualifies. A vendor detect.py can name either
-    has an adapter already, is account-gated (the two-leg flows are handwritten
-    for a reason), or is a known wizard (iCIMS, Taleo) whose page-1 derivation
-    would card a promise the one-page submitter cannot keep.
+    A board qualifies unless a vendor adapter already covers it or it is
+    account-gated (those two-leg flows are handwritten for a reason, and a
+    "derived" logged-out page is a registration form). Recognised-but-
+    unsupported vendors (iCIMS, Taleo, Jobvite, BambooHR) now derive too:
+    whether a given tenant's page 1 is fillable is a per-posting fact, and the
+    derive step records ``{"unusable": ...}`` for the wizards and login walls
+    instead of a per-vendor blanket ban deciding it sight unseen.
 
     Idempotent per posting forever -- ``enqueue`` returns the open row while
     one is queued or running, and revives a ``failed`` one, which is exactly
     the retry story we want: the next candidate match re-asks the question.
     """
-    if posting.ats_vendor:
+    from .submit.registry import ACCOUNT_GATED_VENDORS, can_submit_vendor
+
+    if can_submit_vendor(posting.ats_vendor) or posting.ats_vendor in ACCOUNT_GATED_VENDORS:
         return None
     if posting.form_spec is not None:
         return None
@@ -105,8 +110,11 @@ def handle_formspec_one(db: Session, job: Job, now) -> dict[str, Any]:
         return {"skipped": "posting not found"}
     if posting.form_spec is not None:
         return {"skipped": "already checked"}
-    if posting.ats_vendor:
-        # Recognised between enqueue and run -- the vendor answer wins.
+    from .submit.registry import ACCOUNT_GATED_VENDORS, can_submit_vendor
+
+    if can_submit_vendor(posting.ats_vendor) or posting.ats_vendor in ACCOUNT_GATED_VENDORS:
+        # An adapter (or an account wall) resolved between enqueue and run --
+        # the vendor answer wins over a derived page-1 spec.
         return {"skipped": f"vendor {posting.ats_vendor} resolved meanwhile"}
     url = (posting.apply_url or posting.source_url or "").strip()
     if not url.startswith(("http://", "https://")):

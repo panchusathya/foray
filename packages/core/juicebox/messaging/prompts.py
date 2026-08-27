@@ -552,16 +552,6 @@ PRESENT_TAIL = (
     "everything in flight, any time: {link}"
 )
 
-# What matched is real but none of it is on a board we can submit to. Honest
-# and once per request: the alternative was carding roles under "👍 and i'll
-# apply for you" that no adapter could touch, which the first live run did.
-NOTHING_APPLICABLE = (
-    "the matches i have right now are on job boards i can't submit to for you "
-    "yet — i'm not going to show you roles i can't act on. still looking, and "
-    "i'll text you when i find ones i can."
-)
-
-
 INTENT_SYSTEM = """\
 You classify one inbound text from a job candidate talking to their recruiting
 assistant. Pick exactly one intent:

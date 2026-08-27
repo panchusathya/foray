@@ -285,20 +285,15 @@ class TestRouting:
         assert isinstance(submitter, HostedFormSubmitter)
         assert submitter.spec.fields["resume"] == ("#resume",)
 
-    def test_console_mode_changes_neither_gate(self, session, account):
-        """can_submit_vendor and can_apply must not change when an operator
-        flips APPLY_SUBMITTER to rehearse."""
+    def test_console_mode_does_not_change_the_vendor_answer(self):
+        """can_submit_vendor must not change when an operator flips
+        APPLY_SUBMITTER to rehearse. (The posting-aware carding gate is gone:
+        matches are shown whatever their board, and the submit tier decides
+        what an attempt looks like.)"""
         assert registry.mode() == "console"
         assert not registry.can_submit_vendor("")
-        with_spec = _unknown_posting(session, account["org_id"], suffix="g1", spec=_spec())
-        without = _unknown_posting(session, account["org_id"], suffix="g2")
-        empty = detect.ApplyTarget()
-        assert registry.can_apply(with_spec, empty)
-        assert not registry.can_apply(without, empty)
-        # Recognised-but-unsupported stays out even with a spec cached on the
-        # row: a page-1 derivation of a wizard cards a promise we cannot keep.
-        taleo = detect.ApplyTarget(vendor="taleo")
-        assert not registry.can_apply(with_spec, taleo)
+        assert not registry.can_submit_vendor("taleo")
+        assert registry.can_submit_vendor("greenhouse")
 
 
 def _seed_candidate(session, org_id) -> str:
@@ -367,24 +362,21 @@ class TestCardingGate:
 
         monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
         posting = _unknown_posting(session, account["org_id"], suffix="c1", spec=_spec())
-        kept, unsupported = manager._sendable_postings(
-            session, self._pairs(session, posting), limit=3
-        )
+        kept = manager._sendable_postings(session, self._pairs(session, posting), limit=3)
         assert [p.id for _, p in kept] == [posting.id]
-        assert unsupported == 0
 
-    def test_an_unchecked_unknown_is_dropped_and_derivation_queued(
+    def test_an_unchecked_unknown_is_carded_and_derivation_queued(
         self, session, account, monkeypatch
     ):
+        """Shown now, derivable by the time somebody taps apply. Hiding it —
+        the old behaviour — turned every unknown-board book into a dead-end
+        reply repeated verbatim."""
         from juicebox.messaging import manager
 
         monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
         posting = _unknown_posting(session, account["org_id"], suffix="c2")
-        kept, unsupported = manager._sendable_postings(
-            session, self._pairs(session, posting), limit=3
-        )
-        assert kept == []
-        assert unsupported == 1
+        kept = manager._sendable_postings(session, self._pairs(session, posting), limit=3)
+        assert [p.id for _, p in kept] == [posting.id]
         job = session.scalar(
             select(Job).where(
                 Job.org_id == account["org_id"], Job.kind == KIND_JOBS_FORMSPEC_ONE
@@ -393,16 +385,18 @@ class TestCardingGate:
         assert job is not None
         assert job.payload["posting_id"] == posting.id
 
-    def test_a_checked_unusable_posting_queues_nothing(self, session, account, monkeypatch):
+    def test_a_checked_unusable_posting_is_still_carded_and_queues_nothing(
+        self, session, account, monkeypatch
+    ):
+        """The answer is already on the row, so no new page view — but the
+        match is still shown: an un-automatable form ends as a ready-to-review
+        package with the direct link, not a hidden role."""
         from juicebox.messaging import manager
 
         monkeypatch.setattr("juicebox.jobmatch.liveness.is_gone", lambda url: False)
         posting = _unknown_posting(session, account["org_id"], suffix="c3", unusable=True)
-        kept, unsupported = manager._sendable_postings(
-            session, self._pairs(session, posting), limit=3
-        )
-        assert kept == []
-        assert unsupported == 1
+        kept = manager._sendable_postings(session, self._pairs(session, posting), limit=3)
+        assert [p.id for _, p in kept] == [posting.id]
         assert (
             session.scalar(
                 select(Job).where(
@@ -412,11 +406,24 @@ class TestCardingGate:
             is None
         )
 
-    def test_recognised_vendors_never_queue_a_derivation(self, session, account):
-        posting = _posting(session, account["org_id"], company="Taleo Corp", suffix="c4")
+    def test_adapter_and_account_gated_vendors_never_queue_a_derivation(
+        self, session, account
+    ):
+        """Greenhouse has an adapter; Workday's logged-out page is a
+        registration wall. Neither takes a derived page-1 spec."""
+        for vendor in ("greenhouse", "workday"):
+            posting = _unknown_posting(session, account["org_id"], suffix=f"c4-{vendor}")
+            posting.ats_vendor = vendor
+            session.flush()
+            assert formspec.enqueue_derivation(session, posting) is None
+
+    def test_recognised_but_unsupported_vendors_now_derive(self, session, account):
+        """iCIMS/Taleo tenants differ; whether page 1 is fillable is a
+        per-posting fact the derive step records, not a per-vendor ban."""
+        posting = _unknown_posting(session, account["org_id"], suffix="c5")
         posting.ats_vendor = "taleo"
         session.flush()
-        assert formspec.enqueue_derivation(session, posting) is None
+        assert formspec.enqueue_derivation(session, posting) is not None
 
 
 # ---------------------------------------------------------------------------

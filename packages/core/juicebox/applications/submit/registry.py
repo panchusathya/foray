@@ -218,21 +218,8 @@ def can_submit_vendor(vendor: str) -> bool:
     return bool(vendor) and (vendor == detect.VENDOR_EMAIL or vendor in BROWSER_VENDORS)
 
 
-def can_apply(posting, target: detect.ApplyTarget) -> bool:
-    """``can_submit_vendor``, plus the posting's own derived spec.
-
-    The posting-aware sibling the carding gate needs: an unknown board with a
-    usable derived spec is applicable, and one without is not. Same
-    mode-independence contract as ``can_submit_vendor`` -- flipping
-    ``APPLY_SUBMITTER`` to rehearse changes neither answer.
-    """
-    if can_submit_vendor(target.vendor):
-        return True
-    if target.vendor:
-        # Recognised but unsupported (iCIMS, Taleo, Oracle): a wizard or an
-        # account wall, and a derived page-1 spec would card a promise the
-        # one-page submitter cannot keep.
-        return False
-    from ..formspec import usable_spec
-
-    return usable_spec(posting) is not None
+# ``can_apply`` — the posting-aware carding gate — is gone. Matches are shown
+# whatever their board; applying is attempted with whatever tier exists, and
+# a posting nothing automated can send still becomes a ready-to-review package
+# with the direct link in the portal. Hiding a match behind vendor support
+# turned every unsupported-board book into a dead-end reply.

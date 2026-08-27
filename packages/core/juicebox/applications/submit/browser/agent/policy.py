@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from ....eeo import decline_choice, is_decline
 from ...base import SubmissionContext
 from .actions import (
     ANSWER_PREFIX,
@@ -18,6 +19,7 @@ from .actions import (
     CLICK_TYPES,
     DOC_TOKENS,
     FILL_TYPES,
+    POLICY_DECLINE,
     Action,
     answer_key,
     is_answer_token,
@@ -149,14 +151,18 @@ def check(
     control = _control(obs, action.control_id)
     if control is None:
         return Decision(False, reason="unknown control_id", page_class=klass)
-    if _forbidden_control(control):
-        return Decision(False, reason=f"control {control.id} is a forbidden field", page_class=klass)
     if action.type in FILL_TYPES:
         resolved, file_path, err = resolve_token(
-            action.value_token, ctx, resume_path=resume_path, cover_path=cover_path
+            action.value_token,
+            ctx,
+            resume_path=resume_path,
+            cover_path=cover_path,
+            control=control,
         )
         if err:
             return Decision(False, reason=err, page_class=klass)
+        if _forbidden_control(control, resolved_value=resolved):
+            return Decision(False, reason=f"control {control.id} is a forbidden field", page_class=klass)
         if action.type == "upload" and not file_path:
             return Decision(False, reason="upload requires a document token", page_class=klass)
         if action.type != "check" and not resolved and not file_path:
@@ -171,6 +177,10 @@ def check(
             )
         if action.type == "click_next" and _looks_like_submit(control):
             return Decision(False, reason="use final_submit for the send control", page_class=klass)
+        if _forbidden_control(control, resolved_value=control.label):
+            return Decision(
+                False, reason=f"control {control.id} is a forbidden field", page_class=klass
+            )
         return Decision(True, page_class=klass)
     return Decision(False, reason="unrecognised action", page_class=klass)
 
@@ -181,11 +191,17 @@ def resolve_token(
     *,
     resume_path: str = "",
     cover_path: str = "",
+    control: Control | None = None,
 ) -> tuple[str, str, str]:
     """``(value, file_path, error)``. Empty token or unknown token errors."""
     token = (token or "").strip()
     if not token:
         return "", "", "missing value_token"
+    if token == POLICY_DECLINE:
+        choice = decline_choice(control.options if control is not None else ())
+        if not choice:
+            return "", "", "no decline option on this control"
+        return choice, "", ""
     if token in CANDIDATE_TOKENS:
         return _candidate_value(ctx, CANDIDATE_TOKENS[token]), "", ""
     if token in DOC_TOKENS:
@@ -200,7 +216,7 @@ def resolve_token(
         if not str(value or "").strip():
             return "", "", f"no approved answer for {key}"
         return str(value), "", ""
-    if token.startswith(ANSWER_PREFIX) or token.startswith("candidate.") or token.startswith("doc."):
+    if token.startswith(ANSWER_PREFIX) or token.startswith("candidate.") or token.startswith("doc.") or token.startswith("policy."):
         return "", "", f"unknown token {token}"
     return "", "", "invented value is not allowed"
 
@@ -259,14 +275,15 @@ def _looks_like_submit(control: Control) -> bool:
     return looks_like_submit(control)
 
 
-def _forbidden_control(control: Control) -> bool:
+def _forbidden_control(control: Control, *, resolved_value: str = "") -> bool:
     blob = control.identity
     if control.field_type == "password":
         return True
     if _PASSWORD.search(blob) or _CAPTCHA.search(blob) or _PAYMENT.search(blob):
         return True
     if _SELF_ID.search(blob):
-        return True
+        # A decline option is not a protected attribute. Anything else is.
+        return not is_decline(resolved_value)
     return bool(_SIGNATURE.search(blob) and control.field_type in {"text", "checkbox"})
 
 
@@ -274,7 +291,7 @@ def _self_id_required(obs: Observation, blob: str) -> bool:
     hits = [c for c in obs.controls if _SELF_ID.search(c.identity)]
     if not hits:
         return bool(_SELF_ID.search(blob) and any(c.required for c in obs.controls))
-    return any(c.required for c in hits)
+    return any(c.required and not decline_choice(c.options) for c in hits)
 
 
 def _looks_like_application(obs: Observation) -> bool:

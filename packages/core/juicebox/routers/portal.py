@@ -402,7 +402,7 @@ def _can_auto_submit(db: Session, application: Application, posting: JobPosting 
 
     Same two questions ``request_submission`` asks, so the button appears
     exactly when pressing it would work: is there an adapter for this employer's
-    ATS, and is this candidate past the first-application review.
+    ATS.
     """
     if posting is None or application.status not in {"prepared", "awaiting_consent"}:
         return False

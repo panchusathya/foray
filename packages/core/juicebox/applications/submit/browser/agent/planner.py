@@ -20,14 +20,15 @@ from the inventory and a value_token from the allowed list.
 
 Allowed value_token values: candidate.full_name, candidate.first_name,
 candidate.last_name, candidate.email, candidate.phone, candidate.linkedin,
-candidate.location, doc.resume, doc.cover_letter, and answer.<key> for keys
-listed as approved answers.
+candidate.location, doc.resume, doc.cover_letter, policy.decline (only on
+voluntary self-identification controls that offer Prefer not to answer),
+and answer.<key> for keys listed as approved answers.
 
 final_submit is the send control and may only be used when the inventory
 shows a complete application page. click_next is for wizard continuation,
 never for Submit / Send application / Apply now. stop if the page is a
-login, CAPTCHA, payment, legal signature, or required self-identification,
-or if you cannot proceed honestly.
+login, CAPTCHA, payment, legal signature, or required self-identification
+with no decline option, or if you cannot proceed honestly.
 
 Respond with JSON matching the schema. No prose."""
 

@@ -124,35 +124,16 @@ def request_submission(
     )
 
 
-def first_submission_gate(db: Session, application: Application) -> str:
-    """Empty when auto-submit may proceed, otherwise why it may not.
+def first_submission_gate(_db: Session, _application: Application) -> str:
+    """Empty: a recorded yes is the only extra gate, and ``request_submission``
+    already checks consent.
 
-    CANDIDATE_AGENT_PLAN §8: a candidate's *first* submission gets a human look
-    before it goes. Not because the second is safer in itself, but because the
-    first is the one where a bad resume parse, a wrong name or an answer nobody
-    recognises is still systematically wrong for everything that follows.
-
-    ``approved_at`` satisfies the gate outright: it is stamped in exactly two
-    places, both portal taps made while looking at the built package — which
-    IS the human look this gate exists to guarantee. Without this, a candidate
-    who reviewed and approved their first package was answered "Open the
-    application" and left to apply themselves — the agent promising "i'll
-    apply for you" and then handing the form back is the flow inverted. The
-    thread's 👍 (``consenting_message_id``) deliberately does NOT satisfy it:
-    that yes predates the package, so nothing had been reviewed yet.
+    The candidate-visible flow is thumbs-up → package → submit. A dashboard
+    "approve the resume we just built" step made that a second yes for a
+    document that did not exist when they tapped the card. Consent on the
+    application (the 👍, or a portal apply-for-me tap) is enough.
     """
-    if application.approved_at is not None:
-        return ""
-    prior = db.scalar(
-        select(Application).where(
-            Application.candidate_id == application.candidate_id,
-            Application.id != application.id,
-            Application.submitted_at.is_not(None),
-        )
-    )
-    if prior is not None:
-        return ""
-    return "first application for this candidate: a person reviews it before it goes"
+    return ""
 
 
 def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]:
@@ -166,11 +147,10 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
     blocked = first_submission_gate(db, application)
     if blocked:
         return None, blocked
-    # A required form question nobody has answered refuses the run before the
-    # browser opens, so queueing here spends attempt 1 on a run we already
-    # know terminuses -- and `needs_human` is a terminus on the attempt row.
-    # Withhold instead: asking happens first, and the answer that completes
-    # the set is what queues the attempt.
+    # Only missing work authorization withholds a send — that is the one
+    # fact we will not guess, and the one question chat still asks. Other
+    # required blanks are filled from the package or become a hand-off
+    # inside the submitter, not another round of survey questions.
     from .followups import required_form_blanks
 
     waiting = required_form_blanks(application)

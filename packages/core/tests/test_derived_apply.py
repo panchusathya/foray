@@ -5,9 +5,8 @@ Three claims under test, each the inversion of a live failure:
 * An unknown board with a usable derived spec IS carded, and one without is
   not -- with a derivation queued so the next match has the answer. Before
   this, ``can_submit_vendor("")`` made the unknown frontier invisible.
-* A required form question is asked over text and its answer lands on the
-  form, and no submit attempt is spent while it is blank -- attempt 1 used to
-  burn on a run ``unanswerable_questions`` was guaranteed to refuse.
+* Chat asks only missing work authorization. A required custom essay is not
+  surveyed; the submitter hands off if it cannot fill it.
 * The candidate's browser state is a credential: filtered per run's hosts,
   merged on save, and never handed to a host it was not made on.
 """
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from test_messaging_manager import _managed, _posting, _say
+from test_messaging_manager import _managed, _posting
 
 from juicebox.applications import followups, formspec
 from juicebox.applications.ats import detect
@@ -24,7 +23,7 @@ from juicebox.applications.service import create_application
 from juicebox.applications.submit import registry
 from juicebox.applications.submit.browser.derive import derive_spec
 from juicebox.applications.submit.browser.forms import FormSpec
-from juicebox.jobs import KIND_APP_SUBMIT, KIND_JOBS_FORMSPEC_ONE
+from juicebox.jobs import KIND_JOBS_FORMSPEC_ONE
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
 from juicebox.messaging.threads import open_thread
 from juicebox.models import Application, AtsAccount, Job, JobMatch, JobPosting, utcnow
@@ -459,16 +458,15 @@ class TestPackageTimePreflight:
 
 
 # ---------------------------------------------------------------------------
-# the ask loop: withhold, ask over text, absorb, submit once
+# the ask loop: work authorization only
 # ---------------------------------------------------------------------------
 
 
 QUESTION = "What interests you about infrastructure?"
 
 
-def _asking_application(session, account, thread) -> tuple[Application, JobPosting]:
-    """Prepared, consented, everything standard answered -- only the form's
-    own required question and one optional attestation are blank."""
+def _asking_application(session, account, thread, *, work_auth="US citizen") -> tuple[Application, JobPosting]:
+    """Prepared, consented; a required custom essay is blank on purpose."""
     posting = _posting(
         session, account["org_id"], company="Nimbus", title="Platform Engineer", suffix="ask"
     )
@@ -476,7 +474,7 @@ def _asking_application(session, account, thread) -> tuple[Application, JobPosti
     application.form_answers = [
         {"key": "salary_expectation", "answer": "$220k", "kind": "standard"},
         {"key": "notice_period", "answer": "2 weeks", "kind": "standard"},
-        {"key": "work_authorization", "answer": "US citizen", "kind": "standard"},
+        {"key": "work_authorization", "answer": work_auth, "kind": "standard"},
         {"key": "why_company", "answer": "drafted words", "kind": "standard", "edited": True},
         {
             "key": "q_infra01",
@@ -501,135 +499,50 @@ def _asking_application(session, account, thread) -> tuple[Application, JobPosti
     return application, posting
 
 
-def _prior_submitted(session, account, candidate_id):
-    """A previously submitted application, so the first-submission human gate
-    does not swallow what these tests actually exercise."""
-    posting = _posting(
-        session, account["org_id"], company="Elsewhere", title="SRE", suffix="prior"
-    )
-    application = _application_for(
-        session, account["org_id"], candidate_id, posting
-    )
-    application.status = "submitted"
-    application.submitted_at = utcnow()
-    session.flush()
-    return application
-
-
 class TestAskLoop:
-    def test_auto_submit_withholds_while_a_required_blank_exists(
+    def test_auto_submit_does_not_withhold_on_a_custom_essay(
         self, session, account, channel, thread, memory_mode
     ):
+        """A required custom blank used to park the send for a chat survey.
+        The submitter hands off if it cannot fill it; chat does not ask."""
         from juicebox.applications.submission import auto_submit
 
         thread = _managed(session, thread)
         application, _ = _asking_application(session, account, thread)
-        _prior_submitted(session, account, thread.candidate_id)
 
         job, reason = auto_submit(session, application)
-        assert job is None
-        assert "waiting on required form answers" in reason
-        assert QUESTION in reason
-        assert (
-            session.scalar(
-                select(Job).where(
-                    Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
-                )
-            )
-            is None
-        ), "no attempt may be spent on a run we already know terminuses"
+        assert job is not None, reason
+        assert reason == "queued"
 
-    def test_the_question_is_asked_and_the_attestation_never_is(
+    def test_chat_does_not_ask_the_custom_essay(
         self, session, account, channel, thread, memory_mode
     ):
         thread = _managed(session, thread)
         application, _ = _asking_application(session, account, thread)
 
         result = followups.ask_for_missing(session, application)
+        assert result.get("skipped") == "package answered everything"
+        assert result.get("sent", 0) == 0
+        assert channel.sent == []
+
+    def test_missing_work_auth_is_asked_once(
+        self, session, account, channel, thread, memory_mode
+    ):
+        thread = _managed(session, thread)
+        application, _ = _asking_application(session, account, thread, work_auth="")
+
+        result = followups.ask_for_missing(session, application)
+        assert result["asked"] == ["work_authorization"]
         assert result["sent"] == 1
-        body = channel.sent[-1][1].body
-        assert "what interests you about infrastructure" in body.lower()
-        assert "veteran" not in body.lower()
-        assert thread.last_field_asked == "q_infra01"
-        row = next(
-            item
-            for item in application.form_answers
-            if item.get("key") == "q_infra01"
-        )
-        assert row.get("asked_text") is True
+        body = channel.sent[-1][1].body.lower()
+        assert "authoris" in body or "sponsor" in body
+        assert "infrastructure" not in body
+        assert "veteran" not in body
 
-    def test_asking_twice_is_one_ask(self, session, account, channel, thread, memory_mode):
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        followups.ask_for_missing(session, application)
         sent_before = len(channel.sent)
-        result = followups.ask_for_missing(session, application)
+        again = followups.ask_for_missing(session, application)
+        assert again.get("skipped") == "already asked"
         assert len(channel.sent) == sent_before
-        assert result.get("skipped") or result.get("sent") == 0
-
-    def test_the_reply_lands_on_the_form_and_submits_once(
-        self, session, account, channel, thread, memory_mode
-    ):
-        """The whole loop: ask -> reply -> verbatim answer on the row ->
-        exactly one attempt queued, and the acknowledgement names completion
-        rather than inviting a fresh job search."""
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        _prior_submitted(session, account, thread.candidate_id)
-        followups.ask_for_missing(session, application)
-
-        _say(
-            session,
-            thread,
-            "the scheduler work — i spent two years on nomad internals",
-            native_id="d-1",
-        )
-
-        row = next(
-            item
-            for item in application.form_answers
-            if item.get("key") == "q_infra01"
-        )
-        assert "nomad internals" in row["answer"]
-        assert row["provenance"] == "candidate:text"
-        assert row["edited"] is True, "their words survive re-discovery"
-
-        submit_jobs = session.scalars(
-            select(Job).where(
-                Job.org_id == account["org_id"], Job.kind == KIND_APP_SUBMIT
-            )
-        ).all()
-        assert len(submit_jobs) == 1
-
-    def test_two_questions_arrive_one_per_message(
-        self, session, account, channel, thread, memory_mode
-    ):
-        thread = _managed(session, thread)
-        application, _ = _asking_application(session, account, thread)
-        answers = [dict(item) for item in application.form_answers]
-        answers.append(
-            {
-                "key": "q_lang01",
-                "question": "Which languages do you write daily?",
-                "answer": "",
-                "kind": "custom",
-                "field_type": "text",
-                "selector": "#langs",
-                "form_required": True,
-            }
-        )
-        application.form_answers = answers
-        session.flush()
-
-        followups.ask_for_missing(session, application)
-        first_body = channel.sent[-1][1].body.lower()
-        assert "what interests you" in first_body
-        assert "languages" not in first_body, "one question per message"
-
-        _say(session, thread, "the scheduler work", native_id="d-2")
-        second_body = channel.sent[-1][1].body.lower()
-        assert "languages" in second_body, "the ack carries the next question"
-        assert thread.last_field_asked == "q_lang01"
 
 
 # ---------------------------------------------------------------------------

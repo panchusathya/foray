@@ -373,10 +373,12 @@ discovered later.
 ### What we assert on somebody's behalf
 
 Every generated answer carries provenance pointing at the resume line, intake
-field, or message that supports it. No answer is generated from nothing. A
-review step before a candidate's *first* submission, and an
-`Application.submitted_by` that distinguishes candidate, recruiter, and agent.
-An invented year of experience is not a bug we can apologise for.
+field, or message that supports it. No answer is generated from nothing.
+Thumbs-up (or a portal apply-for-me tap) is the yes; there is no extra
+dashboard review of the first package. Work authorization is asked in chat
+when it is not already saved. Voluntary demographic questions are answered
+with the form's own "Prefer not to answer" option. An invented year of
+experience is not a bug we can apologise for.
 
 ---
 

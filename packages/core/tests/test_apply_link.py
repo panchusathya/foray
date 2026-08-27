@@ -362,10 +362,25 @@ class TestAnswers:
         assert robotics["provenance"] == "none"
 
     def test_a_self_identification_question_is_never_answered(self, session, account):
+        """No decline option: blank is the only honest answer."""
         posting = self._posting(session, account["org_id"])
         answers, _ = build_form_answers(preference=None, resume_json={}, posting=posting)
         gender = next(a for a in answers if a.get("self_identify"))
         assert gender["answer"] == ""
+        assert gender["generated_by"] == "policy"
+
+    def test_a_decline_option_is_selected_automatically(self, session, account):
+        posting = self._posting(session, account["org_id"])
+        questions = list(posting.form_questions or [])
+        for item in questions:
+            if item.get("self_identify"):
+                item["options"] = ["Male", "Female", "Prefer not to answer"]
+        posting.form_questions = questions
+        session.flush()
+        answers, _ = build_form_answers(preference=None, resume_json={}, posting=posting)
+        gender = next(a for a in answers if a.get("self_identify"))
+        assert gender["answer"] == "Prefer not to answer"
+        assert gender["provenance"] == "policy:decline"
         assert gender["generated_by"] == "policy"
 
     def test_preference_values_still_fill_the_standard_keys(self, session, account):

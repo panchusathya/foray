@@ -33,6 +33,8 @@ CANDIDATE_TOKENS = {
     "candidate.location": "location",
 }
 
+POLICY_DECLINE = "policy.decline"
+
 DOC_TOKENS = {
     "doc.resume": "resume",
     "doc.cover_letter": "cover_letter",

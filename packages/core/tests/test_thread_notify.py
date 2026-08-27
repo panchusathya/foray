@@ -254,13 +254,13 @@ class TestEvents:
         _run(session, job)
         ready = channel.bodies[0]
         assert "Figma" in ready and "/m/" in ready
-        # The follow-up questions ride BEHIND the ready message. The worker
-        # used to ask them inline while this notification sat queued, so
-        # "what should we put for comp?" always overtook "your application
-        # is ready" -- the reverse of the order both messages assume.
+        # Follow-up questions ride behind the ready message. Chat asks only
+        # work authorization; other blanks stay off this text.
         if len(channel.bodies) > 1:
             assert "ready to review" in ready
-            assert "asks a couple of things" in channel.bodies[1]
+            follow = channel.bodies[1].lower()
+            assert "authoris" in follow or "sponsor" in follow
+            assert "comp" not in follow
 
     def test_application_sent_reacts_like_on_the_consenting_inbound(
         self, session, account, channel, thread

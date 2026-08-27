@@ -202,11 +202,12 @@ Not a checklist of nice-to-haves. These are the ones with an outside party.
 
 ## Guardrails you cannot turn off with a flag
 
-- No submission without a recorded per-application yes. The gate gates
-  `submitting` as well as `submitted`.
+- No submission without a recorded per-application yes (thumbs-up or a portal
+  apply-for-me tap). The gate gates `submitting` as well as `submitted`.
 - 5 submissions per candidate per 7 days, 2 per company per 30 days, one
   application per posting ever.
-- A candidate's first application waits for a person, however it was triggered
-  automatically.
+- Work authorization is asked in chat when it is not already saved. Other
+  blanks are filled from the package, declined on optional EEO, or become a
+  hand-off inside the submitter — not a survey.
 - A required field we cannot answer from the record stops the run. Nothing here
   invents an answer.

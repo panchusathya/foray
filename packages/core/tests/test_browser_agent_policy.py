@@ -121,6 +121,19 @@ class TestTokenResolve:
         value, _, err = resolve_token("answer.q_abc", ctx)
         assert value == "A friend" and err == ""
 
+    def test_policy_decline_needs_a_control_with_that_option(self):
+        _, _, err = resolve_token("policy.decline", _ctx())
+        assert "no decline option" in err
+        control = Control(
+            id="c099",
+            label="Gender",
+            field_type="select",
+            options=("Male", "Prefer not to answer"),
+        )
+        value, _, err = resolve_token("policy.decline", _ctx(), control=control)
+        assert err == ""
+        assert value == "Prefer not to answer"
+
     def test_doc_token_needs_a_path(self):
         _, _, err = resolve_token("doc.resume", _ctx())
         assert "no resume" in err
@@ -238,6 +251,63 @@ class TestPolicyCheck:
         )
         assert not decision.allowed
         assert "forbidden" in decision.reason
+
+    def test_optional_self_id_accepts_policy_decline(self):
+        obs = _obs(
+            controls=(
+                *_app_controls(),
+                Control(
+                    id="c099",
+                    label="Gender (optional)",
+                    field_type="select",
+                    required=False,
+                    options=("Male", "Female", "Prefer not to answer"),
+                ),
+            )
+        )
+        action = parse_action({"type": "select", "control_id": "c099", "value_token": "policy.decline"})
+        decision = check(
+            action, obs=obs, ctx=_ctx(),
+            allow_submit=True, start_origin="https://boards.greenhouse.io",
+        )
+        assert decision.allowed
+        assert decision.resolved_value == "Prefer not to answer"
+
+    def test_click_next_on_a_self_id_radio_is_forbidden_unless_decline(self):
+        obs = _obs(
+            controls=(
+                *_app_controls(),
+                Control(id="c080", label="Male", field_type="radio", name="gender"),
+                Control(id="c081", label="Prefer not to answer", field_type="radio", name="gender"),
+            )
+        )
+        refused = check(
+            parse_action({"type": "click_next", "control_id": "c080"}),
+            obs=obs, ctx=_ctx(), allow_submit=True,
+            start_origin="https://boards.greenhouse.io",
+        )
+        assert not refused.allowed
+        allowed = check(
+            parse_action({"type": "click_next", "control_id": "c081"}),
+            obs=obs, ctx=_ctx(), allow_submit=True,
+            start_origin="https://boards.greenhouse.io",
+        )
+        assert allowed.allowed
+
+    def test_required_self_id_with_a_decline_option_is_not_a_handoff_page(self):
+        obs = _obs(
+            controls=(
+                *_app_controls(),
+                Control(
+                    id="c099",
+                    label="Gender",
+                    field_type="select",
+                    required=True,
+                    options=("Male", "Female", "Decline to self-identify"),
+                ),
+            )
+        )
+        assert page_class(obs) == PAGE_APPLICATION
 
     def test_captcha_field_is_a_handoff_page(self):
         obs = _obs(

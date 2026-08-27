@@ -1106,17 +1106,15 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
 
     submit_job, reason = auto_submit(db, application)
     result["submission"] = reason
-    # One message, not two. A queued attempt announces itself when it lands
-    # ("I submitted it"); telling somebody their package is ready to review
-    # first and then that it is already gone reads as two different products.
+    # Thumbs-up → package → submit. A queued attempt announces itself when it
+    # lands ("I submitted it"); a "ready to review" text first would be a
+    # second yes for a document that did not exist when they tapped the card.
     #
-    # The follow-up questions ride behind the ready message *inside the notify
-    # handler* -- asking here while the notification sat queued is how the
-    # questions used to overtake the message they were about. Only the
-    # auto-submit path still asks from here: it queues no ready message, and
-    # a required blank will park that attempt at needs_human, so the questions
-    # are what un-parks it.
-    if submit_job is None:
+    # Missing work authorization is the one question chat still asks, and it
+    # is asked here rather than behind a review message. A genuine hand-off
+    # (no adapter, login wall) still sends the package link.
+    waiting = reason.startswith("waiting on required form answers")
+    if submit_job is None and not waiting:
         notify_candidate(
             db,
             org_id=job.org_id,

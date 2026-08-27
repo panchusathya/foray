@@ -490,81 +490,49 @@ class TestAnswerEditing:
         assert entry["answer"] == "Mine."
 
 
-class TestFollowupNamesTheFormsQuestions:
+class TestFollowupAsksOnlyWorkAuthorization:
     class _Posting:
         company = "Baseten"
         title = "Founding Engineer"
 
-    def _app(self, extra):
+    def _app(self, extra, *, work_auth="US citizen"):
         from types import SimpleNamespace
 
         answers = [
             {"key": "salary_expectation", "question": "Comp?", "answer": "USD 250,000"},
             {"key": "notice_period", "question": "Start?", "answer": "Immediately"},
-            {"key": "work_authorization", "question": "Auth?", "answer": "US citizen"},
+            {"key": "work_authorization", "question": "Auth?", "answer": work_auth},
             {"key": "why_company", "question": "Why?", "answer": "Because."},
             *extra,
         ]
         return SimpleNamespace(form_answers=answers)
 
-    def test_a_required_custom_question_is_left_for_the_direct_ask(self):
-        """Required customs are asked over text now (one per message, via the
-        answer loop), so naming them here as "answer in the app" would promise
-        the wrong venue. Optional ones are still the portal's."""
+    def test_custom_and_attestation_blanks_are_not_texted(self):
         from juicebox.applications.followups import followup_message
 
         body = followup_message(
             self._app([
                 _entry(key="q_req", question="How did you hear about us?", form_required=True),
                 _entry(key="q_opt", question="Optional trivia?"),
-            ]),
-            self._Posting(),
-        )
-        assert "How did you hear about us" not in body
-        assert '"Optional trivia?"' in body
-        assert "answer in the app" in body
-
-    def test_attestations_are_counted_never_quoted(self):
-        """Race and disability do not belong in an SMS, even as questions."""
-        from juicebox.applications.followups import followup_message
-
-        body = followup_message(
-            self._app([
                 _entry(key="q_v", question="Veteran status", kind="attestation"),
-                _entry(key="q_d", question="Disability status", kind="attestation"),
             ]),
             self._Posting(),
         )
-        assert "Veteran" not in body
-        assert "Disability" not in body
-        assert "2 self-ID questions" in body
-        assert "i never fill them in" in body
+        assert body == ""
 
-    def test_a_flood_of_custom_questions_collapses_to_a_count(self):
-        from juicebox.applications.followups import (
-            MAX_NAMED_FORM_QUESTIONS,
-            followup_message,
-        )
-
-        extra = [
-            _entry(key=f"q_{i}", question=f"Question number {i}?") for i in range(5)
-        ]
-        body = followup_message(self._app(extra), self._Posting())
-        assert body.count("their form asks") == MAX_NAMED_FORM_QUESTIONS
-        assert "plus 3 more of their questions" in body
-
-    def test_required_questions_never_ride_the_batch(self):
+    def test_missing_work_auth_is_the_only_question(self):
         from juicebox.applications.followups import followup_message
 
         body = followup_message(
-            self._app([
-                _entry(key="q_opt", question="Optional trivia?"),
-                _entry(key="q_req", question="Required essay?", form_required=True),
-            ]),
+            self._app(
+                [_entry(key="q_req", question="Required essay?", form_required=True)],
+                work_auth="",
+            ),
             self._Posting(),
         )
+        assert "authoris" in body.lower() or "sponsor" in body.lower()
         assert "Required essay" not in body
-        assert "Optional trivia" in body
+        assert "Veteran" not in body
 
     def test_everything_answered_is_still_silent(self):
         from juicebox.applications.followups import followup_message

@@ -92,14 +92,27 @@ def merge_discovered(answers: list[dict], discovered: list[FormQuestion]) -> lis
                 options=list(question.options),
                 form_required=question.required,
             )
+            if question.kind == KIND_ATTESTATION and not str(held.get("answer") or "").strip():
+                from ....eeo import decline_choice
+
+                choice = decline_choice(question.options)
+                if choice:
+                    held["answer"] = choice
+                    held["provenance"] = "policy:decline"
+                    held["generated_by"] = "policy"
             continue
+        from ....eeo import decline_choice
+
+        choice = (
+            decline_choice(question.options) if question.kind == KIND_ATTESTATION else ""
+        )
         merged.append(
             {
                 "key": question.key,
                 "question": question.label,
-                "answer": "",
-                "provenance": "none",
-                "generated_by": "form",
+                "answer": choice,
+                "provenance": "policy:decline" if choice else "none",
+                "generated_by": "policy" if choice else "form",
                 "edited": False,
                 "origin": ORIGIN_FORM,
                 "kind": question.kind,

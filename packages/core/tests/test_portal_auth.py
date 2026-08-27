@@ -181,6 +181,45 @@ class TestOtp:
         assert len(session.scalars(select(PortalOtp)).all()) == 3
 
 
+class TestVaultStepUp:
+    def _session_headers(self, account, candidate):
+        return {
+            "Authorization": (
+                f"Bearer {mint_session_token(org_id=account['org_id'], candidate_id=candidate.id)}"
+            )
+        }
+
+    def _sent_code(self):
+        from juicebox.outreach.sender import get_sender
+
+        return get_sender().outbox[-1].subject.rsplit(":", 1)[-1].strip()
+
+    def test_password_write_needs_one_fresh_otp_grant(self, client, session, account, candidate):
+        """A week-long portal session cannot be replayed to edit the vault."""
+        session.commit()
+        headers = self._session_headers(account, candidate)
+        payload = {
+            "vendor": "workday",
+            "tenant": "acme",
+            "username": "ada@example.com",
+            "password": "correct horse battery staple",
+        }
+        assert client.post("/v1/portal/vault/accounts", headers=headers, json=payload).status_code == 401
+
+        assert client.post("/v1/portal/vault/step-up/request", headers=headers).status_code == 202
+        verified = client.post(
+            "/v1/portal/vault/step-up", headers=headers, json={"code": self._sent_code()}
+        )
+        assert verified.status_code == 200, verified.text
+        grant_headers = {**headers, "X-Vault-Grant": verified.json()["grant"]}
+
+        created = client.post("/v1/portal/vault/accounts", headers=grant_headers, json=payload)
+        assert created.status_code == 201, created.text
+        assert "password" not in created.json()
+        # An intercepted grant cannot be replayed for a second credential edit.
+        assert client.post("/v1/portal/vault/accounts", headers=grant_headers, json=payload).status_code == 401
+
+
 class TestPortalSender:
     """Who a sign-in code appears to come from.
 

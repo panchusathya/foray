@@ -178,12 +178,13 @@ class TestTheCallMerges:
         assert pref.source_call_id == call.id
         assert pref.source_thread_id is None
 
-    def test_a_confirmed_record_is_still_refused_not_merged(self, session, account):
-        """Voice defers to a human; text does not. That asymmetry is deliberate.
+    def test_a_confirmed_record_accepts_a_voice_correction(self, session, account):
+        """Voice and text both preserve a correction, then require review.
 
-        A thread is the candidate's own words and outranks a recruiter's
-        transcription, so it writes and clears the confirmation. A call is a
-        machine reading of audio, so it flags and leaves the row alone.
+        Confirmation belongs to the fact that changed, not a stale whole-row
+        snapshot.  Leaving a newly stated answer out because another answer
+        was confirmed forces the candidate to repeat themselves on the next
+        channel.
         """
         from juicebox.models import utcnow
 
@@ -198,10 +199,10 @@ class TestTheCallMerges:
         upsert_preference(session, call=a_call(session, account, candidate), result=a_result(record))
 
         session.refresh(pref)
-        assert pref.timeline == "3_6_months", "a confirmed record was overwritten"
-        assert pref.confirmed_at is not None
+        assert pref.timeline == "immediate"
+        assert pref.confirmed_at is None
         assert pref.review_needed
-        assert "confirmed record" in pref.review_reason
+        assert "changed a confirmed record" in pref.review_reason
 
 
 # --------------------------------------------------------------------------

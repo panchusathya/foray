@@ -84,6 +84,16 @@ class Settings:
     env: str = field(default_factory=lambda: _env("JUICEBOX_ENV", "development"))
     base_url: str = field(default_factory=lambda: _env("BASE_URL", "http://localhost:8000"))
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", DEV_SECRET_KEY))
+    # Optional previous secrets, newest first.  Candidate vault entries cannot
+    # be recreated silently after a SECRET_KEY rotation, so token encryption
+    # accepts a short key ring and rewrites old blobs when they are read.
+    secret_key_previous: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            value.strip()
+            for value in _env("SECRET_KEY_PREVIOUS", "").split(",")
+            if value.strip()
+        )
+    )
     access_token_ttl_seconds: int = field(
         default_factory=lambda: _env_int("ACCESS_TOKEN_TTL_SECONDS", 60 * 60 * 12)
     )

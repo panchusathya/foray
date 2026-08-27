@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..intake.schema import SCHEMA_VERSION, empty_record
-from ..models import IntakeMessage, IntakeThread, record_event, utcnow
+from ..models import CandidatePreference, IntakeMessage, IntakeThread, record_event, utcnow
 from .channels import WEB, DeliveryResult, OutboundMessage
 from .linkedin_flow import default_flow
 
@@ -110,6 +110,15 @@ def open_thread(
     out whether a missing key means unasked or unsupported, and ``coverage()``
     can read the row the moment it exists.
     """
+    record = empty_record()
+    if candidate_id:
+        preference = db.scalar(
+            select(CandidatePreference).where(CandidatePreference.candidate_id == candidate_id)
+        )
+        if preference is not None:
+            from ..intake.records import record_from_preference
+
+            record = record_from_preference(preference)
     thread = IntakeThread(
         org_id=org_id,
         candidate_id=candidate_id,
@@ -126,7 +135,7 @@ def open_thread(
         contact_linkedin=contact_linkedin,
         flow=flow or default_flow(channel),
         status=STATUS_ACTIVE,
-        record=empty_record(),
+        record=record,
         schema_version=SCHEMA_VERSION,
         fields_missing=[],
         low_confidence=[],

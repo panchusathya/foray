@@ -1338,6 +1338,26 @@ def _handle_connector_index(db: Session, job: Job, now) -> dict[str, Any]:
                 stored_doc_id = doc.id
                 state["resume_doc_id"] = doc.id
                 connection.candidate_id = candidate_id
+                # The connector chose a likely file, not a final answer.  Give
+                # the candidate a direct route to inspect or replace it.
+                from .messaging.channels import OutboundMessage
+                from .messaging.conversation import deliver
+                from .portal.links import mint_portal_link
+
+                link = mint_portal_link(
+                    db,
+                    org_id=thread.org_id,
+                    candidate_id=candidate_id,
+                    channel="sms",
+                    next_path="/documents",
+                )
+                deliver(
+                    db,
+                    thread=thread,
+                    message=OutboundMessage(
+                        body=f"I found a resume in your connected {label}. Review or replace it here: {link}",
+                    ),
+                )
             else:
                 # A grant with no email is possible (GitHub-only), so the
                 # bytes wait exactly the way an early iMessage attachment

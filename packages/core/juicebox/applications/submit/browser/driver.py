@@ -524,6 +524,20 @@ def snapshot(page, *, org_id: str, application_id: str, label: str, log: RunLog)
         org_id=org_id, application_id=application_id, label=label, suffix=".png"
     )
     try:
+        # Screenshots are durable artifacts.  Password controls normally draw
+        # bullets, but a board can style them unusually; hide every password
+        # control before capture without changing its value or form state.
+        page.evaluate(
+            """() => {
+              let style = document.getElementById('__juicebox-secret-scrub');
+              if (!style) {
+                style = document.createElement('style');
+                style.id = '__juicebox-secret-scrub';
+                style.textContent = 'input[type="password"] { color: transparent !important; text-shadow: none !important; caret-color: transparent !important; }';
+                document.head.appendChild(style);
+              }
+            }"""
+        )
         image = page.screenshot(full_page=True)
     except Exception as exc:  # noqa: BLE001 - never fail a run over evidence
         log.step(f"could not screenshot at {label}: {exc}")

@@ -885,12 +885,6 @@ class TestHandover:
         assert entry["username"] == "anna+abc@goforay.io"
         assert entry["handed_over"] is False
 
-        taken = client.post(f"/v1/portal/accounts/{row.id}/handover", headers=headers)
-        assert taken.status_code == 200
-        assert "generated-secret" not in taken.text
-        assert taken.json()["handed_over"] is True
-
-        # Idempotent, and the listing reflects it.
-        again = client.post(f"/v1/portal/accounts/{row.id}/handover", headers=headers)
-        assert again.status_code == 200
-        assert client.get("/v1/portal/accounts", headers=headers).json()[0]["handed_over"] is True
+        retired = client.post(f"/v1/portal/accounts/{row.id}/handover", headers=headers)
+        assert retired.status_code == 410
+        assert "generated-secret" not in retired.text

@@ -15,10 +15,12 @@ resurfaces.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import time
+from datetime import UTC, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -37,19 +39,24 @@ from ..applications.service import (
 )
 from ..applications.state import TransitionError, transition
 from ..applications.submit.base import METHOD_CONSOLE, METHOD_MEMORY
+from ..config import get_settings
 from ..crm import patch_candidate
 from ..deps import CandidatePrincipal, CommittingRoute, get_candidate_principal, get_db
+from ..docgen.parse import SUFFIX_BY_MIME, sniff_resume_type
+from ..jobs import KIND_DOC_PARSE, enqueue
 from ..models import (
     Application,
     ApplicationMessage,
     ApplicationSubmission,
     AtsAccount,
     Candidate,
+    CandidateAuthGrant,
     CandidateDocument,
     CandidatePreference,
     JobMatch,
     JobPosting,
     JobProposal,
+    PortalOtp,
     record_event,
     utcnow,
 )
@@ -63,7 +70,13 @@ from ..portal.schemas import (
     portal_card,
 )
 from ..presentation.jobcard import jobcard
-from ..security import signed_intake_token, verify_intake_token
+from ..security import (
+    TokenError,
+    create_access_token,
+    decode_access_token,
+    signed_intake_token,
+    verify_intake_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +85,59 @@ router = APIRouter(route_class=CommittingRoute, prefix="/v1/portal", tags=["port
 FEED_LIMIT = 20
 PURPOSE_DOC_SIG = "portal-doc"
 DOC_SIG_TTL_SECONDS = 60
+VAULT_GRANT_ROLE = "portal-vault"
 
 _NOT_FOUND = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+
+class VaultStepUpIn(BaseModel):
+    code: str
+
+
+class VaultCredentialIn(BaseModel):
+    vendor: str
+    tenant: str
+    username: str
+    password: str
+    origin: str = "candidate_supplied"
+
+
+def _consume_vault_grant(db: Session, principal: CandidatePrincipal, grant: str) -> None:
+    """Spend the step-up grant exactly once, even under concurrent requests."""
+    try:
+        claims = decode_access_token(grant)
+    except TokenError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Fresh verification required") from exc
+    if (
+        claims.get("role") != VAULT_GRANT_ROLE
+        or claims.get("sub") != principal.candidate_id
+        or claims.get("org") != principal.org_id
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Fresh verification required")
+    grant_id = str(claims.get("vault_grant_id") or "")
+    row = db.get(CandidateAuthGrant, grant_id)
+    expires_at = None
+    if row is not None:
+        expires_at = row.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+    if (
+        row is None
+        or row.org_id != principal.org_id
+        or row.candidate_id != principal.candidate_id
+        or row.channel != "vault"
+        or row.consumed_at is not None
+        or expires_at < utcnow()
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Fresh verification required")
+    changed = db.execute(
+        CandidateAuthGrant.__table__.update()
+        .where(CandidateAuthGrant.id == row.id, CandidateAuthGrant.consumed_at.is_(None))
+        .values(consumed_at=utcnow())
+    ).rowcount
+    if changed != 1:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Fresh verification required")
+    db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +696,81 @@ def list_documents(
     return {"documents": [PortalDocumentOut.model_validate(row).model_dump() for row in rows]}
 
 
+@router.post("/documents/upload", status_code=201)
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Candidate-controlled resume replacement, always protected by default."""
+    limit = get_settings().max_upload_bytes
+    data = await file.read(limit + 1)
+    if not data or len(data) > limit:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Resume is too large")
+    content_type = sniff_resume_type(data)
+    if not content_type:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only PDF or Word (.docx) files are accepted")
+    candidate = _candidate(db, principal)
+    suffix = SUFFIX_BY_MIME[content_type]
+    db.execute(
+        CandidateDocument.__table__.update()
+        .where(
+            CandidateDocument.candidate_id == candidate.id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+        )
+        .values(is_default=False, protected_default=False)
+    )
+    doc = CandidateDocument(
+        org_id=candidate.org_id,
+        candidate_id=candidate.id,
+        kind="resume_uploaded",
+        is_default=True,
+        protected_default=True,
+        filename=(file.filename or f"resume{suffix}")[:255],
+        content_type=content_type,
+        status="uploaded",
+        source="portal_upload",
+    )
+    db.add(doc)
+    db.flush()
+    relpath = storage.document_relpath(org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id, suffix=suffix)
+    size, digest = storage.save_bytes(relpath, data)
+    doc.storage_path, doc.size_bytes, doc.sha256 = relpath, size, digest
+    enqueue(
+        db,
+        org_id=doc.org_id,
+        kind=KIND_DOC_PARSE,
+        idempotency_key=f"{KIND_DOC_PARSE}:{doc.id}",
+        payload={"document_id": doc.id},
+    )
+    return PortalDocumentOut.model_validate(doc).model_dump()
+
+
+@router.post("/documents/{document_id}/make-default")
+def make_document_default(
+    document_id: str,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    doc = _document(db, principal, document_id)
+    if doc.kind != "resume_uploaded" or not doc.storage_path:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only an uploaded resume can be the default")
+    db.execute(
+        CandidateDocument.__table__.update()
+        .where(
+            CandidateDocument.candidate_id == principal.candidate_id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+        )
+        .values(is_default=False, protected_default=False)
+    )
+    doc.is_default = True
+    doc.protected_default = True
+    db.flush()
+    return PortalDocumentOut.model_validate(doc).model_dump()
+
+
 def _document(db: Session, principal: CandidatePrincipal, document_id: str) -> CandidateDocument:
     doc = db.scalar(
         select(CandidateDocument).where(
@@ -1031,46 +1170,127 @@ def hand_over_ats_account(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    """Give the candidate sole control of one portal account.
-
-    Marks the row handed over -- ``stored_account`` stops offering it to
-    submit runs immediately -- and tells them how to claim it: run the
-    board's own "forgot password" against the username shown, and the reset
-    mail lands at the alias, which relays to their real address. No secret
-    moves through this response, and the password they set is theirs alone.
-
-    Idempotent: handing over twice is the same handover.
-    """
-    row = db.scalar(
-        select(AtsAccount).where(
-            AtsAccount.id == account_id,
-            AtsAccount.org_id == principal.org_id,
-            AtsAccount.candidate_id == principal.candidate_id,
-        )
+    """Retired: credential control moved to the candidate vault."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Account handover was replaced by vault revoke; remove the credential from the portal vault instead.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Candidate credential vault
+# ---------------------------------------------------------------------------
+
+
+@router.post("/vault/step-up/request", status_code=202)
+def request_vault_step_up(
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Reuse the candidate's existing OTP delivery path, but not their session."""
+    candidate = _candidate(db, principal)
+    email = next((str(value).strip().lower() for value in candidate.emails or [] if str(value).strip()), "")
+    if not email:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Add an email before storing a credential")
+    from .portal_auth import OtpRequestIn, otp_request
+
+    return otp_request(OtpRequestIn(email=email), db)
+
+
+@router.post("/vault/step-up")
+def verify_vault_step_up(
+    payload: VaultStepUpIn,
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    """Consume a fresh OTP and mint a purpose-limited ten-minute grant."""
+    from .portal_auth import _aware, _hash_code
+
+    otp = db.scalar(
+        select(PortalOtp)
+        .where(PortalOtp.candidate_id == principal.candidate_id, PortalOtp.consumed_at.is_(None))
+        .order_by(PortalOtp.created_at.desc())
+    )
+    now = utcnow()
+    settings = get_settings()
+    if otp is None or _aware(otp.expires_at) < now or otp.attempts >= settings.portal_otp_max_attempts:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
+    otp.attempts += 1
+    db.commit()  # failed comparisons must still consume an attempt
+    if not hmac.compare_digest(otp.code_hash, _hash_code((payload.code or "").strip())):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired code")
+    otp.consumed_at = now
+    db.flush()
+    vault_grant = CandidateAuthGrant(
+        org_id=principal.org_id,
+        candidate_id=principal.candidate_id,
+        channel="vault",
+        expires_at=now + timedelta(seconds=settings.portal_otp_ttl_seconds),
+    )
+    db.add(vault_grant)
+    db.flush()
+    return {
+        "grant": create_access_token(
+            subject=principal.candidate_id,
+            org_id=principal.org_id,
+            role=VAULT_GRANT_ROLE,
+            ttl_seconds=settings.portal_otp_ttl_seconds,
+            extra={"vault_grant_id": vault_grant.id},
+        ),
+        "expires_in": settings.portal_otp_ttl_seconds,
+    }
+
+
+@router.get("/vault/accounts")
+def list_vault_accounts(
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> list[dict]:
+    rows = db.scalars(
+        select(AtsAccount)
+        .where(AtsAccount.org_id == principal.org_id, AtsAccount.candidate_id == principal.candidate_id)
+        .order_by(AtsAccount.updated_at.desc())
+    ).all()
+    return [
+        {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username,
+         "status": row.status, "credential_origin": row.credential_origin, "revoked": row.revoked_at is not None}
+        for row in rows
+    ]
+
+
+@router.post("/vault/accounts", status_code=201)
+def save_vault_account(
+    payload: VaultCredentialIn,
+    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> dict:
+    _consume_vault_grant(db, principal, vault_grant)
+    from ..applications.candidate_credentials import save_password
+
+    try:
+        row = save_password(
+            db, org_id=principal.org_id, candidate_id=principal.candidate_id,
+            vendor=payload.vendor.strip(), tenant=payload.tenant.strip(), username=payload.username,
+            password=payload.password, origin=payload.origin,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username, "status": row.status}
+
+
+@router.delete("/vault/accounts/{account_id}", status_code=204)
+def revoke_vault_account(
+    account_id: str,
+    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
+    db: Session = Depends(get_db),
+    principal: CandidatePrincipal = Depends(get_candidate_principal),
+) -> Response:
+    _consume_vault_grant(db, principal, vault_grant)
+    row = db.scalar(select(AtsAccount).where(AtsAccount.id == account_id, AtsAccount.org_id == principal.org_id, AtsAccount.candidate_id == principal.candidate_id))
     if row is None:
         raise _NOT_FOUND
-    if row.handed_over_at is None:
-        row.handed_over_at = utcnow()
-        db.flush()
-        record_event(
-            db,
-            org_id=principal.org_id,
-            type="ats_account.handed_over",
-            subject_type="ats_account",
-            subject_id=row.id,
-            payload={"vendor": row.vendor, "tenant": row.tenant},
-        )
-    return {
-        "id": row.id,
-        "vendor": row.vendor,
-        "tenant": row.tenant,
-        "username": row.username,
-        "handed_over": True,
-        "next_step": (
-            "use the board's own 'forgot password' with this username -- the "
-            "reset email arrives at your managed address and we'll forward it "
-            "to you. the password you set is yours; we never see it and we "
-            "stop using this account."
-        ),
-    }
+    from ..applications.candidate_credentials import revoke
+
+    revoke(db, row)
+    return Response(status_code=204)

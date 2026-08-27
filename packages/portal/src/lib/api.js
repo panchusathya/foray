@@ -82,7 +82,7 @@ function flattenDetail(detail, fallback) {
 
 
 
-export async function request(path, { method = 'GET', body, auth = true } = {}) {
+export async function request(path, { method = 'GET', body, auth = true, extraHeaders = {} } = {}) {
 
   const headers = {};
 
@@ -130,6 +130,22 @@ export async function request(path, { method = 'GET', body, auth = true } = {}) 
 
   return payload;
 
+}
+
+async function upload(path, file) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const form = new FormData();
+  form.append('file', file);
+  const response = await fetch(`/v1/portal${path}`, { method: 'POST', headers, body: form });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    throw new ApiError(flattenDetail(payload?.detail, `Request failed (${response.status})`), response.status);
+  }
+  Object.assign(headers, extraHeaders);
+  return payload;
 }
 
 
@@ -237,6 +253,22 @@ export const api = {
 
 
   documents: () => request('/documents'),
+
+  uploadDocument: (file) => upload('/documents/upload', file),
+
+  makeDefaultDocument: (id) => request(`/documents/${id}/make-default`, { method: 'POST' }),
+
+  vaultStepUpRequest: () => request('/vault/step-up/request', { method: 'POST' }),
+
+  vaultStepUp: (code) => request('/vault/step-up', { method: 'POST', body: { code } }),
+
+  vaultAccounts: () => request('/vault/accounts'),
+
+  saveVaultAccount: (payload, grant) =>
+    request('/vault/accounts', { method: 'POST', body: payload, extraHeaders: { 'X-Vault-Grant': grant } }),
+
+  revokeVaultAccount: (id, grant) =>
+    request(`/vault/accounts/${id}`, { method: 'DELETE', extraHeaders: { 'X-Vault-Grant': grant } }),
 
   documentUrl: (id) => request(`/documents/${id}/download-url`, { method: 'POST' }),
 

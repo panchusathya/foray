@@ -812,13 +812,50 @@ def _run_linkedin_short(
 
         materialize_pending(db, thread=thread)
 
-    if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
+    # The intro fires once, on a thread that has never spoken and was never
+    # asked anything. It used to key on "no email yet" — the email was the
+    # intro's own question — but the intro no longer asks for one, so the
+    # guards are the conversation's actual state: nothing sent, nothing asked,
+    # nobody known.
+    if last is None or (
+        last.direction == INBOUND
+        and not outbound_sent
+        and not (thread.last_field_asked or "").strip()
+        and not thread.candidate_id
+    ):
         return _linkedin_intro(db, thread=thread)
 
     if last is not None and last.direction == OUTBOUND and last.status != "failed":
         return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     assert last is not None
+
+    # A resume is stashed but nothing links this thread to a person yet —
+    # nothing can move until an email (or LinkedIn URL) arrives, so ask for
+    # exactly that instead of falling into the profile ask they already
+    # answered with a file.
+    from .attachments import PENDING_KEY
+
+    if flow_meta(thread).get(PENDING_KEY) and not (thread.contact_email or "").strip():
+        if thread.last_field_asked == identity.CONTACT_EMAIL:
+            body = "still need an email to attach your resume to — what's the best one?"
+        else:
+            body = (
+                "got your resume. what's the best email to reach you on, "
+                "so i can attach it to your file?"
+            )
+        sent = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=body, asked_field=identity.CONTACT_EMAIL),
+        )
+        return TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=identity.CONTACT_EMAIL,
+            sent=[s for s in [sent] if s],
+        )
 
     # An index of a connected app is still running. The same "wait for it"
     # state a scrape or a parsing resume is, and it must be checked BEFORE the
@@ -854,28 +891,7 @@ def _run_linkedin_short(
         if connect_flow.should_offer(db, thread):
             return _connect_offer(db, thread=thread)
         if thread.last_field_asked != connect_flow.BATCH_CONNECT:
-            # iMessage carries files, so on Linq the resume ask is "attach it
-            # right here"; the upload page stays the route for web chat, which
-            # cannot, and reappears on Linq only as the fallback when a
-            # download or a parse fails.
-            from .channels import LINQ
-
-            if thread.channel == LINQ:
-                body = prompts.ASK_RESUME_OR_LINKEDIN
-            else:
-                body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
-            sent = _deliver(
-                db,
-                thread=thread,
-                message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
-            )
-            return TurnResult(
-                ACTION_ASKED,
-                thread,
-                _coverage_for(thread),
-                asked_field=CONTACT_LINKEDIN,
-                sent=[s for s in [sent] if s],
-            )
+            return _ask_profile(db, thread=thread)
 
     # A resume that has landed but not finished parsing is the same "wait for
     # it" state a scrape is, and a resume that HAS parsed settles the profile
@@ -934,18 +950,76 @@ def _profile_document(db: Session, thread: IntakeThread):
 
 
 def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
+    """The intro bubble, then the profile ask riding the same turn.
+
+    The intro is context, not a question — it used to end on "what's the best
+    email to reach you on?", which made a stranger's first task typing an
+    address before anything was in it for them. The email now arrives on its
+    own from the OAuth callback (verified, no typing), or in the gap-fill for
+    threads that went the manual route.
+    """
+    from .attachments import PENDING_KEY
+
     org = db.get(Org, thread.org_id)
     org_name = (getattr(org, "name", "") or "our team").strip()
     body = intro_message(recruiter=prompts.recruiter_name(), org=org_name)
-    sent = _deliver(
-        db, thread=thread, message=OutboundMessage(body=body, asked_field=identity.CONTACT_EMAIL)
-    )
+    intro_sent = _deliver(db, thread=thread, message=OutboundMessage(body=body))
     update_flow_meta(thread, phase="intro")
+    if thread.contact_linkedin:
+        # The first message WAS the profile — a pasted URL. Asking for one
+        # anyway is the agent not reading; scrape it and hold.
+        _enqueue_linkedin_scrape(db, thread)
+        follow = TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+    elif flow_meta(thread).get(PENDING_KEY):
+        # Same for a resume attached as the opener: the only thing missing is
+        # an address to attach it to.
+        ask = (
+            "got your resume. what's the best email to reach you on, "
+            "so i can attach it to your file?"
+        )
+        sent = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=ask, asked_field=identity.CONTACT_EMAIL),
+        )
+        follow = TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=identity.CONTACT_EMAIL,
+            sent=[s for s in [sent] if s],
+        )
+    elif connect_flow.should_offer(db, thread):
+        follow = _connect_offer(db, thread=thread)
+    else:
+        follow = _ask_profile(db, thread=thread)
+    follow.sent[:0] = [s for s in [intro_sent] if s]
+    return follow
+
+
+def _ask_profile(db: Session, *, thread: IntakeThread) -> TurnResult:
+    """The resume/LinkedIn ask, worded per channel.
+
+    iMessage carries files, so on Linq the ask is "attach it right here"; the
+    upload page stays the route for web chat, which cannot, and reappears on
+    Linq only as the fallback when a download or a parse fails.
+    """
+    from .channels import LINQ
+
+    if thread.channel == LINQ:
+        body = prompts.ASK_RESUME_OR_LINKEDIN
+    else:
+        body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
+    sent = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
+    )
     return TurnResult(
-        ACTION_GREETED,
+        ACTION_ASKED,
         thread,
         _coverage_for(thread),
-        asked_field=identity.CONTACT_EMAIL,
+        asked_field=CONTACT_LINKEDIN,
         sent=[s for s in [sent] if s],
     )
 

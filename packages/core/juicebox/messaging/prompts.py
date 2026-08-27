@@ -320,14 +320,14 @@ ASK_RESUME_OR_LINKEDIN = (
 # who would rather paste a URL loses nothing and nobody gets a second pitch.
 # Sent as batched (they exceed the single-question budget on purpose).
 CONNECT_OFFER_LINQ = (
-    "Fastest way to get set up: connect your {apps} and I'll find your resume "
-    "and details myself — {connect_link}\n\n"
+    "Fastest way to get set up: connect your {apps} and I'll pull your resume "
+    "and details myself, so you don't have to type anything — {connect_link}\n\n"
     "Or just send your resume right here (PDF or Word), or your LinkedIn URL."
 )
 
 CONNECT_OFFER_WEB = (
-    "Fastest way to get set up: connect your {apps} and I'll find your resume "
-    "and details myself — {connect_link}\n\n"
+    "Fastest way to get set up: connect your {apps} and I'll pull your resume "
+    "and details myself, so you don't have to type anything — {connect_link}\n\n"
     "Or send your LinkedIn URL, or upload your resume here: {upload_link}"
 )
 

@@ -381,11 +381,19 @@ def intro_message(*, recruiter: str, org: str) -> str:
     """
     name = (recruiter or "vivian").strip() or "vivian"
     org_name = (org or "our team").strip() or "our team"
+    # When the agent and the org share a name ("foray from foray"), the org
+    # clause reads as a stutter and names nothing new — one mention carries
+    # both disclosures.
+    if name.lower() == org_name.lower():
+        return (
+            f"hey, it's {name} — i'm an ai helping teams match you to roles. "
+            f"a couple quick things and i'll only text you ones actually "
+            f"worth your time."
+        )
     return (
         f"hey, i'm {name} from {org_name}. i'm an ai helping the team match you "
-        f"to roles — we'll ask a short series of questions so we don't waste "
-        f"your time on ones that aren't a fit.\n\n"
-        f"first, what's the best email to reach you on?"
+        f"to roles — a couple quick things and i'll only text you ones actually "
+        f"worth your time."
     )
 
 
@@ -403,6 +411,14 @@ def gap_fill_message(thread: IntakeThread, *, preface: str = "") -> tuple[str, l
     # what the URL is for; asking anyway turns the opening of a conversation
     # into a form. When the lookup genuinely fails we would rather have an
     # unnamed candidate that a recruiter can see than a survey question.
+
+    # Email is asked here now rather than as the opening question: the
+    # connect/OAuth route delivers a verified address on its own, so only a
+    # thread that went the manual route still needs one — and it is what lets
+    # a pending resume attach and a candidate row exist at all.
+    if not (thread.contact_email or "").strip():
+        lines.append("- what's the best email to reach you on?")
+        keys.append("contact.email")
 
     if (
         len(lines) < MAX_GAP_FILL

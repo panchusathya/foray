@@ -308,8 +308,10 @@ def walk(
             else:
                 feedback = (
                     f"you already did {action.type} on {action.control_id} "
-                    f"{repeat_count} time(s); it is set. Do NOT choose it again -- "
-                    "fill a different empty field, or click Save and Continue / Next."
+                    f"{repeat_count} time(s). Repeating it types the SAME value again -- "
+                    "if the errors list still names this field the value was refused, "
+                    "and retyping it cannot fix a format complaint. Move to a different "
+                    "empty field, or click Save and Continue / Next."
                 )
             _trace(result, obs, action, decision, "loop-steer")
             continue

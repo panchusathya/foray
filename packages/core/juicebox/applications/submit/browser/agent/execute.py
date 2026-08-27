@@ -6,6 +6,19 @@ from .actions import Action
 from .observe import locator
 from .policy import Decision
 
+#: Is a type-ahead suggestion list open right now? Workday's multiselects
+#: pop an activeListContainer listbox while you type; Enter then commits the
+#: typed text as a selection pill (verified live, Intapp 2026-08-27).
+_LISTBOX_OPEN_JS = """() => {
+  const el = document.querySelector(
+    '[data-automation-id="activeListContainer"], [role="listbox"]'
+  );
+  if (!el) return false;
+  const s = window.getComputedStyle(el);
+  const b = el.getBoundingClientRect();
+  return s.display !== 'none' && s.visibility !== 'hidden' && b.width > 0 && b.height > 0;
+}"""
+
 
 def execute(page, action: Action, decision: Decision) -> str:
     """Run one approved action. Returns a short executed-action label."""
@@ -24,7 +37,16 @@ def execute(page, action: Action, decision: Decision) -> str:
             loc.click()
             loc.fill("")
             loc.press_sequentially(decision.resolved_value, delay=25)
-            page.wait_for_timeout(1200)
+            # The suggestion list is a server round-trip (~2.5s measured);
+            # 1200ms observed an unopened popup and the value never committed
+            # (live, Intapp 2026-08-27).
+            page.wait_for_timeout(2500)
+            if page.evaluate(_LISTBOX_OPEN_JS):
+                # Enter commits the typed text as a pill when it names a real
+                # option; a plain input never has a listbox open, so this
+                # never submits a form.
+                loc.press("Enter")
+                page.wait_for_timeout(1000)
         except Exception:  # noqa: BLE001 - a widget that refuses keystrokes gets the plain set
             loc.fill(decision.resolved_value)
         return f"fill:{action.control_id}"

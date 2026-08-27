@@ -117,6 +117,23 @@ class Control:
         return " ".join(part for part in (self.id, self.name, self.label, self.role, self.field_type) if part)
 
 
+_ERRORS_JS = """() => {
+  const out = [];
+  const seen = new Set();
+  for (const el of document.querySelectorAll('[role="alert"], [data-automation-id*="rror"]')) {
+    const s = window.getComputedStyle(el);
+    const box = el.getBoundingClientRect();
+    if (s.display === 'none' || s.visibility === 'hidden' || box.width === 0) continue;
+    const text = (el.innerText || '').trim().slice(0, 200);
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= 8) break;
+  }
+  return out;
+}"""
+
+
 @dataclass
 class Observation:
     url: str = ""
@@ -124,6 +141,11 @@ class Observation:
     body_text: str = ""
     screenshot: bytes = b""
     controls: tuple[Control, ...] = ()
+    # The page's own visible validation messages. Without them the planner
+    # clicked Save and Continue thirty times into a step Workday was refusing
+    # to advance, blind to the error banner saying which fields were the
+    # reason (live, Intapp 2026-08-27).
+    errors: tuple[str, ...] = ()
 
     def fingerprint(self) -> str:
         material = f"{self.url}|{self.title}|{','.join(c.id + ':' + c.field_type for c in self.controls)}"
@@ -141,6 +163,7 @@ class Observation:
         return {
             "url": self.url,
             "title": self.title,
+            "errors": [e[:200] for e in self.errors[:8]],
             "controls": [
                 {
                     "id": c.id,
@@ -211,6 +234,10 @@ def observe(page) -> Observation:
     except Exception:  # noqa: BLE001
         raw = []
     try:
+        errors = tuple(str(e) for e in (page.evaluate(_ERRORS_JS) or []) if str(e).strip())
+    except Exception:  # noqa: BLE001
+        errors = ()
+    try:
         # Viewport, not full_page: a long signed-in wizard produced a
         # screenshot so tall the planner call returned an empty response every
         # time (live, Intapp 2026-08-27), while a short page worked. The
@@ -246,6 +273,7 @@ def observe(page) -> Observation:
         body_text=body,
         screenshot=screenshot,
         controls=tuple(controls),
+        errors=errors,
     )
 
 

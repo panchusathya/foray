@@ -201,9 +201,11 @@ def walk(
     # button — use check"); this is what finally shows them to the model.
     feedback = ""
     last_action_key = ""
+    last_fingerprint = ""
     repeat_count = 0
     for _ in range(max_steps):
         obs = _settled_observe(page)
+        fingerprint = obs.fingerprint()
         klass = page_class(obs)
         result.page_class = klass
         _collect_questions(result, obs)
@@ -275,23 +277,46 @@ def walk(
         # identical field action means "done, move on" -- steer the planner
         # off it, and if it will not move, stop rather than burn the budget.
         action_key = f"{action.type}:{action.control_id}"
-        if action.type in {"fill", "select", "check", "upload"} and action_key == last_action_key:
+        repeated_field = (
+            action.type in {"fill", "select", "check", "upload"} and action_key == last_action_key
+        )
+        # A repeated Next is only a loop when the page did NOT change under it
+        # -- the same click on a fresh fingerprint is legitimate wizard
+        # progress. Thirty identical Save-and-Continue clicks on one unchanged
+        # step burned the whole step cap (live, Intapp 2026-08-27): Workday
+        # was refusing the step over its own validation errors.
+        repeated_click = (
+            action.type in {"click_next", "dismiss"}
+            and action_key == last_action_key
+            and fingerprint == last_fingerprint
+        )
+        if repeated_field or repeated_click:
             repeat_count += 1
             if repeat_count >= 4:
                 result.needs_human = True
                 result.error = f"stuck repeating {action_key}; the wizard did not advance"
                 _trace(result, obs, action, decision, "loop")
                 break
-            feedback = (
-                f"you already did {action.type} on {action.control_id} "
-                f"{repeat_count} time(s); it is set. Do NOT choose it again -- "
-                "fill a different empty field, or click Save and Continue / Next."
-            )
+            if repeated_click:
+                feedback = (
+                    f"you clicked {action.control_id} {repeat_count} time(s) and the page "
+                    "did not advance -- this step is refusing to continue. Read the "
+                    "errors list in the observation and fix what it names: fill the "
+                    "empty required fields, check the unanswered radio, or commit the "
+                    "open dropdown by clicking its option. Do NOT click it again yet."
+                )
+            else:
+                feedback = (
+                    f"you already did {action.type} on {action.control_id} "
+                    f"{repeat_count} time(s); it is set. Do NOT choose it again -- "
+                    "fill a different empty field, or click Save and Continue / Next."
+                )
             _trace(result, obs, action, decision, "loop-steer")
             continue
         if action_key != last_action_key:
             repeat_count = 0
         last_action_key = action_key
+        last_fingerprint = fingerprint
         if action.type == "final_submit":
             result.final_submit_requested_at = trace.utcstamp()
             _checkpoint(ctx, result)

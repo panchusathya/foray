@@ -945,6 +945,9 @@ class TestBrowserFieldFilling:
         def first(self):
             return self
 
+        def nth(self, index):
+            return self
+
         def count(self):
             return 1 if self._present else 0
 

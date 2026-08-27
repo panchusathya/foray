@@ -70,6 +70,9 @@ _APPLY_MANUALLY = (
 #: and OAuth in the candidate's name is not ours to click. The email/password
 #: inputs (and the Create Account link) render only after this.
 _EMAIL_ROUTE = (
+    # Workday ships this id capitalized (SignInWithEmailButton, live DOM dump,
+    # Intapp 2026-08-27); the lowercase variant stays for tenants that differ.
+    'button[data-automation-id="SignInWithEmailButton"]',
     'button[data-automation-id="signInWithEmailButton"]',
     'button:has-text("Sign in with email")',
     'a:has-text("Sign in with email")',
@@ -356,9 +359,16 @@ class WorkdaySubmitter:
                     )
                     if driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually"):
                         _settle(page, log=log, expect=_EMAIL_ROUTE + _ACCOUNT_EMAIL, timeout_ms=30000)
-                    driver.click(page, _EMAIL_ROUTE, log=log, what="sign in with email")
-                    driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=30000)
-                    driver.fill(
+                    # wait_ms: the settle above returns on PRESENCE, and Workday
+                    # paints the chooser a beat after it renders the nodes -- an
+                    # instant click missed the visible-only check and the whole
+                    # sign-in fell through to clicking the header's Sign In
+                    # (live, Intapp 2026-08-27).
+                    driver.click(
+                        page, _EMAIL_ROUTE, log=log, what="sign in with email", wait_ms=15000
+                    )
+                    driver.wait_for_visible(page, _ACCOUNT_EMAIL, timeout_ms=30000)
+                    missing = driver.fill(
                         page,
                         [
                             FieldSpec(
@@ -377,6 +387,30 @@ class WorkdaySubmitter:
                         ],
                         log=log,
                     )
+                    if missing:
+                        # Without both boxes there is nothing to sign in WITH,
+                        # and the text-fallback Sign In click lands on the
+                        # header's own Sign In link -- the run then hands the
+                        # agent an unauthenticated page it rightly refuses
+                        # (live, Intapp 2026-08-27). Stop here, with the miss.
+                        shot = driver.snapshot(
+                            page,
+                            org_id=ctx.org_id,
+                            application_id=ctx.application_id,
+                            label="workday-no-signin-form",
+                            log=log,
+                        )
+                        return SubmissionResult(
+                            ok=False,
+                            method=self.method,
+                            needs_human=True,
+                            error=(
+                                "sign-in form never rendered: missing "
+                                + ", ".join(missing)
+                            ),
+                            artifacts=[p for p in [shot] if p],
+                            verification={"run": log.as_payload()},
+                        )
                     driver.click(page, _SIGN_IN, log=log, what="sign in")
                     # Sign-in is a navigation. Wait for the password field to
                     # actually leave before handing off, or the agent observes
@@ -425,7 +459,7 @@ class WorkdaySubmitter:
                     # navigated and the agent saw a login page and refused it
                     # (live, 2026-08-27). These controls exist only past the
                     # sign-in, so their presence is the confirmation of it.
-                    driver.wait_for_any(
+                    wizard = driver.wait_for_any(
                         page,
                         (
                             'button[data-automation-id="bottom-navigation-next-button"]',
@@ -435,6 +469,29 @@ class WorkdaySubmitter:
                         ),
                         timeout_ms=45000,
                     )
+                    if not wizard:
+                        # No wizard marker means sign-in did not land -- handing
+                        # the page over anyway burned an attempt on an agent
+                        # that observed a login page and stopped (live, Intapp
+                        # 2026-08-27). Fail here, with the page as evidence.
+                        shot = driver.snapshot(
+                            page,
+                            org_id=ctx.org_id,
+                            application_id=ctx.application_id,
+                            label="workday-no-wizard",
+                            log=log,
+                        )
+                        return SubmissionResult(
+                            ok=False,
+                            method=self.method,
+                            needs_human=True,
+                            error=(
+                                "signed-in wizard never appeared after sign in "
+                                "(no next-button / name / upload marker in 45s)"
+                            ),
+                            artifacts=[p for p in [shot] if p],
+                            verification={"run": log.as_payload()},
+                        )
                     walked = LoopResult()
                     agent_loop.walk(
                         page,

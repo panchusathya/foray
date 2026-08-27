@@ -396,11 +396,21 @@ def first_match(page, selectors: tuple[str, ...]) -> str:
 
 
 def _first(page, selectors: tuple[str, ...]):
+    """The first VISIBLE match across ``selectors``, or None.
+
+    Scans every node a selector matches, not just ``.first``: a text selector
+    like ``button:has-text("Sign In")`` matches the header's Sign In link, the
+    Google/LinkedIn SSO buttons, and the dialog's submit all at once (live,
+    Intapp 2026-08-27 — four nodes), and ``.first`` alone pins whichever is
+    earliest in the DOM even when it is hidden or the wrong control.
+    """
     for selector in selectors:
         try:
-            located = page.locator(selector).first
-            if located.count() and located.is_visible():
-                return located
+            located = page.locator(selector)
+            for index in range(min(located.count(), 10)):
+                node = located.nth(index)
+                if node.is_visible():
+                    return node
         except Exception:  # noqa: BLE001 - a bad selector is not a failure
             continue
     return None
@@ -421,6 +431,27 @@ def wait_for_any(page, selectors: tuple[str, ...], *, timeout_ms: int = 12000) -
         hit = first_match(page, selectors)
         if hit or waited >= timeout_ms:
             return hit
+        page.wait_for_timeout(poll)
+        waited += poll
+
+
+def wait_for_visible(page, selectors: tuple[str, ...], *, timeout_ms: int = 12000) -> bool:
+    """Wait until one of ``selectors`` is actually VISIBLE, not merely present.
+
+    ``wait_for_any`` answers "is it in the DOM", which is the wrong question
+    right before a click or a fill: Workday renders the sign-on chooser's
+    nodes before it paints them, so the settle returned on presence and the
+    click 300ms later found nothing visible and reported the button missing
+    (live, Intapp 2026-08-27). Anything that acts on a control it just waited
+    for should wait with this.
+    """
+    waited = 0
+    poll = 250
+    while True:
+        if _first(page, selectors) is not None:
+            return True
+        if waited >= timeout_ms:
+            return False
         page.wait_for_timeout(poll)
         waited += poll
 
@@ -454,7 +485,14 @@ def reach_form(
     return wait_for_any(page, landmark)
 
 
-def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
+def click(
+    page, selectors: tuple[str, ...], *, log: RunLog, what: str, wait_ms: int = 0
+) -> bool:
+    """Click the first visible match. ``wait_ms`` bounds a poll for it to
+    appear first — for a control the caller knows is coming (a dialog that is
+    still painting), where an instant miss is a race, not an answer."""
+    if wait_ms > 0:
+        wait_for_visible(page, selectors, timeout_ms=wait_ms)
     located = _first(page, selectors)
     if located is None:
         log.step(f"no {what} to click")

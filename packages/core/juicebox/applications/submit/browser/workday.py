@@ -38,7 +38,7 @@ from ....models import AtsAccount
 from ..base import METHOD_BROWSER, SubmissionContext, SubmissionResult
 from . import driver
 from .driver import BrowserUnavailable, FieldSpec, RunLog
-from .forms import WORKDAY_ACCOUNT, WORKDAY_APPLICATION
+from .forms import WORKDAY_ACCOUNT
 
 logger = logging.getLogger(__name__)
 
@@ -138,43 +138,6 @@ def _account_fields(email: str, password: str) -> list[FieldSpec]:
             selectors=('input[data-automation-id="createAccountCheckbox"]',),
             value="1",
             kind="check",
-        ),
-    ]
-
-
-def _application_fields(ctx: SubmissionContext, resume_path: str) -> list[FieldSpec]:
-    return [
-        FieldSpec(
-            key="first_name",
-            selectors=('input[data-automation-id="legalNameSection_firstName"]',),
-            value=ctx.first_name,
-            required=True,
-        ),
-        FieldSpec(
-            key="last_name",
-            selectors=('input[data-automation-id="legalNameSection_lastName"]',),
-            value=ctx.last_name,
-            required=True,
-        ),
-        FieldSpec(
-            key="phone",
-            selectors=('input[data-automation-id="phone-number"]',),
-            value=ctx.phone,
-        ),
-        FieldSpec(
-            key="resume",
-            selectors=(
-                'input[data-automation-id="file-upload-input-ref"]',
-                'input[type="file"]',
-            ),
-            value=resume_path,
-            required=True,
-            kind="file",
-        ),
-        FieldSpec(
-            key="linkedin",
-            selectors=('input[data-automation-id="linkedinQuestion"]',),
-            value=ctx.linkedin_url,
         ),
     ]
 
@@ -435,73 +398,48 @@ class WorkdaySubmitter:
                         )
                         driver.click(page, _SIGN_IN, log=log, what="submit code")
 
-                    # Signing in routes into the wizard; give it the same
-                    # render courtesy every other step gets before reading a
-                    # blank page as a dead field map.
+                    # Signed in. Workday's application is a multi-step wizard
+                    # (My Information -> My Experience -> Questions -> Voluntary
+                    # Disclosures -> Self Identify -> Review -> Submit), each
+                    # step its own form behind a Save-and-Continue. Walking
+                    # multi-step forms is the agent's job -- only the account
+                    # sign-in above had to be deterministic, because an LLM
+                    # must never type a credential. Hand it the authenticated
+                    # page; the agent reads the approved answers off ctx.
+                    from .agent import loop as agent_loop
+                    from .agent import policy as agent_policy
+                    from .agent.loop import LoopResult
+
                     driver.wait_for_any(
                         page,
                         (
                             'input[data-automation-id="file-upload-input-ref"]',
                             'input[type="file"]',
                             'button[data-automation-id="bottom-navigation-next-button"]',
+                            "input, textarea, select",
                         ),
                         timeout_ms=30000,
                     )
-                    missing = driver.fill(page, _application_fields(ctx, str(resume_path)), log=log)
-                    before = driver.snapshot(
+                    walked = LoopResult()
+                    agent_loop.walk(
                         page,
-                        org_id=ctx.org_id,
-                        application_id=ctx.application_id,
-                        label="workday-before-submit",
+                        ctx=ctx,
+                        allow_submit=True,
                         log=log,
+                        result=walked,
+                        start_origin=agent_policy.origin_of(ctx.target.apply_url),
+                        resume_path=str(resume_path),
                     )
-                    artifacts = [path for path in [before] if path]
-                    if missing:
+                    artifacts = list(walked.artifacts)
+                    if not walked.ok:
                         return SubmissionResult(
                             ok=False,
                             method=self.method,
-                            needs_human=True,
-                            error=f"required fields we could not fill: {', '.join(missing)}",
+                            needs_human=walked.needs_human,
+                            needs_verification=walked.needs_verification,
+                            error=walked.error or "workday wizard did not complete",
                             artifacts=artifacts,
-                            verification={"run": log.as_payload()},
-                        )
-                    if not driver.click(page, _SUBMIT, log=log, what="submit"):
-                        return SubmissionResult(
-                            ok=False,
-                            method=self.method,
-                            needs_human=True,
-                            error="the form has no submit control we recognise",
-                            artifacts=artifacts,
-                            verification={"run": log.as_payload()},
-                        )
-                    # A click during an in-flight upload is swallowed, and the
-                    # upload is swallowed, and the after-screenshot of the same
-                    # filled form used to be recorded as submitted.
-                    confirmed = driver.confirm_submission(
-                        page,
-                        landmark=WORKDAY_APPLICATION.landmark,
-                        submit=_SUBMIT,
-                        log=log,
-                    )
-                    after = driver.snapshot(
-                        page,
-                        org_id=ctx.org_id,
-                        application_id=ctx.application_id,
-                        label=f"workday-{'submitted' if confirmed else 'unconfirmed'}",
-                        log=log,
-                    )
-                    artifacts += [path for path in [after] if path]
-                    if not confirmed:
-                        return SubmissionResult(
-                            ok=False,
-                            method=self.method,
-                            needs_human=True,
-                            error=(
-                                "clicked submit but the form never confirmed -- "
-                                "the screenshots say what the page did"
-                            ),
-                            artifacts=artifacts,
-                            verification={"run": log.as_payload()},
+                            verification={"run": log.as_payload(), "agent": walked.steps},
                         )
             except BrowserUnavailable as exc:
                 return SubmissionResult(ok=False, method=self.method, error=str(exc))

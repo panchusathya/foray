@@ -230,6 +230,27 @@ def check(
             cover_path=cover_path,
             control=control,
         )
+        if (
+            not err
+            and action.type == "check"
+            and control.field_type in {"radio", "checkbox"}
+            and resolved
+            and not is_decline(resolved)
+            and resolved.strip().lower() != control.label.strip().lower()
+        ):
+            # Citing an approved answer while checking the control that says
+            # the opposite would put a claim the candidate never made on the
+            # form. The label IS the assertion for a radio.
+            return Decision(
+                False,
+                reason=(
+                    f"control {control.id} asserts {control.label[:40]!r} but the "
+                    f"approved answer is {resolved[:40]!r} -- check the control "
+                    "whose label matches the answer"
+                ),
+                page_class=klass,
+                replan=True,
+            )
         if err:
             # A bad or missing token is a planner mistake, not a governance
             # wall — name it and let it re-plan.

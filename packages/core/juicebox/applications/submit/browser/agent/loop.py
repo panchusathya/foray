@@ -225,6 +225,7 @@ def walk(
             obs,
             allow_submit=allow_submit,
             approved_answer_keys=_approved_keys(ctx),
+            approved_answers=_approved_answers(ctx),
             planner=planner,
             feedback=feedback,
         )
@@ -468,6 +469,14 @@ def confirmation_artifact(artifacts: list[str]) -> str:
         if name.startswith(CONFIRMATION_LABEL):
             return str(path)
     return ""
+
+
+def _approved_answers(ctx: SubmissionContext) -> dict[str, str]:
+    return {
+        str(entry.get("key")): str(entry.get("answer"))
+        for entry in ctx.answers
+        if str(entry.get("key") or "").strip() and str(entry.get("answer") or "").strip()
+    }
 
 
 def _approved_keys(ctx: SubmissionContext) -> tuple[str, ...]:

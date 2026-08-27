@@ -43,6 +43,13 @@ Custom dropdowns render as a button or search box that opens a list of
 option controls. Answer one in two steps: fill (or click) it to open the
 list, then click_next the option row whose text matches the value you are
 entering. Never leave a list open -- commit an option before moving on.
+Some lists are two-level: clicking a row that is a CATEGORY replaces the
+list with its children, and only a leaf commits. If a click deepens the
+list instead of committing, click the leaf you want from the new rows.
+
+Answer a required Yes/No or radio question by checking the control whose
+label matches the relevant approved_answers value; never pick one by
+guessing. If no approved answer covers it, stop.
 An option whose text says an already-chosen value (e.g. "... press delete
 to clear value") is a committed selection: leave it alone. A search-style
 box that shows an empty current_value next to such a pill is ANSWERED --
@@ -62,16 +69,29 @@ def plan(
     *,
     allow_submit: bool,
     approved_answer_keys: tuple[str, ...] = (),
+    approved_answers: dict[str, str] | None = None,
     planner=None,
     feedback: str = "",
 ) -> Action | None:
     klass = page_class(obs)
     legal = sorted(allowed_actions(klass, allow_submit=allow_submit))
     steer = f"your_last_proposal_was_refused: {feedback}\n" if feedback.strip() else ""
+    # The VALUES, not just the keys. A required Yes/No radio ("have you
+    # previously been employed here?") is answered by choosing which control
+    # to check, and a planner shown only key names was guessing at a factual
+    # claim in the candidate's name (live, Intapp 2026-08-27). These are the
+    # candidate's own approved answers; resolve_token hands them to the page
+    # regardless, so showing them here adds no exposure and removes the guess.
+    answers = {
+        key: str(value)[:120]
+        for key, value in (approved_answers or {}).items()
+        if str(value or "").strip()
+    }
     prompt = (
         f"page_class={klass}\n"
         f"legal_actions={legal}\n"
         f"approved_answer_keys={list(approved_answer_keys)}\n"
+        f"approved_answers={answers}\n"
         f"{steer}"
         f"observation={obs.for_planner()}\n"
         "Propose the single next action."

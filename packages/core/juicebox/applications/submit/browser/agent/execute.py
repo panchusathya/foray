@@ -29,7 +29,10 @@ def execute(page, action: Action, decision: Decision) -> str:
         loc.check()
         return f"check:{action.control_id}"
     if action.type in {"click_next", "dismiss", "final_submit"}:
-        cid = action.control_id
+        # Policy may have resolved the real control itself — final_submit
+        # never clicks the model's id (it invented ">FINAL" live while the
+        # true send button sat in the inventory).
+        cid = decision.resolved_control_id or action.control_id
         if cid:
             locator(page, cid).click()
         return f"{action.type}:{cid or 'default'}"

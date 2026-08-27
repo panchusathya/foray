@@ -329,16 +329,22 @@ _VERB_FOR_TYPE = {
 
 
 def _action_type_mismatch(action_type: str, control: Control) -> str:
-    """Why this verb cannot act on this control, or empty when it can."""
-    expected = _VERB_FOR_TYPE.get(control.field_type)
-    if action_type == "fill" and expected:
+    """Why this verb cannot act on this control, or empty when it can.
+
+    Every branch names the verb that DOES work: "not a select" alone had the
+    planner re-proposing select on the same checkbox until its fault budget
+    died (live, Forerunner 2026-08-27) — the refusal is the steering, so it
+    has to steer.
+    """
+    expected = _VERB_FOR_TYPE.get(control.field_type) or "fill"
+    if action_type == "fill" and control.field_type in _VERB_FOR_TYPE:
         return f"control {control.id} is a {control.field_type} — use {expected}"
     if action_type == "upload" and control.field_type != "file":
-        return f"control {control.id} is not a file input"
+        return f"control {control.id} is a {control.field_type}, not a file input — use {expected}"
     if action_type == "select" and control.field_type not in {"select", "select-one"}:
-        return f"control {control.id} is not a select"
+        return f"control {control.id} is a {control.field_type}, not a select — use {expected}"
     if action_type == "check" and control.field_type not in {"checkbox", "radio"}:
-        return f"control {control.id} is not checkable"
+        return f"control {control.id} is a {control.field_type}, not checkable — use {expected}"
     return ""
 
 

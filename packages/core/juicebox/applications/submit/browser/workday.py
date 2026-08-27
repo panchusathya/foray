@@ -436,7 +436,6 @@ class WorkdaySubmitter:
                             ok=False,
                             method=self.method,
                             needs_human=walked.needs_human,
-                            needs_verification=walked.needs_verification,
                             error=walked.error or "workday wizard did not complete",
                             artifacts=artifacts,
                             verification={"run": log.as_payload(), "agent": walked.steps},

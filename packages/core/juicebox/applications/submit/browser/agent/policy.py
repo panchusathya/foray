@@ -145,6 +145,25 @@ def check(
             )
         if any(_SIGNATURE.search(c.identity) for c in obs.controls):
             return Decision(False, reason="legal signature is a hand-off", page_class=klass)
+        # The page's own required controls, checked deterministically now that
+        # observations carry current state: a run submitted with the required
+        # choice questions untouched (Forerunner, 2026-08-27). Re-plannable —
+        # the planner gets the list and fills them.
+        empty_required = [
+            c.id
+            for c in obs.controls
+            if c.required
+            and c.field_type not in {"button", "submit", "a", "link", "reset", "image"}
+            and not c.value
+            and not c.checked
+        ]
+        if empty_required:
+            return Decision(
+                False,
+                reason="required page controls are empty: " + ", ".join(empty_required[:6]),
+                page_class=klass,
+                replan=True,
+            )
         # The model's control_id is never trusted for the one irreversible
         # click: it invented a ">FINAL" placeholder live (Forerunner,
         # 2026-08-27) while the real "Submit Application" button sat in the

@@ -462,6 +462,14 @@ class WorkdaySubmitter:
                     wizard = driver.wait_for_any(
                         page,
                         (
+                            # This generation of the flow (live DOM dump, Intapp
+                            # 2026-08-27): the whole wizard sits in applyFlowPage,
+                            # Save and Continue is pageFooterNextButton, and the
+                            # step rail is progressBar. The older ids below stay
+                            # for tenants still on the previous generation.
+                            '[data-automation-id="applyFlowPage"]',
+                            'button[data-automation-id="pageFooterNextButton"]',
+                            '[data-automation-id="progressBar"]',
                             'button[data-automation-id="bottom-navigation-next-button"]',
                             'input[data-automation-id="legalNameSection_firstName"]',
                             'input[data-automation-id="file-upload-input-ref"]',

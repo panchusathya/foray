@@ -54,6 +54,17 @@ _CREATE_ACCOUNT = (
     'button[data-automation-id="createAccountLink"]',
     'a:has-text("Create Account")',
 )
+#: The "Start Your Application" chooser that Apply opens on most tenants —
+#: Autofill with Resume / Apply Manually / Use My Last Application / LinkedIn.
+#: Manual is our route: the field map is the source of truth, not a resume
+#: parse the tenant runs. (Live screenshot, Intapp 2026-08-27: the run
+#: clicked Apply, this chooser opened, and "create account" matched nothing.)
+_APPLY_MANUALLY = (
+    'button[data-automation-id="applyManually"]',
+    'a[data-automation-id="applyManually"]',
+    'button:has-text("Apply Manually")',
+    'a:has-text("Apply Manually")',
+)
 _SIGN_IN = (
     'button[data-automation-id="signInSubmitButton"]',
     'button:has-text("Sign In")',
@@ -198,9 +209,18 @@ class WorkdaySubmitter:
                 page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
                 _settle(page, log=log, expect=_APPLY_BUTTONS)
                 driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
-                # Apply routes to sign-in on some tenants and straight to the
-                # registration form on others — wait for either shape.
-                _settle(page, log=log, expect=_CREATE_ACCOUNT + _ACCOUNT_EMAIL, timeout_ms=30000)
+                # Apply opens the route chooser on most tenants, a sign-in
+                # dialog on some, and the registration form on a few — wait
+                # for whichever shape arrives, take the manual route when the
+                # chooser is what showed, and wait again for the dialog.
+                _settle(
+                    page,
+                    log=log,
+                    expect=_APPLY_MANUALLY + _CREATE_ACCOUNT + _ACCOUNT_EMAIL,
+                    timeout_ms=30000,
+                )
+                if driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually"):
+                    _settle(page, log=log, expect=_CREATE_ACCOUNT + _ACCOUNT_EMAIL, timeout_ms=30000)
                 driver.click(page, _CREATE_ACCOUNT, log=log, what="create account")
                 driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=20000)
                 missing = driver.fill(page, _account_fields(ctx.from_address, password), log=log)
@@ -301,6 +321,13 @@ class WorkdaySubmitter:
                     page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
                     _settle(page, log=log, expect=_APPLY_BUTTONS + _ACCOUNT_EMAIL)
                     driver.click(page, _APPLY_BUTTONS, log=log, what="apply")
+                    _settle(
+                        page,
+                        log=log,
+                        expect=_APPLY_MANUALLY + _ACCOUNT_EMAIL,
+                        timeout_ms=30000,
+                    )
+                    driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually")
                     driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=30000)
                     driver.fill(
                         page,

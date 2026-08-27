@@ -188,6 +188,16 @@ def check(
         # planner mistake; name the right verb and let it re-plan.
         return Decision(False, reason=mismatch, page_class=klass, replan=True)
     if action.type in FILL_TYPES:
+        if action.type == "check" and not (action.value_token or "").strip():
+            # Checking a box asserts its label — there is no value to resolve,
+            # and demanding a token ended a run whose planner had just been
+            # steered onto the right verb (live, Forerunner 2026-08-27). The
+            # label is what the forbidden-field judgment reads.
+            if _forbidden_control(control, resolved_value=control.label):
+                return Decision(
+                    False, reason=f"control {control.id} is a forbidden field", page_class=klass
+                )
+            return Decision(True, page_class=klass)
         resolved, file_path, err = resolve_token(
             action.value_token,
             ctx,
@@ -196,7 +206,9 @@ def check(
             control=control,
         )
         if err:
-            return Decision(False, reason=err, page_class=klass)
+            # A bad or missing token is a planner mistake, not a governance
+            # wall — name it and let it re-plan.
+            return Decision(False, reason=err, page_class=klass, replan=True)
         if _forbidden_control(control, resolved_value=resolved):
             return Decision(False, reason=f"control {control.id} is a forbidden field", page_class=klass)
         if action.type == "upload" and not file_path:

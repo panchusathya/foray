@@ -23,6 +23,8 @@ def record(
     decision: Decision | None,
     executed: str,
     at: str = "",
+    control_label: str = "",
+    control_count: int = -1,
 ) -> dict[str, Any]:
     action = None
     if proposed is not None:
@@ -31,11 +33,17 @@ def record(
             "control_id": proposed.control_id,
             "value_token": proposed.value_token,
         }
+        if control_label:
+            # WHAT the id pointed at. Reading a trace of bare c-numbers, the
+            # step where the planner clicked "Back to Job Posting" was
+            # indistinguishable from a wizard click (live, Intapp 2026-08-27).
+            action["control_label"] = control_label[:120]
     return {
         "at": at or utcstamp(),
         "url": _redact_query(url),
         "page_class": page_class,
         "observation": observation_fingerprint,
+        "controls": control_count,
         "proposed": action,
         "policy": {
             "allowed": bool(decision and decision.allowed),

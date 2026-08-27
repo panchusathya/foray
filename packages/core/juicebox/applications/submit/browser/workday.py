@@ -65,6 +65,16 @@ _APPLY_MANUALLY = (
     'button:has-text("Apply Manually")',
     'a:has-text("Apply Manually")',
 )
+#: The federated sign-on step some tenants run before any account form —
+#: Google / LinkedIn / "Sign in with email" (live screenshot, Intapp
+#: 2026-08-27). Email is our route: the address is the application's alias,
+#: and OAuth in the candidate's name is not ours to click. The email/password
+#: inputs (and the Create Account link) render only after this.
+_EMAIL_ROUTE = (
+    'button[data-automation-id="signInWithEmailButton"]',
+    'button:has-text("Sign in with email")',
+    'a:has-text("Sign in with email")',
+)
 _SIGN_IN = (
     'button[data-automation-id="signInSubmitButton"]',
     'button:has-text("Sign In")',
@@ -216,10 +226,17 @@ class WorkdaySubmitter:
                 _settle(
                     page,
                     log=log,
-                    expect=_APPLY_MANUALLY + _CREATE_ACCOUNT + _ACCOUNT_EMAIL,
+                    expect=_APPLY_MANUALLY + _EMAIL_ROUTE + _CREATE_ACCOUNT + _ACCOUNT_EMAIL,
                     timeout_ms=30000,
                 )
                 if driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually"):
+                    _settle(
+                        page,
+                        log=log,
+                        expect=_EMAIL_ROUTE + _CREATE_ACCOUNT + _ACCOUNT_EMAIL,
+                        timeout_ms=30000,
+                    )
+                if driver.click(page, _EMAIL_ROUTE, log=log, what="sign in with email"):
                     _settle(page, log=log, expect=_CREATE_ACCOUNT + _ACCOUNT_EMAIL, timeout_ms=30000)
                 driver.click(page, _CREATE_ACCOUNT, log=log, what="create account")
                 driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=20000)
@@ -327,7 +344,9 @@ class WorkdaySubmitter:
                         expect=_APPLY_MANUALLY + _ACCOUNT_EMAIL,
                         timeout_ms=30000,
                     )
-                    driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually")
+                    if driver.click(page, _APPLY_MANUALLY, log=log, what="apply manually"):
+                        _settle(page, log=log, expect=_EMAIL_ROUTE + _ACCOUNT_EMAIL, timeout_ms=30000)
+                    driver.click(page, _EMAIL_ROUTE, log=log, what="sign in with email")
                     driver.wait_for_any(page, _ACCOUNT_EMAIL, timeout_ms=30000)
                     driver.fill(
                         page,

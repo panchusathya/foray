@@ -37,6 +37,10 @@ Custom dropdowns render as a button or search box that opens a list of
 option controls. Answer one in two steps: fill (or click) it to open the
 list, then click_next the option row whose text matches the value you are
 entering. Never leave a list open -- commit an option before moving on.
+An option whose text says an already-chosen value (e.g. "... press delete
+to clear value") is a committed selection: leave it alone. A search-style
+box that shows an empty current_value next to such a pill is ANSWERED --
+do not fill it again.
 
 final_submit is the send control and may only be used when the inventory
 shows a complete application page. click_next is for wizard continuation,

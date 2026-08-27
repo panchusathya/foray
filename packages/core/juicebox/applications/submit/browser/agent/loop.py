@@ -139,6 +139,13 @@ def run(
             max_steps = max(1, int(settings.apply_browser_agent_max_steps or 40))
             submitted = False
             planner_faults = 0
+            # What the policy refused last time, fed back to the planner: a
+            # re-plan on a fresh observation but no explanation had the model
+            # repeating the same wrong verb on the same Yes/No buttons until
+            # the fault budget died (live, Forerunner 2026-08-27). The refusal
+            # reasons are written to steer ("control c015 is a button — use
+            # check"); this is what finally shows them to the model.
+            feedback = ""
             for _ in range(max_steps):
                 obs = _settled_observe(page)
                 klass = page_class(obs)
@@ -161,7 +168,9 @@ def run(
                     allow_submit=allow_submit,
                     approved_answer_keys=_approved_keys(ctx),
                     planner=planner,
+                    feedback=feedback,
                 )
+                feedback = ""
                 if action is None:
                     result.needs_human = True
                     result.error = "planner returned no action"
@@ -183,6 +192,7 @@ def run(
                         # Re-observe and re-plan, bounded; a governance
                         # refusal still ends the run below.
                         planner_faults += 1
+                        feedback = decision.reason
                         _trace(result, obs, action, decision, "replanned")
                         continue
                     result.needs_human = True
@@ -207,6 +217,7 @@ def run(
                         # except after a final_submit click, where "did it
                         # send" must be answered, never retried blind.
                         planner_faults += 1
+                        feedback = f"{action.type} on {action.control_id} failed: {exc}"[:300]
                         _trace(result, obs, action, decision, f"execute-retry: {exc}"[:120])
                         continue
                     result.needs_human = True

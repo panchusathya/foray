@@ -39,13 +39,16 @@ def plan(
     allow_submit: bool,
     approved_answer_keys: tuple[str, ...] = (),
     planner=None,
+    feedback: str = "",
 ) -> Action | None:
     klass = page_class(obs)
     legal = sorted(allowed_actions(klass, allow_submit=allow_submit))
+    steer = f"your_last_proposal_was_refused: {feedback}\n" if feedback.strip() else ""
     prompt = (
         f"page_class={klass}\n"
         f"legal_actions={legal}\n"
         f"approved_answer_keys={list(approved_answer_keys)}\n"
+        f"{steer}"
         f"observation={obs.for_planner()}\n"
         "Propose the single next action."
     )

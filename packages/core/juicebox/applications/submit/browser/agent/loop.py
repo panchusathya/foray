@@ -177,12 +177,11 @@ def run(
                     cover_path=cover_path,
                 )
                 if not decision.allowed:
-                    if decision.reason == "unknown control_id" and planner_faults < 3:
-                        # A planner mistake, not a governance wall: it named a
-                        # control that does not exist (live: an empty id on
-                        # step two killed a run whose step one had just filled
-                        # correctly). Re-observe and re-plan, bounded — a
-                        # governance refusal still ends the run below.
+                    if decision.replan and planner_faults < 5:
+                        # A planner mistake, not a governance wall — an
+                        # invented control id, a fill aimed at a button.
+                        # Re-observe and re-plan, bounded; a governance
+                        # refusal still ends the run below.
                         planner_faults += 1
                         _trace(result, obs, action, decision, "replanned")
                         continue
@@ -202,6 +201,14 @@ def run(
                 try:
                     executed = execute_mod.execute(page, action, decision)
                 except Exception as exc:  # noqa: BLE001
+                    if action.type != "final_submit" and planner_faults < 5:
+                        # Same class as a planner mistake: the page moved, or
+                        # the verb did not take. Re-observe and re-plan —
+                        # except after a final_submit click, where "did it
+                        # send" must be answered, never retried blind.
+                        planner_faults += 1
+                        _trace(result, obs, action, decision, f"execute-retry: {exc}"[:120])
+                        continue
                     result.needs_human = True
                     result.error = f"execute failed: {exc}"[:400]
                     _trace(result, obs, action, decision, "error")

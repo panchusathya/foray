@@ -65,6 +65,9 @@ class Decision:
     # The control the action actually acts on, when policy resolved it itself
     # (final_submit never trusts the model's id for the irreversible click).
     resolved_control_id: str = ""
+    # A planner mistake rather than a governance wall: the loop may re-observe
+    # and re-plan (bounded) instead of ending the run.
+    replan: bool = False
 
 
 def origin_of(url: str) -> str:
@@ -158,7 +161,13 @@ def check(
 
     control = _control(obs, action.control_id)
     if control is None:
-        return Decision(False, reason="unknown control_id", page_class=klass)
+        return Decision(False, reason="unknown control_id", page_class=klass, replan=True)
+    mismatch = _action_type_mismatch(action.type, control)
+    if mismatch:
+        # The model answered a Yes/No *button* with fill and Playwright threw
+        # mid-run (live, Forerunner 2026-08-27). Wrong-verb-for-control is a
+        # planner mistake; name the right verb and let it re-plan.
+        return Decision(False, reason=mismatch, page_class=klass, replan=True)
     if action.type in FILL_TYPES:
         resolved, file_path, err = resolve_token(
             action.value_token,
@@ -281,6 +290,37 @@ def _submit_control(obs: Observation) -> Control | None:
 
 def _looks_like_submit(control: Control) -> bool:
     return looks_like_submit(control)
+
+
+#: field_type -> the verb that actually works on it. fill is only for
+#: text-shaped inputs; everything else has its own action.
+_VERB_FOR_TYPE = {
+    "checkbox": "check",
+    "radio": "check",
+    "file": "upload",
+    "select": "select",
+    "select-one": "select",
+    "button": "click_next",
+    "submit": "final_submit",
+    "reset": "click_next",
+    "image": "click_next",
+    "a": "click_next",
+    "link": "click_next",
+}
+
+
+def _action_type_mismatch(action_type: str, control: Control) -> str:
+    """Why this verb cannot act on this control, or empty when it can."""
+    expected = _VERB_FOR_TYPE.get(control.field_type)
+    if action_type == "fill" and expected:
+        return f"control {control.id} is a {control.field_type} — use {expected}"
+    if action_type == "upload" and control.field_type != "file":
+        return f"control {control.id} is not a file input"
+    if action_type == "select" and control.field_type not in {"select", "select-one"}:
+        return f"control {control.id} is not a select"
+    if action_type == "check" and control.field_type not in {"checkbox", "radio"}:
+        return f"control {control.id} is not checkable"
+    return ""
 
 
 def _forbidden_control(control: Control, *, resolved_value: str = "") -> bool:

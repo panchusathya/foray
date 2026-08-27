@@ -406,6 +406,16 @@ APPLY_PARKED = (
     "twice — I'll come back to you on it."
 )
 
+# Apply by link. The ack promises a review, never a submission -- we prepare
+# the application; pressing submit stays the candidate's move
+# (CANDIDATE_AGENT_PLAN §8, and the copy must not imply otherwise).
+LINK_ACK = (
+    "On it — I'm pulling that role up now. I'll text you when your "
+    "application is ready to review."
+)
+
+LINK_NEED_IDENTITY = "Got the link — before I can fill it out, {ask}"
+
 # Proactive notifications: canned, never model-written. Nothing to reply to
 # means nothing to anchor a model, and a hallucinated claim texted unprompted
 # is the worst place for one.
@@ -504,6 +514,24 @@ VOICE_VERIFICATION_GREETING = (
     "Hi{name} — it's {recruiter} with Go4A. Great talking just now. Reply "
     "\"hey\" or \"hello\" so I know this is the right number, and I'll send "
     "the roles we discussed here."
+)
+
+# Apply-by-link refusals. A link that vanishes into silence reads as the
+# product losing the message, so every dead end says so -- without ever
+# implying anything was submitted.
+NOTIFY_LINK_PROBLEM = (
+    "I couldn't open the job link you sent — mind double-checking it, or "
+    "sending the page it came from?"
+)
+
+NOTIFY_LINK_DUPLICATE = (
+    "You're already in flight for that role — text \"status\" any time for "
+    "where it stands."
+)
+
+NOTIFY_LINK_PARKED = (
+    "I've saved that link. You're at this week's application limit, so I'll "
+    "prepare it as soon as a slot opens."
 )
 
 # Presenting cards relaxes the 320-char single-question budget: a numbered

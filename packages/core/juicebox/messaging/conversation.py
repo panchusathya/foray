@@ -210,6 +210,19 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     # into onboarding on the candidate's next message.
     from .manager import MODE_MANAGING
 
+    # A job link can be the very first thing a stranger texts. Onboarding
+    # still runs -- an application needs a name on it -- but the link is
+    # remembered here and spent at hand-over. Managing threads skip the
+    # stash: the manager's intent router owns the link on those.
+    if (
+        last is not None
+        and last.direction == INBOUND
+        and thread.mode != MODE_MANAGING
+    ):
+        from . import apply_link
+
+        apply_link.stash_from_body(thread, body=last.body or "", message_id=last.id)
+
     if is_linkedin_short(thread) and thread.mode != MODE_MANAGING:
         return _run_linkedin_short(db, thread=thread, last=last)
 
@@ -748,6 +761,11 @@ def _hand_over_to_manager(
 
     thread.mode = MODE_MANAGING
     db.flush()
+    # A link that arrived mid-onboarding is spent the moment the thread has
+    # a candidate to apply for.
+    from . import apply_link
+
+    apply_link.ensure_enqueued(db, thread)
     # Not composed, on purpose. This line lists the literal phrases the intent
     # router matches on -- "what's my status", "find me roles", "who should I
     # talk to". A paraphrase teaches somebody a command that then does not

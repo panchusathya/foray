@@ -29,6 +29,10 @@ candidate.location, doc.resume, doc.cover_letter, policy.decline (only on
 voluntary self-identification controls that offer Prefer not to answer),
 and answer.<key> for keys listed as approved answers.
 
+The observation's errors list is the page's own validation messages. When
+it is non-empty, fixing what it names comes before any click_next: an
+unadvanced step means the page is refusing it, not that the click missed.
+
 Custom dropdowns render as a button or search box that opens a list of
 option controls. Answer one in two steps: fill (or click) it to open the
 list, then click_next the option row whose text matches the value you are

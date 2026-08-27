@@ -232,6 +232,30 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, last: Intak
             application.id,
             submission,
         )
+        if "first application" in submission and outcome.get("next_question") is None:
+            # The gate refused the send the acknowledgement was about to
+            # promise. "i'll take it from here" followed by silence is the
+            # agent lying — a live thread answered "just fire the app looks
+            # good" and nothing fired. Say the one step that actually does.
+            from ..presentation.jobcard import role_line
+
+            link = mint_portal_link(
+                db,
+                org_id=thread.org_id,
+                candidate_id=thread.candidate_id,
+                path=f"/applications/{application.id}",
+                channel=thread.channel,
+            )
+            where = (
+                role_line(posting.title, posting.company)
+                if posting is not None
+                else "your application"
+            )
+            body = (
+                f"that's everything for {where}. one last step since it's your "
+                f"first with me: give it a look and tap approve, and i'll send "
+                f"it — {link}"
+            )
 
     # verbatim: names the role and the employer out of the posting. When the
     # acknowledgement carries the form's next question, the outbound is tagged

@@ -343,6 +343,33 @@ class TestAnsweringAdvancesTheApplication:
         assert calls == []
 
 
+class TestGateBlockedCompletionIsHonest:
+    def test_a_gated_send_asks_for_the_approve_tap_instead_of_promising(
+        self, session, account, thread, channel, monkeypatch
+    ):
+        """The gate refused the send: "i'll take it from here" followed by
+        silence is a lie. Live thread, 2026-08-27: the candidate answered
+        "just fire the app looks good" and nothing fired, with no next step
+        named. The completion message must carry the approve link instead."""
+        import juicebox.applications.submission as submission_mod
+
+        thread = _managed_owing_answers(session, thread)
+        _asked_application(session, account, thread, keys=["salary_expectation"])
+        _extracted(session, thread, comp=150000, work_auth="us citizen")
+        monkeypatch.setattr(
+            submission_mod,
+            "auto_submit",
+            lambda db, app: (None, "first application for this candidate: a person reviews it before it goes"),
+        )
+
+        _say(session, thread, "150k works", native_id="gate-1")
+
+        text = channel.bodies[-1]
+        assert "take it from here" not in text
+        assert "approve" in text.lower()
+        assert "/m/" in text, "the approve message must carry the portal link"
+
+
 class TestAcknowledgementWording:
     def _posting_obj(self, session, account):
         return _posting(

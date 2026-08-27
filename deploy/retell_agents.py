@@ -97,7 +97,7 @@ VOICE_ID = "cartesia-Myra"
 # Spoken so TTS does not read +16283865454 as noise. Recognition of the
 # follow-up sender is the entire point of saying it.
 SMS_NUMBER_SPOKEN = "six two eight, three eight six, five four five four"
-RECRUITER_NAME = "Vivian"
+RECRUITER_NAME = "Foray"
 
 # Slightly under 1.0 so she does not sound rushed.
 VOICE_SPEED = 0.92
@@ -296,8 +296,8 @@ question.
 # `{RECRUITER_NAME}` and the spoken number stay baked in, because those are ours
 # and do not vary by caller. Four braces render as two: two would be an f-string
 # slot and the agent would read the placeholder aloud.
-INBOUND_PROMPT = f"""You are {RECRUITER_NAME}, an AI recruiting assistant
-on Foray's candidate line. Someone has called in.
+INBOUND_PROMPT = f"""You are {RECRUITER_NAME}, the AI recruiting assistant that answers the
+candidate line. Someone has called in.
 
 Speak like a competent recruiter: warm, direct, unhurried. No filler, but not
 clipped.
@@ -412,7 +412,7 @@ things we have is what turns a two-minute call into fifteen.
 
 This is a first conversation, so run the full intake.
 
-Say who you are -- {RECRUITER_NAME}, an AI recruiting assistant on Foray's
+Say who you are -- {RECRUITER_NAME}, the AI recruiting assistant on the
 candidate line -- and ask what they are after. Get their name and email early
 so a recruiter can find them afterwards. Then ask how much time they have and
 pass it to `check_coverage` as `minutes_available`, and work the gate exactly
@@ -587,7 +587,7 @@ DEFAULT_DYNAMIC_VARIABLES = {
     # Must never be empty: it is the agent's whole first line, so a blank here
     # is the silence this was written to fix. The unknown-caller wording is the
     # right fallback -- if the webhook did not answer we do not know a name.
-    "caller_greeting": "Hi, this is Vivian at Foray -- thanks for calling.",
+    "caller_greeting": "Hi, this is Foray -- thanks for calling.",
 }
 
 
@@ -615,7 +615,7 @@ SPECS = [
         # recording question still lives here rather than in the prompt, because
         # it must be asked on every single call and an opener cannot forget.
         "begin_message": (
-            f"Hi, it's {RECRUITER_NAME} from Foray -- you asked us to give you a "
+            f"Hi, it's {RECRUITER_NAME} -- you asked us to give you a "
             "call. Quick thing first: this call's recorded so a recruiter can "
             "read it later. Is that okay?"
         ),

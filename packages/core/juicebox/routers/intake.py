@@ -7,7 +7,7 @@ applies: **identity comes from a signature, and the org comes from a row we
 already own, never from the request body.** An org id read out of a webhook
 payload is a cross-tenant write with somebody else's phone bill attached.
 
-Two endpoints, both signed with the same scheme:
+Three endpoints, all signed with the same scheme:
 
 * ``/v1/intake/webhook`` — the provider's call lifecycle. Verifies, records,
   queues, returns. It must not extract inline: the provider times out at ten
@@ -17,6 +17,13 @@ Two endpoints, both signed with the same scheme:
   need, and may I wrap up?" from the transcript so far. Read-only, and returns
   field names and questions rather than anything about a person, so it discloses
   nothing even though it is reachable by anyone holding a valid signature.
+* ``/v1/intake/matches`` — the wrap-up pitch. Once the gate has closed, returns
+  two or three composed sentences naming open roles that fit what the caller
+  said they wanted, plus guidance for offering the full list by text. Lines
+  come from the jobs book and the caller's own stated preferences — never the
+  candidate's record — so, like coverage, it discloses nothing about a person.
+* ``/v1/intake/text-verification`` — sends one Linq verification message while
+  the caller is still live, after they explicitly request the details by text.
 """
 
 from __future__ import annotations
@@ -57,8 +64,10 @@ from ..intake.service import (
     resolve_org_id,
     schedule_extraction,
 )
+from ..intake.teasers import close_normally, teaser_snapshot
 from ..messaging.identity import AttributionError, attribute_thread
 from ..messaging.threads import messages_of
+from ..messaging.voice_handoff import start_text_verification
 from ..models import (
     CandidatePreference,
     IntakeCall,
@@ -291,6 +300,59 @@ def intake_coverage(
         call=call,
         prior=prior,
     )
+
+
+@router.post("/matches")
+def intake_matches(
+    raw: bytes = Depends(raw_body),
+    x_retell_signature: str = Header(default="", alias="X-Retell-Signature"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """The wrap-up pitch: which open roles are worth naming before hangup.
+
+    Called once, after ``check_coverage`` has said ``wrap_up``. Every sentence
+    the agent may speak — the role lines, the count of what else is in the
+    book, the follow-up promise — is composed server-side; the agent's own
+    rules forbid it to name a company, quote pay, or count roles on its own.
+
+    Degrades rather than fails, like ``/coverage``: a call this endpoint
+    cannot place, an unfinished gate, or any internal error returns the
+    ordinary close, and the caller simply never hears about roles.
+    """
+    provider = _verified(raw, x_retell_signature)
+    event, _args = provider.parse_function_call(loads(raw))
+
+    transcript = (event.transcript or "").strip()
+    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
+    if call is None or not transcript:
+        return close_normally()
+
+    prior = prior_preference_record(db, call.candidate_id)
+    known = known_for_call(db, call)
+    return teaser_snapshot(db, call=call, transcript=transcript, known=known, prior=prior)
+
+
+@router.post("/text-verification")
+def intake_text_verification(
+    raw: bytes = Depends(raw_body),
+    x_retell_signature: str = Header(default="", alias="X-Retell-Signature"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Send the live-call number-verification text, never the role cards.
+
+    The agent calls this only after the candidate has heard the preview and
+    explicitly asked to receive those details by text. A later inbound Linq
+    reply, not this tool call, unlocks the actual job-card delivery.
+    """
+    provider = _verified(raw, x_retell_signature)
+    event, _args = provider.parse_function_call(loads(raw))
+    call = find_call(db, provider=provider.name, provider_call_id=event.provider_call_id)
+    if call is None:
+        return {
+            "sent": False,
+            "guidance": "The verification text could not be sent. Tell them a recruiter will follow up, then end the call.",
+        }
+    return start_text_verification(db, call)
 
 
 def _call_for_org(db: Session, call_id: str, org_id: str) -> IntakeCall:

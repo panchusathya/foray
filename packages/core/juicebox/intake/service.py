@@ -80,6 +80,14 @@ STATUS_FAILED = "failed"
 # ``messaging.identity.UNATTRIBUTED_REASON`` records.
 UNIDENTIFIED_REASON = "caller not identified"
 
+# Written by messaging.voice_handoff when the wrap-up pitched roles and the
+# caller opted into texts, but nothing can deliver the promised list -- no
+# standing thread, Linq disabled or the handle not iMessage-capable. The
+# promise was made on a recorded call, so it lands on the review queue for a
+# human rather than evaporating. Defined here (not in voice_handoff) so intake
+# owns the review-reason vocabulary alongside UNIDENTIFIED_REASON.
+TEXT_PROMISE_REASON = "match list promised by text; no channel can send it -- follow up manually"
+
 # The number is what the caller's *device* claims, and ANI is spoofable. So a
 # call matched to a person by the email they spoke is attributed -- the record
 # is theirs -- but the number is not written onto their row, because "somebody
@@ -405,6 +413,10 @@ def extract_call(db: Session, call: IntakeCall) -> ExtractionResult | None:
         call.review_needed = True
         call.review_reason = _join_reasons(call.review_reason, UNIDENTIFIED_REASON)
 
+    # A match list is never delivered merely because it was offered. The live
+    # Linq verification reply is the second half of the handoff; if it arrived
+    # before extraction completed, this schedules its already-confirmed send.
+    _schedule_match_text(db, call)
     write_field_answers(db, call=call, result=result)
 
     record_event(
@@ -436,6 +448,21 @@ def record_contact(call: IntakeCall, result: ExtractionResult) -> None:
         call.contact_name = result.contact_name[:240]
     if result.contact_email and not call.contact_email:
         call.contact_email = result.contact_email[:255]
+
+
+def _schedule_match_text(db: Session, call: IntakeCall) -> None:
+    """Queue delivery of the match list the wrap-up pitch promised.
+
+    Only after the caller has both requested a text and replied to the live
+    verification message. The reply is what proves the currently-held number;
+    it is deliberately stronger than a spoken number or caller ID alone.
+    """
+    if call.text_verification_status != "confirmed" or not (call.matches_offered or []):
+        return
+    # Late import: messaging imports intake, so the reverse must stay lazy.
+    from ..messaging.voice_handoff import schedule_match_text
+
+    schedule_match_text(db, call)
 
 
 def link_caller(db: Session, call: IntakeCall) -> str | None:

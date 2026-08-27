@@ -539,6 +539,54 @@ the rules that stand now are:
   sitting in silence while it answers, and it degrades to a usable answer rather
   than erroring -- an error here is heard as the agent going quiet.
 
+### The wrap-up pitch (`intake/teasers.py`, `/v1/intake/matches`)
+
+A finished intake closes with two or three open roles that fit what the caller
+just said they wanted, then the offer to text the full list. Non-obvious rules:
+
+- **The agent reads sentences; it never composes them.** `lines`, `more_line`
+  and the follow-up promise are built server-side, and the prompt's hard rules
+  say the only company names, pay figures, and role counts the agent may ever
+  speak are the ones inside those strings. `check_agent_prompts.py` pins this.
+  Adding a "mention the role naturally" instruction to the prompt instead of a
+  composed line is the regression to watch for.
+- **Selection is the preference term alone, on purpose.** Postings are ranked
+  with `jobmatch.preference.preference_term` against a *transient*
+  `CandidatePreference` built from the live transcript -- never `score_pair`'s
+  candidate-fact blend. Two reasons: the intake channel must emit no
+  evaluation of the person (`INTAKE_COMPLIANCE.md` §5), and a first-time
+  caller has no `JobMatch` rows mid-call -- the rescore is a queued worker
+  job, so anything reading the book here would race a queue it cannot see.
+- **What may be named is the posting's provenance, decided in code.**
+  `NAMEABLE_SOURCES` is the policy: open-market sources say the company,
+  `project` mandates become "one of our client companies", so the prompt's
+  "never name a client" survives the feature that names companies. Pay is
+  spoken only as the posting's `parsed_spec` states it, and never converted
+  across currencies -- the same refusal the comp veto makes, for the same
+  reason a wrong figure is worse than none.
+- **A weak match is dropped, not ranked low.** `intake_teaser_min_score`
+  errs high because a bad role pitched with enthusiasm burns the trust the
+  pitch exists to build; vetoed postings, dismissed matches, and the caller's
+  current employer are never pitched at all.
+- **A preview is a conversation, not a forced close.** Ask what they think. A
+  negative answer yields one focused preference question and another preview,
+  capped at two refinements. Do not let a model treat the first two roles as a
+  final recommendation.
+- **The verification text is live; role cards are reply-gated.** After an
+  explicit request for details by text, `start_text_verification` creates the
+  only outbound-first Linq chat and sends a canned Go4A message asking for
+  “hey” or “hello.” `text_verification_status=sent` is not permission to send
+  cards. Only an actual non-STOP Linq reply changes it to `confirmed`; that
+  reply enqueues `KIND_INTAKE_MATCH_TEXT`, which waits for extraction/rescore
+  and then delivers into that exact thread. The direct call-to-thread link on
+  `IntakeCall` is intentional: matching by phone or latest candidate thread
+  would make a fast reply race identity extraction. A STOP, suppression,
+  failed iMessage capability check, or send failure parks review instead.
+- **`matches_offered` is evidence, like the gate snapshot.** What was pitched,
+  verbatim with posting ids and scores, on the call row -- the book moves and
+  the record gets edited, so "what was this caller told" must not be a
+  recomputation.
+
 ### Cheap models cannot be trusted with easy-looking work
 
 The deployment runs cheap open-source models through OpenRouter (`z-ai/glm-5.2`

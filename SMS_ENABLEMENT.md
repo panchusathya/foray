@@ -44,7 +44,7 @@ the same intake gate, extraction, and `CandidatePreference` write as web chat an
 |---|---|
 | Tester-only | Number not advertised until production gates are verified |
 | **iMessage-only for now** | Android / SMS fallback is an open question on Linq's registration model |
-| **Inbound-first + replies** | Candidate texts first; we never cold-text sourced Foray profiles |
+| **Inbound-first + replies** | Candidate texts first; we never cold-text sourced Foray profiles. One deliberate exception: `messaging/voice_handoff.py` opens a verification chat while a caller is still live, after they explicitly request job details by text. No role cards send until their real reply confirms the number; this remains the only caller of `linq.start_chat`. |
 | **Separate `IntakeNumber.provider`** | `linq` vs `retell` so voice dial-out cannot pick the Linq line |
 
 ## When Twilio SMS lands
@@ -63,5 +63,13 @@ Re-enable the SMS branch checklist in [`MESSAGING_INTAKE_PLAN.md`](MESSAGING_INT
   — not in every greeting, and not in the voice wrap-up, which is not an SMS.
   Getting this wrong throttles a shared sender for every tenant on it, so treat
   it as a blocker on enablement rather than a copy tweak afterwards.
+- **Clear the parked match-list promises.** Voice callers who were pitched
+  roles, requested the details, and replied to the live verification text are
+  texted through Linq by `messaging/voice_handoff.py` when `LINQ_ENABLED` is
+  on and the number takes iMessage; everyone the handoff could not reach sits
+  on the review queue with
+  `intake.match_text.parked`. Flipping `SMS_ENABLED=true` changes only what
+  the agent *promises* going forward — the backlog of already-made promises
+  still needs sending, manually or by a backfill.
 
 Until then, follow [`LINQ_SETUP.md`](LINQ_SETUP.md) for the working text intake path.

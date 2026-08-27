@@ -30,6 +30,7 @@ from .jobs import (
     KIND_DOC_PARSE,
     KIND_INTAKE_ATTACHMENT,
     KIND_INTAKE_EXTRACT,
+    KIND_INTAKE_MATCH_TEXT,
     KIND_INTAKE_REFERRAL,
     KIND_INTAKE_TURN,
     KIND_JOBS_DISCOVER_ONE,
@@ -1128,6 +1129,12 @@ def _handle_thread_notify(db: Session, job: Job, now) -> dict[str, Any]:
     return handle_notify(db, job, now)
 
 
+def _handle_intake_match_text(db: Session, job: Job, now) -> dict[str, Any]:
+    from .messaging.voice_handoff import handle_match_text
+
+    return handle_match_text(db, job, now)
+
+
 def _paid_profile_fallback(db: Session, *, thread, url: str):
     """The scrape missed; buy the profile instead. Returns (profile, error)."""
     from .enrich.profile_sources import paid_lookup
@@ -1524,6 +1531,7 @@ HANDLERS = {
     KIND_INTAKE_EXTRACT: _handle_intake_extract,
     KIND_INTAKE_ATTACHMENT: _handle_intake_attachment,
     KIND_INTAKE_REFERRAL: _handle_intake_referral,
+    KIND_INTAKE_MATCH_TEXT: _handle_intake_match_text,
     KIND_DOC_PARSE: _handle_doc_parse,
     KIND_APP_PACKAGE: _handle_app_package,
     KIND_APP_SUBMIT: _handle_app_submit,

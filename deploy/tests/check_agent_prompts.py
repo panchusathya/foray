@@ -278,6 +278,64 @@ def check_every_slot_has_a_default() -> None:
     )
 
 
+def check_the_pitch_reads_only_composed_lines() -> None:
+    """The wrap-up pitch must stay a read-back, never an improvisation.
+
+    ``preview_matches`` hands the agent finished sentences precisely so a
+    company name, a pay figure, or a count of roles can never be invented on a
+    recorded call. The prompt has to keep saying so, in both agents, or the
+    model will helpfully embellish -- and it must keep framing the lines as a
+    match with what the candidate ASKED FOR, because a fit judgement of the
+    candidate is the thing the intake channel must never emit.
+    """
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            "preview_matches" in prompt,
+            f"{name} prompt no longer calls preview_matches at wrap-up",
+        )
+        _must(
+            "exactly as written" in prompt,
+            f"{name} prompt must require the pitch lines be read as written",
+        )
+        _must(
+            "never as a judgement of the candidate" in prompt
+            or "never how good the candidate is" in prompt
+            or "never as a judgement" in prompt,
+            f"{name} prompt must frame the pitch as preference fit, not a verdict "
+            "on the candidate",
+        )
+        _must(
+            "close the way `check_coverage`'s `guidance` told you to" in prompt,
+            f"{name} prompt must keep the no-lines fallback: close normally and "
+            "mention no roles",
+        )
+
+
+def check_the_live_text_verification_flow_is_pinned() -> None:
+    """Cards must wait for a genuine reply from the number we just texted."""
+    for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
+        _must(
+            "start_text_verification" in prompt,
+            f"{name} prompt lost the live text-verification tool",
+        )
+        _must(
+            'reply "hey" or "hello"' in prompt,
+            f"{name} prompt must ask for the verification reply",
+        )
+        _must(
+            "only an explicit, unambiguous yes counts" in prompt,
+            f"{name} prompt must not allow a vague answer to trigger a text",
+        )
+        _must(
+            "never say the detailed role list was texted yet" in prompt,
+            f"{name} prompt must hold cards until the reply arrives",
+        )
+        _must(
+            "`preview_matches` again" in prompt,
+            f"{name} prompt must support refining an unwanted first preview",
+        )
+
+
 def check_outbound_is_unchanged_in_posture() -> None:
     """The outbound call is the other case, and must not be over-corrected.
 
@@ -307,6 +365,8 @@ def main() -> int:
         check_unknown_callers_still_get_a_clean_first_intake,
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,
+        check_the_pitch_reads_only_composed_lines,
+        check_the_live_text_verification_flow_is_pinned,
         check_outbound_is_unchanged_in_posture,
     )
     failed = 0

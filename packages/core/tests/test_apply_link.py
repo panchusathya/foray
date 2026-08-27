@@ -222,6 +222,37 @@ class TestIngest:
         assert posting.location == "US CA Palo Alto"
         assert "acquisitions" in posting.jd_text
 
+    def test_a_declared_jsonld_posting_ingests_without_a_model(self, session, account):
+        """schema.org JobPosting is the standard Ashby (and many boards) ship
+        inside an otherwise-unreadable React shell — the page states the
+        posting, so no model is needed and no model flake can break it.
+        Live failure this pins (2026-08-27): an Ashby link bounced with
+        "couldn't open the job link" because the LLM fallback flaked."""
+        url = "https://jobs.ashbyhq.com/forerunner/1a9c649b"
+        shell = (
+            "<html><head><title>Forerunner</title>"
+            '<script type="application/ld+json">'
+            '{"@context":"https://schema.org/","@type":"JobPosting",'
+            '"title":"Account Executive",'
+            '"hiringOrganization":{"@type":"Organization","name":"Forerunner"},'
+            '"jobLocation":{"@type":"Place","address":{"addressLocality":"San Francisco",'
+            '"addressRegion":"CA"}},'
+            '"description":"<h2>Hi! We\'re Forerunner.</h2><p>We believe adaptation is a '
+            "necessity, not a luxury. You will own the full sales cycle for our climate "
+            "resilience platform, from pipeline to close, working with public agencies "
+            'and enterprises across the country.</p>"}'
+            "</script></head><body><div id=root></div></body></html>"
+        )
+        posting, created = ingest_posting_from_url(
+            session, org_id=account["org_id"], url=url,
+            transport=fake_transport({url: shell}),
+        )
+        assert created
+        assert posting.title == "Account Executive"
+        assert posting.company == "Forerunner"
+        assert posting.location == "San Francisco, CA"
+        assert "full sales cycle" in posting.jd_text
+
     def test_a_js_shell_falls_back_to_llm_extraction(self, session, account):
         """No adapter matched and the markup strips to nothing — before
         refusing a link the candidate is looking at in their own browser, a

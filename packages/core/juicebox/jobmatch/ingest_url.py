@@ -322,10 +322,85 @@ def _company_from_host(url: str) -> str:
     return labels[0].replace("-", " ").title() if len(labels) >= 2 else ""
 
 
+_JSONLD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _jsonld_location(node: dict) -> str:
+    places = node.get("jobLocation")
+    if isinstance(places, dict):
+        places = [places]
+    for place in places or []:
+        if not isinstance(place, dict):
+            continue
+        address = place.get("address")
+        if isinstance(address, dict):
+            parts = [
+                str(address.get(key) or "").strip()
+                for key in ("addressLocality", "addressRegion", "addressCountry")
+            ]
+            joined = ", ".join(part for part in parts if part)
+            if joined:
+                return joined
+        if str(place.get("name") or "").strip():
+            return str(place["name"]).strip()
+    return ""
+
+
+def _jsonld_posting(page: FetchedPage) -> dict | None:
+    """A schema.org JobPosting the page itself declares, or ``None``.
+
+    The standard, not a vendor quirk: Ashby's React shell (which strips to ~30
+    visible characters) ships one, and so do plenty of boards and aggregators.
+    Reading it beats both the meta-tag heuristics (cleaner JD than a whole-page
+    strip) and the model fallback (deterministic, free, byte-exact) — the page
+    is *stating* the posting, so we take its word verbatim.
+    """
+    for match in _JSONLD_RE.finditer(page.text):
+        try:
+            data = json.loads(match.group(1))
+        except ValueError:
+            continue
+        queue = data if isinstance(data, list) else [data]
+        index = 0
+        while index < len(queue):
+            node = queue[index]
+            index += 1
+            if not isinstance(node, dict):
+                continue
+            graph = node.get("@graph")
+            if isinstance(graph, list):
+                queue.extend(item for item in graph if isinstance(item, dict))
+            if str(node.get("@type") or "").strip().lower() != "jobposting":
+                continue
+            title = str(node.get("title") or "").strip()
+            jd_text = strip_html(str(node.get("description") or ""))
+            if not title or len(jd_text) < MIN_JD_CHARS:
+                continue
+            org = node.get("hiringOrganization")
+            company = str(
+                (org.get("name") if isinstance(org, dict) else org) or ""
+            ).strip()
+            return {
+                "company": company or _company_from_host(page.url),
+                "title": title,
+                "location": _jsonld_location(node),
+                "jd_text": jd_text,
+                "form_questions": [],
+            }
+    return None
+
+
 def _ingest_generic(url: str, transport: FetchTransport | None) -> dict:
     page = fetch_page(url, transport=transport)
     if "html" not in page.content_type and "text" not in page.content_type:
         raise LinkUnreachable("the link is not a web page")
+
+    declared = _jsonld_posting(page)
+    if declared is not None:
+        return declared
 
     meta = {key.lower(): value for key, value in _META_RE.findall(page.text)}
     title_match = _TITLE_RE.search(page.text)
@@ -403,6 +478,16 @@ def _llm_extract(page: FetchedPage) -> dict | None:
     title = str(data.get("title") or "").strip()
     jd_text = str(data.get("jd_text") or "").strip()
     if not data.get("is_job_posting") or not title or len(jd_text) < _MIN_LLM_JD_CHARS:
+        # Logged because a silent None here reads downstream as "couldn't open
+        # the link" — a flaky model rejected a perfectly good Ashby page this
+        # way and the diagnosis started from nothing.
+        logger.info(
+            "llm read %s as not-a-posting (is_job_posting=%r, title=%r, jd_chars=%d)",
+            page.url,
+            data.get("is_job_posting"),
+            title[:60],
+            len(jd_text),
+        )
         return None
     return {
         "company": str(data.get("company") or "").strip() or _company_from_host(page.url),

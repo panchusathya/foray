@@ -136,112 +136,17 @@ def run(
             cdp_url=(session.cdp_url if session is not None else ""),
         ) as page:
             page.goto(url, wait_until="domcontentloaded")
-            max_steps = max(1, int(settings.apply_browser_agent_max_steps or 40))
-            submitted = False
-            planner_faults = 0
-            # What the policy refused last time, fed back to the planner: a
-            # re-plan on a fresh observation but no explanation had the model
-            # repeating the same wrong verb on the same Yes/No buttons until
-            # the fault budget died (live, Forerunner 2026-08-27). The refusal
-            # reasons are written to steer ("control c015 is a button — use
-            # check"); this is what finally shows them to the model.
-            feedback = ""
-            for _ in range(max_steps):
-                obs = _settled_observe(page)
-                klass = page_class(obs)
-                result.page_class = klass
-                _collect_questions(result, obs)
-                if klass == PAGE_RECEIPT:
-                    if submitted or not allow_submit:
-                        result.ok = bool(allow_submit) and submitted
-                        if allow_submit and submitted:
-                            _confirmation_shot(page, ctx, log, result)
-                        else:
-                            result.needs_human = True
-                            result.error = "receipt page without a submit we requested"
-                        break
-                    result.needs_human = True
-                    result.error = "receipt page before any submit"
-                    break
-                action = planner_mod.plan(
-                    obs,
-                    allow_submit=allow_submit,
-                    approved_answer_keys=_approved_keys(ctx),
-                    planner=planner,
-                    feedback=feedback,
-                )
-                feedback = ""
-                if action is None:
-                    result.needs_human = True
-                    result.error = "planner returned no action"
-                    _trace(result, obs, None, None, "none")
-                    break
-                decision = policy.check(
-                    action,
-                    obs=obs,
-                    ctx=ctx,
-                    allow_submit=allow_submit,
-                    start_origin=start_origin,
-                    resume_path=resume_path,
-                    cover_path=cover_path,
-                )
-                if not decision.allowed:
-                    if decision.replan and planner_faults < 5:
-                        # A planner mistake, not a governance wall — an
-                        # invented control id, a fill aimed at a button.
-                        # Re-observe and re-plan, bounded; a governance
-                        # refusal still ends the run below.
-                        planner_faults += 1
-                        feedback = decision.reason
-                        _trace(result, obs, action, decision, "replanned")
-                        continue
-                    result.needs_human = True
-                    result.error = decision.reason
-                    _trace(result, obs, action, decision, "refused")
-                    break
-                if action.type == "stop":
-                    result.needs_human = True
-                    result.error = action.reason or f"stopped on {klass}"
-                    _trace(result, obs, action, decision, "stop")
-                    break
-                if action.type == "final_submit":
-                    result.final_submit_requested_at = trace.utcstamp()
-                    _checkpoint(ctx, result)
-                    _before_shot(page, ctx, log, result)
-                try:
-                    executed = execute_mod.execute(page, action, decision)
-                except Exception as exc:  # noqa: BLE001
-                    if action.type != "final_submit" and planner_faults < 5:
-                        # Same class as a planner mistake: the page moved, or
-                        # the verb did not take. Re-observe and re-plan —
-                        # except after a final_submit click, where "did it
-                        # send" must be answered, never retried blind.
-                        planner_faults += 1
-                        feedback = f"{action.type} on {action.control_id} failed: {exc}"[:300]
-                        _trace(result, obs, action, decision, f"execute-retry: {exc}"[:120])
-                        continue
-                    result.needs_human = True
-                    result.error = f"execute failed: {exc}"[:400]
-                    _trace(result, obs, action, decision, "error")
-                    break
-                _trace(result, obs, action, decision, executed)
-                if action.type == "final_submit":
-                    submitted = True
-                    page.wait_for_timeout(2500)
-                    after = observe(page)
-                    after_class = page_class(after)
-                    result.page_class = after_class
-                    if after_class == PAGE_RECEIPT:
-                        result.ok = True
-                        _confirmation_shot(page, ctx, log, result)
-                    else:
-                        result.needs_human = True
-                        result.error = "ambiguous state after submit"
-                        _shot(page, ctx, log, result, "unconfirmed")
-                    break
-            else:
-                result.needs_human = True
-                result.error = "step cap reached"
+            walk(
+                page,
+                ctx=ctx,
+                allow_submit=allow_submit,
+                log=log,
+                result=result,
+                start_origin=start_origin,
+                resume_path=resume_path,
+                cover_path=cover_path,
+                planner=planner,
+            )
         result.artifacts.extend(log.artifacts)
     except browser_cloud.TooManySessions:
         raise SubmitDeferred("too many concurrent Browser Use sessions") from None
@@ -261,6 +166,134 @@ def run(
             browser_cloud.stop_session(session.id)
         elif session is not None:
             browser_cloud.stop_session(session.id)
+    return result
+
+
+def walk(
+    page,
+    *,
+    ctx: SubmissionContext,
+    allow_submit: bool,
+    log: RunLog,
+    result: LoopResult,
+    start_origin: str,
+    resume_path: str = "",
+    cover_path: str = "",
+    planner=None,
+) -> LoopResult:
+    """Drive an ALREADY-OPEN page to a receipt: observe → plan → policy →
+    execute, one step at a time, across as many form steps as it takes.
+
+    Split out of ``run`` so a handwritten adapter can do the deterministic
+    part itself (Workday's account sign-in, which an LLM must never do) and
+    hand the authenticated wizard here -- multi-step form-walking is the
+    agent's job, credential entry is not. ``run`` is now this plus opening a
+    session and navigating to the form.
+    """
+    settings = get_settings()
+    max_steps = max(1, int(settings.apply_browser_agent_max_steps or 40))
+    submitted = False
+    planner_faults = 0
+    # What the policy refused last time, fed back to the planner: a re-plan on
+    # a fresh observation but no explanation had the model repeating the same
+    # wrong verb on the same Yes/No buttons until the fault budget died (live,
+    # Forerunner 2026-08-27). The refusal reasons steer ("control c015 is a
+    # button — use check"); this is what finally shows them to the model.
+    feedback = ""
+    for _ in range(max_steps):
+        obs = _settled_observe(page)
+        klass = page_class(obs)
+        result.page_class = klass
+        _collect_questions(result, obs)
+        if klass == PAGE_RECEIPT:
+            if submitted or not allow_submit:
+                result.ok = bool(allow_submit) and submitted
+                if allow_submit and submitted:
+                    _confirmation_shot(page, ctx, log, result)
+                else:
+                    result.needs_human = True
+                    result.error = "receipt page without a submit we requested"
+                break
+            result.needs_human = True
+            result.error = "receipt page before any submit"
+            break
+        action = planner_mod.plan(
+            obs,
+            allow_submit=allow_submit,
+            approved_answer_keys=_approved_keys(ctx),
+            planner=planner,
+            feedback=feedback,
+        )
+        feedback = ""
+        if action is None:
+            result.needs_human = True
+            result.error = "planner returned no action"
+            _trace(result, obs, None, None, "none")
+            break
+        decision = policy.check(
+            action,
+            obs=obs,
+            ctx=ctx,
+            allow_submit=allow_submit,
+            start_origin=start_origin,
+            resume_path=resume_path,
+            cover_path=cover_path,
+        )
+        if not decision.allowed:
+            if decision.replan and planner_faults < 5:
+                # A planner mistake, not a governance wall — an invented
+                # control id, a fill aimed at a button. Re-observe and
+                # re-plan, bounded; a governance refusal still ends the run.
+                planner_faults += 1
+                feedback = decision.reason
+                _trace(result, obs, action, decision, "replanned")
+                continue
+            result.needs_human = True
+            result.error = decision.reason
+            _trace(result, obs, action, decision, "refused")
+            break
+        if action.type == "stop":
+            result.needs_human = True
+            result.error = action.reason or f"stopped on {klass}"
+            _trace(result, obs, action, decision, "stop")
+            break
+        if action.type == "final_submit":
+            result.final_submit_requested_at = trace.utcstamp()
+            _checkpoint(ctx, result)
+            _before_shot(page, ctx, log, result)
+        try:
+            executed = execute_mod.execute(page, action, decision)
+        except Exception as exc:  # noqa: BLE001
+            if action.type != "final_submit" and planner_faults < 5:
+                # Same class as a planner mistake: the page moved, or the verb
+                # did not take. Re-observe and re-plan — except after a
+                # final_submit click, where "did it send" must be answered.
+                planner_faults += 1
+                feedback = f"{action.type} on {action.control_id} failed: {exc}"[:300]
+                _trace(result, obs, action, decision, f"execute-retry: {exc}"[:120])
+                continue
+            result.needs_human = True
+            result.error = f"execute failed: {exc}"[:400]
+            _trace(result, obs, action, decision, "error")
+            break
+        _trace(result, obs, action, decision, executed)
+        if action.type == "final_submit":
+            submitted = True
+            page.wait_for_timeout(2500)
+            after = observe(page)
+            after_class = page_class(after)
+            result.page_class = after_class
+            if after_class == PAGE_RECEIPT:
+                result.ok = True
+                _confirmation_shot(page, ctx, log, result)
+            else:
+                result.needs_human = True
+                result.error = "ambiguous state after submit"
+                _shot(page, ctx, log, result, "unconfirmed")
+            break
+    else:
+        result.needs_human = True
+        result.error = "step cap reached"
     return result
 
 

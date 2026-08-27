@@ -32,9 +32,18 @@ _PLANNER_MAX_OPTIONS = 12
 _ENUMERATE_JS = """() => {
   const ATTR = 'data-juicebox-id';
   const seen = new Set();
+  // role=option / promptOption: Workday has no native selects -- every
+  // dropdown is a button that opens a listbox of option rows, and a list the
+  // inventory cannot see is a question the planner cannot answer (live,
+  // Intapp 2026-08-27: the source multiselect opened and the run died).
   const nodes = Array.from(document.querySelectorAll(
-    'input, textarea, select, button, a[href], [role="button"], [role="checkbox"], [role="radio"]'
+    'input, textarea, select, button, a[href], [role="button"], [role="checkbox"], [role="radio"], ' +
+    '[role="option"], [data-automation-id="promptOption"]'
   ));
+  function isOption(el) {
+    return el.getAttribute('role') === 'option'
+      || (el.getAttribute('data-automation-id') || '') === 'promptOption';
+  }
   function labelFor(el) {
     const wrap = el.closest('label');
     if (wrap && wrap.innerText) return wrap.innerText.trim().slice(0, 160);
@@ -63,8 +72,9 @@ _ENUMERATE_JS = """() => {
     if (seen.has(id)) continue;
     seen.add(id);
     const tag = (el.tagName || '').toLowerCase();
-    const type = (el.getAttribute('type') || tag || 'text').toLowerCase();
-    const role = (el.getAttribute('role') || (type === 'submit' ? 'submit' : tag)).toLowerCase();
+    const type = isOption(el) ? 'option' : (el.getAttribute('type') || tag || 'text').toLowerCase();
+    const role = isOption(el) ? 'option'
+      : (el.getAttribute('role') || (type === 'submit' ? 'submit' : tag)).toLowerCase();
     out.push({
       id,
       label: labelFor(el),

@@ -29,6 +29,11 @@ candidate.location, doc.resume, doc.cover_letter, policy.decline (only on
 voluntary self-identification controls that offer Prefer not to answer),
 and answer.<key> for keys listed as approved answers.
 
+Custom dropdowns render as a button or search box that opens a list of
+option controls. Answer one in two steps: fill (or click) it to open the
+list, then click_next the option row whose text matches the value you are
+entering. Never leave a list open -- commit an option before moving on.
+
 final_submit is the send control and may only be used when the inventory
 shows a complete application page. click_next is for wizard continuation,
 never for Submit / Send application / Apply now. stop if the page is a

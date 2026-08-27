@@ -420,7 +420,7 @@ def _collect_questions(result: LoopResult, obs: Observation) -> None:
     for control in obs.controls:
         if control.field_type in {"password"}:
             continue
-        if control.role in {"button", "submit", "link"}:
+        if control.role in {"button", "submit", "link", "option"}:
             continue
         if any(c.id == control.id for c in result.questions):
             continue

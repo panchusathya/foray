@@ -66,6 +66,25 @@ GH_JOB = {
     ],
 }
 
+WD_URL = (
+    "https://intapp.wd1.myworkdayjobs.com/en-US/intapp/job/US-CA-Palo-Alto/"
+    "Corporate-Development-Associate_R2024585-2"
+)
+WD_CXS = (
+    "https://intapp.wd1.myworkdayjobs.com/wday/cxs/intapp/intapp/job/"
+    "Corporate-Development-Associate_R2024585-2"
+)
+WD_JOB = {
+    "jobPostingInfo": {
+        "title": "Corporate Development Associate",
+        "location": "US CA Palo Alto",
+        "jobDescription": "<p>Source and evaluate acquisitions for the platform. "
+        "You will build models, run diligence, and work directly with the CFO on "
+        "targets across legal-industry software and adjacent markets.</p>",
+    },
+    "hiringOrganization": {"name": "INTEGRATION APPLIANCE, INC."},
+}
+
 GENERIC_URL = "https://careers.initech.com/openings/tps-lead"
 GENERIC_HTML = (
     "<html><head><title>TPS Report Lead - Initech</title>"
@@ -188,6 +207,20 @@ class TestIngest:
         assert any(
             (j.payload or {}).get("job_posting_id") == posting.id for j in parse_jobs
         )
+
+    def test_workday_lands_via_the_cxs_json(self, session, account):
+        """A Workday page is a JS shell — strip_html of it is zero characters,
+        and a pasted Workday link used to come back "couldn't open the job
+        link" (live, 2026-08-27). The shell's own public JSON is the source."""
+        posting, created = ingest_posting_from_url(
+            session, org_id=account["org_id"], url=WD_URL,
+            transport=fake_transport({WD_CXS: WD_JOB}),
+        )
+        assert created
+        assert posting.title == "Corporate Development Associate"
+        assert posting.company == "INTEGRATION APPLIANCE, INC."
+        assert posting.location == "US CA Palo Alto"
+        assert "acquisitions" in posting.jd_text
 
     def test_the_same_link_twice_is_one_posting(self, session, account):
         transport = fake_transport({GH_API: GH_JOB})

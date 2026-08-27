@@ -55,6 +55,10 @@ _ENUMERATE_JS = """() => {
       role,
       name: el.getAttribute('name') || '',
       required: !!(el.required || el.getAttribute('aria-required') === 'true'),
+      value: tag === 'input' && (type === 'password' || type === 'file')
+        ? (el.value ? '<set>' : '')
+        : String(el.value || '').slice(0, 80),
+      checked: !!el.checked,
       options: tag === 'select'
         ? Array.from(el.options || []).map(o => (o.text || o.value || '').trim()).filter(Boolean).slice(0, 30)
         : [],
@@ -74,6 +78,12 @@ class Control:
     name: str = ""
     required: bool = False
     options: tuple[str, ...] = ()
+    # Current state, so the planner can see what is already done. Without it
+    # a live run re-filled the Name field eight times and submitted with the
+    # required choice questions untouched (Forerunner, 2026-08-27). Password
+    # and file values are never carried — only whether one is set.
+    value: str = ""
+    checked: bool = False
 
     @property
     def identity(self) -> str:
@@ -103,6 +113,8 @@ class Observation:
                     "field_type": c.field_type,
                     "role": c.role,
                     "required": c.required,
+                    "current_value": c.value,
+                    "checked": c.checked,
                     "options": list(c.options)[:12],
                 }
                 for c in self.controls
@@ -151,6 +163,8 @@ def observe(page) -> Observation:
                 name=str(item.get("name") or "").strip(),
                 required=bool(item.get("required")),
                 options=tuple(str(o) for o in (item.get("options") or []) if o),
+                value=str(item.get("value") or ""),
+                checked=bool(item.get("checked")),
             )
         )
     return Observation(

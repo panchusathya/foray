@@ -29,6 +29,7 @@ deliberately boring, and growing it is a code change with a reviewer.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -119,6 +120,29 @@ _WIZARD_MARKERS = (
     'input[data-automation-id="file-upload-input-ref"]',
     '[data-automation-id="fileUploadDropZone"]',
 )
+
+
+#: Workday's own failure page. It renders INSIDE the apply-flow chrome, so a
+#: wizard marker is visibly present on it and no marker set can tell the two
+#: apart — the text is the only honest signal (live, Intapp 2026-08-27: three
+#: runs handed the agent this page while the gate reported a healthy wizard).
+_ERROR_SHELL = re.compile(
+    r"something went wrong|unexpected error|we're sorry|try again later", re.I
+)
+
+
+def _error_shell(page) -> bool:
+    try:
+        return bool(_ERROR_SHELL.search((page.inner_text("body") or "")[:2000]))
+    except Exception:  # noqa: BLE001 - a mid-navigation read is not evidence
+        return False
+
+
+def _in_wizard(page, *, timeout_ms: int) -> bool:
+    """A visible wizard marker AND no error text. Both, or it is not a wizard."""
+    return driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=timeout_ms) and not (
+        _error_shell(page)
+    )
 
 
 def _settle(page, *, log: RunLog, expect: tuple[str, ...], timeout_ms: int = 45000) -> str:
@@ -394,7 +418,7 @@ class WorkdaySubmitter:
                     # in): there is no credential to type, so signing in again
                     # is not just wasted -- the sign-in block would find no
                     # email box and fail a run that is already authenticated.
-                    already_in = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=0)
+                    already_in = _in_wizard(page, timeout_ms=0)
                     if already_in:
                         log.step("already signed in; wizard is open")
                     if not already_in and driver.click(
@@ -511,15 +535,18 @@ class WorkdaySubmitter:
                     # half-rendered SPA, so a presence check passed, this
                     # recovery never ran, and the agent got the broken page
                     # anyway (live, Intapp 2026-08-27).
-                    wizard = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=45000)
-                    if not wizard:
-                        # Authenticating can land on an error shell still titled
-                        # "Sign In" ("Something went wrong", no controls), and a
-                        # posting we already drafted offers Continue Application
-                        # rather than Apply. Reloading the posting as a signed-in
-                        # user clears both (live, Intapp 2026-08-27). Deterministic
-                        # recovery, so the agent never sees the broken shell.
-                        log.step("no wizard after sign in; reloading the posting")
+                    wizard = _in_wizard(page, timeout_ms=45000)
+                    # Authenticating can land on an error shell still titled
+                    # "Sign In" ("Something went wrong"), and a posting we
+                    # already drafted offers Continue Application rather than
+                    # Apply. Reloading the posting as a signed-in user clears
+                    # both (live, Intapp 2026-08-27). Twice, because the reload
+                    # can serve the same error shell again. Deterministic
+                    # recovery, so the agent never sees the broken page.
+                    for attempt in range(2):
+                        if wizard:
+                            break
+                        log.step(f"no wizard after sign in; reloading the posting ({attempt + 1})")
                         page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
                         _settle(
                             page,
@@ -544,7 +571,7 @@ class WorkdaySubmitter:
                                 what="apply manually",
                                 wait_ms=15000,
                             )
-                        wizard = driver.wait_for_visible(page, _WIZARD_MARKERS, timeout_ms=45000)
+                        wizard = _in_wizard(page, timeout_ms=45000)
                     if not wizard:
                         # No wizard marker means sign-in did not land -- handing
                         # the page over anyway burned an attempt on an agent

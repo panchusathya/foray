@@ -462,8 +462,17 @@ def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
     try:
         located.click()
     except Exception as exc:  # noqa: BLE001
-        log.step(f"could not click {what}: {exc}")
-        return False
+        # Workday (and other overlay-heavy ATSes) float an invisible layer
+        # over their buttons -- a `click_filter` div `intercepts pointer
+        # events` and a normal click times out, so Sign In never submitted
+        # and the run stalled on the login page (live, 2026-08-27). A forced
+        # click dispatches to the real target under the overlay.
+        log.step(f"click {what} intercepted, forcing: {str(exc)[:80]}")
+        try:
+            located.click(force=True, timeout=8000)
+        except Exception as exc2:  # noqa: BLE001
+            log.step(f"could not click {what}: {exc2}")
+            return False
     log.step(f"clicked {what}")
     return True
 

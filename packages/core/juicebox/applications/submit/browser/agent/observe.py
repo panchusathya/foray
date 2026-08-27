@@ -144,7 +144,13 @@ def observe(page) -> Observation:
     except Exception:  # noqa: BLE001
         raw = []
     try:
-        screenshot = page.screenshot(full_page=True) or b""
+        # Viewport, not full_page: a long signed-in wizard produced a
+        # screenshot so tall the planner call returned an empty response every
+        # time (live, Intapp 2026-08-27), while a short page worked. The
+        # control inventory below is enumerated from the whole DOM regardless
+        # of what is scrolled into view, so completeness does not depend on
+        # the image -- it is visual context, and a bounded viewport is enough.
+        screenshot = page.screenshot(full_page=False) or b""
     except Exception:  # noqa: BLE001
         screenshot = b""
     controls = []

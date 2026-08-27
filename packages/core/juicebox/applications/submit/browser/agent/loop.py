@@ -138,6 +138,7 @@ def run(
             page.goto(url, wait_until="domcontentloaded")
             max_steps = max(1, int(settings.apply_browser_agent_max_steps or 40))
             submitted = False
+            planner_faults = 0
             for _ in range(max_steps):
                 obs = _settled_observe(page)
                 klass = page_class(obs)
@@ -176,6 +177,15 @@ def run(
                     cover_path=cover_path,
                 )
                 if not decision.allowed:
+                    if decision.reason == "unknown control_id" and planner_faults < 3:
+                        # A planner mistake, not a governance wall: it named a
+                        # control that does not exist (live: an empty id on
+                        # step two killed a run whose step one had just filled
+                        # correctly). Re-observe and re-plan, bounded — a
+                        # governance refusal still ends the run below.
+                        planner_faults += 1
+                        _trace(result, obs, action, decision, "replanned")
+                        continue
                     result.needs_human = True
                     result.error = decision.reason
                     _trace(result, obs, action, decision, "refused")

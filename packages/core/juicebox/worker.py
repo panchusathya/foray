@@ -21,6 +21,7 @@ from .jobs import (
     INTERACTIVE_KINDS,
     KIND_AGENT_TICK,
     KIND_APP_PACKAGE,
+    KIND_APPLY_LINK,
     KIND_APP_SUBMIT,
     KIND_APP_SUBMIT_VERIFY,
     KIND_CONNECTOR_INDEX,
@@ -1130,6 +1131,12 @@ def _handle_app_package(db: Session, job: Job, now) -> dict[str, Any]:
     return result
 
 
+def _handle_apply_link(db: Session, job: Job, now) -> dict[str, Any]:
+    from .messaging.apply_link import handle_apply_link
+
+    return handle_apply_link(db, job, now)
+
+
 def _handle_thread_notify(db: Session, job: Job, now) -> dict[str, Any]:
     from .messaging.notify import handle_notify
 
@@ -1564,6 +1571,7 @@ HANDLERS = {
     KIND_APP_PACKAGE: _handle_app_package,
     KIND_APP_SUBMIT: _handle_app_submit,
     KIND_APP_SUBMIT_VERIFY: _handle_app_submit_verify,
+    KIND_APPLY_LINK: _handle_apply_link,
     KIND_PROFILE_INGEST: _handle_profile_ingest,
     KIND_PROFILE_RESUME: _handle_profile_resume,
     KIND_THREAD_NOTIFY: _handle_thread_notify,

@@ -103,10 +103,15 @@ def _say(session, thread, body, *, native_id=""):
 
 
 def _to_offer(session, account, fake_channel):
-    """Intro, email answered — the next send is the profile ask."""
+    """The intro turn: the greeting bubble, then the profile ask riding it.
+
+    The offer (or the plain LinkedIn/resume ask) now arrives with the intro —
+    the email question that used to sit between them is gone; the OAuth
+    callback delivers a verified address, and manual threads pick one up in
+    the gap-fill.
+    """
     thread = _short_thread(session, account)
-    assert run_turn(session, thread=thread).action == ACTION_GREETED
-    result = _say(session, thread, "ada@example.com")
+    result = run_turn(session, thread=thread)
     return thread, result
 
 
@@ -234,6 +239,7 @@ class TestConnectRoutes:
         self, client, session, account, fake_channel, connector
     ):
         thread, _ = _to_offer(session, account, fake_channel)
+        thread.contact_email = "ada@example.com"  # stated before the tap
         session.commit()
         _connect(client, session, thread)
         session.expire_all()
@@ -303,6 +309,11 @@ class TestConnectorIndexJob:
         connector.hits = [hit(filename="ada-resume.pdf")]
         connector.resume_bytes = render_resume_pdf(RESUME_V1)
         thread = _connected(client, session, account, fake_channel)
+        # The callback wrote the verified email through the API's own session;
+        # a real worker starts fresh, so drop this session's stale snapshot
+        # before running the job (link_candidate needs that email now that the
+        # intro no longer collects one).
+        session.expire_all()
         process_job(session, _index_job(session))
         session.expire_all()
 

@@ -992,6 +992,12 @@ class JobPosting(Base, TimestampMixin):
     open_to_remote: Mapped[bool] = mapped_column(Boolean, default=False)
     seniority: Mapped[str] = mapped_column(String(40), default="")
     jd_text: Mapped[str] = mapped_column(Text, default="")
+    # The application form's own questions, captured at link ingest when the
+    # ATS publishes them: [{key, question, required, kind, self_identify,
+    # options}]. Not part of parsed_spec on purpose -- the spec stays in
+    # ParsedQuery's vocabulary so the match engine can score it; a form
+    # question is packaging, not preference.
+    form_questions: Mapped[list] = mapped_column(JSON, default=list)
 
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

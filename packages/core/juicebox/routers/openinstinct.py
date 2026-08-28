@@ -157,6 +157,42 @@ async def upload_resume(
     return {"id": document.id, "filename": document.filename, "status": document.status}
 
 
+@router.get("/resumes/default")
+def download_default_resume(
+    db: Session = Depends(get_db),
+    principal: OpenInstinctPrincipal = Depends(_service_principal),
+) -> Response:
+    """Return the linked candidate's parsed protected default resume.
+
+    This is deliberately a service-to-service byte response.  OpenInstinct's
+    worker writes it directly into its owned Kernel filesystem, so neither a
+    chat attachment URL nor document bytes are exposed to the model.
+    """
+    link = _link_for(db, principal.subject)
+    document = db.scalar(
+        select(CandidateDocument)
+        .where(
+            CandidateDocument.org_id == link.org_id,
+            CandidateDocument.candidate_id == link.candidate_id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+            CandidateDocument.protected_default.is_(True),
+            CandidateDocument.status == "ready",
+        )
+        .order_by(CandidateDocument.created_at.desc())
+    )
+    if document is None or not document.storage_path:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The protected default resume is not ready yet",
+        )
+    return Response(
+        storage.read_bytes(document.storage_path),
+        media_type=document.content_type,
+        headers={"Content-Disposition": f'attachment; filename="{document.filename}"'},
+    )
+
+
 @router.get("/job-feed")
 def job_feed(
     q: str = Query(default="", max_length=120),

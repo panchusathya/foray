@@ -177,14 +177,18 @@ def download_default_resume(
             CandidateDocument.kind == "resume_uploaded",
             CandidateDocument.is_default.is_(True),
             CandidateDocument.protected_default.is_(True),
-            CandidateDocument.status == "ready",
         )
         .order_by(CandidateDocument.created_at.desc())
     )
-    if document is None or not document.storage_path:
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No protected default resume is on this candidate profile. Attach a PDF or DOCX to continue.",
+        )
+    if document.status != "ready" or not document.storage_path:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="The protected default resume is not ready yet",
+            detail="The protected default resume is still being parsed. Try again once parsing finishes.",
         )
     return Response(
         storage.read_bytes(document.storage_path),

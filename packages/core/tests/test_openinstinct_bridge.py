@@ -126,6 +126,33 @@ def test_linked_candidate_can_upload_a_protected_resume(client, session, account
     assert document.status == "uploaded"
 
 
+def test_default_resume_distinguishes_missing_from_pending_parse(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    _candidate(session, account, sample_candidates)
+    _link(client)
+
+    missing = client.get(
+        "/v1/internal/openinstinct/resumes/default", headers=_service_headers()
+    )
+    assert missing.status_code == 404
+    assert "Attach a PDF or DOCX" in missing.json()["detail"]
+
+    uploaded = client.post(
+        "/v1/internal/openinstinct/resumes",
+        files={"file": ("ada.pdf", b"%PDF-1.4\nresume", "application/pdf")},
+        headers=_service_headers(),
+    )
+    assert uploaded.status_code == 201, uploaded.text
+
+    pending = client.get(
+        "/v1/internal/openinstinct/resumes/default", headers=_service_headers()
+    )
+    assert pending.status_code == 409
+    assert "still being parsed" in pending.json()["detail"]
+
+
 def test_openinstinct_resume_rejects_non_resume_bytes(
     client, session, account, sample_candidates, monkeypatch
 ):

@@ -7,7 +7,7 @@ the other application's browser session as an authority.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import storage
 from ..applications import limits
+from ..applications.bar import passes_bar
 from ..applications.service import (
     ApplicationError,
     DuplicateApplicationError,
@@ -30,7 +31,9 @@ from ..models import (
     ApplicationSubmission,
     Candidate,
     CandidateDocument,
+    JobMatch,
     JobPosting,
+    JobProposal,
     OpenInstinctApplicationTask,
     OpenInstinctIdentityLink,
     utcnow,
@@ -41,6 +44,8 @@ from ..openinstinct import (
     OpenInstinctPrincipal,
     verify_bridge_token,
 )
+from ..portal.schemas import portal_card
+from ..presentation.jobcard import jobcard
 
 router = APIRouter(
     route_class=CommittingRoute,
@@ -79,6 +84,69 @@ class ApplicationTaskResultIn(BaseModel):
     confirmation_ref: str = Field(default="", max_length=400)
     error: str = Field(default="", max_length=600)
     artifacts: list[str] = Field(default_factory=list)
+
+
+@router.get("/job-feed")
+def job_feed(
+    q: str = Query(default="", max_length=120),
+    location: str = Query(default="", max_length=120),
+    limit: int = Query(default=5, ge=1, le=10),
+    db: Session = Depends(get_db),
+    principal: OpenInstinctPrincipal = Depends(_service_principal),
+) -> dict:
+    """Return the linked candidate's current, actionable JuiceBox matches.
+
+    The bridge projects the same candidate-safe cards as the portal feed: no
+    recruiter score, no cross-org rows, and no roles the candidate has already
+    dismissed or started pursuing.  OpenInstinct uses the returned posting id
+    only when the candidate explicitly asks to apply to that concrete role.
+    """
+    link = _link_for(db, principal.subject)
+    answered_postings = set(
+        db.scalars(
+            select(JobProposal.job_posting_id).where(
+                JobProposal.org_id == link.org_id,
+                JobProposal.candidate_id == link.candidate_id,
+            )
+        ).all()
+    )
+    answered_postings.update(
+        db.scalars(
+            select(Application.job_posting_id).where(
+                Application.org_id == link.org_id,
+                Application.candidate_id == link.candidate_id,
+            )
+        ).all()
+    )
+
+    needle = q.strip().lower()
+    place = location.strip().lower()
+    rows = db.execute(
+        select(JobMatch, JobPosting)
+        .join(JobPosting, JobPosting.id == JobMatch.job_posting_id)
+        .where(
+            JobMatch.org_id == link.org_id,
+            JobMatch.candidate_id == link.candidate_id,
+            JobMatch.status != "dismissed",
+            JobPosting.status == "open",
+        )
+        .order_by(JobMatch.score.desc())
+        .limit(200)
+    ).all()
+    cards: list[dict] = []
+    for match, posting in rows:
+        if posting.id in answered_postings:
+            continue
+        if needle and needle not in f"{posting.title} {posting.company}".lower():
+            continue
+        if place and place not in (posting.location or "").lower():
+            continue
+        if not passes_bar(match, posting).ok:
+            continue
+        cards.append(portal_card(jobcard(posting, match)))
+        if len(cards) >= limit:
+            break
+    return {"cards": cards}
 
 
 def _identity_value(principal: OpenInstinctPrincipal, *, kind: str) -> set[str]:

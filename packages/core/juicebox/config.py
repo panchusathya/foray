@@ -105,6 +105,18 @@ class Settings:
         )
     )
 
+    # --- OpenInstinct bridge -----------------------------------------------
+    # OpenInstinct owns the candidate-facing agent and vault.  JuiceBox keeps
+    # recruiting records and accepts only short-lived, signed bridge tokens;
+    # the secret is shared by the two services, never sent to a browser.
+    openinstinct_url: str = field(default_factory=lambda: _env("OPENINSTINCT_URL", "").rstrip("/"))
+    openinstinct_shared_secret: str = field(
+        default_factory=lambda: _env("OPENINSTINCT_SHARED_SECRET", "")
+    )
+    openinstinct_request_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("OPENINSTINCT_REQUEST_TIMEOUT_SECONDS", 8.0)
+    )
+
     # --- storage ---------------------------------------------------------
     # sqlite by default so `make dev` works with zero infrastructure.
     database_url: str = field(

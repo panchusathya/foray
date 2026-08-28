@@ -13,9 +13,9 @@
 # forgotten -f flag or a merge surprise could publish Postgres to the internet.
 #
 # Topology: caddy is the only service with public ports (80/443) and serves
-# ${APP_DOMAIN} with automatic Let's Encrypt TLS. It proxies to web's nginx,
-# which serves the SPA and same-origin-proxies /v1/, /health, and /t/ to the
-# api. db/api/web publish no host ports; ingest binds to localhost only.
+# ${APP_DOMAIN} with automatic Let's Encrypt TLS. Recruiter HTML is at
+# APP_DOMAIN while the FastAPI service is a distinct API_DOMAIN. db/api/web
+# publish no host ports; ingest binds to localhost only.
 name: juicebox
 
 # Cap container logs everywhere: the VM has ~13 GB free and json-file defaults
@@ -66,10 +66,12 @@ x-foray-env: &foray_env
 x-app-env: &app_env
   JUICEBOX_ENV: production
   DATABASE_URL: postgresql+psycopg://juicebox:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/juicebox
-  # Baked into tracking links in outbound email — must be the public origin.
-  BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. app.goforay.io}
+  # Baked into tracking links and document access URLs — the public API origin.
+  BASE_URL: https://${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
   SECRET_KEY: ${SECRET_KEY:?generate with secrets.token_urlsafe(48) - see .env.production.example}
   CORS_ORIGINS: https://${APP_DOMAIN}
+  OPENINSTINCT_URL: ${OPENINSTINCT_URL:-https://apply.goforay.io}
+  OPENINSTINCT_SHARED_SECRET: ${OPENINSTINCT_SHARED_SECRET:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # The app's AI (sequence drafting, personalisation, reply drafts) runs through
   # OpenRouter here: there is no Anthropic key on this host, and without these
@@ -155,9 +157,9 @@ x-app-env: &app_env
   # serves uploads and downloads. Back this volume up alongside pgdata: the
   # rows in candidate_documents are only the metadata half.
   JUICEBOX_FILE_STORAGE_DIR: /app/data/files
-  # Where magic links point. The api and worker mint them, so they carry this;
-  # the portal container itself never needs it.
-  PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+  # Legacy portal links point at the candidate experience during the migration.
+  # New candidate application tasks use OpenInstinct's verified identity link.
+  PORTAL_BASE_URL: ${OPENINSTINCT_URL:-https://apply.goforay.io}
   # Who sign-in codes come from. Separate from OUTREACH_FROM_EMAIL because a
   # candidate receiving a code has not necessarily met the recruiter whose
   # mailbox sends the outreach. Empty falls back to the outreach identity.
@@ -473,6 +475,8 @@ services:
     build:
       context: packages/web
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
     restart: unless-stopped
     logging: *default_logging
     depends_on:
@@ -485,9 +489,9 @@ services:
       timeout: 5s
       retries: 3
 
-  # The candidate portal (apply.goforay.io). A separate image and a separate
-  # nginx from `web` on purpose: its config proxies only /v1/portal/, so the
-  # recruiter API is not reachable from the candidate domain at all.
+  # Legacy candidate portal build is retained only for rollback. Caddy no
+  # longer publishes it: apply.goforay.io is OpenInstinct's separate Vercel
+  # deployment, which owns Better Auth, Linq, vault, and browser execution.
   portal:
     build:
       context: packages/portal
@@ -508,7 +512,7 @@ services:
     logging: *default_logging
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
-      PORTAL_DOMAIN: ${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     ports:
       - "80:80"
@@ -520,7 +524,7 @@ services:
       - caddy_config:/config
     depends_on:
       - web
-      - portal
+      - api
 
 volumes:
   pgdata:

@@ -1,7 +1,7 @@
 """Sending an application: the one door in, and the worker half.
 
-``request_submission`` is the only way an automated attempt starts. Consent and
-the submission budget are checked *here*, before a job row exists, for the same
+``request_submission`` is the only way an automated attempt starts. The
+submission budget is checked *here*, before a job row exists, for the same
 reason ``create_application`` owns the per-posting uniqueness: a surface that
 forgets a check must not be able to bypass it. The thread, the portal and the
 recruiter console all come through this function.
@@ -36,7 +36,7 @@ from ..models import (
 from . import alias, credentials, limits
 from .ats import detect
 from .service import ApplicationError, current_documents
-from .state import TransitionError, has_consent, transition
+from .state import TransitionError, transition
 from .submit.base import (
     METHOD_CONSOLE,
     METHOD_MEMORY,
@@ -72,10 +72,6 @@ def request_submission(
     """
     if application.status not in {"prepared", "awaiting_consent"}:
         raise ApplicationError(f"cannot submit an application in {application.status!r}")
-    if not has_consent(application):
-        raise ApplicationError(
-            "no recorded consent: this application needs a per-application yes first"
-        )
     decision = limits.may_submit(db, application=application)
     if not decision:
         raise ApplicationError(f"submission budget: {decision.detail}")
@@ -125,13 +121,10 @@ def request_submission(
 
 
 def first_submission_gate(_db: Session, _application: Application) -> str:
-    """Empty: a recorded yes is the only extra gate, and ``request_submission``
-    already checks consent.
+    """Compatibility hook for future product-level submission gates.
 
-    The candidate-visible flow is thumbs-up → package → submit. A dashboard
-    "approve the resume we just built" step made that a second yes for a
-    document that did not exist when they tapped the card. Consent on the
-    application (the 👍, or a portal apply-for-me tap) is enough.
+    JuiceBox treats use of the product as authorization to submit, so there is
+    no separate per-application approval gate here.
     """
     return ""
 
@@ -233,8 +226,7 @@ def _repair_submitted(db: Session, application: Application) -> None:
 
     The adapter ran; the employer has the package. If the status move then
     failed, retries would otherwise skip forever with the row still showing
-    `submitting`. Best-effort: a withdrawn application, or one that lost
-    consent, stays where it is.
+    `submitting`. Best-effort: a withdrawn application stays where it is.
     """
     if application.status in {
         "submitted",
@@ -286,7 +278,7 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     if already is not None:
         # The unique index would catch a genuine race; this catches the ordinary
         # case of a redelivered job and keeps it out of the error path. If the
-        # attempt row landed but the status move did not (budget, consent, a
+        # attempt row landed but the status move did not (budget, a
         # crash between the two), repair the application so a succeeded send
         # does not sit in `submitting` forever.
         _repair_submitted(db, application)

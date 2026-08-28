@@ -280,25 +280,10 @@ class TestApplications:
         session.commit()
         return application
 
-    def test_approve_then_confirm_submitted(
+    def test_confirm_submitted_does_not_require_an_approval(
         self, client, session, account, candidate, headers
     ):
         application = self._pursue(session, account, candidate)
-
-        # Confirming before approving is exactly the consent hole -- refused.
-        premature = client.post(
-            f"/v1/portal/applications/{application.id}/confirm-submitted", headers=headers
-        )
-        assert premature.status_code == 409
-        session.expire_all()
-        assert not session.get(Application, application.id).submission_method
-
-        approved = client.post(
-            f"/v1/portal/applications/{application.id}/approve", headers=headers
-        )
-        assert approved.status_code == 200
-        _assert_no_leaks(approved.json())
-        assert approved.json()["status"] == "awaiting_consent"
 
         confirmed = client.post(
             f"/v1/portal/applications/{application.id}/confirm-submitted", headers=headers

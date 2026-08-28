@@ -1,14 +1,17 @@
 # Deploying Foray/Juicebox to a VM
 
 One always-on Linux VM running `docker-compose.prod.yml`. Caddy is the only
-publicly listening service (80/443) and serves `https://$APP_DOMAIN` with
-automatic Let's Encrypt TLS. Postgres, the API, and the web container publish
-no host ports; the ingest webhook binds to localhost only.
+publicly listening service (80/443): `https://app.goforay.io` serves the
+recruiter workspace and `https://api.goforay.io` serves the JuiceBox API.
+Postgres, the API, and the web container publish no host ports; the ingest
+webhook binds to localhost only. `https://apply.goforay.io` is the independent
+OpenInstinct deployment, not a container in this compose stack.
 
 ```
-internet ──▶ caddy :443 ──▶ web (nginx: SPA + proxy) ──▶ api :8000 ──▶ db (pgvector)
-                                                          ▲
-                                                 worker ──┘   (durable job queue)
+internet ──▶ app.goforay.io ──▶ web (recruiter SPA)
+          └▶ api.goforay.io ──▶ api :8000 ──▶ db (pgvector)
+                                               ▲
+                                      worker ──┘   (durable job queue)
 ```
 
 Written for UpCloud (30-day trial) but nothing is provider-specific — any
@@ -26,9 +29,10 @@ restore, ~30 minutes.
 
 ## 2. DNS
 
-Add an `A` record for `app.goforay.io` → the VM's public IPv4. Do this first:
-Caddy can only obtain the certificate once the name resolves (it retries
-harmlessly until then).
+Add `A` records for `app.goforay.io` and `api.goforay.io` → the VM's public
+IPv4. Do this first: Caddy can only obtain each certificate once its name
+resolves (it retries harmlessly until then). Point `apply.goforay.io` at the
+independent OpenInstinct deployment.
 
 ## 3. Base system
 
@@ -62,7 +66,10 @@ Edit `.env`:
   `python -c "import secrets; print(secrets.token_urlsafe(48))"`
 - `POSTGRES_PASSWORD` — any long random string.
 - `SMTP_*`, `OUTREACH_FROM_EMAIL` — your sending mailbox credentials.
-- `APP_DOMAIN`, `ACME_EMAIL` — prefilled; adjust if the hostname differs.
+- `APP_DOMAIN`, `API_DOMAIN`, `ACME_EMAIL` — prefilled; adjust if hostnames differ.
+- `OPENINSTINCT_SHARED_SECRET` — a new random shared secret for five-minute
+  service credentials between JuiceBox and OpenInstinct. Set the exact same
+  value in the OpenInstinct deployment; it is not an ATS password.
 
 Compose refuses to start (loud `${VAR:?}` errors) if a required value is
 missing — `docker compose -f docker-compose.prod.yml config` is a dry-run
@@ -75,7 +82,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml logs -f api   # watch for a clean migrate + startup
 ```
 
-Within a minute of DNS resolving, `https://app.goforay.io` serves the app.
+Within a minute of DNS resolving, `https://app.goforay.io` serves the recruiter
+workspace and `https://api.goforay.io/health` answers from the API.
 
 ## 6. First data
 

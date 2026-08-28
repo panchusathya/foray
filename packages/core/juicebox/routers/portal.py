@@ -20,7 +20,7 @@ import logging
 import time
 from datetime import UTC, timedelta
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -537,21 +537,16 @@ def approve_package(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    """The per-application yes. Approval is what unlocks ``submitted``."""
+    """Backward-compatible submit action for clients using the old approval route."""
     application = _application(db, principal, application_id)
     if application.status not in {"prepared", "awaiting_consent"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"nothing to approve in status {application.status!r}",
         )
-    application.approved_at = utcnow()
-    if application.status == "prepared":
-        transition(db, application, to_status="awaiting_consent", actor="candidate")
-
-    # Approval is the per-application yes, so this is the moment an automated
-    # attempt becomes possible. Most postings will not have an adapter and the
-    # answer is the hand-off we already do -- which is why `auto_submit` reports
-    # a reason instead of raising.
+    # This route used to record an extra per-application approval.  Keeping it
+    # as an alias avoids breaking existing clients while treating product use
+    # as the authorization boundary.
     from ..applications.submission import auto_submit
 
     job, reason = auto_submit(db, application)
@@ -566,19 +561,10 @@ def submit_for_me(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    """The explicit "you apply for me" tap.
-
-    Distinct from ``confirm-submitted``, which is the candidate telling us they
-    applied themselves. This one asks us to do it, and needs the same recorded
-    approval every other path needs -- tapping this button *is* that approval
-    when there is not one yet.
-    """
+    """Queue an application on the authenticated candidate's behalf."""
     from ..applications.submission import NotSubmittable, request_submission
 
     application = _application(db, principal, application_id)
-    if application.approved_at is None:
-        application.approved_at = utcnow()
-        db.flush()
     try:
         job = request_submission(db, application, requested_by="candidate")
     except NotSubmittable as exc:
@@ -596,8 +582,8 @@ def confirm_submitted(
 ) -> dict:
     """The one-tap 'I applied' after the Tier-0 hand-off."""
     application = _application(db, principal, application_id)
-    # Stamp the method only after the move succeeds — a 409 (no consent,
-    # illegal status) must not rewrite a browser/email attempt that is
+    # Stamp the method only after the move succeeds — a 409 from an illegal
+    # status must not rewrite a browser/email attempt that is
     # already in flight, or a draft that never left.
     previous_method = application.submission_method or ""
     try:

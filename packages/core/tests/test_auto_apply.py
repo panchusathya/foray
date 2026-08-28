@@ -1,11 +1,8 @@
 """Auto-apply: what we send, where we send it, and what stops us.
 
-The invariant this file exists to defend is the one from
-``CANDIDATE_AGENT_PLAN`` §8, now that an agent can actually press submit:
-**nothing is sent in a candidate's name without a recorded per-application yes,
-and nothing is invented to fill a form.** The consent and budget tests below
-are the load-bearing ones; the adapter tests only prove we speak each vendor's
-dialect.
+The invariant this file exists to defend is that no form answer is invented and
+submission limits apply consistently. The adapter tests prove we speak each
+vendor's dialect.
 
 No network anywhere. Adapters take an injected client, the browser tier is
 never launched, and the default submitter cannot reach an employer at all.
@@ -291,21 +288,21 @@ class TestTargetResolution:
         assert target.tier == detect.TIER_EMAIL
 
 
-class TestTheConsentGateStillHolds:
-    """The agent path gets no shortcut around the rule a human path obeys."""
+class TestSubmissionAuthorization:
+    """Using JuiceBox authorizes a prepared application to be submitted."""
 
-    def test_submitting_requires_a_recorded_yes(self, session, account, candidate):
+    def test_submitting_does_not_require_a_recorded_yes(self, session, account, candidate):
         posting = _posting(session, account["org_id"])
         application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        with pytest.raises(TransitionError, match="consent"):
-            transition(session, application, to_status="submitting", actor="agent")
+        transition(session, application, to_status="submitting", actor="agent")
 
-    def test_request_submission_refuses_without_consent(self, session, account, candidate):
+    def test_request_submission_queues_without_per_application_approval(
+        self, session, account, candidate, memory_mode
+    ):
         posting = _posting(session, account["org_id"])
         application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        with pytest.raises(Exception, match="consent"):
-            request_submission(session, application)
-        # And nothing was queued, so no worker can pick it up anyway.
+        job = request_submission(session, application)
+        assert job.kind == KIND_APP_SUBMIT
         assert session.query(ApplicationSubmission).count() == 0
 
     def test_the_submission_budget_applies_to_the_agent_too(
@@ -553,27 +550,24 @@ class TestNothingAutomatedIsTheNormalAnswer:
         assert job is None
         assert "hand-off" in reason
 
-    def test_the_first_application_does_not_need_a_second_yes(
+    def test_a_prepared_application_can_be_queued(
         self, session, account, candidate, memory_mode
     ):
-        """Thumbs-up (or a portal apply-for-me tap) is the yes. A dashboard
-        review of the package we just built used to be a second gate."""
+        """No per-application approval is required after preparing a package."""
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
         application = _ready(session, account["org_id"], candidate, posting)
-        assert application.approved_at is not None
         assert first_submission_gate(session, application) == ""
         job, reason = auto_submit(session, application)
         assert job is not None, reason
 
-    def test_no_recorded_yes_still_refuses(self, session, account, candidate, memory_mode):
+    def test_no_recorded_yes_still_queues(self, session, account, candidate, memory_mode):
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
         application = _ready(session, account["org_id"], candidate, posting, consent=False)
         assert first_submission_gate(session, application) == ""
         job, reason = auto_submit(session, application)
-        assert job is None
-        assert "consent" in reason
+        assert job is not None, reason
 
     def test_console_is_the_default_and_cannot_reach_an_employer(self):
         from juicebox.applications.submit.console import ConsoleSubmitter

@@ -2,12 +2,11 @@
 
 ``create_application`` is the one door: every surface — the thread's
 "apply to 2", a portal swipe, a recruiter click — comes through here, so the
-per-posting uniqueness, the per-company budget, and consent capture cannot be
-bypassed by one surface forgetting a check.
+per-posting uniqueness and per-company budget cannot be bypassed by one
+surface forgetting a check.
 
 ``build_package`` is the worker half: documents are files the moment they are
-generated, but the Application's consent gate is what stands between a
-package and a submission.
+generated and a prepared application may then be submitted.
 """
 
 from __future__ import annotations
@@ -339,7 +338,9 @@ def application_status_summary(db: Session, *, org_id: str, candidate_id: str) -
     described = {
         "draft": "being prepared",
         "prepared": "package ready for your review",
-        "awaiting_consent": "waiting on your OK",
+        # Kept for applications created before per-application approval was
+        # removed; new flows stay at prepared until submission starts.
+        "awaiting_consent": "ready to submit",
         "submitting": "being sent now",
         "submitted": "submitted",
         "acknowledged": "received by the employer",

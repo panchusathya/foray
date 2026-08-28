@@ -742,6 +742,11 @@ class CandidateTimelineOut(BaseModel):
     threads: list[ThreadOut]
     events: list[EventOut] = Field(default_factory=list)
     intake_threads: list[IntakeTimelineThreadOut] = Field(default_factory=list)
+    # Read live from OpenInstinct; JuiceBox does not copy its candidate chat
+    # database into the recruiter store.
+    openinstinct_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    openinstinct_available: bool = False
+    openinstinct_application_tasks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RunSequenceResponse(BaseModel):

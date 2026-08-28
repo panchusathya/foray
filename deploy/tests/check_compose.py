@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PROD = (ROOT / "docker-compose.prod.yml").read_text()
-STAGING = (ROOT / "docker-compose.staging.yml").read_text()
-CI_ENV = (ROOT / "deploy" / "ci.env").read_text()
+PROD = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+STAGING = (ROOT / "docker-compose.staging.yml").read_text(encoding="utf-8")
+CI_ENV = (ROOT / "deploy" / "ci.env").read_text(encoding="utf-8")
 
 
 class Failed(Exception):

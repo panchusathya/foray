@@ -196,6 +196,26 @@ class Candidate(Base, TimestampMixin):
         return self.emails[0] if self.emails else None
 
 
+class OpenInstinctIdentityLink(Base, TimestampMixin):
+    """One verified OpenInstinct account mapped to one candidate in one org."""
+
+    __tablename__ = "openinstinct_identity_links"
+    __table_args__ = (
+        UniqueConstraint("external_user_id", name="uq_openinstinct_external_user"),
+        UniqueConstraint("org_id", "candidate_id", name="uq_openinstinct_org_candidate"),
+        Index("ix_openinstinct_link_candidate", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("oilink"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    external_user_id: Mapped[str] = mapped_column(String(160))
+    verified_email: Mapped[str] = mapped_column(String(255), default="")
+    verified_phone: Mapped[str] = mapped_column(String(64), default="")
+
+
 class Experience(Base):
     __tablename__ = "experiences"
 
@@ -1844,11 +1864,11 @@ class ConsentRecord(Base, TimestampMixin):
 #
 #   draft            created; package not yet built
 #   prepared         tailored resume / cover letter / answers exist
-#   awaiting_consent the package was shown; the per-application yes is pending
+#   awaiting_consent legacy status retained for existing records
 #   submitting       an agent attempt is in flight (Tier 1-3); on failure it
 #                    falls back to awaiting_consent with a status_reason
 #   submitted        it was sent (candidate one-tap, recruiter, or agent on a
-#                    tier that allows it) -- REQUIRES a recorded consent
+#                    tier that allows it)
 #   acknowledged     the employer confirmed receipt
 #   interviewing / offer / rejected / withdrawn
 APPLICATION_STATUSES = (
@@ -1973,16 +1993,13 @@ class JobCardAsset(Base, TimestampMixin):
 class Application(Base, TimestampMixin):
     """One pursuit of one posting on behalf of one candidate.
 
-    The lifecycle after a proposal is accepted: prepare the package, get the
-    per-application yes, a human submits, statuses arrive. ``JobMatch`` is
-    triage, ``JobProposal`` is presentation and consent-to-pursue -- this row
-    is the pursuit itself, and the only place a submission can hang off.
+    The lifecycle after a proposal is accepted: prepare the package, submit,
+    statuses arrive. ``JobMatch`` is triage and ``JobProposal`` is
+    presentation; this row is the pursuit itself and the only place a
+    submission can hang off.
 
-    **Consent is structural.** ``applications/state.py`` refuses the
-    transition to ``submitted`` unless ``consenting_message_id`` or
-    ``approved_at`` is set: a candidate saying "yes, things like that" is not
-    consent to a specific submission, and this table is what keeps us out of
-    "you applied to forty jobs as me" (§4).
+    Historic per-application approval fields remain readable for existing
+    records, but are no longer a submission requirement.
 
     Documents hang off ``CandidateDocument.application_id`` rather than FK
     columns here -- one less cycle, and "the current resume variant" is the
@@ -2026,8 +2043,8 @@ class Application(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="draft")
     status_reason: Mapped[str] = mapped_column(String(240), default="")
 
-    # The per-application yes, bound to the message it arrived in (a text) or
-    # to a portal approval. One of these must be set before `submitted`.
+    # Historic per-application approval provenance. New submissions do not
+    # require either field; use of JuiceBox is the authorization boundary.
     consenting_message_id: Mapped[str | None] = mapped_column(
         ForeignKey("intake_messages.id", ondelete="SET NULL"), nullable=True
     )
@@ -2062,6 +2079,32 @@ class Application(Base, TimestampMixin):
     )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class OpenInstinctApplicationTask(Base, TimestampMixin):
+    """A task explicitly requested in OpenInstinct and executed in its browser."""
+
+    __tablename__ = "openinstinct_application_tasks"
+    __table_args__ = (
+        UniqueConstraint("org_id", "external_task_id", name="uq_openinstinct_task_external"),
+        UniqueConstraint("application_id", name="uq_openinstinct_task_application"),
+        Index("ix_openinstinct_task_candidate", "org_id", "candidate_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("oitask"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidates.id", ondelete="CASCADE"), index=True
+    )
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), index=True
+    )
+    external_task_id: Mapped[str] = mapped_column(String(160))
+    # package_pending | ready | running | submitted | needs_human | failed
+    status: Mapped[str] = mapped_column(String(32), default="package_pending")
+    conversation_url: Mapped[str] = mapped_column(String(500), default="")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CandidateDocument(Base, TimestampMixin):

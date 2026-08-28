@@ -1,11 +1,4 @@
-"""Applications: the status machine, the consent rule, the budgets, the bar.
-
-The one invariant everything here defends: **nothing is asserted in a
-candidate's name without a recorded, per-application yes.** The machine
-refuses ``submitted`` without consent, the budgets stop volume from doing
-what consent forbids one at a time, and the bar keeps unexplainable matches
-from ever being shown.
-"""
+"""Applications: the status machine, budgets, and the matching bar."""
 
 from __future__ import annotations
 
@@ -100,8 +93,7 @@ class TestStateMachine:
         transition(session, application, to_status="rejected", actor="recruiter")
         assert application.closed_at is not None
 
-    def test_no_consent_no_submission(self, session, account, candidate):
-        """The rule that keeps us out of 'you applied to forty jobs as me'."""
+    def test_submission_does_not_require_per_application_approval(self, session, account, candidate):
         posting = _posting(session, account["org_id"])
         application = create_application(
             db=session,
@@ -110,12 +102,8 @@ class TestStateMachine:
             job_posting_id=posting.id,
         )
         transition(session, application, to_status="prepared", actor="agent")
-        with pytest.raises(TransitionError, match="consent"):
-            transition(session, application, to_status="submitted", actor="agent")
-        # A consenting message id is the other valid form of the yes.
-        application.consenting_message_id = None
-        application.approved_at = utcnow()
-        transition(session, application, to_status="submitted", actor="candidate")
+        transition(session, application, to_status="submitted", actor="agent")
+        assert application.submitted_by == "agent"
 
     def test_terminal_states_are_frozen(self, session, account, candidate):
         posting = _posting(session, account["org_id"])

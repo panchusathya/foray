@@ -111,7 +111,6 @@ def run(
     start_url: str = "",
 ) -> LoopResult:
     result = LoopResult()
-    settings = get_settings()
     url = form_route(start_url or ctx.target.apply_url or ctx.posting_url or "")
     if not url:
         result.needs_human = True

@@ -311,6 +311,34 @@ class TestASpelledAddressIsRead:
 
         assert not _CORRECTION.match("I think the answer is no on that role")
 
+    def test_a_confirmed_read_back_beats_the_garbled_caller_turn(self):
+        """The third real call: ASR heard "Ishara ... gabta", the agent read
+        back the right address, the caller said yes. The scanner reads caller
+        turns only, so without adopting the confirmed spelling it stores the
+        garbled mailbox -- a wrong address ratified by a call that got it right.
+        """
+        call = (
+            "Agent: Got it. Can I get your email address?\n"
+            "User: Ishara thirty one gabta at g mail dot com.\n"
+            "Agent: Let me make sure I have that -- t-u-s-h-a-r-3-1-g-u-p-t-a"
+            " at gmail dot com?\n"
+            "User: Yes.\n"
+        )
+        assert scan_transcript(call) == ("", EMAIL)
+
+    def test_a_rejected_read_back_is_not_adopted(self):
+        """"No" to the spelling means the read-back was wrong: the correction
+        in the same turn wins, never the spelling the caller just refused."""
+        call = (
+            "Agent: Can I get your name and email to start your record?\n"
+            "User: Yeah. My name is Tushar, it's tushar thirty one gabta at"
+            " g mail dot com.\n"
+            "Agent: Let me make sure -- t-u-s-h-a-r-3-1-g-a-b-t-a at gmail"
+            " dot com, is that right?\n"
+            "User: No. It's t u s h a r three one g u p t a at g mail dot com.\n"
+        )
+        assert scan_transcript(call) == ("Tushar", EMAIL)
+
 
 # --------------------------------------------------------------------------
 # the number reaches the record only once something proves it

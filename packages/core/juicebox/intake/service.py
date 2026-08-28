@@ -1037,9 +1037,15 @@ def _greeting_for(first_name: str) -> str:
     from ..messaging.prompts import recruiter_name
 
     who = recruiter_name()
+    # "at Foray" locates a persona that is not the company. Now that the agent
+    # is itself called Foray, appending it produced "Hi, this is Foray at
+    # Foray" on a real call -- the rename updated the canned constants but not
+    # this composer. Conditional rather than deleted, so a persona named
+    # anything else gets located again.
+    at_company = "" if who.strip().lower() == "foray" else " at Foray"
     if first_name:
-        return f"Hi {first_name} -- it's {who} at Foray. Good to hear from you."
-    return f"Hi, this is {who} at Foray -- thanks for calling."
+        return f"Hi {first_name} -- it's {who}{at_company}. Good to hear from you."
+    return f"Hi, this is {who}{at_company} -- thanks for calling."
 
 
 def _last_contact_phrase(db: Session, *, org_id: str, candidate_id: str) -> str:

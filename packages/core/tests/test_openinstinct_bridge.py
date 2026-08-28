@@ -10,8 +10,8 @@ from juicebox.models import (
     Application,
     ApplicationSubmission,
     Candidate,
-    JobPosting,
     JobMatch,
+    JobPosting,
     OpenInstinctApplicationTask,
 )
 from juicebox.openinstinct import JUICEBOX_AUDIENCE, mint_bridge_token

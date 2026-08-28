@@ -219,8 +219,9 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
         company = (posting.company if posting else "") or "this employer"
         # The vault page prefills the vendor/tenant from the query, so the
         # saved credential is scoped to exactly the account we will register.
-        from ..applications.ats import detect
         from urllib.parse import urlencode
+
+        from ..applications.ats import detect
 
         target = detect.target_of(posting) if posting is not None else None
         query = urlencode(

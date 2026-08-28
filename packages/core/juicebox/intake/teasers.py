@@ -127,7 +127,15 @@ def teaser_snapshot(
         return empty_teasers(fallback)
 
     try:
-        result = extract_intake(transcript, known=known, fast=True)
+        # `live_call=True` for the same reason `coverage_snapshot` passes it:
+        # a caller is holding a phone to their ear while this runs, so it takes
+        # the 3.5s voice budget and not the 10s one meant for a text thread.
+        # Without it this ran to the longer ceiling in silence -- and on a real
+        # call the model filled that silence by narrating a fabricated tool
+        # result out loud, which is the failure the composed `lines` exist to
+        # make impossible. Degrading to heuristics costs a rougher pitch; the
+        # silence cost the call.
+        result = extract_intake(transcript, known=known, fast=True, live_call=True)
         record = merge_record(prior, result.record) if prior else result.record
         # Judged against the gate this call actually closed on, not against the
         # core set. Once a budget can buy fewer than four questions, "complete"

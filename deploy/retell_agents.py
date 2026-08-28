@@ -802,10 +802,21 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 "name": "preview_matches",
                 "description": PREVIEW_TOOL_DESCRIPTION,
                 "url": f"{base}/v1/intake/matches",
-                # The prompt has the agent announce "let me take a quick look"
-                # BEFORE calling, so the pause is already covered -- narration
-                # during execution on top of that would double up.
-                "speak_during_execution": False,
+                # True, despite the prompt already announcing "let me take a
+                # quick look" before the call. That announcement covers the
+                # first beat and nothing after it, and what came after it on a
+                # real call was several seconds of dead air -- into which the
+                # model narrated a fabricated tool result, aloud, to a caller
+                # who had started saying "hello?".
+                #
+                # The doubling this was set False to avoid only happens when
+                # the tool is slow, because Retell speaks during execution only
+                # while it is still waiting. So a fast preview sounds exactly as
+                # it does today, and a slow one sounds like someone looking
+                # something up rather than like a dropped line. That trade was
+                # the wrong way round: a redundant half-sentence is a blemish,
+                # and an unnarrated silence is an invitation to invent.
+                "speak_during_execution": True,
                 # The whole point: the lines and the close come from the result.
                 "speak_after_execution": True,
                 "parameters": {"type": "object", "properties": {}, "required": []},

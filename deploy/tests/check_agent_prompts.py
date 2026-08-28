@@ -158,15 +158,24 @@ def check_every_supplied_variable_reaches_the_model() -> None:
     `caller_greeting` is the one exception: it is the whole of `begin_message`
     and deliberately never appears in the prompt body, because the agent speaks
     it before the first turn rather than reading it mid-call.
+
+    Scanned across **both** prompts, and across every slot name rather than the
+    `caller_*` ones. `default_dynamic_variables` is set on the agent, and
+    `agent_body` sets it on both agents, so it is not an inbound-only bag --
+    `recruiter_intro` is supplied here and consumed by the outbound prompt.
+    Reading only the inbound prompt would call that orphaned, which is the
+    check being narrower than the thing it is checking.
     """
     supplied = set(DEFAULT_DYNAMIC_VARIABLES) - {"caller_greeting"}
-    interpolated = set(re.findall(r"\{\{(caller_[a-z_]+)\}\}", INBOUND_PROMPT))
+    interpolated = set(
+        re.findall(r"\{\{([a-z_]+)\}\}", INBOUND_PROMPT)
+        + re.findall(r"\{\{([a-z_]+)\}\}", OUTBOUND_PROMPT)
+    )
     orphaned = sorted(supplied - interpolated)
     _must(
         not orphaned,
-        f"the webhook supplies {orphaned} but the inbound prompt never "
-        "interpolates them -- the model cannot see a variable it is only told "
-        "the name of",
+        f"the webhook supplies {orphaned} but neither prompt interpolates "
+        "them -- the model cannot see a variable it is only told the name of",
     )
 
 
@@ -375,8 +384,39 @@ def check_outbound_is_unchanged_in_posture() -> None:
     )
     _must(
         "{{candidate_first_name}}" in OUTBOUND_PROMPT
-        or "{{recruiter_name}}" in OUTBOUND_PROMPT,
+        or "{{recruiter_name}}" in OUTBOUND_PROMPT
+        or "{{recruiter_intro}}" in OUTBOUND_PROMPT,
         "outbound prompt must keep its dynamic variables",
+    )
+
+
+def check_the_persona_is_introduced_once() -> None:
+    """The agent is called Foray and works for Foray. Say it once.
+
+    The rename made every "<name> at Foray" / "<name> with Foray" construction
+    a stutter, and a caller hears the worst of them -- "I'm Foray, an AI
+    recruiting assistant with Foray" -- as the very first sentence of the call.
+
+    The fix is that the located name arrives pre-composed in
+    `{{recruiter_intro}}`, from `messaging.prompts.locate`. So what this pins is
+    that the prompt does not go back to writing the firm on after the slot,
+    which is the shape that broke: the slot already carries it when it should.
+    """
+    for stutter in (
+        "{{recruiter_intro}}, an ai recruiting assistant with foray",
+        "{{recruiter_intro}} at foray",
+        "{{recruiter_intro}} from foray",
+        "{{recruiter_name}}, an ai recruiting assistant with foray",
+        "{{recruiter_name}} at foray",
+    ):
+        _must(
+            stutter not in OUTBOUND,
+            f"outbound prompt names the firm after the persona slot ({stutter!r}); "
+            "`recruiter_intro` already carries it, so this says Foray twice",
+        )
+    _must(
+        "{{recruiter_intro}}" in OUTBOUND_PROMPT,
+        "outbound prompt must introduce from the located slot, not a bare name",
     )
 
 
@@ -394,6 +434,7 @@ def main() -> int:
         check_the_pitch_reads_only_composed_lines,
         check_the_live_text_verification_flow_is_pinned,
         check_outbound_is_unchanged_in_posture,
+        check_the_persona_is_introduced_once,
     )
     failed = 0
     for check in checks:

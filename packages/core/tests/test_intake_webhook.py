@@ -973,6 +973,27 @@ class TestRingTimeRecognition:
         assert variables["caller_greeting"].strip()
         assert "Foray" in variables["caller_greeting"]
 
+    def test_the_greeting_does_not_say_foray_twice(
+        self, client, session, signer, owned_number, account
+    ):
+        """"Hi, this is Foray at Foray." -- the first words of a real call.
+
+        The composer wrote "at Foray" after the persona name, which was right
+        while the persona was called Vivian. The rename to Foray moved the
+        canned constants and missed this, so the one greeting that actually
+        runs on a call became a stutter. Both branches are checked because they
+        are separate format strings and only one of them was ever heard.
+        """
+        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
+        known = post(client, signer, inbound_payload()).json()["call_inbound"][
+            "dynamic_variables"
+        ]["caller_greeting"]
+        stranger = post(client, signer, inbound_payload(from_number=STRANGER_NUMBER)).json()[
+            "call_inbound"
+        ]["dynamic_variables"]["caller_greeting"]
+        for greeting in (known, stranger):
+            assert greeting.lower().count("foray") == 1, greeting
+
     def test_the_caller_is_told_which_number_we_hold(
         self, client, session, signer, owned_number, account
     ):

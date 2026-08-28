@@ -185,7 +185,13 @@ def _stub_extraction(monkeypatch, record):
     from juicebox.intake.extract import ExtractionResult
     from juicebox.intake.schema import coverage
 
-    def _extract(transcript, *, known="", fast=True):
+    # `live_call` is accepted because production passes it: the pitch runs
+    # while the caller waits, so it takes the voice budget. A stub that does
+    # not accept it raises TypeError inside `teaser_snapshot`, whose catch-all
+    # turns that into the ordinary close -- so the tests go green-to-red in the
+    # confusing direction, asserting fallback guidance rather than a signature
+    # mismatch.
+    def _extract(transcript, *, known="", fast=True, live_call=False):
         return ExtractionResult(record=record, extractor="llm", coverage=coverage(record))
 
     monkeypatch.setattr(teasers, "extract_intake", _extract)

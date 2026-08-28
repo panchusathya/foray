@@ -166,6 +166,32 @@ def recruiter_name() -> str:
     return (get_settings().intake_recruiter_name or "Foray").strip() or "Foray"
 
 
+# The firm the agent works for. Not a setting, because unlike the persona it is
+# not ours to vary per deployment -- it is the name on the door.
+COMPANY_NAME = "Foray"
+
+
+def locate(name: str, company: str = COMPANY_NAME) -> str:
+    """``"Vivian at Foray"`` -- or just ``"Foray"`` when they are the same word.
+
+    A persona is normally introduced *somewhere*: "Vivian at Foray" says both
+    who is speaking and who they speak for, in one clause. That stops being
+    true the moment the persona takes the firm's own name. Since the rename the
+    inbound line opened "Hi, this is Foray at Foray", which is the first thing
+    a caller hears and reads as a broken template rather than a greeting.
+
+    Collapsed rather than deleted, so a future persona called anything else
+    gets located again. Case- and space-insensitive, because the two names come
+    from different places -- one a setting, one the constant above -- and
+    "foray " must not read as a different company from "Foray".
+    """
+    who = (name or "").strip()
+    where = (company or "").strip()
+    if not where or who.casefold() == where.casefold():
+        return who
+    return f"{who} at {where}"
+
+
 # The greeting carries exactly two disclosures: who we are, and that this is an
 # AI. It used to carry a third -- "you can stop any time" -- and that clause is
 # gone from every greeting in this package. See INTAKE_COMPLIANCE.md section 6a
@@ -182,8 +208,12 @@ def recruiter_name() -> str:
 def greeting_for(*, org: str, recruiter: str | None = None) -> str:
     name = (recruiter or recruiter_name()).strip() or "vivian"
     org_name = (org or "our team").strip() or "our team"
+    # Same collapse as `locate`, in this channel's own phrasing: when the
+    # persona carries the firm's name, "i'm foray from foray" is a stutter, and
+    # one mention already carries both disclosures.
+    who = name if name.casefold() == org_name.casefold() else f"{name} from {org_name}"
     return (
-        f"hey, i'm {name} from {org_name}. i'm an ai, and i'm here to take a "
+        f"hey, i'm {who}. i'm an ai, and i'm here to take a "
         f"few details so we can match you to the right roles. it takes a "
         f"couple of minutes."
     )

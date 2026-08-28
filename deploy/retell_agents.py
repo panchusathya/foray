@@ -48,10 +48,17 @@ Usage:
     python deploy/retell_agents.py apply  --base-url https://example.com
     python deploy/retell_agents.py list
     python deploy/retell_agents.py import --number +16283865454   # own-Twilio number
-    python deploy/retell_agents.py attach --number +16283865454   # goes live
+    python deploy/retell_agents.py attach --number +16283865454 --base-url https://example.com
 
 ``attach`` is separate on purpose. Creating agents changes nothing a caller can
 reach; attaching one to a number makes a bot answer real people.
+
+It takes ``--base-url`` because attaching is also the moment the number's
+``inbound_webhook_url`` has to exist. ``apply`` sets that too, but it can only
+reach numbers the inbound agent is already attached to -- so on a first setup
+``apply`` runs before ``attach``, finds nothing, and the hook is never written.
+The line then answers every returning candidate as a stranger, with no error
+anywhere. ``list`` prints the hook per number so that state is visible.
 """
 
 from __future__ import annotations
@@ -137,6 +144,55 @@ REMINDER_MAX_COUNT = 1
 # A hard ceiling, not a target. The gate ends a good call in two to three
 # minutes; this only stops a wedged one from billing for an hour.
 MAX_CALL_MS = 15 * 60 * 1000
+
+# --- the speech path -------------------------------------------------------
+#
+# Everything below exists because of one reproducible failure: the agent
+# finished its opening line and then answered something the caller had not
+# said. Nobody had spoken. Three separate defaults combine to produce it, and
+# each is fixed on its own line rather than by blunting INTERRUPTION_SENSITIVITY
+# back down -- the agent talking over real people was the worse bug, and it was
+# fixed by raising that number.
+
+# Retell speaks the opening line the instant the media path opens (its default
+# here is 0). Inbound arrives over a Twilio SIP trunk, and the first moments of
+# that path carry the tail of ringback and the codec settling -- audio the
+# transcriber is already listening to. That is the phantom first turn: not a
+# mishearing of the caller, a hearing of the line itself.
+#
+# One second, because the caller has just been connected and is not expecting
+# instant speech anyway. It is also the cheapest of the three fixes to undo if
+# the pause ever reads as dead air.
+BEGIN_MESSAGE_DELAY_MS = 1_000
+
+# Retell's default is `noise-cancellation`, which removes hum and hiss and is
+# explicitly not aimed at anything speech-shaped. The failure here is
+# speech-shaped: the greeting coming back through a speakerphone, a TV, someone
+# else in the room. `noise-and-background-speech-cancellation` is the mode that
+# targets it, and it is the right trade on a line where the agent is talking
+# for a third of the call and INTERRUPTION_SENSITIVITY is deliberately near 1.
+DENOISING_MODE = "noise-and-background-speech-cancellation"
+
+# `fast` is Retell's default and it is the wrong default for this call. What we
+# take down is names, email addresses and companies -- tokens with no helpful
+# context around them, where a plausible wrong word is indistinguishable from a
+# right one downstream. A real call transcribed "tushar" as "Ishara" and very
+# nearly stored the garbled mailbox.
+#
+# It costs latency on every turn. That is affordable here and would not be on a
+# line doing quick transactional exchanges: this agent already speaks during
+# `check_coverage`, and RESPONSIVENESS carries the rest.
+STT_MODE = "accurate"
+
+# Bias the transcriber toward the handful of words this call cannot afford to
+# lose. Deliberately short -- a long list starts pulling ordinary speech toward
+# these instead. `Foray` is both the agent's name and the firm's, so it appears
+# in the first sentence of every call and in most callers' replies; `Retell`
+# never reaches the transcriber, and nothing generic belongs here.
+# `dict.fromkeys` rather than a set: order is meaningful to the transcriber,
+# and the persona name is the same word as the firm's today -- sending it twice
+# would double the bias on one token for no reason.
+BOOSTED_KEYWORDS = list(dict.fromkeys(["Foray", RECRUITER_NAME]))
 
 _SHARED_RULES = """
 ## How to run the call
@@ -402,21 +458,31 @@ def _shared_rules(sms_spoken: str) -> str:
     return _SHARED_RULES.format(sms_number_spoken=sms_spoken)
 
 
-# Outbound: Retell interpolates {{recruiter_name}} / {{sms_number_spoken}}.
+# Outbound: Retell interpolates {{recruiter_intro}} / {{sms_number_spoken}}.
 # Four braces because this is an f-string; two would render as a literal
-# {recruiter_name} and the agent would say the placeholder aloud.
-OUTBOUND_PROMPT = f"""You are {{{{recruiter_name}}}}, an AI recruiting assistant
-with Foray. You are calling a candidate who just asked to be called from
-Foray's website, to learn what they want from their next role so Foray can
-match them properly.
+# {recruiter_intro} and the agent would say the placeholder aloud.
+#
+# `recruiter_intro` rather than `recruiter_name`, and it arrives already
+# located -- "Vivian at Foray", or just "Foray" when the persona carries the
+# firm's own name. This prompt used to write "with Foray" after the name
+# itself, which was right while the persona was called Vivian and became "I'm
+# Foray, an AI recruiting assistant with Foray" the day it was renamed. The
+# collapse cannot live in this string, because the name only exists at dial
+# time; `messaging.prompts.locate` composes it and is the one place that rule
+# is written down.
+OUTBOUND_PROMPT = f"""You are {{{{recruiter_intro}}}}, an AI recruiting
+assistant. You are calling a candidate who just asked to be called from Foray's
+website, to learn what they want from their next role so Foray can match them
+properly.
 
 Speak like a competent recruiter: warm, direct, unhurried. No filler, but not
 clipped.
 
 ## Opening, in this order, before anything else
 
-1. Say who you are: {{{{recruiter_name}}}}, an AI recruiting assistant with
-   Foray, calling because they asked.
+1. Say who you are: {{{{recruiter_intro}}}}, an AI recruiting assistant,
+   calling because they asked. Say it once -- do not name Foray a second time
+   in the same breath.
 2. Say the call is recorded so a recruiter can read it later, and ask if that is
    OK. Wait for an answer. If they say no, say you will not record, and end the
    call politely -- tell them a recruiter will reach out directly instead.
@@ -736,10 +802,21 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 "name": "preview_matches",
                 "description": PREVIEW_TOOL_DESCRIPTION,
                 "url": f"{base}/v1/intake/matches",
-                # The prompt has the agent announce "let me take a quick look"
-                # BEFORE calling, so the pause is already covered -- narration
-                # during execution on top of that would double up.
-                "speak_during_execution": False,
+                # True, despite the prompt already announcing "let me take a
+                # quick look" before the call. That announcement covers the
+                # first beat and nothing after it, and what came after it on a
+                # real call was several seconds of dead air -- into which the
+                # model narrated a fabricated tool result, aloud, to a caller
+                # who had started saying "hello?".
+                #
+                # The doubling this was set False to avoid only happens when
+                # the tool is slow, because Retell speaks during execution only
+                # while it is still waiting. So a fast preview sounds exactly as
+                # it does today, and a slow one sounds like someone looking
+                # something up rather than like a dropped line. That trade was
+                # the wrong way round: a redundant half-sentence is a blemish,
+                # and an unnarrated silence is an invitation to invent.
+                "speak_during_execution": True,
                 # The whole point: the lines and the close come from the result.
                 "speak_after_execution": True,
                 "parameters": {"type": "object", "properties": {}, "required": []},
@@ -788,6 +865,14 @@ def delivery_body() -> dict:
         "backchannel_frequency": BACKCHANNEL_FREQUENCY,
         "reminder_trigger_ms": REMINDER_TRIGGER_MS,
         "reminder_max_count": REMINDER_MAX_COUNT,
+        # The speech path. In `delivery_body` and not in `agent_body` for the
+        # reason the docstring gives: these have to ride the PATCH as well as
+        # the POST, or the live agent keeps whatever it was created with and
+        # the phantom first turn survives every `apply`.
+        "begin_message_delay_ms": BEGIN_MESSAGE_DELAY_MS,
+        "denoising_mode": DENOISING_MODE,
+        "stt_mode": STT_MODE,
+        "boosted_keywords": BOOSTED_KEYWORDS,
     }
 
 
@@ -813,6 +898,11 @@ DEFAULT_DYNAMIC_VARIABLES = {
     # is the silence this was written to fix. The unknown-caller wording is the
     # right fallback -- if the webhook did not answer we do not know a name.
     "caller_greeting": "Hi, this is Foray -- thanks for calling.",
+    # Outbound's introduction, already located by `messaging.prompts.locate`.
+    # `service.request_intake_call` supplies the real one at dial time; this is
+    # what the prompt reads if that ever stops happening, and it is deliberately
+    # the collapsed form, because the persona and the firm are the same word.
+    "recruiter_intro": "Foray",
 }
 
 
@@ -835,7 +925,8 @@ SPECS = [
         "prompt": OUTBOUND_PROMPT,
         # Warm first, disclosure second, and short. The old version put "an AI
         # recruiting assistant with Foray, calling because you asked us to get
-        # in touch" and the recording notice into one unbroken breath, which
+        # in touch" -- which after the rename also said Foray twice -- and the
+        # recording notice into one unbroken breath, which
         # opened the call sounding like a compliance script being read. The
         # recording question still lives here rather than in the prompt, because
         # it must be asked on every single call and an opener cannot forget.
@@ -882,6 +973,27 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def ring_hook_url(base_url: str) -> str:
+    """Where Retell must send ``call_inbound``. One definition, three callers."""
+    return f"{base_url.rstrip('/')}/v1/intake/webhook"
+
+
+def inbound_agent_ids(number: dict) -> set[str]:
+    """Which agents answer this number, across both shapes Retell returns.
+
+    Weighted lists are current. The single ``inbound_agent_id`` field survives
+    on numbers configured before the 2026-03-31 deprecation, and reading only
+    the list silently treats such a number as answering nobody -- which, in
+    ``sync_inbound_webhook``, means silently skipping the one number that
+    actually takes calls. ``cmd_list`` already handled both; this did not.
+    """
+    ids = {a.get("agent_id") for a in number.get("inbound_agents") or [] if a.get("agent_id")}
+    legacy = number.get("inbound_agent_id")
+    if legacy:
+        ids.add(legacy)
+    return ids
+
+
 def sync_inbound_webhook(*, base_url: str, inbound_agent_id: str) -> list[str]:
     """Point every number the inbound agent answers at the ringing webhook.
 
@@ -895,12 +1007,22 @@ def sync_inbound_webhook(*, base_url: str, inbound_agent_id: str) -> list[str]:
     Driven off the attached agent rather than a ``--number`` flag, so ``apply``
     stays a one-argument command and repairs whichever numbers are actually
     live -- including any added later.
+
+    **That is also its limit, and the limit had teeth.** It can only repair a
+    number the inbound agent is already attached to, and ``attach`` is a
+    separate command that runs *after* ``apply`` -- so on a first setup this
+    walks an empty list, and nothing ever comes back to fix it. The line then
+    answers every returning candidate as a stranger, exactly as it did before
+    2026-08-25, with the hook unset for the same reason in a different place.
+    ``cmd_attach`` now sets the hook itself, which is what closes that; this
+    stays as the repair path for a moved tunnel.
     """
-    url = f"{base_url.rstrip('/')}/v1/intake/webhook"
+    url = ring_hook_url(base_url)
     touched: list[str] = []
     for number in request("GET", "/list-phone-numbers") or []:
-        attached = {a.get("agent_id") for a in number.get("inbound_agents") or []}
-        if inbound_agent_id not in attached or number.get("inbound_webhook_url") == url:
+        if inbound_agent_id not in inbound_agent_ids(number):
+            continue
+        if number.get("inbound_webhook_url") == url:
             continue
         request(
             "PATCH",
@@ -958,12 +1080,25 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(f"updated {name}: agent={current['agent_id']} llm={llm_id}")
 
     inbound_id = agent_ids.get(INBOUND_NAME)
+    live = 0
     if inbound_id:
+        live = sum(
+            1
+            for number in request("GET", "/list-phone-numbers") or []
+            if inbound_id in inbound_agent_ids(number)
+        )
         for number in sync_inbound_webhook(base_url=args.base_url, inbound_agent_id=inbound_id):
             print(f"ring hook set on {number}")
+    if not live:
+        # Not an error -- this is exactly what a first `apply` looks like. But
+        # it is also what a permanently broken recognition path looks like, and
+        # without saying so the two are indistinguishable from the output.
+        print("\nNo number has the inbound agent yet, so no ring hook was set.")
+        print("`attach` sets it too; recognition then works from the first call.")
 
+    base = args.base_url.rstrip("/")
     print("\nAgents exist but answer nobody until attached:")
-    print("  python deploy/retell_agents.py attach --number +16283865454")
+    print(f"  python deploy/retell_agents.py attach --number +16283865454 --base-url {base}")
     return 0
 
 
@@ -990,6 +1125,15 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
     for n in numbers:
         print(f"{n['phone_number']}  inbound={bound(n, 'inbound')}  outbound={bound(n, 'outbound')}")
+        # Printed even when unset, and loudly. An empty ring hook is the one
+        # misconfiguration here with no symptom at all: the line answers, the
+        # agent sounds word-perfect, and every returning candidate is met as a
+        # stranger. It has to be visible in the command people run to check.
+        hook = n.get("inbound_webhook_url")
+        if hook:
+            print(f"  ring hook={hook}")
+        else:
+            print("  ring hook=UNSET -- returning callers will not be recognised")
     return 0
 
 
@@ -1065,7 +1209,30 @@ def cmd_voices(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    """Make the agents answer real callers. Deliberately a separate command."""
+    """Make the agents answer real callers. Deliberately a separate command.
+
+    **The ring hook is set here, in the same PATCH.** It used to be set only by
+    ``apply``, which walks the numbers the inbound agent is *already* attached
+    to -- and on a first setup ``apply`` runs before ``attach``, so it walked
+    nothing and the hook was never written. Nothing failed: the line answered,
+    the agent was word-perfect, and `caller_known` was false for every caller
+    forever, so a returning candidate got introduced to us again. That is the
+    bug this ordering produces, and the only reliable moment to close it is the
+    one where the number starts answering.
+
+    ``--base-url`` is therefore required to attach, and refused for
+    ``--detach``: a detached number answers nobody, so there is no hook to aim.
+    """
+    if args.detach and args.base_url:
+        print("--base-url means nothing with --detach; a detached number answers nobody.")
+        return 1
+    if not args.detach and not args.base_url:
+        print("attach needs --base-url, the same origin you passed to `apply`.")
+        print("It sets the number's inbound_webhook_url, which is what tells the")
+        print("agent who is calling. Without it the line answers every returning")
+        print("candidate as a stranger, and nothing reports an error.")
+        return 1
+
     have = existing_agents()
     missing = [s["name"] for s in SPECS if s["name"] not in have]
     if missing:
@@ -1073,17 +1240,21 @@ def cmd_attach(args: argparse.Namespace) -> int:
         return 1
     # Weighted agent lists (the single-agent fields were removed 2026-03-31).
     # One agent per direction, so each list is a single entry at weight 1.
-    body = {
+    body: dict[str, Any] = {
         "inbound_agents": [{"agent_id": have[INBOUND_NAME]["agent_id"], "weight": 1}],
         "outbound_agents": [{"agent_id": have[OUTBOUND_NAME]["agent_id"], "weight": 1}],
+        "inbound_webhook_url": ring_hook_url(args.base_url),
     }
     if args.detach:
-        body = {"inbound_agents": [], "outbound_agents": []}
+        # The hook is cleared too. Left pointing at us, a number later attached
+        # to somebody else's agent would still ring our endpoint.
+        body = {"inbound_agents": [], "outbound_agents": [], "inbound_webhook_url": None}
     number = urllib.parse.quote(args.number)
     request("PATCH", f"/update-phone-number/{number}", body)
     verb = "detached from" if args.detach else "attached to"
     print(f"{verb} {args.number}")
     if not args.detach:
+        print(f"ring hook  : {ring_hook_url(args.base_url)}")
         print("This number now answers real callers with the inbound agent.")
     return 0
 
@@ -1124,6 +1295,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     attach = sub.add_parser("attach", help="point a number at the agents (GOES LIVE)")
     attach.add_argument("--number", required=True)
+    # Not `required=True`, because --detach legitimately has no use for it.
+    # cmd_attach enforces the pairing and says why, which is a better error than
+    # argparse's -- the reason this flag exists is not guessable from its name.
+    attach.add_argument(
+        "--base-url",
+        default="",
+        help="Public origin serving /v1/intake/* -- the same one you passed to "
+        "`apply`. Sets the number's ring hook, which is how the agent knows "
+        "who is calling.",
+    )
     attach.add_argument("--detach", action="store_true", help="unset both agents instead")
     attach.set_defaults(func=cmd_attach)
     return parser

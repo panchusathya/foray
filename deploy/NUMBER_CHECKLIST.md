@@ -29,10 +29,20 @@ are ordered by blast radius.
 ## Retell console — before real callers
 
 - [ ] **Attach agents to the number** — deliberately not automatic:
-      `python deploy/retell_agents.py attach --number +16283865454`.
+      `python deploy/retell_agents.py attach --number +16283865454 --base-url …`.
       Creating agents changes nothing a caller can reach; attaching one makes a
       bot answer real people. Verify with `retell_agents.py list` that inbound
       is `foray-status-inbound` and outbound is `foray-intake-outbound`.
+- [ ] **Check `ring hook=` on that number** in `retell_agents.py list`. It is
+      the number's `inbound_webhook_url`, and it is what fires `call_inbound`
+      while the phone rings — the only moment we can tell the agent who is
+      calling. `attach --base-url` sets it; `apply` can only repair a number
+      that is *already* attached, so on a first setup `apply` runs too early to
+      set anything and never comes back.
+      **Unset, nothing looks broken:** the line answers, the agent is
+      word-perfect, and `caller_known` is false for every caller forever, so
+      returning candidates get introduced to us again. If someone reports "it
+      didn't remember we spoke", check this before anything in the database.
 - [ ] **Restrict allowed countries to US (+ CA if wanted)** on both inbound and
       outbound. This is the abuse-and-spend control: an unrestricted outbound
       agent on a metered line is somebody else's international calling card.

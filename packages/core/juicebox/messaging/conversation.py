@@ -210,6 +210,19 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
     # into onboarding on the candidate's next message.
     from .manager import MODE_MANAGING
 
+    # A job link can be the very first thing a stranger texts. Onboarding
+    # still runs -- an application needs a name on it -- but the link is
+    # remembered here and spent at hand-over. Managing threads skip the
+    # stash: the manager's intent router owns the link on those.
+    if (
+        last is not None
+        and last.direction == INBOUND
+        and thread.mode != MODE_MANAGING
+    ):
+        from . import apply_link
+
+        apply_link.stash_from_body(thread, body=last.body or "", message_id=last.id)
+
     if is_linkedin_short(thread) and thread.mode != MODE_MANAGING:
         return _run_linkedin_short(db, thread=thread, last=last)
 
@@ -591,6 +604,79 @@ def humanize(
     return written
 
 
+_REPEAT_VARIANTS = (
+    "still the same as my last text — {body}",
+    "no change since you last asked — {body}",
+)
+
+
+def _unrepeated(db: Session, *, thread: IntakeThread, body: str, verbatim: bool) -> str:
+    """Never send the byte-identical bubble twice in a row.
+
+    The last line of defence, on the one chokepoint every send crosses. The
+    per-callsite mechanisms (paired "again" variants, ``manager._fresh``,
+    ``humanize``) each cover their own callers; the live thread that answered
+    every message with the same canned line for an afternoon proves a guard
+    per callsite is a guard with gaps.
+
+    An LLM rewrite says the same thing in different words; without a model (or
+    for verbatim/URL-bearing copy, where a rewrite risks a fact) a canned
+    preface makes the bubble different and names the repetition honestly. The
+    comparison window is the last three outbound bubbles so the preface cannot
+    itself alternate into a period-two loop. If every variant has also been
+    said, the original goes out — a repeat is still better than silence.
+    """
+    candidate = (body or "").strip()
+    if not candidate:
+        return body
+    recent: list[str] = []
+    last_inbound = ""
+    for message in reversed(messages_of(db, thread)):
+        if message.direction == OUTBOUND and message.status != "failed" and len(recent) < 3:
+            recent.append((message.body or "").strip().lower())
+        elif message.direction == INBOUND and not last_inbound:
+            last_inbound = message.body or ""
+        if len(recent) >= 3 and last_inbound:
+            break
+    if not recent or candidate.lower() != recent[0]:
+        return body
+    if not verbatim and "http" not in candidate.lower():
+        rewritten = _rewrite_repeat(body=body, last_inbound=last_inbound)
+        if rewritten and rewritten.strip().lower() not in recent:
+            return rewritten
+    for template in _REPEAT_VARIANTS:
+        variant = template.format(body=body)
+        if variant.strip().lower() not in recent:
+            return variant
+    return body
+
+
+def _rewrite_repeat(*, body: str, last_inbound: str) -> str:
+    """One model pass to unstick a repeat; empty string when it cannot help."""
+    llm = get_llm()
+    if not llm.available:
+        return ""
+    try:
+        result = llm.json_fast(
+            system=prompts.REPEAT_SYSTEM,
+            prompt=(
+                f"The message about to repeat:\n{body}\n\n"
+                f"They just said: {last_inbound.strip() or '(nothing)'}"
+            ),
+            schema=prompts.COMPOSE_SCHEMA,
+        )
+        written = str((result.data or {}).get("message") or "").strip()
+    except Exception as exc:  # noqa: BLE001 - the canned variant ships instead
+        logger.warning("repeat rewrite failed: %s", exc)
+        return ""
+    if not prompts.valid_question(written, batched=True):
+        return ""
+    if written.count("?") > body.count("?"):
+        # An invented question gets a real answer nobody wanted.
+        return ""
+    return written
+
+
 def _deliver(
     db: Session, *, thread: IntakeThread, message: OutboundMessage, origin: str = "reply"
 ) -> IntakeMessage | None:
@@ -601,6 +687,7 @@ def _deliver(
     and a channel does not have a session.
     """
     body = message.body if message.verbatim else prompts.lowercase_outbound(message.body)
+    body = _unrepeated(db, thread=thread, body=body, verbatim=message.verbatim)
     lowered = replace(message, body=body)
     channel = get_channel(thread.channel)
     if not channel.is_configured():
@@ -748,6 +835,11 @@ def _hand_over_to_manager(
 
     thread.mode = MODE_MANAGING
     db.flush()
+    # A link that arrived mid-onboarding is spent the moment the thread has
+    # a candidate to apply for.
+    from . import apply_link
+
+    apply_link.ensure_enqueued(db, thread)
     # Not composed, on purpose. This line lists the literal phrases the intent
     # router matches on -- "what's my status", "find me roles", "who should I
     # talk to". A paraphrase teaches somebody a command that then does not
@@ -794,13 +886,50 @@ def _run_linkedin_short(
 
         materialize_pending(db, thread=thread)
 
-    if last is None or (last.direction == INBOUND and not outbound_sent and not thread.contact_email):
+    # The intro fires once, on a thread that has never spoken and was never
+    # asked anything. It used to key on "no email yet" — the email was the
+    # intro's own question — but the intro no longer asks for one, so the
+    # guards are the conversation's actual state: nothing sent, nothing asked,
+    # nobody known.
+    if last is None or (
+        last.direction == INBOUND
+        and not outbound_sent
+        and not (thread.last_field_asked or "").strip()
+        and not thread.candidate_id
+    ):
         return _linkedin_intro(db, thread=thread)
 
     if last is not None and last.direction == OUTBOUND and last.status != "failed":
         return TurnResult(ACTION_HELD, thread, _coverage_for(thread))
 
     assert last is not None
+
+    # A resume is stashed but nothing links this thread to a person yet —
+    # nothing can move until an email (or LinkedIn URL) arrives, so ask for
+    # exactly that instead of falling into the profile ask they already
+    # answered with a file.
+    from .attachments import PENDING_KEY
+
+    if flow_meta(thread).get(PENDING_KEY) and not (thread.contact_email or "").strip():
+        if thread.last_field_asked == identity.CONTACT_EMAIL:
+            body = "still need an email to attach your resume to — what's the best one?"
+        else:
+            body = (
+                "got your resume. what's the best email to reach you on, "
+                "so i can attach it to your file?"
+            )
+        sent = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=body, asked_field=identity.CONTACT_EMAIL),
+        )
+        return TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=identity.CONTACT_EMAIL,
+            sent=[s for s in [sent] if s],
+        )
 
     # An index of a connected app is still running. The same "wait for it"
     # state a scrape or a parsing resume is, and it must be checked BEFORE the
@@ -836,28 +965,7 @@ def _run_linkedin_short(
         if connect_flow.should_offer(db, thread):
             return _connect_offer(db, thread=thread)
         if thread.last_field_asked != connect_flow.BATCH_CONNECT:
-            # iMessage carries files, so on Linq the resume ask is "attach it
-            # right here"; the upload page stays the route for web chat, which
-            # cannot, and reappears on Linq only as the fallback when a
-            # download or a parse fails.
-            from .channels import LINQ
-
-            if thread.channel == LINQ:
-                body = prompts.ASK_RESUME_OR_LINKEDIN
-            else:
-                body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
-            sent = _deliver(
-                db,
-                thread=thread,
-                message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
-            )
-            return TurnResult(
-                ACTION_ASKED,
-                thread,
-                _coverage_for(thread),
-                asked_field=CONTACT_LINKEDIN,
-                sent=[s for s in [sent] if s],
-            )
+            return _ask_profile(db, thread=thread)
 
     # A resume that has landed but not finished parsing is the same "wait for
     # it" state a scrape is, and a resume that HAS parsed settles the profile
@@ -916,18 +1024,76 @@ def _profile_document(db: Session, thread: IntakeThread):
 
 
 def _linkedin_intro(db: Session, *, thread: IntakeThread) -> TurnResult:
+    """The intro bubble, then the profile ask riding the same turn.
+
+    The intro is context, not a question — it used to end on "what's the best
+    email to reach you on?", which made a stranger's first task typing an
+    address before anything was in it for them. The email now arrives on its
+    own from the OAuth callback (verified, no typing), or in the gap-fill for
+    threads that went the manual route.
+    """
+    from .attachments import PENDING_KEY
+
     org = db.get(Org, thread.org_id)
     org_name = (getattr(org, "name", "") or "our team").strip()
     body = intro_message(recruiter=prompts.recruiter_name(), org=org_name)
-    sent = _deliver(
-        db, thread=thread, message=OutboundMessage(body=body, asked_field=identity.CONTACT_EMAIL)
-    )
+    intro_sent = _deliver(db, thread=thread, message=OutboundMessage(body=body))
     update_flow_meta(thread, phase="intro")
+    if thread.contact_linkedin:
+        # The first message WAS the profile — a pasted URL. Asking for one
+        # anyway is the agent not reading; scrape it and hold.
+        _enqueue_linkedin_scrape(db, thread)
+        follow = TurnResult(ACTION_HELD, thread, _coverage_for(thread))
+    elif flow_meta(thread).get(PENDING_KEY):
+        # Same for a resume attached as the opener: the only thing missing is
+        # an address to attach it to.
+        ask = (
+            "got your resume. what's the best email to reach you on, "
+            "so i can attach it to your file?"
+        )
+        sent = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=ask, asked_field=identity.CONTACT_EMAIL),
+        )
+        follow = TurnResult(
+            ACTION_ASKED,
+            thread,
+            _coverage_for(thread),
+            asked_field=identity.CONTACT_EMAIL,
+            sent=[s for s in [sent] if s],
+        )
+    elif connect_flow.should_offer(db, thread):
+        follow = _connect_offer(db, thread=thread)
+    else:
+        follow = _ask_profile(db, thread=thread)
+    follow.sent[:0] = [s for s in [intro_sent] if s]
+    return follow
+
+
+def _ask_profile(db: Session, *, thread: IntakeThread) -> TurnResult:
+    """The resume/LinkedIn ask, worded per channel.
+
+    iMessage carries files, so on Linq the ask is "attach it right here"; the
+    upload page stays the route for web chat, which cannot, and reappears on
+    Linq only as the fallback when a download or a parse fails.
+    """
+    from .channels import LINQ
+
+    if thread.channel == LINQ:
+        body = prompts.ASK_RESUME_OR_LINKEDIN
+    else:
+        body = prompts.ASK_LINKEDIN.format(upload_link=mint_upload_link(thread))
+    sent = _deliver(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=body, asked_field=CONTACT_LINKEDIN),
+    )
     return TurnResult(
-        ACTION_GREETED,
+        ACTION_ASKED,
         thread,
         _coverage_for(thread),
-        asked_field=identity.CONTACT_EMAIL,
+        asked_field=CONTACT_LINKEDIN,
         sent=[s for s in [sent] if s],
     )
 

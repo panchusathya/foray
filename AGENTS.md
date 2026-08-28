@@ -1030,3 +1030,47 @@ afterwards. Non-obvious points:
 - `years_experience` is **omitted** when the column is blank rather than sent as
   `0`: `normalize_candidate` only computes it from experiences when it arrives
   as `None`.
+
+## Apply by link (`messaging/apply_link.py` + `jobmatch/ingest_url.py`)
+
+A candidate texts a job URL; the product texts back a filled application to
+review. The whole downstream — `create_application` as the one door, the
+package build, `EVENT_PACKAGE_READY`, the blanks follow-up — was already
+built; this feature is the front door only. Non-obvious points:
+
+- **A URL is an intent, decided before every keyword.** `intents.classify`
+  returns `APPLY_LINK` deterministically, so a texted link works with no API
+  key. LinkedIn `/in/` profile URLs are excluded inside
+  `apply_link.find_job_link` — those are identity, and treating one as "apply
+  to this" would turn onboarding replies into application attempts.
+- **The link is stashed on the thread record (`_pending_apply`), same
+  mechanism as `_linkedin`.** A stranger's first message can be a job URL;
+  onboarding still runs (an application needs a name on it), and the stash is
+  spent at hand-over by `apply_link.ensure_enqueued` — which refuses without a
+  `candidate_id`, so the job's message-scoped idempotency key can stay
+  permanent. Do not enqueue `KIND_APPLY_LINK` from anywhere else.
+- **Ingest reuses the scraper's identity.** `ingest_posting_from_url` upserts
+  on the same `(org_id, source_id)` (sha1 of the normalised URL) the Exa
+  ingest uses, so a texted link to a posting we already found lands on the
+  existing row and the one-application-per-posting rule sees one role.
+  Greenhouse and Lever go through their public JSON endpoints (Greenhouse
+  carries the real form questions); everything else is a plain GET behind the
+  `FetchTransport` seam, and `parse.resolve_identity` fills what the page
+  didn't. Tier 3 (browser automation) stays out of scope — nothing submits.
+- **`JobPosting.form_questions` is packaging, not preference.** The form's
+  own questions live in their own column so `docgen.answers` can answer what
+  the employer actually asks; putting them in `parsed_spec` would leak
+  non-`ParsedQuery` keys into the match engine. A form question that restates
+  a standard one (salary, sponsorship, start date) replaces the standard
+  *wording* under the same key, so `followups.ASKABLE` and
+  `refill_from_preference` keep working on forms we did not write.
+- **Self-identification questions are carried but structurally never
+  answered.** `is_protected_question` flags them at ingest; `build_form_answers`
+  emits them blank with `generated_by="policy"` and excludes them from the
+  model prompt entirely. A protected attribute asserted in somebody's name is
+  a compliance failure, not a blank to fill.
+- **Every dead end texts a canned line.** Unreachable, duplicate, and
+  limit-parked all notify through `EVENT_LINK_*` (subject-keyed on the link
+  message, so retries cannot double-text). A link that vanishes into silence
+  reads as the product losing the message. The copy never implies a
+  submission happened — the ack promises a package "ready to review".

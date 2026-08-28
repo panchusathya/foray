@@ -1,12 +1,8 @@
-"""The application status machine, and the one rule that is not negotiable.
+"""The application status machine.
 
-**No application reaches ``submitted`` without a recorded per-application
-yes.** A candidate saying "yes, things like that" is not consent to a specific
-submission; the yes is bound to a message id or a portal approval timestamp,
-and ``transition`` refuses the move without one (CANDIDATE_AGENT_PLAN §4).
-
-Transitions are validated here in code, like every status vocabulary in
-``models.py`` — the DB stores strings, the router turns a refusal into a 409.
+Using JuiceBox authorizes applications on the candidate's behalf; a separate
+per-application approval is not required.  Transitions and submission limits
+remain centralized here so a caller cannot bypass them accidentally.
 """
 
 from __future__ import annotations
@@ -71,10 +67,6 @@ def can_transition(from_status: str, to_status: str) -> bool:
     return to_status in TRANSITIONS.get(from_status, set())
 
 
-def has_consent(application: Application) -> bool:
-    return bool(application.consenting_message_id or application.approved_at)
-
-
 def transition(
     db: Session,
     application: Application,
@@ -95,15 +87,10 @@ def transition(
             f"cannot move an application from {application.status!r} to {to_status!r}"
         )
 
-    # Both gates apply on the way IN to an attempt as well as on the way out of
-    # one. Discovering at the end of a browser run that we were never allowed
-    # to record it means the employer already has the application.
+    # The submission volume limit applies both on the way into an attempt and
+    # on the way out of one.  This keeps direct status changes from bypassing
+    # the same limit enforced by request_submission.
     if to_status in {"submitting", "submitted"}:
-        if not has_consent(application):
-            raise TransitionError(
-                "no recorded consent: an application needs a per-application yes "
-                "(a consenting message or a portal approval) before it is submitted"
-            )
         decision = limits.may_submit(db, application=application, now=now)
         if not decision:
             raise TransitionError(f"submission budget: {decision.detail}")

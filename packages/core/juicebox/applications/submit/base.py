@@ -41,6 +41,10 @@ class SubmitError(Exception):
     records the verdict rather than an exception string."""
 
 
+class SubmitDeferred(SubmitError):
+    """Provider capacity, not a form problem. Requeue; do not keep the attempt."""
+
+
 @dataclass(frozen=True)
 class Attachment:
     filename: str
@@ -76,6 +80,13 @@ class SubmissionContext:
     phone: str = ""
     linkedin_url: str = ""
     location: str = ""
+    #: The candidate's present role, as their own record states it. Workday's
+    #: My Experience step requires Job Title and Company and the agent had no
+    #: token for either, so it correctly refused to invent them and stopped
+    #: mid-wizard (live, Intapp 2026-08-27). Stated fact from the record, the
+    #: same tier as name and phone -- never a model's paraphrase.
+    current_title: str = ""
+    current_company: str = ""
 
     #: The portal login we already hold for this employer's tenant, when there
     #: is one. Workday and Oracle make you register before you can apply, and
@@ -84,6 +95,12 @@ class SubmissionContext:
     #: Loaded by the service, because an adapter must not reach the database.
     portal_username: str = ""
     portal_password: str = ""
+    #: Whether the stored portal login has been confirmed to exist on the
+    #: employer (a prior successful registration + verification). False means
+    #: the candidate picked this password in the vault and the account still
+    #: has to be REGISTERED with it, not signed into. The register-vs-sign-in
+    #: fork keys on this, never on password presence alone.
+    portal_account_verified: bool = False
 
     #: A ``profiles.ProfileState`` when warm profiles are on, else None. A
     #: value object: the origin-filtered slice in, the saved state back out.
@@ -98,6 +115,12 @@ class SubmissionContext:
     company: str = ""
     title: str = ""
     posting_url: str = ""
+
+    #: Service callback. The browser agent calls this before an irreversible
+    #: submit click (and when a cloud session id is first known) so a crashed
+    #: worker can reconnect instead of clicking Submit again. ``None`` in
+    #: tests that do not persist.
+    persist_checkpoint: Any = None
 
     def answer(self, key: str) -> str:
         for entry in self.answers:

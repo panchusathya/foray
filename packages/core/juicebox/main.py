@@ -30,6 +30,7 @@ from .routers import (
     job_matches,
     job_postings,
     messaging,
+    openinstinct,
     org,
     outreach,
     portal,
@@ -138,6 +139,8 @@ def create_app() -> FastAPI:
     app.include_router(messaging.chat_router)
     app.include_router(messaging.linq_router)
     app.include_router(messaging.upload_router)
+    # Private service boundary for the separately deployed candidate agent.
+    app.include_router(openinstinct.router)
     # Same trust model as the upload page: a texted, thread-bound HMAC link.
     # The OAuth callback inside is unauthenticated by necessity and carries
     # its own signed state.

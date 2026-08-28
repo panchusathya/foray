@@ -83,6 +83,15 @@ class TestStickySession:
         config = _proxy_config("http://user:pw@gate.otherproxy.com:8000", session_token="abc123")
         assert config["username"] == "user"
 
+    def test_decodo_gets_the_session_token(self):
+        """Verified against the live gateway 2026-08-27: with the username
+        configured as ``user-<account>``, ``-session-<token>`` pins one
+        residential IP per token and overrides the port-based pin."""
+        url = "http://user-spcaccount:pw@us.decodo.com:10001"
+        config = _proxy_config(url, session_token="run42")
+        assert config["username"] == "user-spcaccount-session-run42"
+        assert config["server"] == "http://us.decodo.com:10001"
+
 
 class TestScrapingBrowserMode:
     """When a CDP endpoint is set, the driver connects to a managed browser
@@ -181,7 +190,7 @@ class TestScrapingBrowserMode:
         )
         assert calls["connect_over_cdp"] == "wss://brd-customer-x-zone-sb:pw@brd.superproxy.io:9222"
         assert calls["launch"] is None
-        assert any("scraping browser" in s for s in log.steps)
+        assert any("managed chrome" in s for s in log.steps)
 
     def test_no_cdp_url_launches_local(self, monkeypatch):
         calls, _ = self._run_session(monkeypatch, cdp_url="", proxy_url="")

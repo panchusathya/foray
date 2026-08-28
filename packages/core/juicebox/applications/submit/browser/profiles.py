@@ -47,6 +47,9 @@ class ProfileState:
     user_agent: str = ""
     #: Written by the driver on a clean close; never read by it.
     saved_state: dict | None = field(default=None, repr=False)
+    #: Browser Use Cloud profile UUID for this candidate+origin, when the
+    #: agent tier is on. Empty on the Workday/YC local-storage_state path.
+    cloud_profile_id: str = ""
 
 
 def _host(url: str) -> str:
@@ -174,3 +177,61 @@ def persist(db: Session, profile: ProfileState, *, user_agent: str = "") -> None
         row.user_agent = user_agent[:400]
     row.last_used_at = utcnow()
     db.flush()
+
+
+def origin_key(url: str) -> str:
+    """Scheme + host, lowercased. Empty when the URL is not navigable."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc.lower()}"
+
+
+def cloud_profile_for(
+    db: Session, *, org_id: str, candidate_id: str, origin: str
+) -> ProfileState | None:
+    """Mint or reuse a Browser Use profile for this candidate at this origin.
+
+    Never shared across candidates or origins. A 402 from the vendor is
+    ``ProfileQuota`` — the caller hands off rather than loading someone else's
+    jar.
+    """
+    from ....models import BrowserCloudProfile
+    from . import cloud as browser_cloud
+
+    origin = (origin or "").strip().lower()
+    if not candidate_id or not origin:
+        return None
+    row = db.scalar(
+        select(BrowserCloudProfile).where(
+            BrowserCloudProfile.org_id == org_id,
+            BrowserCloudProfile.candidate_id == candidate_id,
+            BrowserCloudProfile.origin == origin,
+        )
+    )
+    if row is not None and row.cloud_profile_id:
+        row.last_used_at = utcnow()
+        db.flush()
+        return ProfileState(profile_id=row.id, cloud_profile_id=row.cloud_profile_id)
+    user_id = f"{candidate_id}:{origin}"[:255]
+    held = browser_cloud.find_profile(user_id)
+    if not held:
+        held = browser_cloud.create_profile(name=f"jb-{candidate_id[:8]}", user_id=user_id)
+    if row is None:
+        row = BrowserCloudProfile(
+            org_id=org_id,
+            candidate_id=candidate_id,
+            origin=origin,
+            user_id=user_id,
+            cloud_profile_id=held,
+            last_used_at=utcnow(),
+        )
+        db.add(row)
+        db.flush()
+    else:
+        row.cloud_profile_id = held
+        row.last_used_at = utcnow()
+        db.flush()
+    return ProfileState(profile_id=row.id, cloud_profile_id=held)

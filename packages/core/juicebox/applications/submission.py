@@ -1,7 +1,7 @@
 """Sending an application: the one door in, and the worker half.
 
-``request_submission`` is the only way an automated attempt starts. Consent and
-the submission budget are checked *here*, before a job row exists, for the same
+``request_submission`` is the only way an automated attempt starts. The
+submission budget is checked *here*, before a job row exists, for the same
 reason ``create_application`` owns the per-posting uniqueness: a surface that
 forgets a check must not be able to bypass it. The thread, the portal and the
 recruiter console all come through this function.
@@ -36,7 +36,7 @@ from ..models import (
 from . import alias, credentials, limits
 from .ats import detect
 from .service import ApplicationError, current_documents
-from .state import TransitionError, has_consent, transition
+from .state import TransitionError, transition
 from .submit.base import (
     METHOD_CONSOLE,
     METHOD_MEMORY,
@@ -45,6 +45,7 @@ from .submit.base import (
     Attachment,
     SubmissionContext,
     SubmissionResult,
+    SubmitDeferred,
 )
 from .submit.registry import get_submitter
 
@@ -71,10 +72,6 @@ def request_submission(
     """
     if application.status not in {"prepared", "awaiting_consent"}:
         raise ApplicationError(f"cannot submit an application in {application.status!r}")
-    if not has_consent(application):
-        raise ApplicationError(
-            "no recorded consent: this application needs a per-application yes first"
-        )
     decision = limits.may_submit(db, application=application)
     if not decision:
         raise ApplicationError(f"submission budget: {decision.detail}")
@@ -123,24 +120,13 @@ def request_submission(
     )
 
 
-def first_submission_gate(db: Session, application: Application) -> str:
-    """Empty when auto-submit may proceed, otherwise why it may not.
+def first_submission_gate(_db: Session, _application: Application) -> str:
+    """Compatibility hook for future product-level submission gates.
 
-    CANDIDATE_AGENT_PLAN §8: a candidate's *first* submission gets a human look
-    before it goes. Not because the second is safer in itself, but because the
-    first is the one where a bad resume parse, a wrong name or an answer nobody
-    recognises is still systematically wrong for everything that follows.
+    JuiceBox treats use of the product as authorization to submit, so there is
+    no separate per-application approval gate here.
     """
-    prior = db.scalar(
-        select(Application).where(
-            Application.candidate_id == application.candidate_id,
-            Application.id != application.id,
-            Application.submitted_at.is_not(None),
-        )
-    )
-    if prior is not None:
-        return ""
-    return "first application for this candidate: a person reviews it before it goes"
+    return ""
 
 
 def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]:
@@ -154,11 +140,10 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
     blocked = first_submission_gate(db, application)
     if blocked:
         return None, blocked
-    # A required form question nobody has answered refuses the run before the
-    # browser opens (`hosted_form.unanswerable_questions`), so queueing here
-    # spends attempt 1 on a run we already know terminuses -- and `needs_human`
-    # is a terminus on the attempt row. Withhold instead: asking happens first,
-    # and the answer that completes the set is what queues the attempt.
+    # Only missing work authorization withholds a send — that is the one
+    # fact we will not guess, and the one question chat still asks. Other
+    # required blanks are filled from the package or become a hand-off
+    # inside the submitter, not another round of survey questions.
     from .followups import required_form_blanks
 
     waiting = required_form_blanks(application)
@@ -167,6 +152,17 @@ def auto_submit(db: Session, application: Application) -> tuple[Job | None, str]
             str(item.get("question") or item.get("key")) for item in waiting[:3]
         )
         return None, f"waiting on required form answers: {named}"
+
+    # Account-gated boards wait for a candidate-chosen vault credential before
+    # any attempt (model B2): the agent registers with the candidate's
+    # password, never one it minted behind an unreadable email loop. Prompt
+    # the vault once and hold; the vault save re-queues this.
+    posting = db.get(JobPosting, application.job_posting_id)
+    target = detect.target_of(posting) if posting is not None else None
+    if target and candidate_credential_needed(db, application, target):
+        prompt_vault_credential(db, application, target)
+        return None, f"waiting on a vault credential for {target.vendor}"
+
     try:
         return request_submission(db, application, requested_by="candidate"), "queued"
     except NotSubmittable as exc:
@@ -180,25 +176,21 @@ def submitter_for(db: Session, application: Application, posting: JobPosting, ta
 
     Both callers need the same two lookups in the same order, and a second copy
     of "which key, which adapter" is how the API path and the form path drift
-    apart. The posting's derived spec rides along for the same reason: it is
-    the fallback adapter for a board nobody mapped, and reading it here keeps
-    the API path and the form path answering from the same facts.
+    apart.
     """
-    from .formspec import usable_spec
-
     key = credentials.board_key(
         db, org_id=application.org_id, vendor=target.vendor, tenant=target.tenant
     )
-    return get_submitter(target, board_key=key, derived_spec=usable_spec(posting)), key
+    return get_submitter(target, board_key=key), key
 
 
 def _form_target(posting: JobPosting) -> detect.ApplyTarget:
-    """A target for a derived-spec run: no vendor, just where the form is.
+    """A target for an unrecognised board: no vendor, just where the form is.
 
-    ``target_of`` answers empty for an unrecognised board, and the derived
-    ``HostedFormSubmitter`` still needs ``ctx.target.apply_url`` to navigate.
-    Deliberately vendorless -- inventing a vendor here would leak a guess into
-    every row that stores ``target.vendor`` as a fact.
+    ``target_of`` answers empty for an unrecognised board, and the browser
+    agent still needs ``ctx.target.apply_url`` to navigate. Deliberately
+    vendorless -- inventing a vendor here would leak a guess into every row
+    that stores ``target.vendor`` as a fact.
     """
     return detect.ApplyTarget(
         vendor="",
@@ -234,8 +226,7 @@ def _repair_submitted(db: Session, application: Application) -> None:
 
     The adapter ran; the employer has the package. If the status move then
     failed, retries would otherwise skip forever with the row still showing
-    `submitting`. Best-effort: a withdrawn application, or one that lost
-    consent, stays where it is.
+    `submitting`. Best-effort: a withdrawn application stays where it is.
     """
     if application.status in {
         "submitted",
@@ -287,7 +278,7 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     if already is not None:
         # The unique index would catch a genuine race; this catches the ordinary
         # case of a redelivered job and keeps it out of the error path. If the
-        # attempt row landed but the status move did not (budget, consent, a
+        # attempt row landed but the status move did not (budget, a
         # crash between the two), repair the application so a succeeded send
         # does not sit in `submitting` forever.
         _repair_submitted(db, application)
@@ -331,6 +322,10 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     if application.status != "submitting":
         transition(db, application, to_status="submitting", actor="agent")
 
+    recovered = _recover_checkpointed(db, application, candidate, posting, target, submitter)
+    if recovered is not None:
+        return recovered
+
     attempt = ApplicationSubmission(
         org_id=application.org_id,
         application_id=application.id,
@@ -344,10 +339,45 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     db.flush()
 
     ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
-    profile = _browser_profile_for(db, application, submitter, target)
+    try:
+        profile = _browser_profile_for(db, application, submitter, target)
+    except Exception as exc:
+        from .submit.browser.cloud import ProfileQuota
+
+        if isinstance(exc, ProfileQuota):
+            _finish(
+                db,
+                application,
+                attempt,
+                SubmissionResult(ok=False, method="browser", needs_human=True, error=str(exc)[:600]),
+            )
+            return {
+                "application_id": application.id,
+                "submission_id": attempt.id,
+                "vendor": attempt.vendor,
+                "method": attempt.method,
+                "status": attempt.status,
+            }
+        raise
     ctx.browser_profile = profile
+    ctx.persist_checkpoint = _checkpoint_writer(db, attempt)
     try:
         result = submitter.submit(ctx)
+    except SubmitDeferred:
+        db.delete(attempt)
+        db.flush()
+        if application.status == "submitting":
+            try:
+                transition(
+                    db,
+                    application,
+                    to_status="prepared",
+                    actor="agent",
+                    reason="browser capacity; will retry",
+                )
+            except TransitionError:
+                logger.info("could not park application %s after a deferred submit", application.id)
+        raise
     except Exception as exc:
         _finish(db, application, attempt, SubmissionResult(ok=False, error=str(exc)[:600]))
         raise
@@ -367,24 +397,85 @@ def submit_application(db: Session, application: Application) -> dict[str, Any]:
     }
 
 
+def _checkpoint_writer(db: Session, attempt: ApplicationSubmission):
+    """Persist planner state onto the running attempt before an irreversible click."""
+
+    def persist(payload: dict) -> None:
+        held = dict(attempt.verification or {})
+        held["run"] = payload
+        attempt.verification = held
+        db.flush()
+
+    return persist
+
+
+def _recover_checkpointed(db, application, candidate, posting, target, submitter) -> dict | None:
+    """If a prior run requested final_submit, inspect that session. Never re-click."""
+    running = db.scalar(
+        select(ApplicationSubmission).where(
+            ApplicationSubmission.application_id == application.id,
+            ApplicationSubmission.status == "running",
+        )
+    )
+    if running is None:
+        return None
+    payload = _unseal(running.verification)
+    run = payload.get("run") or {}
+    if not run.get("final_submit_requested_at") or not run.get("provider_session_id"):
+        return None
+    resume = getattr(submitter, "resume", None)
+    if not callable(resume):
+        return None
+    ctx = build_context(db, application, candidate=candidate, posting=posting, target=target)
+    ctx.persist_checkpoint = _checkpoint_writer(db, running)
+    result = resume(ctx, payload)
+    _finish(db, application, running, result)
+    return {
+        "application_id": application.id,
+        "submission_id": running.id,
+        "vendor": running.vendor,
+        "method": running.method,
+        "status": running.status,
+        "recovered": True,
+    }
+
+
 def _browser_profile_for(db: Session, application: Application, submitter, target):
     """The candidate's warm profile for this run, when profiles are on.
 
     ``None`` in every other case, and ``None`` is always safe: the driver
-    falls back to the proven cold context. CDP takes precedence -- the
-    Scraping Browser owns its fingerprint -- and only a browser-method
-    adapter gets one at all: an API or email submitter opens no page.
+    falls back to the proven cold context. The public-form agent loads a
+    Browser Use cloud profile scoped to this origin. Workday/YC keep the
+    local encrypted storage_state path and never receive a cloud profile --
+    blending a Workday login into a public-form jar is the failure the
+    origin split exists to prevent.
     """
     settings = get_settings()
-    if not settings.apply_browser_profiles or settings.apply_browser_cdp_url.strip():
-        return None
     if getattr(submitter, "method", "") != "browser":
         return None
     from urllib.parse import urlparse
 
-    from .submit.browser.profiles import profile_for
+    from .submit.browser.cloud import agent_configured
+    from .submit.browser.profiles import cloud_profile_for, origin_key, profile_for
+    from .submit.registry import TWO_LEG_VENDORS
 
-    host = (urlparse(target.apply_url or "").netloc or "").split(":")[0].lower()
+    apply_url = target.apply_url or ""
+    if agent_configured() and target.vendor not in TWO_LEG_VENDORS:
+        origin = origin_key(apply_url)
+        return cloud_profile_for(
+            db,
+            org_id=application.org_id,
+            candidate_id=application.candidate_id,
+            origin=origin,
+        )
+    # A static CDP endpoint (legacy scraping browser, or a test fake) owns the
+    # fingerprint; overlaying a local storage_state is the tell. Cloud profiles
+    # for the agent path are loaded above, before this gate.
+    if getattr(settings, "apply_browser_cdp_url", ""):
+        return None
+    if not settings.apply_browser_profiles:
+        return None
+    host = (urlparse(apply_url).netloc or "").split(":")[0].lower()
     return profile_for(
         db,
         org_id=application.org_id,
@@ -761,7 +852,7 @@ def build_context(
     documents = current_documents(db, application)
     from_address, reply_to = alias.sending_identity(db, candidate, application)
     first, _, last = (candidate.full_name or "").strip().partition(" ")
-    portal_username, portal_password = _portal_account(db, candidate, target)
+    portal_username, portal_password, portal_verified = _portal_account(db, candidate, target)
 
     return SubmissionContext(
         application_id=application.id,
@@ -776,8 +867,11 @@ def build_context(
         phone=_primary_phone(candidate),
         linkedin_url=candidate.linkedin_url or "",
         location=_location(candidate),
+        current_title=candidate.current_title or "",
+        current_company=candidate.current_company or "",
         portal_username=portal_username,
         portal_password=portal_password,
+        portal_account_verified=portal_verified,
         resume=_attachment(documents.get("resume_generated") or documents.get("resume_uploaded")),
         cover_letter=_attachment(documents.get("cover_letter")),
         answers=list(application.form_answers or []),
@@ -808,24 +902,65 @@ def _account_tenant(target) -> str:
     return target.tenant
 
 
-def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str]:
-    """The login we hold for this tenant, for the adapter that needs it.
+def _portal_account(db: Session, candidate: Candidate, target) -> tuple[str, str, bool]:
+    """``(username, password, verified)`` for this tenant's stored login.
 
     Read here rather than in the adapter for the reason ``_remember_account``
     writes here: the seam is a plain value object, and an adapter holding a
     ``Session`` is one refactor away from moving the pursuit itself.
+    ``verified`` tells the adapter whether to sign in (True) or register with
+    the stored password (False -- a candidate-picked vault credential).
     """
     if target.vendor not in _REGISTERING_VENDORS:
-        return "", ""
+        return "", "", False
+    from .candidate_credentials import account_state
     from .submit.browser.workday import stored_account
 
     try:
-        return stored_account(
+        username = stored_account(
+            db, candidate_id=candidate.id, vendor=target.vendor, tenant=_account_tenant(target)
+        )[0]
+        password, verified = account_state(
             db, candidate_id=candidate.id, vendor=target.vendor, tenant=_account_tenant(target)
         )
+        return username, password, verified
     except Exception as exc:  # noqa: BLE001 - a missing login is registering again
         logger.warning("could not read the stored portal account: %s", exc)
-        return "", ""
+        return "", "", False
+
+
+def candidate_credential_needed(db: Session, application: Application, target) -> bool:
+    """Whether an account-gated board is waiting on a candidate-chosen login.
+
+    Model B2 (operator decision, 2026-08-27): the candidate picks the password
+    in the vault and the agent registers the account with it, rather than the
+    agent minting one and self-registering behind an email-verification loop we
+    cannot reliably read. A fresh account-gated pursuit therefore waits for
+    that credential instead of proceeding.
+    """
+    from .submit.registry import ACCOUNT_GATED_VENDORS
+
+    if target.vendor not in ACCOUNT_GATED_VENDORS:
+        return False
+    from .candidate_credentials import account_state
+
+    password, _verified = account_state(
+        db, candidate_id=application.candidate_id, vendor=target.vendor, tenant=_account_tenant(target)
+    )
+    return not password
+
+
+def prompt_vault_credential(db: Session, application: Application, target) -> None:
+    """Ask the candidate, once, to set a vault password for this employer."""
+    from ..messaging.notify import EVENT_VAULT_NEEDED, notify_candidate
+
+    notify_candidate(
+        db,
+        org_id=application.org_id,
+        candidate_id=application.candidate_id,
+        event=EVENT_VAULT_NEEDED,
+        subject_id=application.id,
+    )
 
 
 def _attachment(document: CandidateDocument | None) -> Attachment | None:

@@ -161,12 +161,18 @@ def post_linq(client, payload, *, webhook_id="wh-1"):
 
 
 def drain(session, kind=KIND_INTAKE_REFERRAL):
+    from datetime import UTC, datetime
+
     from juicebox.worker import process_job
 
+    # Pinned inside the unknown-timezone send window (16:00Z-02:00Z): the
+    # notify handler judges cadence on the worker's `now`, and a suite run in
+    # the evening US-time used to have every proactive send defer.
+    in_window = datetime(2026, 1, 15, 18, 0, tzinfo=UTC)
     jobs = session.scalars(select(Job).where(Job.kind == kind)).all()
     for job in jobs:
         session.refresh(job)
-        process_job(session, job)
+        process_job(session, job, now=in_window)
     session.commit()
     return jobs
 

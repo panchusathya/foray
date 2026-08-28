@@ -194,30 +194,39 @@ class TestVaultStepUp:
 
         return get_sender().outbox[-1].subject.rsplit(":", 1)[-1].strip()
 
-    def test_password_write_needs_one_fresh_otp_grant(self, client, session, account, candidate):
-        """A week-long portal session cannot be replayed to edit the vault."""
+    def test_the_portal_session_authorizes_a_vault_write(self, client, session, account, candidate):
+        """The step-up OTP was removed (operator decision 2026-08-27): it rode
+        the same unreliable mail path that made the vault unreachable, and a
+        candidate arriving on a single-use texted link has already
+        authenticated. The write is accepted on the session alone, the
+        password never comes back, and a blank username is derived."""
         session.commit()
         headers = self._session_headers(account, candidate)
         payload = {
             "vendor": "workday",
             "tenant": "acme",
-            "username": "ada@example.com",
-            "password": "correct horse battery staple",
+            "password": "Horse-Battery9!",
         }
-        assert client.post("/v1/portal/vault/accounts", headers=headers, json=payload).status_code == 401
-
-        assert client.post("/v1/portal/vault/step-up/request", headers=headers).status_code == 202
-        verified = client.post(
-            "/v1/portal/vault/step-up", headers=headers, json={"code": self._sent_code()}
-        )
-        assert verified.status_code == 200, verified.text
-        grant_headers = {**headers, "X-Vault-Grant": verified.json()["grant"]}
-
-        created = client.post("/v1/portal/vault/accounts", headers=grant_headers, json=payload)
+        created = client.post("/v1/portal/vault/accounts", headers=headers, json=payload)
         assert created.status_code == 201, created.text
-        assert "password" not in created.json()
-        # An intercepted grant cannot be replayed for a second credential edit.
-        assert client.post("/v1/portal/vault/accounts", headers=grant_headers, json=payload).status_code == 401
+        body = created.json()
+        assert "password" not in body
+        assert body["username"]  # derived server-side
+        assert body["status"] == "pending_verification"
+
+    def test_a_weak_password_is_refused_with_the_missing_rules(self, client, session, account, candidate):
+        """The employer's complexity rule is enforced at the door so a
+        registration never fails on it later."""
+        session.commit()
+        headers = self._session_headers(account, candidate)
+        weak = client.post(
+            "/v1/portal/vault/accounts",
+            headers=headers,
+            json={"vendor": "workday", "tenant": "acme", "password": "alllowercase"},
+        )
+        assert weak.status_code == 422
+        detail = weak.json()["detail"].lower()
+        assert "uppercase" in detail and "number" in detail and "special" in detail
 
 
 class TestPortalSender:

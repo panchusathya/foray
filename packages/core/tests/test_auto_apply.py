@@ -1,11 +1,8 @@
 """Auto-apply: what we send, where we send it, and what stops us.
 
-The invariant this file exists to defend is the one from
-``CANDIDATE_AGENT_PLAN`` §8, now that an agent can actually press submit:
-**nothing is sent in a candidate's name without a recorded per-application yes,
-and nothing is invented to fill a form.** The consent and budget tests below
-are the load-bearing ones; the adapter tests only prove we speak each vendor's
-dialect.
+The invariant this file exists to defend is that no form answer is invented and
+submission limits apply consistently. The adapter tests prove we speak each
+vendor's dialect.
 
 No network anywhere. Adapters take an injected client, the browser tier is
 never launched, and the default submitter cannot reach an employer at all.
@@ -45,7 +42,14 @@ from juicebox.applications.submit.base import (
 )
 from juicebox.applications.submit.console import MemorySubmitter
 from juicebox.jobs import KIND_APP_SUBMIT
-from juicebox.models import Application, ApplicationSubmission, Candidate, JobPosting, utcnow
+from juicebox.models import (
+    Application,
+    ApplicationSubmission,
+    Candidate,
+    CandidatePreference,
+    JobPosting,
+    utcnow,
+)
 from juicebox.repository import upsert_candidates
 from juicebox.security import alias_token, verify_alias_token
 
@@ -284,21 +288,21 @@ class TestTargetResolution:
         assert target.tier == detect.TIER_EMAIL
 
 
-class TestTheConsentGateStillHolds:
-    """The agent path gets no shortcut around the rule a human path obeys."""
+class TestSubmissionAuthorization:
+    """Using JuiceBox authorizes a prepared application to be submitted."""
 
-    def test_submitting_requires_a_recorded_yes(self, session, account, candidate):
+    def test_submitting_does_not_require_a_recorded_yes(self, session, account, candidate):
         posting = _posting(session, account["org_id"])
         application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        with pytest.raises(TransitionError, match="consent"):
-            transition(session, application, to_status="submitting", actor="agent")
+        transition(session, application, to_status="submitting", actor="agent")
 
-    def test_request_submission_refuses_without_consent(self, session, account, candidate):
+    def test_request_submission_queues_without_per_application_approval(
+        self, session, account, candidate, memory_mode
+    ):
         posting = _posting(session, account["org_id"])
         application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        with pytest.raises(Exception, match="consent"):
-            request_submission(session, application)
-        # And nothing was queued, so no worker can pick it up anyway.
+        job = request_submission(session, application)
+        assert job.kind == KIND_APP_SUBMIT
         assert session.query(ApplicationSubmission).count() == 0
 
     def test_the_submission_budget_applies_to_the_agent_too(
@@ -546,19 +550,24 @@ class TestNothingAutomatedIsTheNormalAnswer:
         assert job is None
         assert "hand-off" in reason
 
-    def test_the_first_application_waits_for_a_person(
+    def test_a_prepared_application_can_be_queued(
         self, session, account, candidate, memory_mode
     ):
+        """No per-application approval is required after preparing a package."""
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
         application = _ready(session, account["org_id"], candidate, posting)
-        assert "first application" in first_submission_gate(session, application)
+        assert first_submission_gate(session, application) == ""
         job, reason = auto_submit(session, application)
-        assert job is None
-        assert "first application" in reason
-        # Explicitly requested, it still goes -- the gate is on the automatic
-        # path, not on the candidate's own decision.
-        assert request_submission(session, application) is not None
+        assert job is not None, reason
+
+    def test_no_recorded_yes_still_queues(self, session, account, candidate, memory_mode):
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting, consent=False)
+        assert first_submission_gate(session, application) == ""
+        job, reason = auto_submit(session, application)
+        assert job is not None, reason
 
     def test_console_is_the_default_and_cannot_reach_an_employer(self):
         from juicebox.applications.submit.console import ConsoleSubmitter
@@ -930,6 +939,9 @@ class TestBrowserFieldFilling:
         def first(self):
             return self
 
+        def nth(self, index):
+            return self
+
         def count(self):
             return 1 if self._present else 0
 
@@ -1097,11 +1109,17 @@ class TestTheThreadPath:
         from juicebox.models import Job
         from juicebox.worker import _handle_app_package
 
-        # A prior submission, so the first-application review gate is not what
-        # this test is measuring.
-        earlier = _posting(session, account["org_id"], company="Stripe", suffix="9")
-        prior = _ready(session, account["org_id"], candidate, earlier)
-        transition(session, prior, to_status="submitted", actor="candidate")
+        # Work authorization is the one fact auto_submit still withholds on;
+        # seed it so this test is measuring the queue, not the ask.
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                spec={},
+                work_authorization="US citizen, no sponsorship needed",
+            )
+        )
+        session.flush()
 
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
@@ -1132,16 +1150,48 @@ class TestTheThreadPath:
         ]
         assert len(queued) == 1
 
+    def test_missing_work_authorization_asks_instead_of_queueing(
+        self, session, account, candidate, memory_mode
+    ):
+        from juicebox.jobs import KIND_APP_PACKAGE, enqueue
+        from juicebox.worker import _handle_app_package
+
+        posting = _posting(session, account["org_id"])
+        detect.resolve_target(session, posting, allow_network=False)
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+        application.approved_at = utcnow()
+        session.flush()
+        job = enqueue(
+            session,
+            org_id=account["org_id"],
+            kind=KIND_APP_PACKAGE,
+            idempotency_key="pkg-auth",
+            payload={"application_id": application.id},
+        )
+        result = _handle_app_package(session, job, utcnow())
+        assert "waiting on required form answers" in result["submission"]
+        assert "authorized" in result["submission"].lower() or "sponsor" in result["submission"].lower()
+
     def test_a_handoff_still_tells_the_candidate_their_package_is_ready(
         self, session, account, candidate, memory_mode
     ):
         from juicebox.jobs import KIND_APP_PACKAGE, enqueue
         from juicebox.worker import _handle_app_package
 
-        earlier = _posting(session, account["org_id"], company="Stripe", suffix="9")
-        prior = _ready(session, account["org_id"], candidate, earlier)
-        transition(session, prior, to_status="submitted", actor="candidate")
-
+        session.add(
+            CandidatePreference(
+                org_id=account["org_id"],
+                candidate_id=candidate.id,
+                spec={},
+                work_authorization="US citizen, no sponsorship needed",
+            )
+        )
+        session.flush()
         posting = _posting(session, account["org_id"], url="https://example.com/careers/1")
         detect.resolve_target(session, posting, allow_network=False)
         application = create_application(
@@ -1353,13 +1403,29 @@ class TestApiVersusForm:
         registry.reset_overrides()
         reset_settings_cache()
 
-    def test_no_key_means_the_hosted_form(self):
-        from juicebox.applications.submit.browser.hosted_form import HostedFormSubmitter
-
+    def test_no_key_means_a_handoff_without_the_agent(self):
         target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
         chosen = registry.get_submitter(target)
-        assert isinstance(chosen, HostedFormSubmitter)
-        assert chosen.method == "browser"
+        assert chosen is None
+
+    def test_agent_configured_means_the_browser_agent(self, monkeypatch):
+        from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
+        from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
+        from juicebox.config import reset_settings_cache as _reset
+
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT", "true")
+        monkeypatch.setenv("APPLY_BROWSER_AGENT_ACK", "true")
+        _reset()
+        set_cloud_client(FakeCloudClient())
+        try:
+            target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
+            chosen = registry.get_submitter(target)
+            assert isinstance(chosen, BrowserAgentSubmitter)
+            assert chosen.method == "browser"
+        finally:
+            set_cloud_client(None)
+            _reset()
 
     def test_a_stored_key_means_the_api(self):
         from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
@@ -1771,6 +1837,7 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         ctx = TestAdapters._ctx("workday", self._URL)
         ctx.portal_username = "anna+abc@goforay.io"
         ctx.portal_password = "stored-pw"
+        ctx.portal_account_verified = True  # a login we already registered
         result = _Reusing().submit(ctx)
 
         assert result.ok
@@ -1790,6 +1857,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
             def goto(self, url, **kwargs):
                 return None
 
+            def wait_for_timeout(self, ms):
+                return None
+
         @contextlib.contextmanager
         def fake_session(*, log):
             yield _Page()
@@ -1805,6 +1875,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         monkeypatch.setattr(workday_mod.driver, "fill", fake_fill)
         monkeypatch.setattr(workday_mod.driver, "click", lambda *a, **k: True)
         monkeypatch.setattr(workday_mod.driver, "snapshot", lambda *a, **k: "")
+        # `_settle` polls the real page for the SPA render; the fake page has
+        # no clock, and the "page" here is whatever `fills` describes anyway.
+        monkeypatch.setattr(workday_mod.driver, "wait_for_any", lambda *a, **k: "")
         return workday_mod
 
     def test_a_sign_in_page_is_not_reported_as_an_account_created(self, monkeypatch):
@@ -1815,7 +1888,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         workday_mod = self._fake_browser(
             monkeypatch, fills={"email": "anna+abc@goforay.io", "password": "<redacted>"}
         )
-        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+        ctx = TestAdapters._ctx("workday", self._URL)
+        ctx.portal_password = "candidate-pick"  # vault credential, not yet registered
+        result = workday_mod.WorkdaySubmitter().submit(ctx)
 
         assert not result.needs_verification
         assert result.needs_human
@@ -1833,7 +1908,9 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
                 "terms": "1",
             },
         )
-        result = workday_mod.WorkdaySubmitter().submit(TestAdapters._ctx("workday", self._URL))
+        ctx = TestAdapters._ctx("workday", self._URL)
+        ctx.portal_password = "candidate-pick"  # vault credential we register with
+        result = workday_mod.WorkdaySubmitter().submit(ctx)
 
         assert result.needs_verification
         assert result.verification["stage"] == "account_created"
@@ -1944,15 +2021,57 @@ class TestTheFieldMapsAreCoherent:
             assert spec.landmark, f"{vendor} has no landmark to prove we reached a form"
 
     def test_the_adapter_can_value_every_field_the_map_declares(self):
-        from juicebox.applications.submit.browser.forms import ASHBY, GREENHOUSE, LEVER
-        from juicebox.applications.submit.browser.hosted_form import _values, specs_for
+        from juicebox.applications.submit.browser.forms import WORKDAY_ACCOUNT, YC_ACCOUNT
 
-        ctx = TestAdapters._ctx("greenhouse", "https://boards.greenhouse.io/x/jobs/1")
-        values = _values(ctx, "/tmp/resume.pdf")
-        for spec in (GREENHOUSE, LEVER, ASHBY):
-            built = specs_for(spec, values)
-            assert {row.key for row in built} == set(spec.fields)
-            # Every required field resolves to something we actually hold.
-            for row in built:
-                if row.required:
-                    assert row.value, f"{spec.vendor}.{row.key} is required but we have no value"
+        for spec in (WORKDAY_ACCOUNT, YC_ACCOUNT):
+            assert spec.fields
+            assert spec.submit
+            for key in spec.required:
+                assert spec.selectors_for(key)
+
+
+class TestAccountGatedWaitsForVault:
+    """Model B2: Workday/YC hold for a candidate-chosen vault password rather
+    than self-registering behind an email loop we cannot read."""
+
+    _WD = "https://acme.wd1.myworkdayjobs.com/en-US/acme/job/US/Analyst_R99"
+
+    def test_no_credential_prompts_the_vault_and_does_not_submit(
+        self, session, account, candidate, memory_mode, monkeypatch
+    ):
+        from juicebox.applications import submission as sub
+        from juicebox.applications.ats import detect
+
+        posting = _posting(session, account["org_id"], company="Acme", url=self._WD, suffix="wd")
+        detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+
+        prompted: list = []
+        monkeypatch.setattr(
+            sub, "prompt_vault_credential", lambda db, app, target: prompted.append(app.id)
+        )
+        job, reason = sub.auto_submit(session, application)
+
+        assert job is None
+        assert "vault credential" in reason
+        assert prompted == [application.id]
+
+    def test_a_stored_credential_lets_it_proceed(
+        self, session, account, candidate, memory_mode
+    ):
+        from juicebox.applications import submission as sub
+        from juicebox.applications.ats import detect
+        from juicebox.applications.candidate_credentials import save_password
+
+        posting = _posting(session, account["org_id"], company="Acme", url=self._WD, suffix="wd2")
+        target = detect.resolve_target(session, posting, allow_network=False)
+        application = _ready(session, account["org_id"], candidate, posting)
+        save_password(
+            session, org_id=account["org_id"], candidate_id=candidate.id,
+            vendor=target.vendor, tenant=sub._account_tenant(target),
+            username="anna+x@goforay.io", password="candidate-pick", origin="candidate_supplied",
+            registered=False,
+        )
+
+        job, reason = sub.auto_submit(session, application)
+        assert job is not None, reason

@@ -143,6 +143,11 @@ KIND_APP_SUBMIT = "application.submit"
 # The second leg of a parked browser run: the form needed an email verification
 # or a one-time code, the alias mailbox received it, and the run resumes.
 KIND_APP_SUBMIT_VERIFY = "application.submit.verify"
+# A job URL a candidate texted: ingest the posting, open the application with
+# the link message as its consent, queue the package. Keyed on that message id
+# -- permanent on purpose, one link message is one application attempt however
+# many times the webhook retries or the turn re-runs.
+KIND_APPLY_LINK = "application.from_link"
 
 OPEN_STATUSES = ("queued", "running")
 
@@ -276,7 +281,27 @@ def recover_stale_locks(db: Session, *, now: datetime | None = None) -> int:
 # inside a claim is not enough on its own: a batch is processed serially, so a
 # turn queued behind nineteen mailbox syncs waits for all nineteen. The worker
 # claims these separately for that reason.
-INTERACTIVE_KINDS = (KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE, KIND_CONNECTOR_INDEX)
+INTERACTIVE_KINDS = (
+    KIND_INTAKE_TURN,
+    KIND_LINKEDIN_SCRAPE,
+    KIND_CONNECTOR_INDEX,
+    KIND_APPLY_LINK,
+)
+
+# The candidate-facing application pipeline: package builds, submit attempts
+# and their verification second legs, form-spec derivations, and the texts
+# that tell the candidate what happened. Claimed by its own worker
+# (`work --apply-only`) for the same reason intake has one: on 2026-08-27
+# three 👍-applications sat `queued` behind a batch of outreach sends, and
+# "i'm preparing your application" went quiet for ten minutes. The general
+# worker runs `--exclude-apply` so it cannot swallow these into its batches.
+CANDIDATE_APPLY_KINDS = (
+    KIND_APP_PACKAGE,
+    KIND_APP_SUBMIT,
+    KIND_APP_SUBMIT_VERIFY,
+    KIND_JOBS_FORMSPEC_ONE,
+    KIND_THREAD_NOTIFY,
+)
 
 
 def claim(
@@ -286,6 +311,7 @@ def claim(
     limit: int | None = None,
     now: datetime | None = None,
     kinds: tuple[str, ...] | None = None,
+    exclude: tuple[str, ...] | None = None,
 ) -> list[Job]:
     settings = get_settings()
     now = now or utcnow()
@@ -302,6 +328,8 @@ def claim(
     )
     if kinds is not None:
         stmt = stmt.where(Job.kind.in_(kinds))
+    if exclude:
+        stmt = stmt.where(Job.kind.not_in(exclude))
     bind = db.get_bind()
     if bind is not None and bind.dialect.name == "postgresql":
         stmt = stmt.with_for_update(skip_locked=True)

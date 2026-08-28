@@ -11,8 +11,6 @@ answer decides something the candidate can see.
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 import pytest
 from sqlalchemy import select
 
@@ -332,31 +330,24 @@ class TestApplicationQuestionsAskedAtApplicationTime:
         application = self._application(session, account, thread, self._blank_set())
         result = followups.ask_for_missing(session, application)
 
-        assert set(result["asked"]) == {
-            "salary_expectation",
-            "notice_period",
-            "work_authorization",
-        }
+        assert set(result["asked"]) == {"work_authorization"}
         body = channel.bodies[-1].lower()
         assert "google" in body, "the question has to say what it is for"
-        assert "comp" in body
-        # A blank why_company (no model drafted one) is still named and
-        # pointed at the portal -- unmentioned, the empty box reads as a
-        # question the agent missed -- but it is never phrased as something
-        # to text back.
-        assert "write it in the app" in body
-        assert "what should we put for why" not in body
+        assert "authoris" in body or "sponsor" in body
+        assert "comp" not in body
+        assert "write it in the app" not in body
 
     def test_an_answer_we_already_have_is_not_asked_for(
         self, session, account, thread, channel
     ):
         answers = self._blank_set()
-        answers[1]["answer"] = "USD 200,000"
+        answers[0]["answer"] = "US citizen, no sponsorship needed"
         application = self._application(session, account, thread, answers)
         result = followups.ask_for_missing(session, application)
 
-        assert "salary_expectation" not in result["asked"]
-        assert "comp" not in channel.bodies[-1].lower()
+        assert result.get("skipped") == "package answered everything"
+        assert "work_authorization" not in result.get("asked", [])
+        assert channel.bodies == []
 
     def test_it_asks_once(self, session, account, thread, channel):
         application = self._application(session, account, thread, self._blank_set())
@@ -452,15 +443,8 @@ class TestADegradedEmbedderIsNotSilent:
             embeddings_module._embedder = previous
 
 
-class TestThePortalOnlyBlank:
-    """`why_company` is deliberately blank, and used to be silently blank.
-
-    The package left it empty on purpose -- we do not write somebody's
-    enthusiasm for them -- but the follow-up text listed only the askable
-    blanks. So the portal showed an empty "why this company" while the text
-    asked about comp, and it read as a question the agent had missed rather
-    than one it had left on purpose. Reported from production.
-    """
+class TestChatAsksOnlyWorkAuthorization:
+    """Salary, start date, and why-this-company are not surveyed over text."""
 
     class _Posting:
         company = "Voice Capital"
@@ -472,81 +456,39 @@ class TestThePortalOnlyBlank:
 
         return _App()
 
-    #: The real Voice Capital answer set, as production wrote it.
-    REAL: ClassVar[list[dict]] = [
-        {"key": "work_authorization", "answer": "I am a U.S. citizen."},
-        {"key": "salary_expectation", "answer": "", "asked": True},
-        {"key": "notice_period", "answer": "I can start immediately."},
-        {"key": "why_company", "answer": ""},
-    ]
-
-    def test_it_names_the_company_specific_question(self):
-        from juicebox.applications.followups import followup_message
-
-        body = followup_message(self._application(self.REAL), self._Posting())
-        assert "why Voice Capital" in body
-
-    def test_it_hands_a_blank_why_to_the_portal(self):
-        from juicebox.applications.followups import followup_message
-
-        body = followup_message(self._application(self.REAL), self._Posting())
-        assert "write it in the app" in body
-
-    def test_it_still_asks_the_askable_blank(self):
-        """Naming the portal-only one must not displace the real question."""
-        from juicebox.applications.followups import followup_message
-
-        body = followup_message(self._application(self.REAL), self._Posting())
-        assert "comp expectations" in body
-
-    def test_a_filled_why_is_not_mentioned(self):
-        from juicebox.applications.followups import followup_message
-
-        answers = [dict(item) for item in self.REAL]
-        answers[-1]["answer"] = "I have followed the fund since inception."
-        body = followup_message(self._application(answers), self._Posting())
-        assert "write it in the app" not in body
-
-    def test_the_handed_off_key_is_reported_separately(self):
-        """`asked` counts questions asked. A portal-only blank was named, not
-        asked, so it belongs in its own bucket."""
-        from juicebox.applications import followups
-
-        answers = [dict(item) for item in self.REAL]
-        assert followups.portal_only_blanks(self._application(answers)) == ["why_company"]
-        assert "why_company" not in followups.blank_answers(self._application(answers))
-
-    def test_a_lone_portal_blank_still_produces_a_message(self):
-        """Everything else answered: previously silent, so the candidate never
-        learned the one field waiting on them."""
+    def test_known_work_auth_is_silent_even_with_other_blanks(self):
         from juicebox.applications.followups import followup_message
 
         answers = [
-            {"key": "work_authorization", "answer": "US citizen."},
-            {"key": "salary_expectation", "answer": "USD 250,000"},
-            {"key": "notice_period", "answer": "Immediately."},
+            {"key": "work_authorization", "answer": "I am a U.S. citizen."},
+            {"key": "salary_expectation", "answer": ""},
+            {"key": "notice_period", "answer": "I can start immediately."},
             {"key": "why_company", "answer": ""},
-        ]
-        body = followup_message(self._application(answers), self._Posting())
-        assert body
-        assert "why Voice Capital" in body
-        # It is a hand-off, not a question, so it must not claim to be asking.
-        assert "i don't have yet" not in body
-        assert "needs a few things from you" in body
-
-    def test_nothing_owed_is_silent(self):
-        from juicebox.applications.followups import followup_message
-
-        answers = [
-            {"key": "work_authorization", "answer": "US citizen."},
-            {"key": "salary_expectation", "answer": "USD 250,000"},
-            {"key": "notice_period", "answer": "Immediately."},
-            {"key": "why_company", "answer": "Because of the thesis."},
         ]
         assert followup_message(self._application(answers), self._Posting()) == ""
 
-    def test_it_falls_back_when_the_company_is_unknown(self):
+    def test_missing_work_auth_is_the_only_question(self):
         from juicebox.applications.followups import followup_message
 
-        body = followup_message(self._application(self.REAL), None)
-        assert "why the company" in body
+        answers = [
+            {"key": "work_authorization", "answer": ""},
+            {"key": "salary_expectation", "answer": ""},
+            {"key": "why_company", "answer": ""},
+        ]
+        body = followup_message(self._application(answers), self._Posting())
+        assert "authoris" in body.lower() or "sponsor" in body.lower()
+        assert "Voice Capital" in body
+        assert "comp" not in body.lower()
+        assert "why Voice Capital" not in body
+        assert "write it in the app" not in body
+
+    def test_why_company_is_still_a_portal_blank_not_an_ask(self):
+        from juicebox.applications import followups
+
+        answers = [
+            {"key": "work_authorization", "answer": "I am a U.S. citizen."},
+            {"key": "why_company", "answer": ""},
+        ]
+        app = self._application(answers)
+        assert followups.portal_only_blanks(app) == ["why_company"]
+        assert "why_company" not in followups.blank_answers(app)

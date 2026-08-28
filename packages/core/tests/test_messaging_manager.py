@@ -615,10 +615,12 @@ class TestDeadPostingsAreNotProposed:
         assert not is_gone("")
 
 
-class TestUnsupportedPostingsAreNotProposed:
-    """The card says "👍 and i'll apply for you" -- so a role with no submit
-    adapter is a promise we cannot keep, and the first live run made it three
-    times (YC before support, DigitalHire, a scraper mirror)."""
+class TestEveryBoardIsProposed:
+    """A match is shown whatever its board. The old vendor gate hid every
+    unsupported-board match, which turned a taleo-heavy book into "i'm not
+    going to show you roles i can't act on" repeated verbatim forever -- a
+    dead line wearing an honesty costume. Applying is attempted with whatever
+    tier exists, and the fallback is a ready-to-review package, not a refusal."""
 
     def _match(self, session, org_id, thread, posting, *, score=0.9):
         session.add(
@@ -632,16 +634,15 @@ class TestUnsupportedPostingsAreNotProposed:
             )
         )
 
-    def test_an_unsupported_role_yields_to_the_supported_one_below_it(
+    def test_an_unsupported_vendor_is_carded_alongside_the_supported_one(
         self, session, account, channel, thread
     ):
-        """Over-fetch is what makes the filter a re-ranking rather than a
-        shrinking: the best-scoring role has no adapter, and hiding it must
-        surface the supported role ranked under it, not send fewer cards."""
+        """Best-first, no vendor filter: the taleo role outranks the
+        greenhouse-able one and both are shown."""
         thread = _managed(session, thread)
         org_id = account["org_id"]
         unsupported = _posting(session, org_id, company="Wipro", title="Junior Dev", suffix="u")
-        unsupported.ats_vendor = "taleo"  # recognised, not submittable
+        unsupported.ats_vendor = "taleo"  # recognised, no handwritten adapter
         supported = _posting(session, org_id, company="Toast", title="Strat Fin", suffix="s")
         self._match(session, org_id, thread, unsupported, score=0.95)
         self._match(session, org_id, thread, supported, score=0.85)
@@ -651,17 +652,15 @@ class TestUnsupportedPostingsAreNotProposed:
 
         burst = "\n".join(channel.bodies)
         assert "Toast" in burst
-        assert "Wipro" not in burst, "an unapplicable role was promised"
-        # Hidden, not buried: no proposal row means it is not marked answered,
-        # so adapter support arriving later can still surface it.
+        assert "Wipro" in burst, "a match was hidden for vendor reasons"
         assert (
             session.scalar(
                 select(JobProposal).where(JobProposal.job_posting_id == unsupported.id)
             )
-            is None
+            is not None
         )
 
-    def test_all_unsupported_says_so_instead_of_carding(
+    def test_an_all_unsupported_book_is_carded_not_refused(
         self, session, account, channel, thread
     ):
         thread = _managed(session, thread)
@@ -674,8 +673,8 @@ class TestUnsupportedPostingsAreNotProposed:
         _say(session, thread, "find me some roles", native_id="unsup-2")
 
         burst = "\n".join(channel.bodies).lower()
-        assert "can't submit to for you yet" in burst
-        assert "wipro" not in burst
+        assert "can't submit" not in burst
+        assert "wipro" in burst
 
     def test_a_networked_miss_does_not_poison_the_posting(
         self, session, account, channel, thread

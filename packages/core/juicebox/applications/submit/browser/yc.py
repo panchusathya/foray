@@ -33,6 +33,7 @@ that requires a completed profile will refuse in front of the screenshots.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 import tempfile
 
@@ -55,8 +56,19 @@ _SIGN_IN = (
 )
 
 
+def _mint_username(ctx: SubmissionContext) -> str:
+    """A YC username for the account we are about to register.
+
+    The sign-up form requires one (live probe 2026-08-27); it is ours the
+    same way the password is, so it is minted here and carried on the
+    verification payload for leg two's sign-in.
+    """
+    stem = re.sub(r"[^a-z0-9]", "", f"{ctx.first_name}{ctx.last_name}".lower())
+    return f"{(stem or 'candidate')[:16]}{secrets.token_hex(3)}"
+
+
 def _account_fields(
-    ctx: SubmissionContext, password: str
+    ctx: SubmissionContext, password: str, username: str
 ) -> list[FieldSpec]:
     return [
         FieldSpec(
@@ -73,6 +85,12 @@ def _account_fields(
             key="email",
             selectors=YC_ACCOUNT.selectors_for("email"),
             value=ctx.from_address,
+            required=True,
+        ),
+        FieldSpec(
+            key="username",
+            selectors=YC_ACCOUNT.selectors_for("username"),
+            value=username,
             required=True,
         ),
         FieldSpec(
@@ -106,10 +124,9 @@ class YCSubmitter:
                 ),
             )
 
-        # An account we already hold skips registration entirely -- no new
-        # signup means no verification mail, and parking on one that will
-        # never arrive is how a pursuit ages out in `submitting`.
-        if ctx.portal_password:
+        # A verified account we already hold skips registration entirely -- no
+        # new signup, no verification mail, so leg two is the whole of it.
+        if ctx.portal_password and ctx.portal_account_verified:
             return self.resume(
                 ctx,
                 {
@@ -118,16 +135,37 @@ class YCSubmitter:
                 },
             )
 
-        password = secrets.token_urlsafe(18)
+        # Model B2: register with the candidate's vault-chosen password. The
+        # gate prompts the vault and holds, so no stored password means a path
+        # that skipped it -- refuse rather than self-register in their name.
+        if not ctx.portal_password:
+            return SubmissionResult(
+                ok=False,
+                method=self.method,
+                needs_human=True,
+                error="no vault credential for workatastartup; awaiting the candidate's password",
+            )
+        password = ctx.portal_password
+        username = ctx.portal_username or _mint_username(ctx)
         log = RunLog()
         try:
             with driver.session(log=log) as page:
                 page.goto(ctx.target.apply_url, wait_until="domcontentloaded")
                 # Logged out, Apply routes through the YC login; the sign-up
                 # link is on that wall. Both clicks are navigation, not sends.
+                driver.wait_for_any(page, YC_APPLICATION.open_form, timeout_ms=30000)
                 driver.click(page, YC_APPLICATION.open_form, log=log, what="apply")
                 driver.click(page, YC_ACCOUNT.open_form, log=log, what="sign up")
-                missing = driver.fill(page, _account_fields(ctx, password), log=log)
+                # account.ycombinator.com is a SPA: domcontentloaded fires on
+                # its shell, and the first live run filled nothing but the
+                # (late-rendering) password box. Wait for the form's stable
+                # ids before reading anything as absent.
+                driver.wait_for_any(
+                    page,
+                    YC_ACCOUNT.selectors_for("username") + YC_ACCOUNT.selectors_for("email"),
+                    timeout_ms=30000,
+                )
+                missing = driver.fill(page, _account_fields(ctx, password, username), log=log)
                 shot = driver.snapshot(
                     page,
                     org_id=ctx.org_id,
@@ -186,7 +224,11 @@ class YCSubmitter:
             artifacts=list(log.artifacts),
             verification={
                 "stage": "account_created",
-                "username": ctx.from_address,
+                # The minted YC username, not the alias address: the login
+                # form's identifier field is name='username' (#ycid-input),
+                # and it is what leg two signs in with.
+                "username": username,
+                "email": ctx.from_address,
                 "password": password,
                 "tenant": ACCOUNT_TENANT,
                 "run": log.as_payload(),
@@ -228,8 +270,12 @@ class YCSubmitter:
                         page,
                         [
                             FieldSpec(
-                                key="email",
-                                selectors=YC_ACCOUNT.selectors_for("email"),
+                                key="username",
+                                # The login wall's identifier is #ycid-input
+                                # (name='username'); the email selectors stay
+                                # as the fallback for any older form shape.
+                                selectors=YC_ACCOUNT.selectors_for("username")
+                                + YC_ACCOUNT.selectors_for("email"),
                                 value=username,
                             ),
                             FieldSpec(
@@ -241,7 +287,7 @@ class YCSubmitter:
                         ],
                         log=log,
                     )
-                    if {"email", "password"} & set(log.filled):
+                    if {"username", "email", "password"} & set(log.filled):
                         driver.click(page, _SIGN_IN, log=log, what="sign in")
                         # Signing in navigates away from the wall; the apply
                         # control has to be reached again on the job page.

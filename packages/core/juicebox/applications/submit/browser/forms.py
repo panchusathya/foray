@@ -1,23 +1,12 @@
 """Field maps, as data.
 
-A browser adapter is a field map and a step order. Keeping the map *declarative*
-rather than buried in each adapter's code buys the one thing this tier actually
-needs: ``juicebox ats-probe`` can load the very same map, point a browser at a
-real posting, and report which selectors still resolve. When a vendor reshapes
-their form -- the failure mode this tier has, and it is not rare -- the fix is
-editing one tuple with the probe's output in front of you.
+A browser adapter is a field map and a step order. Public Greenhouse / Lever /
+Ashby / SmartRecruiters / Workable maps are gone -- those boards are filled
+by the governed browser agent. What remains here is the two-leg Workday and
+YC account/application maps, plus ``FormSpec`` so a cached derived spec from
+an older row can still deserialize.
 
-**These maps are the part most likely to be wrong.** Selectors here were written
-from the vendors' published form markup, not from a probe run, and until
-``ats-probe`` has been pointed at a live posting they should be read as a
-starting point. That is survivable because of how ``driver.fill`` fails: a
-required field whose selectors all miss ends the run as ``needs_human`` naming
-the field, rather than submitting something half-filled. A wrong map costs an
-application we did not send; it never costs one we sent wrongly.
-
-Selector order is preference order. Vendors ship several generations of the same
-form and the tenant decides which one you get, so each field lists the most
-specific hook first and the generic input name last.
+``juicebox ats-probe`` still loads these maps for the two-leg vendors.
 """
 
 from __future__ import annotations
@@ -92,91 +81,6 @@ class FormSpec:
         )
 
 
-GREENHOUSE = FormSpec(
-    vendor="greenhouse",
-    landmark=("#application_form", "form#application-form", "[data-ui='application-form']"),
-    open_form=("a#apply_button", "button:has-text('Apply')", "a:has-text('Apply for this job')"),
-    fields={
-        "first_name": ("#first_name", "input[name='job_application[first_name]']"),
-        "last_name": ("#last_name", "input[name='job_application[last_name]']"),
-        "email": ("#email", "input[name='job_application[email]']", "input[type='email']"),
-        "phone": ("#phone", "input[name='job_application[phone]']"),
-        "resume": (
-            "input#resume[type='file']",
-            "input[name='job_application[resume]']",
-            "input[type='file']",
-        ),
-        "cover_letter": (
-            "input#cover_letter[type='file']",
-            "input[name='job_application[cover_letter]']",
-        ),
-        "linkedin": (
-            "input[name*='urls[LinkedIn]']",
-            "input[aria-label*='LinkedIn' i]",
-        ),
-    },
-    required=frozenset({"first_name", "last_name", "email", "resume"}),
-    files=frozenset({"resume", "cover_letter"}),
-    submit=("#submit_app", "input[type='submit']", "button:has-text('Submit application')"),
-)
-
-LEVER = FormSpec(
-    vendor="lever",
-    landmark=("form.application-form", ".application-page", "form[action*='apply']"),
-    open_form=("a.postings-btn", "a:has-text('Apply for this job')", "a[href$='/apply']"),
-    fields={
-        # Lever takes one name field, not two.
-        "full_name": ("input[name='name']", "input#name"),
-        "email": ("input[name='email']", "input#email", "input[type='email']"),
-        "phone": ("input[name='phone']", "input#phone"),
-        "resume": ("input[name='resume']", "input[type='file']"),
-        "linkedin": ("input[name='urls[LinkedIn]']", "input[name*='LinkedIn']"),
-        "comments": ("textarea[name='comments']",),
-    },
-    required=frozenset({"full_name", "email", "resume"}),
-    files=frozenset({"resume"}),
-    submit=(
-        "button[type='submit'].template-btn-submit",
-        "button:has-text('Submit application')",
-        "button[type='submit']",
-    ),
-)
-
-ASHBY = FormSpec(
-    vendor="ashby",
-    # Ashby renders no <form> element at all -- the application is a React tree
-    # on a client-side /application route. A landmark of "form" therefore never
-    # matched, which `hosted_form` reads as "no application form on this page"
-    # and refuses the run. The landmark has to be a field we know is there.
-    landmark=(
-        "input[name='_systemfield_email']",
-        "input[name='_systemfield_name']",
-        "[class*='ashby-application-form']",
-    ),
-    open_form=("button:has-text('Apply for this Job')", "a:has-text('Apply')"),
-    fields={
-        # Ashby's inputs carry `_systemfield_*` names; the accessible name is
-        # null on the current board, so aria-label is the fallback, not the
-        # first guess.
-        "full_name": ("input[name='_systemfield_name']", "input[aria-label='Name']"),
-        "email": ("input[name='_systemfield_email']", "input[aria-label='Email']"),
-        "phone": ("input[name='_systemfield_phone']", "input[aria-label='Phone']"),
-        # The resume input must be addressed by id. Ashby puts an *autofill*
-        # file input above the form: a bare `input[type=file]` matches that one
-        # first, which parses the CV into the page and leaves the actual resume
-        # field empty -- a required-field stall that looks like a wrong answer.
-        "resume": (
-            "#_systemfield_resume",
-            "input[name='_systemfield_resume']",
-            "input[type='file']",
-        ),
-        "linkedin": ("input[aria-label*='LinkedIn' i]",),
-    },
-    required=frozenset({"full_name", "email", "resume"}),
-    files=frozenset({"resume"}),
-    submit=("button:has-text('Submit Application')", "button[type='submit']"),
-)
-
 WORKDAY_ACCOUNT = FormSpec(
     vendor="workday",
     landmark=('[data-automation-id="createAccountLink"]', '[data-automation-id="email"]'),
@@ -225,72 +129,19 @@ WORKDAY_APPLICATION = FormSpec(
     ),
 )
 
-SMARTRECRUITERS = FormSpec(
-    vendor="smartrecruiters",
-    # Unprobed starting point (see the module docstring): written from the
-    # vendor's published markup, to be corrected with `ats-probe` output. The
-    # apply flow is a React app on /oneclick-ui/ reached from the posting's
-    # "I'm interested" control.
-    landmark=(
-        "input[name='firstName']",
-        "form[class*='application']",
-        "[data-test='application-form']",
-    ),
-    open_form=(
-        "a:has-text(\"I'm interested\")",
-        "button:has-text(\"I'm interested\")",
-        "a:has-text('Apply')",
-        "button:has-text('Apply')",
-    ),
-    fields={
-        "first_name": ("input[name='firstName']", "input[id*='first' i]"),
-        "last_name": ("input[name='lastName']", "input[id*='last' i]"),
-        "email": ("input[name='email']", "input[type='email']"),
-        "phone": ("input[name='phoneNumber']", "input[type='tel']"),
-        "resume": ("input[type='file']",),
-    },
-    required=frozenset({"first_name", "last_name", "email", "resume"}),
-    files=frozenset({"resume"}),
-    submit=(
-        "button[type='submit']",
-        "button:has-text('Submit')",
-        "button:has-text('Apply')",
-    ),
-)
-
-WORKABLE = FormSpec(
-    vendor="workable",
-    # Unprobed starting point. Workable's hosted form is one page at
-    # /<tenant>/j/<id>/apply and stamps stable data-ui hooks on its controls.
-    landmark=(
-        "form[data-ui='application-form']",
-        "input[name='firstname']",
-        "[data-ui='application-form']",
-    ),
-    open_form=("a[data-ui='overview-apply-now']", "a:has-text('Apply')"),
-    fields={
-        "first_name": ("input[name='firstname']", "input[id='firstname']"),
-        "last_name": ("input[name='lastname']", "input[id='lastname']"),
-        "email": ("input[name='email']", "input[type='email']"),
-        "phone": ("input[name='phone']", "input[type='tel']"),
-        # Workable renders a drag-drop uploader; the real input hides inside.
-        "resume": ("[data-ui='resume'] input[type='file']", "input[type='file']"),
-        "cover_letter": ("textarea[name='cover_letter']",),
-    },
-    required=frozenset({"first_name", "last_name", "email", "resume"}),
-    files=frozenset({"resume"}),
-    submit=("button[data-ui='apply-button']", "button[type='submit']"),
-)
-
 YC_ACCOUNT = FormSpec(
     vendor="yc",
-    # Unprobed starting point. Work at a Startup runs on the unified YC
-    # account (account.ycombinator.com); a logged-out Apply lands on its
-    # sign-up form. Same two-leg shape as Workday: register, park on the
-    # verification mail, and browser/yc.py signs in for the application leg.
+    # Probed live 2026-08-27 against account.ycombinator.com (the unified YC
+    # account; a logged-out Apply lands on its sign-up form with
+    # defaults[signUpActive]=true). The name inputs carry NO attributes at
+    # all — no name, id, placeholder or autocomplete — so they are reachable
+    # only by layout, anchored on their floating labels. Username is required
+    # and has the only stable ids on the page (#ycid-input, #password-input).
+    # Same two-leg shape as Workday: register, park on the verification mail,
+    # and browser/yc.py signs in for the application leg.
     landmark=(
         "input[name='password']",
-        "input[id='sign-up-password']",
+        "input[id='password-input']",
         "form[action*='sign' i]",
     ),
     open_form=(
@@ -300,12 +151,21 @@ YC_ACCOUNT = FormSpec(
         "button:has-text('Apply')",
     ),
     fields={
-        "first_name": ("input[name='first_name']", "input[id*='first' i]"),
-        "last_name": ("input[name='last_name']", "input[id*='last' i]"),
+        "first_name": (
+            "input[name='first_name']",
+            "input[id*='first' i]",
+            'input:below(:text("First Name"))',
+        ),
+        "last_name": (
+            "input[name='last_name']",
+            "input[id*='last' i]",
+            'input:below(:text("Last Name"))',
+        ),
         "email": ("input[name='email']", "input[type='email']"),
-        "password": ("input[name='password']", "input[type='password']"),
+        "username": ("input[name='username']", "#ycid-input"),
+        "password": ("#password-input", "input[name='password']", "input[type='password']"),
     },
-    required=frozenset({"email", "password"}),
+    required=frozenset({"email", "username", "password"}),
     submit=(
         "button[type='submit']",
         "button:has-text('Sign up')",
@@ -334,25 +194,13 @@ YC_APPLICATION = FormSpec(
 #: What ``ats-probe`` can check, by vendor. Workday's second form sits behind a
 #: login, so only the account step is probeable without an account -- and YC's
 #: application leg likewise, so its probeable face is the sign-up form.
+#: Public boards no longer have handwritten maps; the browser agent observes
+#: them live.
 PROBEABLE: dict[str, FormSpec] = {
-    "greenhouse": GREENHOUSE,
-    "lever": LEVER,
-    "ashby": ASHBY,
     "workday": WORKDAY_ACCOUNT,
-    "smartrecruiters": SMARTRECRUITERS,
-    "workable": WORKABLE,
     "yc": YC_ACCOUNT,
 }
 
-#: Vendors whose *reachable* page is the application form itself, which is
-#: what question discovery (``applications/questions.py``) needs. Workday and
-#: YC gate theirs behind an account, so the page a logged-out browser reaches
-#: is a registration form -- "discovering" questions there would put
-#: "password" in front of the candidate as something the employer asked.
-DISCOVERABLE: dict[str, FormSpec] = {
-    "greenhouse": GREENHOUSE,
-    "lever": LEVER,
-    "ashby": ASHBY,
-    "smartrecruiters": SMARTRECRUITERS,
-    "workable": WORKABLE,
-}
+#: Public-form question discovery is the agent preflight. These maps used to
+#: name vendors whose logged-out page *was* the application; that path is gone.
+DISCOVERABLE: dict[str, FormSpec] = {}

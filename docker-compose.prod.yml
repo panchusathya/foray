@@ -13,9 +13,9 @@
 # forgotten -f flag or a merge surprise could publish Postgres to the internet.
 #
 # Topology: caddy is the only service with public ports (80/443) and serves
-# ${APP_DOMAIN} with automatic Let's Encrypt TLS. It proxies to web's nginx,
-# which serves the SPA and same-origin-proxies /v1/, /health, and /t/ to the
-# api. db/api/web publish no host ports; ingest binds to localhost only.
+# ${APP_DOMAIN} with automatic Let's Encrypt TLS. Recruiter HTML is at
+# APP_DOMAIN while the FastAPI service is a distinct API_DOMAIN. db/api/web
+# publish no host ports; ingest binds to localhost only.
 name: juicebox
 
 # Cap container logs everywhere: the VM has ~13 GB free and json-file defaults
@@ -66,10 +66,12 @@ x-foray-env: &foray_env
 x-app-env: &app_env
   JUICEBOX_ENV: production
   DATABASE_URL: postgresql+psycopg://juicebox:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/juicebox
-  # Baked into tracking links in outbound email — must be the public origin.
-  BASE_URL: https://${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. app.goforay.io}
+  # Baked into tracking links and document access URLs — the public API origin.
+  BASE_URL: https://${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
   SECRET_KEY: ${SECRET_KEY:?generate with secrets.token_urlsafe(48) - see .env.production.example}
   CORS_ORIGINS: https://${APP_DOMAIN}
+  OPENINSTINCT_URL: ${OPENINSTINCT_URL:-https://apply.goforay.io}
+  OPENINSTINCT_SHARED_SECRET: ${OPENINSTINCT_SHARED_SECRET:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # The app's AI (sequence drafting, personalisation, reply drafts) runs through
   # OpenRouter here: there is no Anthropic key on this host, and without these
@@ -155,9 +157,9 @@ x-app-env: &app_env
   # serves uploads and downloads. Back this volume up alongside pgdata: the
   # rows in candidate_documents are only the metadata half.
   JUICEBOX_FILE_STORAGE_DIR: /app/data/files
-  # Where magic links point. The api and worker mint them, so they carry this;
-  # the portal container itself never needs it.
-  PORTAL_BASE_URL: https://${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+  # Legacy portal links point at the candidate experience during the migration.
+  # New candidate application tasks use OpenInstinct's verified identity link.
+  PORTAL_BASE_URL: ${OPENINSTINCT_URL:-https://apply.goforay.io}
   # Who sign-in codes come from. Separate from OUTREACH_FROM_EMAIL because a
   # candidate receiving a code has not necessarily met the recruiter whose
   # mailbox sends the outreach. Empty falls back to the outreach identity.
@@ -244,12 +246,23 @@ x-app-env: &app_env
   APPLY_ALIAS_RELAY: ${APPLY_ALIAS_RELAY:-true}
   APPLY_MAX_ATTEMPTS: ${APPLY_MAX_ATTEMPTS:-3}
   APPLY_BROWSER_HEADLESS: ${APPLY_BROWSER_HEADLESS:-true}
-  # Residential proxy for the apply browser -- employer anti-bot flags
-  # this datacentre's IP. `http://user:pass@gate:port`. Empty = direct.
+  # Browser Use Cloud. Live public-form apply creates a managed Chrome per
+  # run (stealth + residential proxy) and drives it over CDP. Empty key is
+  # the offline default: public boards hand off. Agent stays off until both
+  # APPLY_BROWSER_AGENT and APPLY_BROWSER_AGENT_ACK are true -- the ack is
+  # that screenshots, resume bytes, and profile state go to Browser Use and
+  # the vision model.
+  BROWSER_USE_API_KEY: ${BROWSER_USE_API_KEY:-}
+  APPLY_BROWSER_AGENT: ${APPLY_BROWSER_AGENT:-false}
+  APPLY_BROWSER_AGENT_ACK: ${APPLY_BROWSER_AGENT_ACK:-false}
+  APPLY_BROWSER_AGENT_MODEL: ${APPLY_BROWSER_AGENT_MODEL:-}
+  APPLY_BROWSER_AGENT_TIMEOUT_MIN: ${APPLY_BROWSER_AGENT_TIMEOUT_MIN:-15}
+  APPLY_BROWSER_AGENT_MAX_STEPS: ${APPLY_BROWSER_AGENT_MAX_STEPS:-40}
+  APPLY_BROWSER_PROXY_COUNTRY: ${APPLY_BROWSER_PROXY_COUNTRY:-us}
+  APPLY_BROWSER_AGENT_RECORDING: ${APPLY_BROWSER_AGENT_RECORDING:-false}
+  # Local-Chromium only (Workday/YC two-leg, and tests). Live apply uses
+  # Browser Use's pool; these do not replace it.
   APPLY_PROXY_URL: ${APPLY_PROXY_URL:-}
-  # Managed anti-detect browser (Bright Data Scraping Browser) CDP endpoint.
-  # Set it and the browser tier drives that instead of local Chromium; it
-  # brings its own residential exit + fingerprint + CAPTCHA. Empty = local.
   APPLY_BROWSER_CDP_URL: ${APPLY_BROWSER_CDP_URL:-}
   APPLY_BROWSER_USER_AGENT: ${APPLY_BROWSER_USER_AGENT:-}
   APPLY_VERIFICATION_HOURS: ${APPLY_VERIFICATION_HOURS:-24}
@@ -310,6 +323,12 @@ services:
     build:
       context: .
       dockerfile: packages/core/Dockerfile
+      # Chromium for the browser apply tier. In the args permanently because a
+      # plain `up -d --build` used to rebuild the worker WITHOUT it, and the
+      # browser tier silently vanished until the next submit failed
+      # (AUTO_APPLY_SETUP.md §4 documents the trap; it bit on 2026-08-27).
+      args:
+        INSTALL_PLAYWRIGHT: "true"
     restart: unless-stopped
     logging: *default_logging
     environment: *app_env
@@ -320,13 +339,41 @@ services:
       # once uvicorn is serving, which is only after migrations finished.
       api:
         condition: service_healthy
-    command: python -m juicebox.cli work
+    # --exclude-apply: the candidate application pipeline belongs to
+    # worker-apply below, and exclusion is what makes that real — a kind the
+    # general worker can still claim ends up inside its serial batch behind
+    # outreach sends, which is exactly the ten-quiet-minutes this split fixes.
+    command: python -m juicebox.cli work --exclude-apply
 
     # The core image bakes a HEALTHCHECK that probes uvicorn on :8000 (correct
     # for `api`, which shares this image). The worker runs the queue loop and
     # serves no HTTP, so it inherited a probe that can only ever fail: it has
     # been reporting "unhealthy" in prod while working fine. Nothing depends on
     # worker being healthy, so drop the probe rather than invent a fake one.
+    healthcheck:
+      disable: true
+
+  # The candidate application pipeline: package builds, submit attempts and
+  # their verification legs, form-spec derivations, and the "your application
+  # is ready" texts. Its own process for the same reason worker-intake exists —
+  # on 2026-08-27 three 👍-applications waited ten minutes behind a batch of
+  # outreach sends. Pairs with the general worker's --exclude-apply; deploy
+  # both or neither. Needs Chromium: the browser submit tier runs here.
+  worker-apply:
+    build:
+      context: .
+      dockerfile: packages/core/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: "true"
+    restart: unless-stopped
+    logging: *default_logging
+    environment: *app_env
+    volumes:
+      - filedata:/app/data/files
+    depends_on:
+      api:
+        condition: service_healthy
+    command: python -m juicebox.cli work --apply-only
     healthcheck:
       disable: true
 
@@ -428,6 +475,8 @@ services:
     build:
       context: packages/web
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
     restart: unless-stopped
     logging: *default_logging
     depends_on:
@@ -440,9 +489,9 @@ services:
       timeout: 5s
       retries: 3
 
-  # The candidate portal (apply.goforay.io). A separate image and a separate
-  # nginx from `web` on purpose: its config proxies only /v1/portal/, so the
-  # recruiter API is not reachable from the candidate domain at all.
+  # Legacy candidate portal build is retained only for rollback. Caddy no
+  # longer publishes it: apply.goforay.io is OpenInstinct's separate Vercel
+  # deployment, which owns Better Auth, Linq, vault, and browser execution.
   portal:
     build:
       context: packages/portal
@@ -463,7 +512,7 @@ services:
     logging: *default_logging
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
-      PORTAL_DOMAIN: ${PORTAL_DOMAIN:?set PORTAL_DOMAIN in .env, e.g. apply.goforay.io}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
     ports:
       - "80:80"
@@ -475,7 +524,7 @@ services:
       - caddy_config:/config
     depends_on:
       - web
-      - portal
+      - api
 
 volumes:
   pgdata:

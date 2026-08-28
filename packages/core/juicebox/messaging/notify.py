@@ -44,6 +44,20 @@ EVENT_PACKAGE_READY = "package.ready"
 EVENT_APPLICATION_SENT = "application.sent"
 EVENT_STATUS_CHANGED = "status.changed"
 EVENT_REFERRAL_CONFIRMED = "referral.confirmed"
+# An account-gated board (Workday/Oracle/YC) needs a login before the agent
+# can apply. Subject-keyed on the application so one prompt goes out per role.
+EVENT_VAULT_NEEDED = "vault.needed"
+# Apply-by-link dead ends, subject-keyed on the link message so a retried
+# job cannot text the same refusal twice.
+EVENT_LINK_PROBLEM = "link.problem"
+EVENT_LINK_DUPLICATE = "link.duplicate"
+EVENT_LINK_PARKED = "link.parked"
+
+_LINK_EVENT_BODIES = {
+    EVENT_LINK_PROBLEM: prompts.NOTIFY_LINK_PROBLEM,
+    EVENT_LINK_DUPLICATE: prompts.NOTIFY_LINK_DUPLICATE,
+    EVENT_LINK_PARKED: prompts.NOTIFY_LINK_PARKED,
+}
 
 
 def manager_thread_for(db: Session, *, org_id: str, candidate_id: str) -> IntakeThread | None:
@@ -145,10 +159,13 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             link=link,
         )
         # verbatim: names the company and role from the posting.
+        media = ()
+        if event == EVENT_APPLICATION_SENT:
+            media = _sent_screenshot(db, thread, application)
         row = _deliver(
             db,
             thread=thread,
-            message=OutboundMessage(body=body, verbatim=True),
+            message=OutboundMessage(body=body, media=media, verbatim=True),
             origin="proactive",
         )
         reacted = False
@@ -185,6 +202,47 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
             result["followup"] = ask_for_missing(db, application)
         return result
 
+    if event in _LINK_EVENT_BODIES:
+        row = _deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=_LINK_EVENT_BODIES[event]),
+            origin="proactive",
+        )
+        return {"event": event, "sent": 1 if row is not None else 0}
+
+    if event == EVENT_VAULT_NEEDED:
+        application = db.get(Application, job.payload.get("subject_id") or "")
+        if application is None or application.candidate_id != thread.candidate_id:
+            return {"skipped": "application not found for this thread"}
+        posting = db.get(JobPosting, application.job_posting_id)
+        company = (posting.company if posting else "") or "this employer"
+        # The vault page prefills the vendor/tenant from the query, so the
+        # saved credential is scoped to exactly the account we will register.
+        from ..applications.ats import detect
+        from urllib.parse import urlencode
+
+        target = detect.target_of(posting) if posting is not None else None
+        query = urlencode(
+            {
+                "vault": (target.vendor if target else "") or "",
+                "tenant": (target.tenant if target else "") or "",
+                "company": company,
+            }
+        )
+        link = mint_portal_link(
+            db,
+            org_id=thread.org_id,
+            candidate_id=application.candidate_id,
+            path=f"/documents?{query}",
+            channel=thread.channel,
+        )
+        body = prompts.NOTIFY_VAULT_NEEDED.format(company=company, link=link)
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body), origin="proactive"
+        )
+        return {"event": event, "sent": 1 if row is not None else 0}
+
     if event == EVENT_STATUS_CHANGED:
         from ..applications.service import application_status_summary
 
@@ -211,6 +269,65 @@ def handle_notify(db: Session, job: Job, now) -> dict[str, Any]:
         return {"event": event, "sent": 1 if row is not None else 0}
 
     return {"skipped": f"unknown event {event!r}"}
+
+
+def _sent_screenshot(db: Session, thread, application) -> tuple:
+    """Confirmation PNG for a succeeded browser submit, or empty.
+
+    Same media contract as job cards: iMessage/RCS only, body always kept,
+    any failure stays text-only. The path is the one labelled ``confirmation``
+    on the succeeded attempt — never a before-submit or unconfirmed shot.
+    """
+    from .. import storage
+    from ..applications.submit.browser.agent.loop import confirmation_artifact
+    from ..models import ApplicationSubmission
+    from .cards import wants_image
+    from .linq import LinqSendError, OutboundMedia, upload_attachment
+
+    if not wants_image(thread):
+        return ()
+    attempt = db.scalar(
+        select(ApplicationSubmission).where(
+            ApplicationSubmission.application_id == application.id,
+            ApplicationSubmission.status == "succeeded",
+        )
+    )
+    if attempt is None:
+        return ()
+    artifacts = list(attempt.artifacts or [])
+    run = (attempt.verification or {}).get("run") or {}
+    artifacts.extend(run.get("artifacts") or [])
+    relpath = confirmation_artifact(artifacts)
+    if not relpath:
+        return ()
+    try:
+        data = storage.read_bytes(relpath)
+    except Exception as exc:  # noqa: BLE001 - text still goes
+        logger.info("confirmation screenshot unreadable for %s: %s", application.id, exc)
+        return ()
+    if not data:
+        return ()
+    try:
+        attachment_id = upload_attachment(
+            filename="application-sent.png",
+            content_type="image/png",
+            data=data,
+        )
+    except LinqSendError as exc:
+        logger.info("confirmation screenshot upload refused for %s: %s", application.id, exc)
+        return ()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("confirmation screenshot upload failed for %s: %s", application.id, exc)
+        return ()
+    if not attachment_id:
+        return ()
+    return (
+        OutboundMedia(
+            content_type="image/png",
+            attachment_id=attachment_id,
+            filename="application-sent.png",
+        ),
+    )
 
 
 def notify_candidate(

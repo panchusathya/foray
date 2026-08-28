@@ -20,7 +20,7 @@ import logging
 import time
 from datetime import UTC, timedelta
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -97,7 +97,10 @@ class VaultStepUpIn(BaseModel):
 class VaultCredentialIn(BaseModel):
     vendor: str
     tenant: str
-    username: str
+    # Optional: for the texted vault-needed flow the candidate types only a
+    # password, and the username is derived server-side as the alias the
+    # account will be registered under (so leg-two sign-in matches).
+    username: str = ""
     password: str
     origin: str = "candidate_supplied"
 
@@ -402,7 +405,7 @@ def _can_auto_submit(db: Session, application: Application, posting: JobPosting 
 
     Same two questions ``request_submission`` asks, so the button appears
     exactly when pressing it would work: is there an adapter for this employer's
-    ATS, and is this candidate past the first-application review.
+    ATS.
     """
     if posting is None or application.status not in {"prepared", "awaiting_consent"}:
         return False
@@ -534,21 +537,16 @@ def approve_package(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    """The per-application yes. Approval is what unlocks ``submitted``."""
+    """Backward-compatible submit action for clients using the old approval route."""
     application = _application(db, principal, application_id)
     if application.status not in {"prepared", "awaiting_consent"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"nothing to approve in status {application.status!r}",
         )
-    application.approved_at = utcnow()
-    if application.status == "prepared":
-        transition(db, application, to_status="awaiting_consent", actor="candidate")
-
-    # Approval is the per-application yes, so this is the moment an automated
-    # attempt becomes possible. Most postings will not have an adapter and the
-    # answer is the hand-off we already do -- which is why `auto_submit` reports
-    # a reason instead of raising.
+    # This route used to record an extra per-application approval.  Keeping it
+    # as an alias avoids breaking existing clients while treating product use
+    # as the authorization boundary.
     from ..applications.submission import auto_submit
 
     job, reason = auto_submit(db, application)
@@ -563,19 +561,10 @@ def submit_for_me(
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    """The explicit "you apply for me" tap.
-
-    Distinct from ``confirm-submitted``, which is the candidate telling us they
-    applied themselves. This one asks us to do it, and needs the same recorded
-    approval every other path needs -- tapping this button *is* that approval
-    when there is not one yet.
-    """
+    """Queue an application on the authenticated candidate's behalf."""
     from ..applications.submission import NotSubmittable, request_submission
 
     application = _application(db, principal, application_id)
-    if application.approved_at is None:
-        application.approved_at = utcnow()
-        db.flush()
     try:
         job = request_submission(db, application, requested_by="candidate")
     except NotSubmittable as exc:
@@ -593,8 +582,8 @@ def confirm_submitted(
 ) -> dict:
     """The one-tap 'I applied' after the Tier-0 hand-off."""
     application = _application(db, principal, application_id)
-    # Stamp the method only after the move succeeds — a 409 (no consent,
-    # illegal status) must not rewrite a browser/email attempt that is
+    # Stamp the method only after the move succeeds — a 409 from an illegal
+    # status must not rewrite a browser/email attempt that is
     # already in flight, or a draft that never left.
     previous_method = application.submission_method or ""
     try:
@@ -1261,32 +1250,99 @@ def list_vault_accounts(
 @router.post("/vault/accounts", status_code=201)
 def save_vault_account(
     payload: VaultCredentialIn,
-    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> dict:
-    _consume_vault_grant(db, principal, vault_grant)
+    # No step-up here: the candidate already authenticated to reach the portal
+    # (a single-use texted magic link, or an email/Google sign-in). A second
+    # OTP on top rode the same mail path that is currently unreliable, which
+    # made the vault unreachable; the credential is write-only and never shown
+    # back, so the session is the authorization.
     from ..applications.candidate_credentials import save_password
 
+    vendor = payload.vendor.strip()
+    tenant = payload.tenant.strip()
+    weak = _password_shortfall(payload.password or "")
+    if weak:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=weak)
+    username = payload.username.strip() or _vault_username_for(db, principal, vendor)
     try:
         row = save_password(
             db, org_id=principal.org_id, candidate_id=principal.candidate_id,
-            vendor=payload.vendor.strip(), tenant=payload.tenant.strip(), username=payload.username,
+            vendor=vendor, tenant=tenant, username=username,
             password=payload.password, origin=payload.origin,
+            # A vault-entered credential is one we have not registered on the
+            # employer yet: the agent registers with it (model B2), so the
+            # account is pending_verification until that lands.
+            registered=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    _resume_after_credential(db, principal, row)
     return {"id": row.id, "vendor": row.vendor, "tenant": row.tenant, "username": row.username, "status": row.status}
+
+
+def _password_shortfall(password: str) -> str:
+    """Empty when the password clears every ATS complexity rule we've met,
+    otherwise a candidate-facing reason. Workday/Oracle/YC each demand some
+    subset of upper/lower/digit/special/length; asking for all of them once,
+    at 10+ characters, gets a login through any of them on the first try
+    rather than after a rejected registration."""
+    checks = [
+        (len(password) >= 10, "at least 10 characters"),
+        (any(c.islower() for c in password), "a lowercase letter"),
+        (any(c.isupper() for c in password), "an uppercase letter"),
+        (any(c.isdigit() for c in password), "a number"),
+        (any(not c.isalnum() for c in password), "a special character"),
+    ]
+    missing = [label for ok, label in checks if not ok]
+    return ("password needs " + ", ".join(missing)) if missing else ""
+
+
+def _vault_username_for(db: Session, principal: CandidatePrincipal, vendor: str) -> str:
+    """The candidate's own email — the address the ATS account is registered
+    under, so the employer's verification link reaches the candidate to click.
+
+    Deliberately NOT the application alias: the alias inbox is a mailbox we
+    cannot reliably read (verification mail never arrived tonight), and an ATS
+    login is genuinely the candidate's own. The alias still fronts the
+    application itself; only the account registration uses the real address."""
+    from ..applications import alias
+
+    return alias.primary_email(_candidate(db, principal))
+
+
+def _resume_after_credential(db: Session, principal: CandidatePrincipal, account) -> None:
+    """Queue any account-gated pursuit that was waiting on this login.
+
+    The candidate just supplied the vault password the apply-time gate paused
+    for; this is what turns that into a submission without a second tap.
+    """
+    from ..applications.ats import detect
+    from ..applications.submission import auto_submit
+
+    pending = db.scalars(
+        select(Application).where(
+            Application.org_id == principal.org_id,
+            Application.candidate_id == principal.candidate_id,
+            Application.status.in_(("prepared", "awaiting_consent")),
+        )
+    ).all()
+    for application in pending:
+        posting = db.get(JobPosting, application.job_posting_id)
+        target = detect.target_of(posting) if posting is not None else None
+        if not target or target.vendor != account.vendor:
+            continue
+        auto_submit(db, application)
 
 
 @router.delete("/vault/accounts/{account_id}", status_code=204)
 def revoke_vault_account(
     account_id: str,
-    vault_grant: str = Header(default="", alias="X-Vault-Grant"),
     db: Session = Depends(get_db),
     principal: CandidatePrincipal = Depends(get_candidate_principal),
 ) -> Response:
-    _consume_vault_grant(db, principal, vault_grant)
+    # Same reasoning as save: the portal session is the authorization.
     row = db.scalar(select(AtsAccount).where(AtsAccount.id == account_id, AtsAccount.org_id == principal.org_id, AtsAccount.candidate_id == principal.candidate_id))
     if row is None:
         raise _NOT_FOUND

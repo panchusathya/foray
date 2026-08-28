@@ -1,30 +1,9 @@
-"""The questions an application needs, asked when an application needs them.
+"""The one question the apply flow still asks: work authorization.
 
-Onboarding used to close with a batch of three — years, comp, timing — before
-the candidate had been shown a single role. Two of those are literally in
-``docgen.answers.STANDARD_QUESTIONS``: an employer asks for a salary
-expectation and a notice period on the form, and we asked them weeks earlier,
-in the abstract, from somebody who had no idea what they were being considered
-for. The answer went stale and the conversation spent its best messages on a
-survey.
-
-So they move here. A package is built, the answer set comes back with blanks,
-and the blanks are what we ask about — in one message, naming the role, at the
-moment the number actually decides something. "Google wants a salary
-expectation on the form" is a question somebody can answer. "What are you
-targeting on comp?" three weeks earlier is a form field.
-
-**Only ever blanks.** ``build_form_answers`` fills what the preference already
-knows, so a candidate who volunteered a number is never asked for it again --
-and the extractor absorbs whatever comes back on the next turn, so the second
-application does not ask a third time.
-
-``why_company`` arrives *drafted* now (``answers.py``: from the resume and
-the posting, flagged ``needs_review``), so the follow-up hands the draft over
-for review rather than asking for a paragraph by SMS. A blank one -- no model
-to draft with -- is still named and pointed at the portal: an empty "why this
-company" the text never mentions reads as a question the agent missed rather
-than one it deliberately left.
+Thumbs-up is the yes. The package fills what the preference already knows.
+Salary and start date are folded in when we have them; they are not surveyed
+over text. Voluntary EEO is declined on the form. The only fact we will not
+guess — and the only chat question after a card tap — is work authorization.
 """
 
 from __future__ import annotations
@@ -38,16 +17,21 @@ from ..models import Application, CandidatePreference, IntakeThread, JobPosting
 
 logger = logging.getLogger(__name__)
 
-#: Blank answer keys worth one message, and the field each one lands in when
-#: the reply is re-extracted. ``why_company`` is absent on purpose.
+#: Blank answer keys worth one chat message. Work authorization is the only
+#: fact we will not guess and the only question the apply flow still asks.
+#: Salary and start date are filled from the saved preference when we have
+#: them; a missing one is left blank, not surveyed over text.
 ASKABLE: dict[str, str] = {
-    "salary_expectation": "what should we put for comp expectations?",
-    "notice_period": "when could you start?",
     "work_authorization": "any visa sponsorship needed, or are you authorised to work there?",
 }
 
 #: Ask order, so the message reads the same way every time.
-ASK_ORDER: tuple[str, ...] = ("salary_expectation", "notice_period", "work_authorization")
+ASK_ORDER: tuple[str, ...] = ("work_authorization",)
+
+#: Preference keys we fold into the package when the candidate answers later.
+#: Broader than ASKABLE: a number they texted still fills salary even though
+#: we no longer ask for it.
+REFILL_KEYS: tuple[str, ...] = ("work_authorization", "salary_expectation", "notice_period")
 
 #: Blanks that are answered in the portal, not over text. ``why_company`` is
 #: normally *drafted* by the package build now (``docgen.answers``); it lands
@@ -113,35 +97,26 @@ def form_question_blanks(application: Application) -> list[dict]:
     return sorted(blanks, key=lambda item: not item.get("form_required"))
 
 
-def textable_form_blanks(application: Application) -> list[dict]:
-    """Required custom blanks a text conversation may ask directly.
-
-    Custom only, never attestations: a form's own question ("what interests
-    you about infra?") is answerable in a reply, and the reply is the
-    candidate's own words -- the same standing a portal PATCH has. Self-ID
-    stays off SMS entirely, whatever the form marks it.
+def textable_form_blanks(_application: Application) -> list[dict]:
+    """Required custom blanks we used to ask over text. Empty: the apply
+    flow asks only work authorization. In-flight rows already tagged
+    ``asked_text`` are still absorbed (``awaiting_text_answers``).
     """
-    return [
-        item
-        for item in (application.form_answers or [])
-        if item.get("kind") == "custom"
-        and item.get("form_required")
-        and not str(item.get("answer") or "").strip()
-    ]
+    return []
 
 
 def required_form_blanks(application: Application) -> list[dict]:
-    """Required form questions nobody has answered -- the submit withhold.
+    """Only missing work authorization withholds a send.
 
-    Custom and attestation both: ``hosted_form.unanswerable_questions`` will
-    refuse the run on exactly this set, so queueing an attempt while it is
-    non-empty spends attempt 1 on a run we already know terminuses.
+    Everything else is filled from the package, declined on optional EEO
+    fields, or becomes a hand-off inside the submitter. Queueing while a
+    custom essay is blank used to be right (the run was guaranteed to
+    terminus); asking that essay over chat is the complexity we dropped.
     """
     return [
         item
         for item in (application.form_answers or [])
-        if item.get("kind") in ("custom", "attestation")
-        and item.get("form_required")
+        if str(item.get("key")) == "work_authorization"
         and not str(item.get("answer") or "").strip()
     ]
 
@@ -182,62 +157,18 @@ def attestation_count(application: Application) -> int:
 
 
 def followup_message(application: Application, posting: JobPosting | None) -> str:
-    """One message naming the role and the blanks, or "" when nothing is owed."""
+    """The one question this package still asks, or "" when work
+    authorization is already known. No portal hand-off, no self-ID
+    survey, no custom-essay interrogation.
+    """
     missing = blank_answers(application)
-    mine = portal_only_blanks(application)
-    drafted = drafted_for_review(application)
-    # Required customs are asked directly over text now (one per message, via
-    # the answer loop), so naming them here as "answer in the app" would
-    # promise the wrong venue. Only the optional ones are handed to the portal.
-    form_blanks = [
-        item for item in form_question_blanks(application) if not item.get("form_required")
-    ]
-    attestations = attestation_count(application)
-    if not missing and not mine and not drafted and not form_blanks and not attestations:
-        return ""
-
-    where = role_phrase(posting)
-    head = (
-        f"{where} asks a couple of things I don't have yet:"
-        if where
-        else "the application form asks a couple of things I don't have yet:"
-    )
-    lines = [f"- {ASKABLE[key]}" for key in missing]
-    company = ((posting.company if posting else "") or "the company").strip()
-    for key in mine:
-        lines.append(
-            f"- {PORTAL_ONLY[key].format(company=company)} — "
-            "write it in the app and i'll include it."
-        )
-    for _item in drafted:
-        lines.append(
-            f"- i drafted why {company} for you from your background — "
-            "read it in the app and change anything before it goes out."
-        )
-    for item in form_blanks[:MAX_NAMED_FORM_QUESTIONS]:
-        question = str(item.get("question") or "").strip().rstrip("?")
-        lines.append(
-            f'- their form asks: "{question}?" '
-            "— answer in the app and i'll include it."
-        )
-    overflow = len(form_blanks) - MAX_NAMED_FORM_QUESTIONS
-    if overflow > 0:
-        lines.append(f"- plus {overflow} more of their questions, all in the app.")
-    if attestations:
-        plural = "questions" if attestations > 1 else "question"
-        lines.append(
-            f"- {attestations} self-ID {plural} (things like veteran or disability "
-            "status) — in the app too. only you can answer those; i never fill them in."
-        )
     if not missing:
-        # Nothing to ask, only things to hand over. A question head would
-        # misdescribe what this message wants.
-        head = (
-            f"{where} needs a few things from you:"
-            if where
-            else "your application needs a few things from you:"
-        )
-    return head + "\n\n" + "\n".join(lines)
+        return ""
+    where = role_phrase(posting)
+    asks = " ".join(ASKABLE[key] for key in missing)
+    if where:
+        return f"{where} — {asks}"
+    return asks
 
 
 def role_phrase(posting: JobPosting | None) -> str:
@@ -338,41 +269,44 @@ def absorb_text_answers(
     admitting we did not understand it -- the two replies a bare "noted,
     thanks" was collapsing into one.
 
-    ``asked_key`` is ``thread.last_field_asked``: when it names a form
-    question we asked directly, the reply body is the answer, written onto the
-    row **verbatim** -- never through the preference extractor, which knows
-    nothing about ``q_*`` keys. Their words, same standing as a portal PATCH,
-    so ``edited`` shields them from re-discovery exactly the same way.
+    ``asked_key`` is ``thread.last_field_asked``: when it names a question we
+    asked directly -- a form's own ``q_*`` key or one of the standard set --
+    the reply body is the answer, written onto the row **verbatim** when the
+    extractor pass left it blank. Their words, same standing as a portal
+    PATCH, so ``edited`` shields them from re-discovery exactly the same way.
     """
     filled = refill_from_preference(db, application)
-    if asked_key and reply_body.strip():
+    reply = reply_body.strip()
+    if asked_key and reply and not reply.endswith("?"):
+        # A directly-asked question owns its reply, standard keys included.
+        # The preference extractor gets first shot (refill above) because it
+        # also feeds matching — but when it fails, the candidate's own words
+        # land verbatim rather than evaporating. A live thread answered "when
+        # could you start?" four ways ("November 2026", "11/26", ...) while
+        # the extractor's model timed out, and every answer vanished into a
+        # re-ask loop. A reply that itself ends in a question mark is the
+        # candidate asking us something, never an answer to bind.
         answers = [dict(item) for item in (application.form_answers or [])]
         for item in answers:
-            if (
-                str(item.get("key")) == asked_key
-                and item.get("kind") == "custom"
-                and item.get("asked_text")
-                and not str(item.get("answer") or "").strip()
-            ):
-                item["answer"] = reply_body.strip()
-                item["provenance"] = "candidate:text"
-                item["edited"] = True
-                application.form_answers = answers
-                db.flush()
-                filled = [*filled, asked_key]
+            if str(item.get("key")) != asked_key:
+                continue
+            if str(item.get("answer") or "").strip():
                 break
+            askable = str(item.get("key")) in ASKABLE
+            custom = item.get("kind") == "custom" and item.get("asked_text")
+            if not (askable or custom):
+                break
+            item["answer"] = reply
+            item["provenance"] = "candidate:text"
+            item["edited"] = True
+            application.form_answers = answers
+            db.flush()
+            filled = [*filled, asked_key]
+            break
     return {
         "filled": filled,
         "missing": asked_blanks(application),
-        "handover": bool(
-            portal_only_blanks(application)
-            or [
-                item
-                for item in form_question_blanks(application)
-                if not item.get("form_required")
-            ]
-            or attestation_count(application)
-        ),
+        "handover": False,
         "next_question": next_text_question(application),
     }
 
@@ -409,14 +343,6 @@ def answer_acknowledgement(
         question = str(next_question.get("question") or "").strip().rstrip("?")
         return f'got it. their form also asks: "{question}?"'
 
-    if outcome.get("handover"):
-        # Everything answerable over text is in. What is left is deliberately
-        # not askable here -- their own words, the form's own questions, and
-        # self-ID -- so this says where it lives rather than asking again.
-        return (
-            f"that's everything i needed for {where}. the last few bits are "
-            "yours to fill in — they're waiting in the app."
-        )
     return f"perfect, that's {where} complete. i'll take it from here."
 
 
@@ -461,36 +387,14 @@ def thread_for(db: Session, application: Application) -> IntakeThread | None:
 def ask_for_missing(db: Session, application: Application) -> dict:
     """Send the one follow-up this package needs. Idempotent per application.
 
-    Silent when there is nothing to ask, nobody to ask, or we already asked for
-    this application — a second copy of the same three questions is the thing
-    that made the agent look like it was not listening.
+    Silent when work authorization is already known, nobody is there to ask,
+    or we already asked. The apply flow does not survey salary, start date,
+    custom essays, or self-ID over chat.
     """
     missing = blank_answers(application)
-    # Everything the message hands over rather than asks: the write-it-yourself
-    # keys, drafts awaiting the candidate's eyes, the form's *optional*
-    # questions, and the self-ID entries. Required customs are deliberately
-    # absent -- they are asked directly, one per message, below. The self-ID
-    # ones are named here only so the ask-once flag lands on their rows -- the
-    # rendered message carries them as a count, never by name.
-    mine = (
-        portal_only_blanks(application)
-        + [str(item.get("key")) for item in drafted_for_review(application)]
-        + [
-            str(item.get("key"))
-            for item in (application.form_answers or [])
-            if item.get("kind") in ("custom", "attestation")
-            and not str(item.get("answer") or "").strip()
-            and not (item.get("kind") == "custom" and item.get("form_required"))
-        ]
-    )
-    next_custom = next_text_question(application)
-    if not missing and not mine and next_custom is None:
+    if not missing:
         return {"asked": [], "skipped": "package answered everything"}
 
-    # A question already put to them directly and still unanswered holds
-    # everything: the conversation is mid-loop, and a handover batch (or the
-    # same question again) on top of an open question is the double-text that
-    # makes the agent read as not listening.
     pending = [
         item
         for item in (application.form_answers or [])
@@ -501,12 +405,9 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     if pending:
         return {"asked": [], "skipped": "waiting on a texted answer"}
 
-    # "Have we asked?" is recorded on the answer rows themselves rather than a
-    # new column: they are already JSON on this application, and a flag that
-    # travels with the answer cannot drift from it.
     answers = [dict(item) for item in (application.form_answers or [])]
     already = {str(i.get("key")) for i in answers if i.get("asked")}
-    if set(missing) | set(mine) <= already and next_custom is None:
+    if set(missing) <= already:
         return {"asked": [], "skipped": "already asked"}
 
     thread = thread_for(db, application)
@@ -518,27 +419,6 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     from ..messaging.channels import OutboundMessage
     from ..messaging.conversation import deliver
 
-    if not missing and next_custom is not None:
-        # The form's own required question goes out alone, tagged so the reply
-        # lands on its row -- the same asked_field mechanics identity
-        # questions use. One per message; the answer loop asks the next one in
-        # the acknowledgement, and the hand-over line (portal-only blanks,
-        # drafts, self-ID) arrives in the completion ack once the loop drains
-        # -- a batch sent first would leave this question waiting on an event
-        # that may never come.
-        key = str(next_custom.get("key"))
-        body = custom_question_message(application, posting, next_custom)
-        row = deliver(
-            db, thread=thread, message=OutboundMessage(body=body, asked_field=key)
-        )
-        if row is not None:
-            mark_text_asked(db, application, key)
-        return {
-            "asked": [key] if row is not None else [],
-            "handed_off": [],
-            "sent": 1 if row is not None else 0,
-        }
-
     body = followup_message(application, posting)
     if not body:
         return {"asked": [], "skipped": "nothing to say"}
@@ -546,16 +426,13 @@ def ask_for_missing(db: Session, application: Application) -> dict:
     row = deliver(db, thread=thread, message=OutboundMessage(body=body))
     if row is not None:
         for item in answers:
-            if str(item.get("key")) in set(missing) | set(mine):
+            if str(item.get("key")) in set(missing):
                 item["asked"] = True
         application.form_answers = answers
         db.flush()
-    # `asked` stays the questions we actually asked. A portal-only blank was
-    # named, not asked, and a caller counting questions should not see it --
-    # but the row still carries `asked` so it is not named twice.
     return {
         "asked": missing,
-        "handed_off": mine,
+        "handed_off": [],
         "sent": 1 if row is not None else 0,
     }
 
@@ -593,7 +470,7 @@ def refill_from_preference(db: Session, application: Application) -> list[str]:
     filled: list[str] = []
     for item in answers:
         key = str(item.get("key"))
-        if key not in ASKABLE or str(item.get("answer") or "").strip():
+        if key not in REFILL_KEYS or str(item.get("answer") or "").strip():
             continue
         # An answer a human edited is theirs, blank or not.
         if item.get("edited"):

@@ -22,11 +22,13 @@ from ..models import (
     IntakeCall,
     JobMatch,
     Message,
+    OpenInstinctApplicationTask,
     ProjectCandidate,
     new_id,
     record_event,
     utcnow,
 )
+from ..openinstinct import fetch_candidate_conversations
 from ..outreach.history import (
     candidate_history_stats,
     candidate_timeline,
@@ -731,6 +733,18 @@ def get_candidate_timeline(
     intake_threads = intake_threads_for_candidate(
         db, org_id=principal.org_id, candidate_id=candidate_id
     )
+    openinstinct = fetch_candidate_conversations(
+        org_id=principal.org_id, candidate_id=candidate_id
+    )
+    application_tasks = db.scalars(
+        select(OpenInstinctApplicationTask)
+        .where(
+            OpenInstinctApplicationTask.org_id == principal.org_id,
+            OpenInstinctApplicationTask.candidate_id == candidate_id,
+        )
+        .order_by(OpenInstinctApplicationTask.updated_at.desc())
+        .limit(limit)
+    ).all()
     return CandidateTimelineOut(
         stats=HistoryStatsOut(**stats.__dict__),
         threads=[
@@ -765,6 +779,20 @@ def get_candidate_timeline(
                 ],
             )
             for thread in intake_threads
+        ],
+        openinstinct_conversations=list(openinstinct["conversations"]),
+        openinstinct_available=bool(openinstinct["available"]),
+        openinstinct_application_tasks=[
+            {
+                "id": task.id,
+                "application_id": task.application_id,
+                "status": task.status,
+                "conversation_url": task.conversation_url,
+                "result": dict(task.result or {}),
+                "reported_at": task.reported_at.isoformat() if task.reported_at else None,
+                "updated_at": task.updated_at.isoformat(),
+            }
+            for task in application_tasks
         ],
     )
 

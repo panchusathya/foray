@@ -35,6 +35,7 @@ from ..applications.service import (
     request_package,
 )
 from ..intake.schema import coverage
+from ..jobmatch.ids import source_id_for
 from ..models import (
     Application,
     IntakeMessage,
@@ -46,8 +47,8 @@ from ..models import (
 )
 from ..portal.links import mint_portal_link
 from ..presentation.jobcard import clean_title, jobcard, render_card, role_line
+from . import apply_link, identity, intents, prompts
 from . import cards as cards_media
-from . import identity, intents, prompts
 from .channels import OutboundMessage
 from .threads import was_handed_off
 
@@ -107,6 +108,10 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         identity.link_candidate(db, thread=thread)
     state = coverage(thread.record or {})
 
+    # A link that arrived before we knew who was texting is spent the moment
+    # a candidate exists -- idempotent, so re-entered turns cannot double it.
+    apply_link.ensure_enqueued(db, thread)
+
     presented = list(thread.last_presented or [])
     intent = intents.classify(last.body or "", presented=presented)
 
@@ -114,6 +119,7 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         # verbatim copy names companies and roles read out of the database --
         # rewriting it risks changing a fact, so only the conversational lines
         # go through the composer.
+        canned = body
         if not verbatim:
             from .conversation import humanize
 
@@ -121,8 +127,14 @@ def _managing_turn(db: Session, *, thread: IntakeThread, last: IntakeMessage):
         row = _deliver(
             db, thread=thread, message=OutboundMessage(body=body, verbatim=verbatim)
         )
+        if row is not None and not verbatim:
+            # Which template this bubble came from, for `_fresh`: the stored
+            # body is a model rewrite, so comparing surfaces never matches.
+            row.raw = {**(row.raw or {}), "canned": canned}
         return TurnResult(action, thread, state, sent=[r for r in [row] if r])
 
+    if intent.kind == intents.INTENT_APPLY_LINK:
+        return _apply_by_link(db, thread=thread, last=last, state=state, url=intent.url)
     if intent.kind == intents.INTENT_APPLY:
         return _apply(db, thread=thread, last=last, state=state, selection=intent.selection)
     if intent.kind == intents.INTENT_JOBS_MORE:
@@ -204,12 +216,11 @@ def _absorb_application_answer(db: Session, *, thread: IntakeThread, last: Intak
     body = followups.answer_acknowledgement(application, posting, outcome)
 
     # Answering is what makes an attempt possible, so this is where one is
-    # retried. The first attempt ran at package time, before these answers
-    # existed: a required blank refuses the run before the browser opens, so
-    # without this the candidate answers the question and nothing whatsoever
-    # happens. `auto_submit` reports rather than raises, returns any attempt
-    # already in flight instead of queueing a second, and most postings have no
-    # adapter at all -- so a hand-off stays a hand-off.
+    # retried. Work authorization is withheld at package time; without this
+    # the candidate answers it and nothing happens. `auto_submit` reports
+    # rather than raises, returns any attempt already in flight instead of
+    # queueing a second, and most postings have no adapter at all -- so a
+    # hand-off stays a hand-off.
     submission = ""
     if not outcome["missing"]:
         from ..applications.submission import auto_submit
@@ -458,6 +469,54 @@ def _accept_proposal(proposal: JobProposal | None, last: IntakeMessage) -> None:
         proposal.responded_message_id = last.id
 
 
+def _apply_by_link(db: Session, *, thread: IntakeThread, last: IntakeMessage, state, url: str):
+    """A job URL in the message: the posting and the per-application yes at once.
+
+    The link is stashed before anything else. Identity may still be missing,
+    and the stash is what lets the answer to "what name goes on this?" finish
+    the job the link started -- ``ensure_enqueued`` runs at the top of every
+    managing turn, so the reply that links a candidate spends it.
+    """
+    from .conversation import TurnResult, _deliver
+
+    apply_link.stash(thread, url=url, message_id=last.id)
+
+    candidate_id = thread.candidate_id or identity.link_candidate(db, thread=thread)
+    if not candidate_id:
+        ask, field = _identity_request(thread)
+        body = prompts.LINK_NEED_IDENTITY.format(ask=ask[0].lower() + ask[1:])
+        row = _deliver(
+            db, thread=thread, message=OutboundMessage(body=body, asked_field=field)
+        )
+        return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
+
+    # Already in flight for this exact URL: say so now rather than promising
+    # a package the worker would refuse a minute later.
+    posting = db.scalar(
+        select(JobPosting).where(
+            JobPosting.org_id == thread.org_id,
+            JobPosting.source_id == source_id_for(url=url),
+        )
+    )
+    if posting is not None:
+        existing = db.scalar(
+            select(Application).where(
+                Application.candidate_id == candidate_id,
+                Application.job_posting_id == posting.id,
+            )
+        )
+        if existing is not None:
+            apply_link.clear(thread)
+            row = _deliver(
+                db, thread=thread, message=OutboundMessage(body=prompts.NOTIFY_LINK_DUPLICATE)
+            )
+            return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
+
+    apply_link.ensure_enqueued(db, thread)
+    row = _deliver(db, thread=thread, message=OutboundMessage(body=prompts.LINK_ACK))
+    return TurnResult(ACTION_APPLIED, thread, state, sent=[r for r in [row] if r])
+
+
 def _detail(db: Session, *, thread: IntakeThread, state, selection: int):
     from .conversation import TurnResult, _deliver
 
@@ -601,20 +660,22 @@ def _fresh(db, thread, first: str, second: str) -> str:
     """
     from .threads import OUTBOUND, messages_of
 
-    # Case-insensitive: the channel voice lowercases outbound copy before it
-    # is stored, so comparing against the constant as written never matches.
+    # Compared against the template the last bubble was written FROM (stashed
+    # on the row by `_say`), not its surface text: with a model key the stored
+    # body is a rewrite and never string-equals the constant. Case-insensitive
+    # for the keyless path, where the channel voice lowercases the constant.
     for message in reversed(messages_of(db, thread)):
         if message.direction != OUTBOUND:
             continue
-        said = (message.body or "").strip().lower()
+        said = str((message.raw or {}).get("canned") or message.body or "").strip().lower()
         return second if said == first.strip().lower() else first
     return first
 
 
-def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, int]:
-    """Walk best-first and keep the first ``limit`` we can honestly card.
+def _sendable_postings(db: Session, pairs: list, *, limit: int) -> list:
+    """Walk best-first and keep the first ``limit`` still worth carding.
 
-    Two checks per posting, both at the last moment before a person acts on it:
+    One check per posting, at the last moment before a person acts on it:
 
     **Still up.** Freshness elsewhere means "recently seen", which is not the
     same as still existing -- a live thread was sent a Rippling role whose page
@@ -622,26 +683,21 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
     skipping it: `eligible_matches` only reads open postings, so a dead role
     removed here does not come back on the next request.
 
-    **On a vendor we can submit to.** The card says "👍 and i'll apply for
-    you", so a role with no submit adapter is a promise we cannot keep -- the
-    first live run carded three roles (YC, DigitalHire, a scraper mirror) and
-    could apply to none of them. The vendor check is `can_submit_vendor`, not
-    `submittable`: under APPLY_SUBMITTER=console the latter says yes to
-    everything. Resolution runs with ``stamp_on_miss=False`` so an aggregator
-    403ing our IP today does not cache "unrecognised" forever.
-
-    Walking a longer eligible list and stopping at ``limit`` is what keeps a
-    high-scoring unsupported role from starving the supported ones ranked
-    under it. Returns ``(kept, unsupported_dropped)`` so the caller can tell
-    "everything was taken down" from "nothing here is applicable".
+    The vendor gate that used to live here is gone on purpose. Hiding a match
+    because its board has no adapter turned every unsupported-board book into
+    "i'm not going to show you roles i can't act on", repeated verbatim
+    forever. A match is shown; applying is attempted with whatever tier exists
+    (handwritten adapter, keyed API, derived form spec), and a posting nothing
+    automated can send becomes a ready-to-review package with the direct link
+    in the portal -- an outcome, not a refusal. Derivation is still queued
+    here for postings with no spec yet, so the answer is on the row by the
+    time somebody taps apply.
     """
     from ..applications import formspec
     from ..applications.ats import detect as ats_detect
-    from ..applications.submit.registry import can_apply
     from ..jobmatch.liveness import is_gone
 
     kept: list = []
-    unsupported = 0
     for match, posting in pairs:
         url = (posting.source_url or "").strip()
         if url and is_gone(url):
@@ -649,27 +705,17 @@ def _sendable_postings(db: Session, pairs: list, *, limit: int) -> tuple[list, i
             db.flush()
             logger.info("closed dead posting %s before proposing it", posting.id)
             continue
-        target = ats_detect.resolve_target(db, posting, stamp_on_miss=False)
-        if not can_apply(posting, target):
-            unsupported += 1
-            # A board nobody mapped is not a verdict, it is an unanswered
-            # question -- queue one derivation (a read-only page view) so the
-            # NEXT time this posting comes up the answer is on the row. Only
-            # here, on a bar-passing match somebody would have been shown:
-            # deriving the whole book would be a page view per posting for
-            # postings nobody ever sees.
-            queued = formspec.enqueue_derivation(db, posting)
-            logger.info(
-                "not carding posting %s: not applicable (vendor=%r)%s",
-                posting.id,
-                target.vendor,
-                "; derivation queued" if queued is not None else "",
-            )
-            continue
+        # Resolution with ``stamp_on_miss=False`` so an aggregator 403ing our
+        # IP today does not cache "unrecognised" forever. A board with no spec
+        # yet gets one derivation queued (a read-only page view) -- only here,
+        # on a bar-passing match somebody is about to be shown: deriving the
+        # whole book would be a page view per posting nobody ever sees.
+        ats_detect.resolve_target(db, posting, stamp_on_miss=False)
+        formspec.enqueue_derivation(db, posting)
         kept.append((match, posting))
         if len(kept) >= limit:
             break
-    return kept, unsupported
+    return kept
 
 
 def _identity_request(thread) -> tuple[str, str]:
@@ -720,25 +766,27 @@ def present_matches(
         )
         return TurnResult("asked", thread, state, sent=[r for r in [row] if r])
 
-    # Over-fetched: the sendable filter below drops dead pages and roles with
-    # no submit adapter, and a filter over exactly three would let one
-    # high-scoring unapplicable role shrink the batch rather than yield to the
-    # supported role ranked under it.
+    # Over-fetched: the liveness filter below drops dead pages, and a filter
+    # over exactly three would let one taken-down role shrink the batch rather
+    # than yield to the live one ranked under it.
     pairs = eligible_matches(
         db,
         org_id=thread.org_id,
         candidate_id=candidate_id,
         limit=MAX_CARDS_PER_MESSAGE * 3,
     )
+    if pairs:
+        pairs = _sendable_postings(db, pairs, limit=MAX_CARDS_PER_MESSAGE)
     if not pairs:
         if quiet:
             return None
-        # Asked directly and holding nothing: go and look before answering.
-        # Reading the book we happen to have is the whole of what "find me
-        # roles" used to do, so a candidate whose spec had never been searched
-        # -- or whose spec was searched once, at handover, before any of it was
-        # parsed -- got "nothing clears the bar" from a search that had never
-        # run. Capped at one billed sweep per candidate per day.
+        # Asked directly and holding nothing (or holding only roles whose
+        # pages are gone): go and look before answering. Reading the book we
+        # happen to have is the whole of what "find me roles" used to do, so a
+        # candidate whose spec had never been searched -- or whose spec was
+        # searched once, at handover, before any of it was parsed -- got
+        # "nothing clears the bar" from a search that had never run. Capped at
+        # one billed sweep per candidate per day.
         searching = _request_discovery(db, thread=thread, candidate_id=candidate_id)
         body = (
             "Looking now — I'll text you as soon as something worth your time turns up."
@@ -753,11 +801,14 @@ def present_matches(
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
 
+    # The budget check runs AFTER the liveness filter: "I'll send them
+    # tomorrow" must be a promise about roles that still exist, and the daily
+    # cap must not be spent on postings about to be dropped as dead.
     decision = limits.may_propose(
         db,
         org_id=thread.org_id,
         candidate_id=candidate_id,
-        count=min(len(pairs), MAX_CARDS_PER_MESSAGE),
+        count=len(pairs),
     )
     if not decision:
         if quiet:
@@ -768,30 +819,6 @@ def present_matches(
             message=OutboundMessage(
                 body="I've got roles lined up — I'll send them tomorrow so I'm not flooding you."
             ),
-            origin=origin,
-        )
-        return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])
-
-    pairs, unsupported = _sendable_postings(db, pairs, limit=MAX_CARDS_PER_MESSAGE)
-    if not pairs:
-        if quiet:
-            return None
-        # Two honest empties, told apart so neither lies: everything was taken
-        # down, or everything left is a role we cannot apply to. The second is
-        # said once per request rather than never -- silence on an explicit
-        # "find me roles" reads as a dead line.
-        body = (
-            prompts.NOTHING_APPLICABLE
-            if unsupported
-            else (
-                "the roles i had lined up have already been taken down. "
-                "i'll keep looking and text you when something lands."
-            )
-        )
-        row = _deliver(
-            db,
-            thread=thread,
-            message=OutboundMessage(body=body),
             origin=origin,
         )
         return TurnResult(ACTION_ANSWERED, thread, state, sent=[r for r in [row] if r])

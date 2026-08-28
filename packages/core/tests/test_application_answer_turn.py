@@ -55,7 +55,7 @@ def thread(session, account, channel):
 def _asked_application(session, account, thread, *, company="Sourcebot", keys=None):
     """An application that has asked over text and is waiting, as
     ``ask_for_missing`` leaves one."""
-    keys = keys or ["salary_expectation", "work_authorization"]
+    keys = keys or ["work_authorization"]
     posting = _posting(
         session, account["org_id"], company=company, title="Founding Engineer", suffix="ans"
     )
@@ -78,11 +78,24 @@ def _asked_application(session, account, thread, *, company="Sourcebot", keys=No
         source="candidate",
     )
     application.status = "prepared"
-    # The state ask_for_missing leaves behind: asked, and still blank.
-    application.form_answers = [
-        {"key": key, "question": followups.ASKABLE[key], "answer": "", "asked": True}
-        for key in keys
+    answers = [
+        {
+            "key": "salary_expectation",
+            "question": "comp?",
+            "answer": "",
+            "asked": False,
+        }
     ]
+    for key in keys:
+        answers.append(
+            {
+                "key": key,
+                "question": followups.ASKABLE.get(key, key),
+                "answer": "",
+                "asked": True,
+            }
+        )
+    application.form_answers = answers
     session.flush()
     return application, posting
 
@@ -229,10 +242,9 @@ class TestTheReportedSequence:
         answers = {
             item["key"]: item.get("answer") or "" for item in application.form_answers
         }
-        assert answers["salary_expectation"].strip()
         assert answers["work_authorization"].strip()
-        # `asked_blanks`, not `blank_answers`: the latter reads a key that was
-        # never on this form as blank, so it would never report complete.
+        # salary is refilled when they mention a number, but we no longer ask
+        # for it. The asked key is work authorization.
         assert followups.asked_blanks(application) == []
 
     def test_a_partial_answer_asks_only_for_what_is_left(
@@ -264,6 +276,52 @@ class TestTheReportedSequence:
         assert "noted" not in reply
         assert "didn't catch" in reply or "didn t catch" in reply
         assert "sourcebot" in reply
+
+    def test_a_directly_asked_answer_lands_verbatim_when_the_extractor_fails(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        """We asked "when could you start?"; the reply IS the answer.
+
+        Live loop this pins (2026-08-27): the extractor's model timed out, so
+        "November 2026", "11/26" and "ASAP" all evaporated and the same
+        question went out four times. The extractor keeps first shot; the
+        candidate's words are the fallback, never a re-ask.
+        """
+        thread = _managed_owing_answers(session, thread)
+        application, _ = _asked_application(session, account, thread)
+
+        # The extractor understands nothing this turn (no _extracted call),
+        # but the thread's last question named the key.
+        thread.last_field_asked = "work_authorization"
+        session.flush()
+        # Worded so the keyless heuristics cannot parse it — the extractor
+        # pass genuinely comes up empty, which is the live failure mode.
+        _say(session, thread, "yes all good on that front", native_id="a-verbatim")
+
+        session.refresh(application)
+        row = next(
+            item for item in application.form_answers if item["key"] == "work_authorization"
+        )
+        assert row["answer"] == "yes all good on that front"
+        assert row["provenance"] == "candidate:text"
+        reply = channel.bodies[-1].lower()
+        assert "didn't catch" not in reply
+
+    def test_a_question_back_is_not_bound_as_an_answer(
+        self, session, account, channel, thread
+    ):
+        """"sorry wdym?" is the candidate asking us something, not a start date."""
+        thread = _managed_owing_answers(session, thread)
+        application, _ = _asked_application(session, account, thread)
+        thread.last_field_asked = "work_authorization"
+        session.flush()
+        _say(session, thread, "sorry wdym?", native_id="a-wdym")
+
+        session.refresh(application)
+        row = next(
+            item for item in application.form_answers if item["key"] == "work_authorization"
+        )
+        assert row["answer"] == ""
 
     def test_a_bare_no_is_not_read_as_declining_a_job_search(
         self, session, account, channel, thread
@@ -356,18 +414,19 @@ class TestAcknowledgementWording:
     def test_complete_and_nothing_handed_over(self, session, account):
         posting = self._posting_obj(session, account)
         text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["salary_expectation"], "missing": [], "handover": False}
+            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": False}
         )
         assert "Founding Engineer" in text and "Sourcebot" in text
         assert "take it from here" in text
 
-    def test_complete_but_the_portal_still_needs_them(self, session, account):
+    def test_handover_flag_does_not_send_them_to_the_app(self, session, account):
+        """Chat no longer parks on a portal review. Completing work
+        authorization means we take it from here."""
         posting = self._posting_obj(session, account)
         text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["salary_expectation"], "missing": [], "handover": True}
+            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": True}
         )
-        assert "app" in text
-        assert "take it from here" not in text
+        assert "take it from here" in text
 
     def test_no_posting_still_reads_as_english(self):
         text = followups.answer_acknowledgement(

@@ -254,13 +254,13 @@ class TestEvents:
         _run(session, job)
         ready = channel.bodies[0]
         assert "Figma" in ready and "/m/" in ready
-        # The follow-up questions ride BEHIND the ready message. The worker
-        # used to ask them inline while this notification sat queued, so
-        # "what should we put for comp?" always overtook "your application
-        # is ready" -- the reverse of the order both messages assume.
+        # Follow-up questions ride behind the ready message. Chat asks only
+        # work authorization; other blanks stay off this text.
         if len(channel.bodies) > 1:
             assert "ready to review" in ready
-            assert "asks a couple of things" in channel.bodies[1]
+            follow = channel.bodies[1].lower()
+            assert "authoris" in follow or "sponsor" in follow
+            assert "comp" not in follow
 
     def test_application_sent_reacts_like_on_the_consenting_inbound(
         self, session, account, channel, thread
@@ -359,3 +359,253 @@ class TestThreadLookup:
             )
             is None
         )
+
+
+class TestConfirmationScreenshot:
+    """The receipt PNG rides on the existing application.sent text."""
+
+    def _application(self, session, account, thread, *, suffix="shot"):
+        posting = _posting(session, account["org_id"], company="Notion", suffix=suffix)
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=thread.candidate_id,
+            job_posting_id=posting.id,
+        )
+        session.flush()
+        return application
+
+    def _succeeded(self, session, account, application, artifacts):
+        from juicebox.models import ApplicationSubmission
+
+        row = ApplicationSubmission(
+            org_id=account["org_id"],
+            application_id=application.id,
+            attempt=1,
+            vendor="greenhouse",
+            method="browser",
+            status="succeeded",
+            artifacts=list(artifacts),
+        )
+        session.add(row)
+        session.flush()
+        return row
+
+    def _uploads(self, monkeypatch, *, refuse=False, boom=False):
+        from juicebox.messaging import linq as linq_mod
+        from juicebox.messaging.linq import LinqSendError
+
+        calls = []
+
+        def fake(*, filename, content_type, data):
+            if boom:
+                raise RuntimeError("network")
+            if refuse:
+                raise LinqSendError("upload refused")
+            calls.append(
+                {"filename": filename, "content_type": content_type, "size": len(data)}
+            )
+            return f"att_{len(calls)}"
+
+        monkeypatch.setattr(linq_mod, "upload_attachment", fake)
+        return calls
+
+    def _png(self, application, label="confirmation"):
+        from juicebox import storage
+
+        relpath = storage.artifact_relpath(
+            org_id=application.org_id,
+            application_id=application.id,
+            label=label,
+        )
+        storage.save_bytes(relpath, b"png-bytes")
+        return relpath
+
+    def test_imessage_attaches_the_confirmation_and_keeps_the_body(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="im")
+        path = self._png(application)
+        self._succeeded(session, account, application, [path])
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+
+        assert uploads and uploads[0]["filename"] == "application-sent.png"
+        assert len(channel.sent) == 1
+        message = channel.sent[0][1]
+        assert "Notion" in message.body
+        assert "/m/" in message.body
+        assert message.media
+        assert message.media[0].attachment_id == "att_1"
+        assert message.body  # words stay even when the image is attached
+
+    def test_rcs_attaches_too(self, session, account, channel, thread, monkeypatch):
+        from juicebox.messaging.linq import SERVICE_RCS
+
+        thread.last_service = SERVICE_RCS
+        session.flush()
+        application = self._application(session, account, thread, suffix="rcs")
+        path = self._png(application)
+        self._succeeded(session, account, application, [path])
+        self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert channel.sent[0][1].media
+
+    def test_sms_stays_text_only(self, session, account, channel, thread, monkeypatch):
+        from juicebox.messaging.linq import SERVICE_SMS
+
+        thread.last_service = SERVICE_SMS
+        session.flush()
+        application = self._application(session, account, thread, suffix="sms")
+        path = self._png(application)
+        self._succeeded(session, account, application, [path])
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert "Notion" in channel.bodies[-1]
+        assert channel.sent[0][1].media == ()
+        assert uploads == []
+
+    def test_empty_last_service_stays_text_only(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        thread.last_service = ""
+        session.flush()
+        application = self._application(session, account, thread, suffix="unk")
+        path = self._png(application)
+        self._succeeded(session, account, application, [path])
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert channel.sent[0][1].media == ()
+        assert uploads == []
+
+    def test_missing_artifact_is_text_only(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="miss")
+        self._succeeded(session, account, application, ["org/applications/x/confirmation.png"])
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert "Notion" in channel.bodies[-1]
+        assert channel.sent[0][1].media == ()
+        assert uploads == []
+
+    def test_upload_failure_is_text_only(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="up")
+        path = self._png(application)
+        self._succeeded(session, account, application, [path])
+        self._uploads(monkeypatch, refuse=True)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert "Notion" in channel.bodies[-1]
+        assert channel.sent[0][1].media == ()
+
+    def test_unconfirmed_shot_is_not_sent(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="unc")
+        path = self._png(application, label="unconfirmed")
+        self._succeeded(session, account, application, [path])
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert channel.sent[0][1].media == ()
+        assert uploads == []
+
+    def test_failed_attempt_attaches_nothing(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+        from juicebox.models import ApplicationSubmission
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="fail")
+        path = self._png(application)
+        session.add(
+            ApplicationSubmission(
+                org_id=account["org_id"],
+                application_id=application.id,
+                attempt=1,
+                vendor="greenhouse",
+                method="browser",
+                status="needs_human",
+                artifacts=[path],
+            )
+        )
+        session.flush()
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert channel.sent[0][1].media == ()
+        assert uploads == []
+
+    def test_before_submit_shot_is_not_sent(
+        self, session, account, channel, thread, monkeypatch
+    ):
+        from juicebox.messaging.linq import SERVICE_IMESSAGE
+
+        thread.last_service = SERVICE_IMESSAGE
+        session.flush()
+        application = self._application(session, account, thread, suffix="bef")
+        path = self._png(application, label="before-submit")
+        self._succeeded(
+            session,
+            account,
+            application,
+            [path, f"{application.org_id}/applications/{application.id}/unconfirmed.png"],
+        )
+        uploads = self._uploads(monkeypatch)
+
+        job = enqueue_notify(
+            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
+        )
+        _run(session, job)
+        assert channel.sent[0][1].media == ()
+        assert uploads == []

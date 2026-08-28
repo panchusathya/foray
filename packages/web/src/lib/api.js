@@ -1,6 +1,13 @@
 /** Typed-ish API client. One place that knows about auth, errors and routes. */
 
 const TOKEN_KEY = 'juicebox.token';
+// Production keeps the recruiter SPA at app.goforay.io and the API at
+// api.goforay.io. Empty retains the same-origin dev proxy.
+const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+
+function apiUrl(path) {
+  return API_ORIGIN ? `${API_ORIGIN}${path}` : path;
+}
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) ?? '';
@@ -24,7 +31,7 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   const token = getToken();
   if (auth && token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -58,7 +65,7 @@ async function upload(path, file) {
   const form = new FormData();
   form.append('file', file, file.name);
   const token = getToken();
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: form,
@@ -76,7 +83,7 @@ async function upload(path, file) {
 
 async function downloadFile(path, filename) {
   const token = getToken();
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {

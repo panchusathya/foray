@@ -27,14 +27,15 @@ from juicebox.messaging.consent import (
     DISCLOSURE_WEB_WIDGET_VERSION,
 )
 from juicebox.messaging.linkedin_flow import intro_message
-from juicebox.messaging.prompts import MANAGER_GREETING, greeting_for
+from juicebox.messaging.prompts import greeting_for
 
 
 def _greetings() -> dict[str, str]:
     return {
         "web": greeting_for(org="Acme Talent", recruiter="vivian"),
-        "manager": MANAGER_GREETING.format(org="Acme Talent"),
         "linkedin_first": intro_message(recruiter="vivian", org="Acme Talent"),
+        # The name == org rendering ("it's foray") is its own greeting surface.
+        "linkedin_same_name": intro_message(recruiter="Foray", org="Foray"),
         "template": prompts.GREETING.format(recruiter="vivian", org="Acme Talent"),
     }
 

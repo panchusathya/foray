@@ -1,8 +1,6 @@
 # Public front door. Caddy terminates TLS (automatic Let's Encrypt issuance
-# and renewal, plus the HTTP->HTTPS redirect) and hands everything to the web
-# container's nginx, which serves the SPA and same-origin-proxies /v1/,
-# /health, and /t/ to the api. APP_DOMAIN and ACME_EMAIL come from the compose
-# environment.
+# and renewal, plus the HTTP->HTTPS redirect). Recruiter HTML is served by
+# app.goforay.io; the FastAPI service is a distinct api.goforay.io origin.
 {
 	email {$ACME_EMAIL}
 }
@@ -18,13 +16,6 @@
 	}
 }
 
-# The candidate portal. A separate site block onto a separate container, so
-# the recruiter SPA is not merely hidden from this domain -- it is not served
-# here at all, and the portal's own nginx proxies only /v1/portal/. The
-# candidate-facing surface therefore cannot reach a recruiter endpoint even
-# if a route were mis-registered upstream.
-{$PORTAL_DOMAIN} {
-	handle {
-		reverse_proxy portal:80
-	}
+{$API_DOMAIN} {
+	reverse_proxy api:8000
 }

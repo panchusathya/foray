@@ -30,6 +30,7 @@ from typing import Any
 from .... import storage
 from ....config import get_settings
 from ..base import REDACTED
+from . import cloud as browser_cloud
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class FieldSpec:
     selectors: tuple[str, ...]
     value: str = ""
     required: bool = False
-    kind: str = "text"  # text | file | select | check
+    kind: str = "text"  # text | file | select | check | password | radio
     #: A credential. The run log records that the field was filled and never
     #: what went into it -- see ``_recorded``.
     secret: bool = False
@@ -99,7 +100,9 @@ def _recorded(spec: FieldSpec) -> str:
     """What goes in ``RunLog.filled`` for a field we just filled."""
     if spec.kind == "file":
         return "<file>"
-    return REDACTED if spec.secret else spec.value
+    if spec.kind == "password" or spec.secret:
+        return REDACTED
+    return spec.value
 
 
 def available() -> tuple[bool, str]:
@@ -116,7 +119,13 @@ def available() -> tuple[bool, str]:
 #: one IP -- a page loaded from IP A and submitted from IP B is a tell. A token
 #: fixed for the life of one browser run gives each application its own stable
 #: IP without pinning every application to a single one.
-_SESSION_PROXY_HOSTS = ("superproxy.io",)
+#:
+#: Decodo (ex-Smartproxy): verified live 2026-08-27 — with the username
+#: configured as ``user-<account>``, appending ``-session-<token>`` pins one
+#: IP per token and overrides the gateway's port-based pin, so every run gets
+#: its own residential IP. Two calls with one token returned one IP; a second
+#: token returned another.
+_SESSION_PROXY_HOSTS = ("superproxy.io", "decodo.com")
 
 
 def _proxy_config(url: str, *, session_token: str = "") -> dict | None:
@@ -165,20 +174,19 @@ def _proxy_config(url: str, *, session_token: str = "") -> dict | None:
 
 
 @contextlib.contextmanager
-def session(*, log: RunLog, profile=None):
+def session(*, log: RunLog, profile=None, cdp_url: str = "", cloud_stop_id: str = ""):
     """A paced, serialised browser context. Closes whatever it opened.
 
-    ``profile`` is a ``profiles.ProfileState`` when warm profiles are on: its
-    (already origin-filtered) storage_state seeds the context, its sticky
-    egress token replaces the per-run one so the candidate keeps one IP across
-    runs, and its UA pins the fingerprint the profile was born with. On a
-    clean close the context's storage_state is written back onto
-    ``profile.saved_state`` for the caller to persist -- the driver itself
-    never touches the database.
+    ``cdp_url`` is an already-open Cloud (or test) session the caller owns.
+    When it is empty and Browser Use is configured, this context creates a
+    session, connects, and **always** PATCH-stops it -- Playwright close does
+    not end cloud billing. Callers that must reconnect after a crash (the
+    agent, at the final-submit checkpoint) pass their own ``cdp_url`` and
+    stop themselves.
 
-    Ignored entirely on the CDP branch: the Scraping Browser owns its
-    fingerprint, and seeding it with our cookies would make the identity it
-    was built to present inconsistent.
+    ``profile`` is a ``profiles.ProfileState`` when warm *local* profiles are
+    on. Ignored on every CDP path: the managed browser owns the fingerprint,
+    and overlaying UA / webdriver hacks is the tell.
     """
     ok, reason = available()
     if not ok:
@@ -193,9 +201,6 @@ def session(*, log: RunLog, profile=None):
         _LAST_RUN_AT = time.monotonic()
 
         settings = get_settings()
-        # A fresh sticky-session token per run: one IP for this whole form
-        # fill, a different one for the next application. A warm profile pins
-        # it instead -- one candidate, one IP, run after run.
         import secrets
 
         session_token = (
@@ -203,40 +208,39 @@ def session(*, log: RunLog, profile=None):
             if profile is not None and profile.egress_session
             else secrets.token_hex(6)
         )
-        cdp_url = settings.apply_browser_cdp_url.strip()
-        if cdp_url and profile is not None:
-            log.step("profile ignored: scraping browser owns the fingerprint")
+        owned_cloud_id = cloud_stop_id
+        remote = (cdp_url or "").strip()
+        if not remote and browser_cloud.configured():
+            cloud = browser_cloud.create_session()
+            remote = cloud.cdp_url
+            owned_cloud_id = cloud.id
+            log.step(f"browser-use session {cloud.id}")
+        if not remote:
+            remote = settings.apply_browser_cdp_url.strip()
+        if remote and profile is not None:
+            log.step("local profile ignored: managed browser owns the fingerprint")
             profile = None
         with sync_playwright() as playwright:
-            if cdp_url:
-                # Bright Data Scraping Browser: a real, managed browser on their
-                # side that owns the fingerprint, proxy, CAPTCHA and rotation.
-                # We drive it over CDP and add none of our own stealth -- a UA
-                # override or a webdriver-delete would only make the fingerprint
-                # it was built to present inconsistent, which is the tell.
+            if remote:
+                # Managed Chrome (Browser Use Cloud, or a legacy scraping
+                # browser). Drive the context it already has; do not overlay
+                # stealth -- that is the tell against a fingerprint they built.
                 browser = playwright.chromium.connect_over_cdp(
-                    cdp_url, timeout=CDP_CONNECT_TIMEOUT_MS
+                    remote, timeout=CDP_CONNECT_TIMEOUT_MS
                 )
             else:
                 browser = playwright.chromium.launch(
                     headless=settings.apply_browser_headless,
                     proxy=_proxy_config(settings.apply_proxy_url, session_token=session_token),
-                    # Two flags that most cheaply separate "real Chrome" from
-                    # "automation" for a fingerprinter: the AutomationControlled
-                    # blink feature is what sets navigator.webdriver, and the
-                    # default headless UA names "HeadlessChrome" outright.
                     args=["--disable-blink-features=AutomationControlled"],
                 )
             try:
-                if cdp_url:
-                    # The managed browser ships a context already; reuse it so
-                    # the fingerprint stays the one it was built with, and drive
-                    # its existing page rather than opening a second.
+                if remote:
                     context = browser.contexts[0] if browser.contexts else browser.new_context()
                     context.set_default_timeout(ACTION_TIMEOUT_MS)
                     context.set_default_navigation_timeout(CDP_NAV_TIMEOUT_MS)
                     page = context.pages[0] if context.pages else context.new_page()
-                    log.step("browser opened (scraping browser)")
+                    log.step("browser opened (managed chrome)")
                 else:
                     context = browser.new_context(
                         viewport={"width": 1440, "height": 900},
@@ -254,9 +258,6 @@ def session(*, log: RunLog, profile=None):
                             else None
                         ),
                     )
-                    # navigator.webdriver stays true even with the launch flag on
-                    # some Chromium builds; this removes it before any page script
-                    # on the employer's form can read it.
                     context.add_init_script(
                         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                     )
@@ -268,15 +269,15 @@ def session(*, log: RunLog, profile=None):
                     )
                 yield page
                 if profile is not None:
-                    # Only after a clean yield: a run that raised may have a
-                    # half-authenticated jar, and persisting that would make
-                    # the next run inherit the breakage.
                     with contextlib.suppress(Exception):
                         profile.saved_state = context.storage_state()
                         log.step("profile state captured")
             finally:
                 with contextlib.suppress(Exception):
                     browser.close()
+                if owned_cloud_id:
+                    browser_cloud.stop_session(owned_cloud_id)
+                    log.step(f"browser-use session {owned_cloud_id} stopped")
                 log.step("browser closed")
 
 
@@ -314,6 +315,19 @@ def fill(page, specs: list[FieldSpec], *, log: RunLog) -> list[str]:
                 located.select_option(spec.value)
             elif spec.kind == "check":
                 located.check()
+            elif spec.kind == "password":
+                # Workday's password box is a React component that ignores a
+                # set value -- `fill` reported success while the field stayed
+                # empty and Create Account submitted blank (live, Intapp
+                # 2026-08-27). Type it as real keystrokes, then confirm the
+                # value actually took (length only; the value is a secret).
+                located.click()
+                located.press_sequentially(spec.value, delay=25)
+                got = (located.input_value() or "")
+                if len(got) != len(spec.value):
+                    raise RuntimeError(
+                        f"password field did not accept the value ({len(got)}/{len(spec.value)} chars)"
+                    )
             else:
                 located.fill(spec.value)
         except Exception as exc:  # noqa: BLE001 - one field, not the run
@@ -382,11 +396,21 @@ def first_match(page, selectors: tuple[str, ...]) -> str:
 
 
 def _first(page, selectors: tuple[str, ...]):
+    """The first VISIBLE match across ``selectors``, or None.
+
+    Scans every node a selector matches, not just ``.first``: a text selector
+    like ``button:has-text("Sign In")`` matches the header's Sign In link, the
+    Google/LinkedIn SSO buttons, and the dialog's submit all at once (live,
+    Intapp 2026-08-27 — four nodes), and ``.first`` alone pins whichever is
+    earliest in the DOM even when it is hidden or the wrong control.
+    """
     for selector in selectors:
         try:
-            located = page.locator(selector).first
-            if located.count() and located.is_visible():
-                return located
+            located = page.locator(selector)
+            for index in range(min(located.count(), 10)):
+                node = located.nth(index)
+                if node.is_visible():
+                    return node
         except Exception:  # noqa: BLE001 - a bad selector is not a failure
             continue
     return None
@@ -407,6 +431,27 @@ def wait_for_any(page, selectors: tuple[str, ...], *, timeout_ms: int = 12000) -
         hit = first_match(page, selectors)
         if hit or waited >= timeout_ms:
             return hit
+        page.wait_for_timeout(poll)
+        waited += poll
+
+
+def wait_for_visible(page, selectors: tuple[str, ...], *, timeout_ms: int = 12000) -> bool:
+    """Wait until one of ``selectors`` is actually VISIBLE, not merely present.
+
+    ``wait_for_any`` answers "is it in the DOM", which is the wrong question
+    right before a click or a fill: Workday renders the sign-on chooser's
+    nodes before it paints them, so the settle returned on presence and the
+    click 300ms later found nothing visible and reported the button missing
+    (live, Intapp 2026-08-27). Anything that acts on a control it just waited
+    for should wait with this.
+    """
+    waited = 0
+    poll = 250
+    while True:
+        if _first(page, selectors) is not None:
+            return True
+        if waited >= timeout_ms:
+            return False
         page.wait_for_timeout(poll)
         waited += poll
 
@@ -440,7 +485,14 @@ def reach_form(
     return wait_for_any(page, landmark)
 
 
-def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
+def click(
+    page, selectors: tuple[str, ...], *, log: RunLog, what: str, wait_ms: int = 0
+) -> bool:
+    """Click the first visible match. ``wait_ms`` bounds a poll for it to
+    appear first — for a control the caller knows is coming (a dialog that is
+    still painting), where an instant miss is a race, not an answer."""
+    if wait_ms > 0:
+        wait_for_visible(page, selectors, timeout_ms=wait_ms)
     located = _first(page, selectors)
     if located is None:
         log.step(f"no {what} to click")
@@ -448,8 +500,17 @@ def click(page, selectors: tuple[str, ...], *, log: RunLog, what: str) -> bool:
     try:
         located.click()
     except Exception as exc:  # noqa: BLE001
-        log.step(f"could not click {what}: {exc}")
-        return False
+        # Workday (and other overlay-heavy ATSes) float an invisible layer
+        # over their buttons -- a `click_filter` div `intercepts pointer
+        # events` and a normal click times out, so Sign In never submitted
+        # and the run stalled on the login page (live, 2026-08-27). A forced
+        # click dispatches to the real target under the overlay.
+        log.step(f"click {what} intercepted, forcing: {str(exc)[:80]}")
+        try:
+            located.click(force=True, timeout=8000)
+        except Exception as exc2:  # noqa: BLE001
+            log.step(f"could not click {what}: {exc2}")
+            return False
     log.step(f"clicked {what}")
     return True
 

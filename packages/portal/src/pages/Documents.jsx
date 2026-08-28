@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { IconDoc, IconExternal } from '../components/icons.jsx';
 import { BackLink, Empty, ErrorNote, Head, Screen, Skeleton } from '../components/ui.jsx';
@@ -30,10 +31,15 @@ export function DocumentsPage() {
   const [error, setError] = useState(null);
   const [preview, setPreview] = useState(null);
   const [vault, setVault] = useState([]);
-  const [vaultCode, setVaultCode] = useState('');
-  const [vaultGrant, setVaultGrant] = useState('');
   const [vaultNote, setVaultNote] = useState('');
-  const [credential, setCredential] = useState({ vendor: '', tenant: '', username: '', password: '' });
+  const [params] = useSearchParams();
+  const askedVendor = params.get('vault') || '';
+  const askedCompany = params.get('company') || '';
+  const [credential, setCredential] = useState({
+    vendor: askedVendor,
+    tenant: params.get('tenant') || '',
+    password: '',
+  });
 
   const upload = async (event) => {
     const file = event.target.files?.[0];
@@ -57,39 +63,28 @@ export function DocumentsPage() {
     }
   };
 
-  const requestStepUp = async () => {
-    try {
-      await api.vaultStepUpRequest();
-      setVaultNote('We emailed you a six-digit code. Enter it below to unlock credential changes for ten minutes.');
-    } catch (err) { setError(err); }
-  };
-
-  const verifyStepUp = async (event) => {
-    event.preventDefault();
-    try {
-      const result = await api.vaultStepUp(vaultCode);
-      setVaultGrant(result.grant);
-      setVaultCode('');
-      setVaultNote('Credential changes are unlocked for ten minutes.');
-    } catch (err) { setError(err); }
-  };
+  const pw = credential.password;
+  const passwordStrong = pw.length >= 10
+    && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw);
 
   const saveCredential = async (event) => {
     event.preventDefault();
     try {
-      await api.saveVaultAccount(credential, vaultGrant);
-      setCredential({ vendor: '', tenant: '', username: '', password: '' });
+      await api.saveVaultAccount(credential);
+      setCredential({ vendor: askedVendor, tenant: params.get('tenant') || '', password: '' });
       setVault(await api.vaultAccounts());
-      setVaultGrant('');
-      setVaultNote('Credential saved. Verify again before another change.');
+      setVaultNote(
+        askedCompany
+          ? `Saved. I'll set up your ${askedCompany} account and finish the application — you can close this.`
+          : 'Credential saved.',
+      );
     } catch (err) { setError(err); }
   };
 
   const revokeCredential = async (id) => {
     try {
-      await api.revokeVaultAccount(id, vaultGrant);
+      await api.revokeVaultAccount(id);
       setVault(await api.vaultAccounts());
-      setVaultGrant('');
       setVaultNote('Credential removed. Automated applications can no longer use it.');
     } catch (err) { setError(err); }
   };
@@ -202,31 +197,31 @@ export function DocumentsPage() {
       ) : null}
 
       <section className="card stack" style={{ marginTop: 'var(--s-4)' }}>
-        <div className="card-head"><h2>Application account vault</h2></div>
-        <p className="tiny">Store a job-board login for applications you approve. Your password is encrypted and never appears in messages or on this page.</p>
+        <div className="card-head">
+          <h2>{askedCompany ? `Set your ${askedCompany} password` : 'Application account vault'}</h2>
+        </div>
+        <p className="tiny">
+          {askedCompany
+            ? `${askedCompany} makes you create an account to apply. Pick a password and I'll register it and finish your application. It's encrypted and never shown again.`
+            : 'Store a job-board login for applications you approve. Your password is encrypted and never appears in messages or on this page.'}
+        </p>
         {vault.map((account) => (
           <div className="spread" key={account.id}>
             <span className="tiny">{account.vendor} · {account.tenant} · {account.username} · {account.status}</span>
-            {!account.revoked && vaultGrant ? <button type="button" className="btn small ghost" onClick={() => revokeCredential(account.id)}>Remove</button> : null}
+            {!account.revoked ? <button type="button" className="btn small ghost" onClick={() => revokeCredential(account.id)}>Remove</button> : null}
           </div>
         ))}
-        {!vaultGrant ? (
-          <>
-            <button type="button" className="btn small" onClick={requestStepUp}>Email a verification code</button>
-            <form className="spread" onSubmit={verifyStepUp}>
-              <input value={vaultCode} onChange={(event) => setVaultCode(event.target.value)} inputMode="numeric" maxLength="6" placeholder="Six-digit code" aria-label="Verification code" />
-              <button type="submit" className="btn small">Verify</button>
-            </form>
-          </>
-        ) : (
-          <form className="stack tight" onSubmit={saveCredential}>
-            <input required value={credential.vendor} onChange={(event) => setCredential({ ...credential, vendor: event.target.value })} placeholder="Board (for example, workday)" aria-label="Board" />
-            <input required value={credential.tenant} onChange={(event) => setCredential({ ...credential, tenant: event.target.value })} placeholder="Employer tenant" aria-label="Employer tenant" />
-            <input required value={credential.username} onChange={(event) => setCredential({ ...credential, username: event.target.value })} placeholder="Login email or username" aria-label="Login username" />
-            <input required type="password" value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} placeholder="Password" aria-label="Password" />
-            <button type="submit" className="btn small">Save credential</button>
-          </form>
-        )}
+        <form className="stack tight" onSubmit={saveCredential}>
+          {askedVendor ? null : (
+            <>
+              <input required value={credential.vendor} onChange={(event) => setCredential({ ...credential, vendor: event.target.value })} placeholder="Board (for example, workday)" aria-label="Board" />
+              <input required value={credential.tenant} onChange={(event) => setCredential({ ...credential, tenant: event.target.value })} placeholder="Employer tenant" aria-label="Employer tenant" />
+            </>
+          )}
+          <input required type="password" minLength="10" value={credential.password} onChange={(event) => setCredential({ ...credential, password: event.target.value })} placeholder="Password" aria-label="Password" />
+          <p className="tiny">Use 10+ characters with an uppercase letter, a lowercase letter, a number, and a special character — the employer's site requires all of these.</p>
+          <button type="submit" className="btn small" disabled={!passwordStrong}>{askedCompany ? 'Save and apply' : 'Save credential'}</button>
+        </form>
         {vaultNote ? <p className="tiny">{vaultNote}</p> : null}
       </section>
     </Screen>

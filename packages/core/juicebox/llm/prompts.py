@@ -1197,6 +1197,47 @@ def resume_parse_prompt(*, text: str) -> str:
     return f"<resume_text>\n{(text or '').strip()[:24000]}\n</resume_text>"
 
 
+# The last resort of apply-by-link ingestion: no ATS adapter matched and the
+# page's visible text was too thin to be a job page — most often a JS shell
+# whose real content sits in script-embedded JSON. Extraction, not generation:
+# the model copies what the page states and flags anything else unreadable,
+# because a title invented from a URL slug becomes an application built on
+# nothing.
+JOB_PAGE_PARSE_SYSTEM = """\
+You read the raw HTML of a web page and extract the job posting it renders, \
+if there is one. The description is often inside <script> JSON rather than \
+visible markup -- read it wherever it lives. Extraction, not invention: every \
+field must be stated by the page itself. Copy the job description's own \
+wording (as plain text, markup dropped); do not summarise or embellish. If \
+the page does not contain a job posting -- an error page, a login wall, a \
+listing of many jobs, a cookie notice -- set is_job_posting to false and \
+leave every other field empty. Never derive anything from the URL alone.
+"""
+
+JOB_PAGE_PARSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["is_job_posting", "title", "company", "location", "jd_text"],
+    "properties": {
+        "is_job_posting": {
+            "type": "boolean",
+            "description": "True only when this page states exactly one job opening.",
+        },
+        "title": {"type": "string", "description": "The job title, as the page states it."},
+        "company": {"type": "string", "description": "The hiring company, as stated. Empty if unstated."},
+        "location": {"type": "string", "description": "The job's location, as stated. Empty if unstated."},
+        "jd_text": {
+            "type": "string",
+            "description": "The full job description as plain text, the page's own wording.",
+        },
+    },
+}
+
+
+def job_page_parse_prompt(*, url: str, html: str) -> str:
+    return f"<url>{url}</url>\n<page_html>\n{(html or '')[:60000]}\n</page_html>"
+
+
 RESUME_TAILOR_SYSTEM = """\
 You tighten a structured resume for one specific role. You are given the \
 resume as JSON and the role's parsed requirements.

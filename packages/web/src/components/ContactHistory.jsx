@@ -96,7 +96,15 @@ export function ContactHistory({ candidateId, onCount }) {
   if (timeline.loading) return <Loading label="Loading contact history…" />;
   if (timeline.error) return <ErrorBox error={timeline.error} />;
 
-  const { stats, threads, events = [], intake_threads: intakeThreads = [] } = timeline.data;
+  const {
+    stats,
+    threads,
+    events = [],
+    intake_threads: intakeThreads = [],
+    openinstinct_conversations: openInstinctConversations = [],
+    openinstinct_available: openInstinctAvailable = false,
+    openinstinct_application_tasks: openInstinctApplicationTasks = [],
+  } = timeline.data;
   return (
     <div className="stack" data-testid="contact-history">
       <div className="grid four">
@@ -139,6 +147,30 @@ export function ContactHistory({ candidateId, onCount }) {
         </div>
       ) : null}
 
+      {openInstinctConversations.length ? (
+        <div className="stack" style={{ gap: 8 }} data-testid="openinstinct-conversations">
+          {openInstinctConversations.map((conversation, index) => (
+            <OpenInstinctConversation
+              key={conversation.id || conversation.url || index}
+              conversation={conversation}
+            />
+          ))}
+        </div>
+      ) : openInstinctAvailable ? (
+        <div className="card empty">No OpenInstinct conversations yet.</div>
+      ) : null}
+
+      {openInstinctApplicationTasks.length ? (
+        <div className="stack" style={{ gap: 6 }} data-testid="openinstinct-application-tasks">
+          {openInstinctApplicationTasks.map((task) => (
+            <div key={task.id} className="card row spread small">
+              <span>OpenInstinct application · {String(task.status || '').replaceAll('_', ' ')}</span>
+              <span className="muted">{when(task.reported_at || task.updated_at)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {threads.length ? (
         threads.map((thread, index) => (
           <Thread
@@ -153,6 +185,41 @@ export function ContactHistory({ candidateId, onCount }) {
           connect Outlook thread sync in Settings to also see mail you write by hand.
         </Empty>
       )}
+    </div>
+  );
+}
+
+function OpenInstinctConversation({ conversation }) {
+  const [open, setOpen] = useState(true);
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  return (
+    <div className="stack" style={{ gap: 6 }} data-testid="openinstinct-conversation">
+      <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
+        <span className="thread-head">
+          <span className="thread-subject">
+            {open ? '▾' : '▸'} OpenInstinct · {conversation.channel || 'chat'}
+          </span>
+          <span className="thread-meta muted small">{shortDate(conversation.updated_at || conversation.last_at)}</span>
+        </span>
+      </button>
+      {open
+        ? messages.map((message, index) => (
+            <div key={message.id || index} className="card stack" style={{ gap: 6 }}>
+              <div className="row small spread">
+                <Badge tone={message.direction === 'inbound' ? 'accent' : 'strong'}>
+                  {message.direction === 'inbound' ? '← candidate' : '→ OpenInstinct'}
+                </Badge>
+                <span className="muted small">{when(message.created_at)}</span>
+              </div>
+              <pre className="message-body">{message.body || '—'}</pre>
+            </div>
+          ))
+        : null}
+      {conversation.url ? (
+        <a className="small" href={conversation.url} target="_blank" rel="noreferrer">
+          Open conversation →
+        </a>
+      ) : null}
     </div>
   );
 }

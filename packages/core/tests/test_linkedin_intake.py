@@ -11,12 +11,10 @@ from juicebox.jobs import KIND_LINKEDIN_SCRAPE
 from juicebox.messaging.channels import WEB, set_channel
 from juicebox.messaging.conversation import (
     ACTION_ASKED,
-    ACTION_GREETED,
     ACTION_HELD,
     run_turn,
 )
 from juicebox.messaging.identity import (
-    CONTACT_EMAIL,
     CONTACT_LINKEDIN,
     find_linkedin,
     link_candidate,
@@ -97,22 +95,28 @@ def linq_number(session, account):
 
 
 class TestLinkedinShortFlow:
-    def test_intro_asks_for_email_in_one_lowercase_message(
+    def test_intro_discloses_and_asks_for_the_profile_in_one_turn(
         self, session, account, fake_channel
     ):
+        """The greeting bubble, then the profile ask riding the same turn.
+
+        The intro no longer ends on "what's the best email" — the email comes
+        verified from the OAuth callback, or in the gap-fill for manual
+        threads. A stranger's first task is no longer typing an address.
+        """
         thread = _short_thread(session, account, fake_channel)
         result = run_turn(session, thread=thread)
 
-        assert result.action == ACTION_GREETED
-        assert result.asked_field == CONTACT_EMAIL
-        assert len(fake_channel.bodies) == 1
+        assert result.action == ACTION_ASKED
+        assert result.asked_field == CONTACT_LINKEDIN
+        assert len(fake_channel.bodies) == 2
         body = fake_channel.bodies[0]
         # Lowercase voice, with two deliberate hold-outs: URLs, and the carrier
         # keywords. The keywords are held out of the transform whether or not
         # any message currently contains one -- see ``lowercase_outbound``.
         prose = body.replace("STOP", "").replace("HELP", "")
         assert prose == prose.lower() or "http" in body
-        assert "email" in body
+        assert "email" not in body
         # The persona name comes from settings, so this asserts whatever the
         # agent is currently called rather than pinning one spelling.
         from juicebox.messaging.prompts import recruiter_name
@@ -127,7 +131,7 @@ class TestLinkedinShortFlow:
         assert "ai" in body
         assert "STOP" not in body and "HELP" not in body
 
-    def test_after_email_it_offers_linkedin_or_a_resume(
+    def test_the_intro_turn_offers_linkedin_or_a_resume(
         self, session, account, fake_channel
     ):
         """Both routes, in one message, with the upload link live.
@@ -139,8 +143,7 @@ class TestLinkedinShortFlow:
         message that finally points at it.
         """
         thread = _short_thread(session, account, fake_channel)
-        run_turn(session, thread=thread)
-        result = _say(session, thread, "ada@lovelace.dev")
+        result = run_turn(session, thread=thread)
 
         assert result.action == ACTION_ASKED
         assert result.asked_field == CONTACT_LINKEDIN
@@ -263,15 +266,19 @@ class TestLinkedinShortFlow:
         assert result.asked_field == BATCH_GAP_FILL
         assert "couldn't pull" in fake_channel.bodies[-1]
 
-    def test_a_first_inbound_url_still_prompts_for_email_first(
+    def test_a_first_inbound_url_gets_the_intro_and_goes_straight_to_scrape(
         self, session, account, fake_channel
     ):
+        """The first message WAS the profile. Disclose, then scrape — asking
+        for an email first made the person who over-delivered wait longest."""
         thread = _short_thread(session, account, fake_channel)
         result = _say(session, thread, "linkedin.com/in/ada-lovelace")
-        assert result.action == ACTION_GREETED
-        assert result.asked_field == CONTACT_EMAIL
-        assert "email" in fake_channel.bodies[-1]
+        assert result.action == ACTION_HELD
         assert thread.contact_linkedin.endswith("/ada-lovelace")
+        # The intro (with its AI disclosure) still went out first.
+        assert "ai" in fake_channel.bodies[0]
+        jobs = session.scalars(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE)).all()
+        assert len(jobs) == 1
 
 
 class TestLinkedinIdentity:
@@ -342,10 +349,13 @@ class TestLinqReceipts:
         )
         run_turn(session, thread=thread)
         outbound = session.scalars(
-            select(IntakeMessage).where(
-                IntakeMessage.thread_id == thread.id, IntakeMessage.direction == "outbound"
+            select(IntakeMessage)
+            .where(
+                IntakeMessage.thread_id == thread.id,
+                IntakeMessage.direction == "outbound",
             )
-        ).one()
+            .order_by(IntakeMessage.created_at.desc())
+        ).first()
         native_id = outbound.provider_native_id
         session.commit()
 
@@ -411,7 +421,9 @@ class TestLinqReceipts:
             flow=FLOW_LINKEDIN_SHORT,
         )
         run_turn(session, thread=thread)
-        outbound = session.scalars(select(IntakeMessage)).one()
+        outbound = session.scalars(
+            select(IntakeMessage).order_by(IntakeMessage.created_at.desc())
+        ).first()
         session.commit()
         payload = {
             "event_type": "message.failed",

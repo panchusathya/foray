@@ -475,8 +475,14 @@ services:
     build:
       context: packages/web
       dockerfile: Dockerfile
-      args:
-        VITE_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.goforay.io}
+      # Deliberately NO VITE_API_URL: the SPA must call the API on its own
+      # origin, through the /v1/ proxy in packages/web/nginx.conf. Baking
+      # https://${API_DOMAIN} in here points every fetch off-origin, and that
+      # nginx also sends `connect-src 'self'`, so the browser blocks the calls
+      # before they leave -- the whole app dies with "Failed to fetch", login
+      # first. Serving the API on API_DOMAIN is fine and stays; the recruiter
+      # SPA just doesn't go there. If you ever do want the cross-origin split,
+      # CSP connect-src has to name the API origin in the same change.
     restart: unless-stopped
     logging: *default_logging
     depends_on:

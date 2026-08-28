@@ -1,8 +1,9 @@
 /** Typed-ish API client. One place that knows about auth, errors and routes. */
 
 const TOKEN_KEY = 'juicebox.token';
-// Production keeps the recruiter SPA at app.goforay.io and the API at
-// api.goforay.io. Empty retains the same-origin dev proxy.
+// Empty (the default everywhere, prod included) keeps every call same-origin,
+// which is what nginx's `connect-src 'self'` CSP allows and what its /v1/
+// proxy serves. Only set VITE_API_URL if that CSP names the origin too.
 const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 
 function apiUrl(path) {

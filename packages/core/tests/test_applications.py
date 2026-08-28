@@ -314,6 +314,31 @@ def linq_message_row(session, account):
 
 
 class TestPackageBuild:
+    def test_uploaded_resume_waits_until_the_parser_marks_it_ready(
+        self, session, account, candidate
+    ):
+        uploaded = CandidateDocument(
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            kind="resume_uploaded",
+            is_default=True,
+            filename="processing.pdf",
+            content_type="application/pdf",
+            status="uploaded",
+            storage_path="candidate/processing.pdf",
+        )
+        session.add(uploaded)
+        posting = _posting(session, account["org_id"], suffix="processing")
+        application = create_application(
+            db=session,
+            org_id=account["org_id"],
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+        )
+
+        with pytest.raises(ApplicationError, match="still processing"):
+            build_package(session, application)
+
     def test_default_upload_is_the_exact_application_resume(
         self, session, account, candidate
     ):

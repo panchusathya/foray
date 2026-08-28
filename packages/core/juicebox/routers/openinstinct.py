@@ -7,7 +7,7 @@ the other application's browser session as an authority.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -84,6 +84,77 @@ class ApplicationTaskResultIn(BaseModel):
     confirmation_ref: str = Field(default="", max_length=400)
     error: str = Field(default="", max_length=600)
     artifacts: list[str] = Field(default_factory=list)
+
+
+@router.post("/resumes", status_code=status.HTTP_201_CREATED)
+async def upload_resume(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    principal: OpenInstinctPrincipal = Depends(_service_principal),
+) -> dict:
+    """Accept a candidate-selected resume from OpenInstinct.
+
+    The service token resolves a single linked candidate.  Bytes land in the
+    same candidate-document path as the portal, so parsing and application
+    packaging have one source of truth.
+    """
+    from ..docgen.parse import SUFFIX_BY_MIME, sniff_resume_type
+    from ..jobs import KIND_DOC_PARSE, enqueue
+    from .documents import _read_capped
+
+    link = _link_for(db, principal.subject)
+    candidate = db.get(Candidate, link.candidate_id)
+    if candidate is None or candidate.org_id != link.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Candidate not found")
+
+    data = await _read_capped(file)
+    content_type = sniff_resume_type(data)
+    if not content_type:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only PDF or Word (.docx) resumes are accepted",
+        )
+    suffix = SUFFIX_BY_MIME[content_type]
+    db.execute(
+        CandidateDocument.__table__.update()
+        .where(
+            CandidateDocument.candidate_id == candidate.id,
+            CandidateDocument.kind == "resume_uploaded",
+            CandidateDocument.is_default.is_(True),
+        )
+        .values(is_default=False, protected_default=False)
+    )
+    document = CandidateDocument(
+        org_id=candidate.org_id,
+        candidate_id=candidate.id,
+        kind="resume_uploaded",
+        is_default=True,
+        protected_default=True,
+        filename=(file.filename or f"resume{suffix}")[:255],
+        content_type=content_type,
+        status="uploaded",
+        source="openinstinct_upload",
+    )
+    db.add(document)
+    db.flush()
+    relpath = storage.document_relpath(
+        org_id=document.org_id,
+        candidate_id=document.candidate_id,
+        document_id=document.id,
+        suffix=suffix,
+    )
+    size, digest = storage.save_bytes(relpath, data)
+    document.storage_path = relpath
+    document.size_bytes = size
+    document.sha256 = digest
+    enqueue(
+        db,
+        org_id=document.org_id,
+        kind=KIND_DOC_PARSE,
+        idempotency_key=f"{KIND_DOC_PARSE}:{document.id}",
+        payload={"document_id": document.id},
+    )
+    return {"id": document.id, "filename": document.filename, "status": document.status}
 
 
 @router.get("/job-feed")

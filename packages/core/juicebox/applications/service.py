@@ -157,7 +157,9 @@ def build_package(db: Session, application: Application) -> dict[str, Any]:
         raise ApplicationError("application lost its candidate or posting")
 
     uploaded = default_uploaded_resume(db, candidate.id)
-    if uploaded is not None and not uploaded.storage_path:
+    if uploaded is not None and (
+        not uploaded.storage_path or uploaded.status != "ready"
+    ):
         raise ApplicationError("the uploaded resume is still processing")
 
     # A resume with no employment history is not a resume. The onboarding

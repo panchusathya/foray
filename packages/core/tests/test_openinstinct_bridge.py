@@ -10,8 +10,9 @@ from juicebox.models import (
     Application,
     ApplicationSubmission,
     Candidate,
-    JobMatch,
+    CandidateDocument,
     JobPosting,
+    JobMatch,
     OpenInstinctApplicationTask,
 )
 from juicebox.openinstinct import JUICEBOX_AUDIENCE, mint_bridge_token
@@ -103,6 +104,42 @@ def test_identity_link_requires_verified_claim(client, session, account, sample_
         headers=_service_headers(identities=[]),
     )
     assert response.status_code == 403
+
+
+def test_linked_candidate_can_upload_a_protected_resume(client, session, account, sample_candidates, monkeypatch):
+    _enable_bridge(monkeypatch)
+    candidate = _candidate(session, account, sample_candidates)
+    _link(client)
+
+    response = client.post(
+        "/v1/internal/openinstinct/resumes",
+        files={"file": ("ada.pdf", b"%PDF-1.4\nresume", "application/pdf")},
+        headers=_service_headers(),
+    )
+
+    assert response.status_code == 201, response.text
+    document = session.get(CandidateDocument, response.json()["id"])
+    assert document is not None
+    assert document.candidate_id == candidate.id
+    assert document.is_default is True
+    assert document.protected_default is True
+    assert document.status == "uploaded"
+
+
+def test_openinstinct_resume_rejects_non_resume_bytes(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    _candidate(session, account, sample_candidates)
+    _link(client)
+
+    response = client.post(
+        "/v1/internal/openinstinct/resumes",
+        files={"file": ("not-a-resume.pdf", b"not a PDF", "application/pdf")},
+        headers=_service_headers(),
+    )
+
+    assert response.status_code == 415
 
 
 def test_task_submits_without_second_approval_and_cannot_duplicate(

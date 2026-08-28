@@ -1034,18 +1034,22 @@ def _greeting_for(first_name: str) -> str:
     function for the same reason line 256 does: `intake` must not take a module
     -level dependency on `messaging`.
     """
-    from ..messaging.prompts import recruiter_name
+    from ..messaging.prompts import locate, recruiter_name
 
-    who = recruiter_name()
-    # "at Foray" locates a persona that is not the company. Now that the agent
-    # is itself called Foray, appending it produced "Hi, this is Foray at
-    # Foray" on a real call -- the rename updated the canned constants but not
-    # this composer. Conditional rather than deleted, so a persona named
-    # anything else gets located again.
-    at_company = "" if who.strip().lower() == "foray" else " at Foray"
+    # `locate` and not a written-in "at Foray": the agent is itself called
+    # Foray now, and the suffix produced "Hi, this is Foray at Foray" as the
+    # first words of every inbound call. The rename moved the canned constants
+    # and missed this composer, which is the only one that runs on a real call.
+    #
+    # This supersedes the inline `at_company` conditional that fixed the same
+    # sentence on `claude/greeting-and-readback`. The behaviour is identical;
+    # the difference is that the rule is a function, so the outbound prompt's
+    # `recruiter_intro` and the text greeting hold to it too instead of each
+    # grep-and-replace growing its own copy of the same comparison.
+    who = locate(recruiter_name())
     if first_name:
-        return f"Hi {first_name} -- it's {who}{at_company}. Good to hear from you."
-    return f"Hi, this is {who}{at_company} -- thanks for calling."
+        return f"Hi {first_name} -- it's {who}. Good to hear from you."
+    return f"Hi, this is {who} -- thanks for calling."
 
 
 def _last_contact_phrase(db: Session, *, org_id: str, candidate_id: str) -> str:
@@ -1572,6 +1576,10 @@ def request_intake_call(
 
     settings = get_settings()
     provider = get_voice_provider()
+    # Imported inside the function like `_greeting_for` does, and for the same
+    # reason: `intake` must not take a module-level dependency on `messaging`.
+    from ..messaging.prompts import locate
+
     try:
         placed = provider.place_call(
             from_number=number.phone,
@@ -1580,6 +1588,12 @@ def request_intake_call(
             metadata={"org_id": org_id, "candidate_id": candidate.id, "source": source},
             dynamic_variables={
                 "candidate_first_name": candidate.first_name or "",
+                # Already located: "Vivian at Foray", or bare "Foray" when the
+                # persona carries the firm's name. The prompt cannot make that
+                # choice -- it only sees the rendered string -- and writing
+                # "with Foray" after the name is what produced "I'm Foray, an
+                # AI recruiting assistant with Foray" on a real call.
+                "recruiter_intro": locate(settings.intake_recruiter_name),
                 "recruiter_name": settings.intake_recruiter_name,
                 "sms_number_spoken": settings.intake_sms_number_spoken,
             },

@@ -11,6 +11,7 @@ from juicebox.models import (
     ApplicationSubmission,
     Candidate,
     JobPosting,
+    JobMatch,
     OpenInstinctApplicationTask,
 )
 from juicebox.openinstinct import JUICEBOX_AUDIENCE, mint_bridge_token
@@ -54,6 +55,27 @@ def _posting(session, org_id: str) -> JobPosting:
         status="open",
     )
     session.add(posting)
+    session.commit()
+    return posting
+
+
+def _matched_posting(session, candidate: Candidate) -> JobPosting:
+    posting = _posting(session, candidate.org_id)
+    session.add(
+        JobMatch(
+            org_id=candidate.org_id,
+            candidate_id=candidate.id,
+            job_posting_id=posting.id,
+            score=0.95,
+            criteria=[
+                {
+                    "label": "Relevant experience",
+                    "score": 0.95,
+                    "evidence": "Relevant machine learning experience",
+                }
+            ],
+        )
+    )
     session.commit()
     return posting
 
@@ -126,6 +148,23 @@ def test_task_submits_without_second_approval_and_cannot_duplicate(
         headers=_service_headers(),
     )
     assert duplicate.status_code == 409
+
+
+def test_job_feed_returns_only_linked_candidates_actionable_matches(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    candidate = _candidate(session, account, sample_candidates)
+    posting = _matched_posting(session, candidate)
+    _link(client)
+
+    response = client.get("/v1/internal/openinstinct/job-feed", headers=_service_headers())
+
+    assert response.status_code == 200, response.text
+    cards = response.json()["cards"]
+    assert cards[0]["posting_id"] == posting.id
+    assert cards[0]["title"] == "Machine Learning Engineer"
+    assert "recruiter_only" not in cards[0]
 
 
 def test_task_cannot_cross_org_and_recruiter_timeline_keeps_voice_plus_openinstinct(

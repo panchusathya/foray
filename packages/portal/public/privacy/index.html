@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#faf8fc" />
+    <meta name="color-scheme" content="light" />
+    <title>Privacy Policy — Foray</title>
+    <meta name="description" content="How Foray collects, uses, and protects candidate information." />
+    <style>
+      /*
+       * Standalone on purpose. No build step, no shared stylesheet, no
+       * external font: this page has to load for a carrier reviewer or a
+       * candidate who has never signed in, and it must render the same if it
+       * is copied onto the goforay.io landing host. Palette is First light,
+       * matching the portal.
+       *
+       * CSP note: the portal serves style-src 'self' 'unsafe-inline', so this
+       * inline block is allowed. Do not add an external stylesheet or script
+       * here -- default-src 'self' would block it and the page would ship
+       * unstyled without anything failing loudly.
+       */
+      :root {
+        --bg: #faf8fc;
+        --surface: #ffffff;
+        --text: #2a2140;
+        --muted: #6e6684;
+        --border: rgba(42, 33, 64, 0.1);
+        --accent: #6a50c8;
+        --accent-ink: #5a41b4;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        -webkit-text-size-adjust: 100%;
+      }
+      .wrap { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+      header { margin-bottom: 2.5rem; }
+      .brand {
+        display: inline-block;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: var(--accent-ink);
+        text-decoration: none;
+        font-size: 1.05rem;
+      }
+      h1 { font-size: 1.9rem; line-height: 1.2; margin: 1.25rem 0 0.5rem; letter-spacing: -0.02em; }
+      h2 { font-size: 1.15rem; margin: 2.25rem 0 0.6rem; letter-spacing: -0.01em; }
+      h3 { font-size: 1rem; margin: 1.5rem 0 0.4rem; }
+      .dates { color: var(--muted); font-size: 0.9rem; margin: 0; }
+      ul { padding-left: 1.25rem; }
+      li { margin: 0.35rem 0; }
+      a { color: var(--accent-ink); }
+      code {
+        background: rgba(106, 80, 200, 0.08);
+        border-radius: 0.25rem;
+        padding: 0.1em 0.35em;
+        font-size: 0.9em;
+      }
+      .callout {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 0.5rem;
+        padding: 1rem 1.15rem;
+        margin: 1.5rem 0;
+      }
+      .callout p:first-child { margin-top: 0; }
+      .callout p:last-child { margin-bottom: 0; }
+      table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.95rem; }
+      th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+      th { color: var(--muted); font-weight: 600; }
+      .tablewrap { overflow-x: auto; }
+      footer {
+        margin-top: 3rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <a class="brand" href="/">Foray</a>
+        <h1>Privacy Policy</h1>
+        <p class="dates">Effective 27 August 2026 &middot; Last updated 27 August 2026</p>
+      </header>
+
+      <p>
+        Foray is a recruiting service for job candidates. We take your details,
+        match you to open roles, prepare and submit applications on your
+        behalf, and keep you posted on where each one stands. This policy
+        explains what we collect while doing that, why, who else sees it, and
+        what you can ask us to do about it.
+      </p>
+      <p>
+        This policy covers <strong>candidates</strong> &mdash; people using
+        Foray to find work. It applies to our website, the candidate portal,
+        our phone line, and our text conversations with you.
+      </p>
+
+      <h2>Who we are</h2>
+      <p>
+        Foray is operated by [LEGAL ENTITY NAME], a [STATE] [ENTITY TYPE], at
+        [REGISTERED ADDRESS]. You can reach us at
+        <a href="mailto:privacy@goforay.io">privacy@goforay.io</a>.
+      </p>
+
+      <h2>What we collect</h2>
+
+      <h3>Information you give us</h3>
+      <ul>
+        <li>Contact details &mdash; your name, phone number, and email address.</li>
+        <li>
+          Your resume and the work history in it, plus profile details like
+          your current title, skills, and education.
+        </li>
+        <li>
+          What you are looking for &mdash; target roles, seniority, locations,
+          remote preference, industries, company stage and size, compensation
+          expectations, timeline, and any companies you would rather we
+          avoided.
+        </li>
+        <li>
+          Two work-authorization answers: whether you are legally authorized to
+          work where you are applying, and whether you will need sponsorship.
+        </li>
+        <li>
+          Whatever else you choose to tell us in a call, a text, or the chat.
+        </li>
+      </ul>
+
+      <h3>Calls</h3>
+      <p>
+        Our intake assistant is an AI. It says so at the start of every call,
+        and it asks for your permission to record before it asks you anything
+        else. If you say no, we do not record and we do not continue with
+        intake &mdash; a person follows up instead. Permission is asked
+        <em>per call</em>, not once and assumed forever. Where we record, we
+        keep the recording and a written transcript.
+      </p>
+
+      <h3>Texts and chat</h3>
+      <p>
+        We keep the messages you exchange with us, including any files you send
+        in a text thread, and the record of how and when you agreed to be
+        texted.
+      </p>
+
+      <h3>Connected apps, only if you choose to connect one</h3>
+      <p>
+        You can connect Gmail, Outlook, or GitHub so we can find your resume
+        instead of making you dig it out. If you do:
+      </p>
+      <ul>
+        <li>
+          We request read-only access and nothing wider &mdash; Gmail
+          <code>gmail.readonly</code>, Microsoft <code>Mail.Read</code>, GitHub
+          <code>read:user</code>. We never request permission to send mail as
+          you.
+        </li>
+        <li>
+          We run a fixed set of searches looking for resume attachments. We do
+          not read your email for content, and we do not index your mailbox.
+        </li>
+        <li>
+          What we keep is the resume file itself and basic profile facts. The
+          subject lines, bodies, and snippets of your email are not stored
+          &mdash; there is no field in our system that holds them.
+        </li>
+        <li>
+          Your access tokens are encrypted at rest. We read your mailbox once
+          when you connect, and again only if you explicitly ask us to
+          re-check. There is no background sync.
+        </li>
+        <li>
+          You can disconnect at any time from the connect page. We delete our
+          copy of the token and revoke it upstream where the provider offers a
+          way to. Google and GitHub do; Microsoft does not, so we delete our
+          copy and you can revoke it from your Microsoft account.
+        </li>
+      </ul>
+
+      <h3>Automatically</h3>
+      <p>
+        Standard technical data when you use the portal: IP address, browser
+        and device type, and log records of requests. We use this to keep the
+        service running and secure.
+      </p>
+
+      <h2>What we never ask for</h2>
+      <div class="callout">
+        <p>
+          <strong>Salary history.</strong> We ask what you are targeting going
+          forward. We never ask what you make now or made before, and if you
+          mention it we do not record it or use it to steer anything.
+        </p>
+        <p>
+          <strong>Protected characteristics.</strong> We never ask about your
+          age, race, religion, health, disability, family or marital status, or
+          pregnancy. If you volunteer something in one of these categories, the
+          assistant acknowledges it and moves on &mdash; there is no field for
+          it to land in.
+        </p>
+        <p>
+          <strong>Immigration detail.</strong> Beyond the two authorization
+          questions above, we do not ask about citizenship, visa type,
+          green-card status, or country of origin.
+        </p>
+      </div>
+
+      <h2>How we use your information</h2>
+      <ul>
+        <li>To match you to open roles against the preferences you gave us.</li>
+        <li>
+          To prepare applications &mdash; drafting a resume, cover letter, and
+          answers for a specific role &mdash; and to submit them where you have
+          asked us to.
+        </li>
+        <li>To tell you where your applications stand and to answer your questions.</li>
+        <li>To introduce you to employers, where you have told us that is okay.</li>
+        <li>To keep a record of the permissions you gave us and when.</li>
+        <li>To operate, secure, debug, and improve the service.</li>
+        <li>To meet our legal obligations.</li>
+      </ul>
+      <p>
+        We do not use your information to train third-party AI models, and we
+        do not use it for advertising.
+      </p>
+
+      <h2>Text messaging</h2>
+      <p>
+        We text you only if you asked us to. There are two ways that happens:
+        you tell us yes on a recorded call when we ask, verbatim, &ldquo;Can I
+        text you updates at this number?&rdquo; &mdash; or you text our number
+        first. Only a clear yes counts; we do not re-ask or rephrase to get a
+        better answer.
+      </p>
+      <p>
+        Our first message identifies us and asks you to reply so we know we
+        have the right number. Nothing else goes out until you do. After that,
+        our messages are about your own job search: application status updates,
+        roles that match what you told us, requests for a missing detail, and
+        replies to what you send us.
+      </p>
+      <div class="callout">
+        <p>
+          <strong>
+            No mobile information will be shared with third parties or
+            affiliates for marketing or promotional purposes. All other
+            categories of data sharing described in this policy exclude text
+            messaging originator opt-in data and consent; that information is
+            not shared with any third party.
+          </strong>
+        </p>
+      </div>
+      <p>
+        Reply <strong>STOP</strong> at any time and we stop texting you. Reply
+        <strong>HELP</strong> for help. Message frequency varies with your own
+        job search. Message and data rates may apply.
+      </p>
+      <p>
+        Our voice and text line is <strong>coming soon</strong>. We will
+        publish the number here once it is live.
+      </p>
+
+      <h2>Who we share it with</h2>
+
+      <h3>Employers</h3>
+      <p>
+        The point of the service is getting your profile in front of companies
+        that are hiring, and we ask you directly whether that is okay before we
+        do it. When we apply on your behalf, the employer receives what any
+        applicant would send: your resume, your cover letter, and your answers
+        to their questions. Anything you tell us you would rather we did not
+        repeat to a company, we do not.
+      </p>
+
+      <h3>Service providers</h3>
+      <p>
+        We use a small number of vendors to run the service. They process your
+        data on our instructions and for no purpose of their own.
+      </p>
+      <div class="tablewrap">
+        <table>
+          <tr><th>Provider</th><th>What they handle</th></tr>
+          <tr><td>Twilio</td><td>Our phone number, calls, and text messages</td></tr>
+          <tr><td>Retell AI</td><td>The voice assistant &mdash; call audio and transcripts</td></tr>
+          <tr><td>Linq</td><td>Message delivery on our text channel</td></tr>
+          <tr><td>Anthropic</td><td>The AI models behind the assistant</td></tr>
+          <tr><td>[HOSTING PROVIDER]</td><td>Servers and database hosting</td></tr>
+        </table>
+      </div>
+
+      <h3>Legal</h3>
+      <p>
+        We disclose information where the law requires it, to respond to lawful
+        requests, to enforce our terms, or to protect the rights and safety of
+        people using the service. If we are ever involved in a merger,
+        acquisition, or sale of assets, your information may transfer as part
+        of that, and this policy travels with it.
+      </p>
+
+      <h3>What we do not do</h3>
+      <p>
+        We do not sell your personal information, and we do not share it for
+        cross-context behavioral advertising. We have not done so in the
+        preceding twelve months. We do not buy, rent, or trade phone numbers,
+        and every number we text belongs to someone who asked us to.
+      </p>
+
+      <h2>How long we keep it</h2>
+      <p>
+        We keep your profile, applications, and message history for as long as
+        you are using Foray and for a reasonable period afterwards, so that a
+        returning candidate does not start from nothing. We keep records of the
+        permissions you gave us &mdash; including your text opt-in and the
+        exact wording you saw or heard &mdash; for as long as we may need to
+        show that consent was given, and for at least [RETENTION PERIOD]
+        afterwards. You can ask us to delete your information at any time; see
+        below.
+      </p>
+
+      <h2>Your choices and rights</h2>
+      <ul>
+        <li><strong>Stop the texts</strong> &mdash; reply STOP, any time.</li>
+        <li><strong>Disconnect an app</strong> &mdash; from the connect page, any time.</li>
+        <li>
+          <strong>Stop us sharing with employers</strong> &mdash; tell us, and
+          we stop.
+        </li>
+        <li>
+          <strong>See what we hold, correct it, or delete it</strong> &mdash;
+          email <a href="mailto:privacy@goforay.io">privacy@goforay.io</a>.
+        </li>
+      </ul>
+      <p>
+        If you are a California resident, the CCPA and CPRA give you the right
+        to know what we collect and why, to delete it, to correct it, to opt
+        out of sale or sharing (we do neither), and not to be discriminated
+        against for exercising any of these. We will verify your identity
+        before acting on a request, and we will respond within the time the law
+        allows. You may use an authorized agent.
+      </p>
+      <p>
+        Under California law, candidates are entitled to the pay scale for a
+        role on request. Ask us and we will get it for you.
+      </p>
+
+      <h2>Automated decisions</h2>
+      <p>
+        Our assistants collect information and prepare applications. They do
+        not decide whether you get hired &mdash; employers do. Where we rank
+        roles, we are ranking them against the preferences <em>you</em> gave
+        us. If you would rather a person looked at your file instead of the
+        assistant, ask and we will arrange it.
+      </p>
+
+      <h2>Security</h2>
+      <p>
+        Access to candidate data is restricted to the people who need it.
+        Connected-app tokens are encrypted at rest, traffic to our servers is
+        encrypted in transit, and each organization's data is separated from
+        every other's. No system is perfectly secure, and we will not pretend
+        otherwise &mdash; but if a breach affects you, we will tell you as the
+        law requires.
+      </p>
+
+      <h2>Minors</h2>
+      <p>
+        Foray is for adults. We do not knowingly collect information from
+        anyone under 18. If our assistant realizes it is talking to a minor, it
+        stops the intake and hands off to a person. If you believe a minor has
+        given us information, email us and we will delete it.
+      </p>
+
+      <h2>Changes</h2>
+      <p>
+        We will update this policy as the service changes. The effective date
+        at the top always tells you which version you are reading, and we keep
+        a record of the wording that was in place when you gave us each
+        permission &mdash; so a change here never rewrites what you originally
+        agreed to.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Questions, requests, or complaints:
+        <a href="mailto:privacy@goforay.io">privacy@goforay.io</a>, or write to
+        [LEGAL ENTITY NAME], [REGISTERED ADDRESS].
+      </p>
+
+      <footer>
+        <p><a href="/terms/">Terms of Service</a> &middot; <a href="/">Foray</a></p>
+      </footer>
+    </div>
+  </body>
+</html>

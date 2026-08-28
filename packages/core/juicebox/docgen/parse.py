@@ -45,6 +45,13 @@ _ZIP_MAGIC = b"PK\x03\x04"
 ERROR_NO_TEXT = "no_text (scanned image? OCR is out of scope)"
 ERROR_LLM_UNAVAILABLE = "llm_unavailable (text kept; parse re-runs when a model is configured)"
 
+# Resume parsing is a background task, but it gates an application run.  A
+# normal LLM call can wait and retry for several minutes, leaving the document
+# permanently "parsing" and stranding the browser worker behind it.  Keep the
+# structured parse bounded; the original file and extracted text remain on the
+# protected document row if the model is temporarily unavailable.
+RESUME_PARSE_TIMEOUT_SECONDS = 30.0
+
 
 def sniff_resume_type(data: bytes) -> str:
     """The MIME type this file actually is: PDF, DOCX, or ``""``.
@@ -151,10 +158,12 @@ def parse_resume_text(text: str) -> tuple[dict, str]:
     if not llm.available:
         return {}, ERROR_LLM_UNAVAILABLE
     try:
-        result = llm.json(
+        result = llm.json_fast(
             system=RESUME_PARSE_SYSTEM,
             prompt=resume_parse_prompt(text=text),
             schema=RESUME_PARSE_SCHEMA,
+            max_tokens=8000,
+            timeout=RESUME_PARSE_TIMEOUT_SECONDS,
         )
     except LLMUnavailable:
         return {}, ERROR_LLM_UNAVAILABLE

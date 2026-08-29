@@ -307,7 +307,7 @@ WRAP_UP_PARTIAL = (
 STOP_ACKNOWLEDGEMENT = "understood — i won't message you again."
 
 HELP_REPLY = (
-    "juicebox intake assistant. reply stop to opt out. "
+    "foray intake assistant. reply stop to opt out. "
     "for help, contact the recruiter who shared this number."
 )
 

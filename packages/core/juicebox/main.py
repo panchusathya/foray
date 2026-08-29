@@ -76,7 +76,7 @@ async def lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="Juicebox API",
+        title="Foray API",
         version=__version__,
         description=(
             "AI recruiting stack: natural-language people search with explainable "

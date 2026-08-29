@@ -185,32 +185,76 @@ than proven. These questions turn a claim into evidence.
     whether "things you made exist." Options: make the drone work or the Walmart tool public,
     or lean entirely on links and Looms instead. Which?
 
-# 7c · WestBridge — two claims that need to be exact
+# 7c · WestBridge
 
-Both are strong. Both are also checkable in one message by **exactly the two firms you're
-applying to who are most likely to know these deals.**
+One claim resolved, one still open, and a tactical opening for the a16z form specifically.
 
-68. 🔴 **The $2.5B figure — map each company to its actual acquirer.** As you sent it, it
-    doesn't reconcile: Zoom and Snowflake are large public acquirers rather than acquisitions,
-    and Natoma appears twice with two different acquirers. I have Prior Labs → SAP. I need the
-    rest: which company, acquired by whom, roughly when. Also: is **$2.5B offers received or
-    deals closed?** A precise $2.5B is one of the best lines in the pack; a number with one
-    wrong acquirer attached costs the credibility of everything else on the page.
-69. 🔴 **Which of those deals were sourced by which of you**, and how did you find them? For
-    these forms the sourcing *method* matters more than the outcome — it's the same muscle
-    you're claiming transfers to candidates.
+68. ✅ **Resolved — all 21 anti-portfolio companies were sourced by Tushar**, so this is an
+    origination record, not an anti-portfolio. Use it: *21 companies sourced in a year, 7
+    acquired, 14 that went on to raise from the top of the market.* Two things still open:
+    **(a)** is **$2.5B** offers received or deals closed, and across which subset? That number
+    stays out until it's pinned to something checkable. **(b)** Sathya's sourcing record is
+    separate — 3 diligences with 2 self-sourced from his own thesis work, plus the Twitter
+    follower bot. Don't merge the two into a "we."
+71. 🟡 **Use the a16z overlap in the a16z form and nowhere else.** Three of the 21 took a16z
+    money after Tushar sourced them — Ornn (led the A), Merendil (led the Seed), Tessera
+    (Series A). *"I sourced Ornn, Merendil and Tessera before you funded them"* is checkable,
+    flattering and high-signal. Confirm all three are right and you're comfortable using it.
 70. 🔴 **"Sourced the Head of Applied Research at OpenAI" — recruited into a role, or sourced
     as a contact/speaker for an event?** Both are usable, they are just not the same sentence,
     and only one of them is a recruiting claim.
-71. 🟡 **WestBridge internal recruiting — what did taking point actually involve?** Roles, how
+72. 🟡 **WestBridge internal recruiting — what did taking point actually involve?** Roles, how
     many candidates, how many hires, who owned the decision. **Combined with Tushar's J.P.
     Morgan campus and lateral remit, this makes two institutions where you have personally run
     hiring — that's your strongest founder–market-fit fact and it has never appeared in a
     pitch.** Give me enough to make it concrete.
-72. 🟡 **Biz2Credit partnerships** — what did "from the ground up" mean? Was the Mastercard
+73. 🟡 **Biz2Credit partnerships** — what did "from the ground up" mean? Was the Mastercard
     partnership yours end-to-end? What about Optum? Any numbers — volume, revenue, launch date?
-73. ⚪ **Sathya, "first hire out of college for the WestBridge office"** — first ever for the
+74. ⚪ **Sathya, "first hire out of college for the WestBridge office"** — first ever for the
     office, or first of that year? Worth getting right; it's a good line.
+
+# 7d · The portco hiring pipeline — highest-value, needs the most care
+
+Duplo (CMO, CFO), Biz2Credit (CFO), Innovaccer (multiple C-suite), Turing (multiple).
+
+**This outranks everything else in the pack.** Innovaccer is Series F, Turing is Series E.
+C-suite search at that stage is retained work at 30–33%; one CFO is a six-figure fee. Four
+named companies with multiple executive roles each, arriving at a company currently reporting
+$0 revenue, changes the traction answer more than anything else you've told me.
+
+Which is why the tense has to be exact. "We'll be running hiring for" is not "we have run
+hiring for," and that gap is the difference between the best line in the application and a
+claim that unravels in a partner meeting.
+
+75. 🔴 **Per company and per role: verbal interest, agreed mandate, or signed engagement?**
+    Duplo CMO, Duplo CFO, Biz2Credit CFO, Innovaccer (which roles?), Turing (which roles?).
+76. 🔴 **Fee terms agreed?** Retained, contingent, a percentage, or not yet priced?
+77. 🔴 **Exclusive, or running alongside incumbent search firms?**
+78. 🔴 **Has any search actually started?** Any candidate delivered, interview scheduled, brief
+    taken?
+79. 🟡 **Who's the counterparty at each**, and did they ask you or did you offer?
+80. 🔴 **Has WestBridge approved this in writing, and who signed off?** Taking placement fees
+    from portfolio companies while employed as investors at the fund holding those positions is
+    a real governance question, and all five programs reach it in about ninety seconds. A clean
+    answer is completely fine — not having one is the problem.
+
+> **Even the weakest honest version of this is strong.** "Four portfolio companies have asked
+> us to run eight executive searches, starting in September" is better than anything else in
+> this pack, because it's unsolicited demand from late-stage companies. It does not need
+> inflating.
+
+81. 🔴 **Which of these three leads the story?** You now have three segments and an application
+    can only carry one:
+    (a) founding GTM/ops at seed AI startups — where the work is actually done, free;
+    (b) C-suite search at growth-stage portcos — where the money and demand are;
+    (c) mid-level engineering volume — the stated destination and the venture story.
+    Exec search is the *least* automatable of the three — small n, relationship-driven, seven-month
+    cycles — which is the opposite of the "one recruiter does the work of ten" thesis that makes
+    this fundable. **My recommendation:** exec search inside a fund network is the revenue engine
+    that funds the build and proves you close; seed GTM/ops is where the product got forged
+    against real reqs; engineering volume is where the software thesis pays off. That's the
+    Crosby shape, and it's also a much better answer to "how will you support yourselves" than
+    any alternative. Agree, or do you want to reposition around exec search entirely?
 
 # 8 · The gap I can't fill
 

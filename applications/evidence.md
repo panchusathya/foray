@@ -162,10 +162,14 @@ Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to
   (Coatue/Lightspeed), **Doss** (Madrona B), **Triomics** (Battery A), **Accordance**
   (Altimeter A), **Anything** (Footwork A), **Actively** (TCV and First Harmonic B),
   **JustAI** (Base10 A), **Integral** (Venrex A).
-  `GAP — see §10. This is an "evaluated" list, not a "sourced" list; the two claims are not
-  interchangeable and the $2.5B figure needs to be attached to the right one.`
-  **Tactical note for the a16z form specifically:** three of these took a16z money after they
-  saw them. *"We evaluated Ornn, Merendil and Tessera before you funded them"* is checkable,
+  **All 21 were sourced by Tushar**, not merely evaluated — confirmed 29 Aug. That makes this
+  an origination record, not an anti-portfolio, and it is the strongest single piece of
+  evidence for the sourcing claim in A5: *21 companies sourced in a year; 7 acquired; 14 that
+  went on to raise from the top of the market.*
+  `GAP: attribution — Sathya's sourcing record is separate (3 diligences with 2 self-sourced
+  from his own thesis work, plus the Twitter follower bot). Don't merge the two into a "we".`
+  **Tactical note for the a16z form specifically:** three of these took a16z money after he
+  sourced them. *"I sourced Ornn, Merendil and Tessera before you funded them"* is checkable,
   flattering and high-signal — use it there and nowhere else.
 - **Built Biz2Credit's partnerships business from the ground up**, including its credit-card
   partnership with **Mastercard** and its healthcare-provider partnership with **Optum /
@@ -185,15 +189,12 @@ Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to
 Both are strong. Both are also the kind of thing a16z and Greylock can check in one message,
 and these two firms are more likely than anyone to know these exact deals.
 
-- **"Sourced" versus "evaluated" — the distinction that matters most in this pack.** The
-  anti-portfolio is headed *"outcomes of companies I evaluated."* Evaluating a company that
-  later gets acquired is a claim about **judgement and access**: real, impressive, and the
-  honest frame for that list. The YC application instead said *"sourced 6 deals for the
-  WestBridge team that have resulted in strategic acquisitions"* — a claim about **origination**,
-  which is stronger and narrower. Presenting the anti-portfolio as sourcing would be caught:
-  **a16z is on that list three times** and knows these companies. Needed: which six were
-  genuinely sourced, and whether **$2.5B** attaches to the seven acquisitions or to something
-  else, offers or closes.
+- ~~"Sourced" vs "evaluated"~~ **Resolved 29 Aug: all 21 were sourced by Tushar.** Use the
+  origination framing. Still open: whether **$2.5B** is offers received or deals closed, and
+  across which subset — that number stays out until it's pinned to something checkable.
+
+- **"Will be running" versus "have run" — the same distinction, one week later.** See §11.
+  This is now the most valuable unverified claim in the pack, so it gets the most care.
 - **The OpenAI sourcing claim.** "Sourced the Head of Applied Research at OpenAI" means one
   thing if a person was recruited into a role and a very different thing if they were sourced
   as a speaker or contact for an event. Both are usable; they are not the same sentence.
@@ -236,3 +237,54 @@ and these two firms are more likely than anyone to know these exact deals.
 
 An accelerator will find all four of these. Volunteering them costs nothing and buys the
 credibility that carries every other claim on this page.
+
+## 11. Portfolio-company hiring pipeline — the biggest claim in the pack
+
+Stated 29 Aug: Foray will be running hiring for WestBridge portfolio companies —
+**Duplo (CMO, CFO), Biz2Credit (CFO), Innovaccer (multiple C-suite), Turing (multiple).**
+
+**Why this outranks everything else on this page.** Innovaccer is Series F and Turing is
+Series E. C-suite search at that stage is retained work at 30–33% of first-year comp; a single
+CFO placement is a six-figure fee. Four companies with multiple executive roles each is not a
+seed-stage experiment — it is enterprise demand with a named, checkable customer list, arriving
+at a company that currently reports $0 in revenue. Nothing else in this pack changes the read
+of A3 as much.
+
+**Which is exactly why the tense has to be right.** "We'll be running hiring for" is not
+"we have run hiring for", and the gap between them is the difference between the best line in
+the application and a claim that unravels in diligence. Required before use:
+
+- Per company and per role: **verbal interest, agreed mandate, or signed engagement?**
+- **Fee terms agreed?** Retained, contingent, percentage, or unpriced?
+- **Exclusive, or alongside incumbent search firms?**
+- **Started?** Any candidate delivered, any interview scheduled, any search kicked off?
+- Who at each company is the counterparty, and did they ask you or did you offer?
+
+Write A3 to whatever is actually true. **Even the weakest honest version — "four portfolio
+companies have asked us to run eight executive searches, starting in September" — is stronger
+than anything else in this pack**, because it is demand that arrived unsolicited from
+late-stage companies. It does not need inflating.
+
+**Two consequences to handle deliberately:**
+
+**a) The conflict question stops being hypothetical.** Taking placement fees from portfolio
+companies while employed as investors at the fund that owns those positions is a real
+governance question, and every one of these five programs will reach it in about ninety
+seconds. Needed: has WestBridge approved this in writing, who at the firm signed off, and how
+are fees handled. A clean answer is completely fine. Not having one is the problem.
+
+**b) There are now three segments, and an application can only carry one story.**
+1. Founding GTM/ops at seed AI startups — where the work has actually been done, free.
+2. **C-suite search at growth-stage portcos — where the money and the demand are.**
+3. Mid-level engineering volume — the stated destination and the venture story.
+
+Executive search is the least automatable of the three: small n, relationship-driven, long
+cycles — the Kyber placement took seven months. It is the opposite of the "one recruiter does
+the work of ten" thesis that makes this fundable. So do not blur them into one paragraph.
+
+**The framing that holds all three honestly:** executive search inside a fund network is the
+revenue engine that funds the build and proves we can close; seed GTM/ops is where the product
+was forged against real reqs; volume engineering hiring is where the software thesis pays off.
+That is the Crosby shape — the firm funds the software — and it is the story a16z speedrun and
+HF0 are actually set up to reward. It is also a much better answer to "how will you support
+yourselves" than any of the alternatives.

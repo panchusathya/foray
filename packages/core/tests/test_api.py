@@ -659,6 +659,64 @@ class TestAnalytics:
         assert funnel["stages"]["contacted"] == 1
         assert funnel["reply_rate"] == 0.0
 
+    def test_funnel_scopes_outreach_to_the_project(self, client, loaded_org, mailbox):
+        """project_id narrows the outreach block, not just the stages block."""
+        headers = loaded_org["headers"]
+        candidates = client.get("/v1/candidates", headers=headers).json()
+
+        def send_one(name, candidate):
+            project = client.post(
+                "/v1/projects", json={"name": name}, headers=headers
+            ).json()
+            client.post(
+                f"/v1/projects/{project['id']}/candidates",
+                json={"candidate_ids": [candidate["id"]]},
+                headers=headers,
+            )
+            sequence = client.post(
+                "/v1/sequences",
+                json={
+                    "name": f"{name} touch",
+                    "project_id": project["id"],
+                    "personalize": False,
+                    "steps": [
+                        {
+                            "delay_days": 0,
+                            "subject_template": "Hi",
+                            "body_template": "Hello",
+                        }
+                    ],
+                },
+                headers=headers,
+            ).json()
+            client.post(
+                f"/v1/sequences/{sequence['id']}/enroll",
+                json={"candidate_ids": [candidate["id"]], "project_id": project["id"]},
+                headers=headers,
+            )
+            client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers)
+            return project
+
+        ml = send_one("ML", candidates[0])
+        infra = send_one("Infra", candidates[1])
+
+        # The unscoped call must still see both. This half is what catches a
+        # filter that leaks into the default, org-wide answer.
+        unscoped = client.get("/v1/analytics/funnel", headers=headers).json()
+        assert unscoped["outreach"]["sent"] == 2
+
+        scoped = client.get(
+            f"/v1/analytics/funnel?project_id={ml['id']}", headers=headers
+        ).json()
+        assert scoped["project_id"] == ml["id"]
+        assert scoped["outreach"]["sent"] == 1
+        assert scoped["stages"]["contacted"] == 1
+
+        other = client.get(
+            f"/v1/analytics/funnel?project_id={infra['id']}", headers=headers
+        ).json()
+        assert other["outreach"]["sent"] == 1
+
     def test_activity_feed_records_events(self, client, loaded_org):
         headers = loaded_org["headers"]
         project = client.post("/v1/projects", json={"name": "ML"}, headers=headers).json()

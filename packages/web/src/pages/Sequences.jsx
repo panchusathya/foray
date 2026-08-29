@@ -197,15 +197,38 @@ function CreateSequenceModal({ projects, sequences, defaultProjectId, onClose })
 }
 
 export function SequencesPage() {
+  const { projects, project, loading: projectLoading } = useCurrentProject();
+  const projectId = project?.id ?? null;
+
+  // Fetched once, unscoped, then filtered below. Switching the sidebar project
+  // re-filters synchronously -- a server-side filter would put a loading card
+  // between every switch.
   const sequences = useAsync(() => api.listSequences(), []);
-  const funnel = useAsync(() => api.funnel(), []);
-  const { projects, project } = useCurrentProject();
+  // Hold the funnel until the sidebar's project has resolved. Firing it
+  // unscoped first would paint org-wide totals for a frame and then swap them
+  // for the smaller scoped ones.
+  const funnel = useAsync(
+    () => (projectLoading ? Promise.resolve(null) : api.funnel(projectId)),
+    [projectLoading, projectId],
+  );
   const [searchParams] = useSearchParams();
   const pitchProjectId = searchParams.get('project') || '';
   const [creating, setCreating] = useState(searchParams.get('new') === '1');
   const [error, setError] = useState(null);
 
-  const outreach = funnel.data?.outreach ?? {};
+  // /funnel echoes the project_id it answered for. Only trust a payload that
+  // names the project selected right now -- that rules out the pre-scope null,
+  // the frame of zeros before the refetch starts, and a slow answer for a
+  // project we have already switched away from.
+  const scoped = funnel.data && funnel.data.project_id === projectId ? funnel.data : null;
+  const outreach = scoped?.outreach ?? {};
+  const stat = (value) => (scoped ? value ?? 0 : '—');
+  const rate = (value) => (scoped ? percent(value) : '—');
+
+  const allSequences = sequences.data ?? [];
+  const visibleSequences = projectId
+    ? allSequences.filter((sequence) => sequence.project_id === projectId)
+    : allSequences;
 
   async function toggleStatus(sequence) {
     setError(null);
@@ -248,22 +271,22 @@ export function SequencesPage() {
       <ErrorBox error={error} />
 
       <div className="grid four">
-        <Stat value={outreach.sent ?? 0} label="Sent" />
-        <Stat value={outreach.opened ?? 0} label={`Opened · ${percent(funnel.data?.open_rate)}`} />
-        <Stat value={outreach.replied ?? 0} label={`Replied · ${percent(funnel.data?.reply_rate)}`} />
+        <Stat value={stat(outreach.sent)} label="Sent" />
+        <Stat value={stat(outreach.opened)} label={`Opened · ${rate(scoped?.open_rate)}`} />
+        <Stat value={stat(outreach.replied)} label={`Replied · ${rate(scoped?.reply_rate)}`} />
         <Stat
-          value={outreach.positive_replies ?? 0}
-          label={`Interested · ${percent(funnel.data?.positive_reply_rate)}`}
+          value={stat(outreach.positive_replies)}
+          label={`Interested · ${rate(scoped?.positive_reply_rate)}`}
         />
       </div>
 
       {sequences.loading ? <Loading /> : null}
       <ErrorBox error={sequences.error} />
-      {!sequences.loading && !(sequences.data ?? []).length ? (
-        <Empty>No sequences yet — create one to start reaching out.</Empty>
+      {!sequences.loading && !visibleSequences.length ? (
+        <Empty>No sequences for this project yet — create one to start reaching out.</Empty>
       ) : (
         <div className="stack" style={{ gap: 8 }}>
-          {(sequences.data ?? []).map((sequence) => (
+          {visibleSequences.map((sequence) => (
             <div className="card spread" key={sequence.id}>
               <div>
                 <Link to={`/sequences/${sequence.id}`} style={{ fontWeight: 600 }}>

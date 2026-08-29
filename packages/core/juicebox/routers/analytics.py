@@ -16,12 +16,14 @@ from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..models import (
     PIPELINE_STAGES,
     Application,
+    Enrollment,
     Event,
     IntakeCall,
     IntakeThread,
     Message,
     Project,
     ProjectCandidate,
+    Sequence,
     utcnow,
 )
 
@@ -52,6 +54,18 @@ def funnel(
     message_stmt = select(Message).where(
         Message.org_id == principal.org_id, Message.direction == "outbound"
     )
+    if project_id:
+        # Attribute a send to the project its *sequence* belongs to, so these
+        # counts describe exactly the sequences the page lists. Going through
+        # Enrollment.project_id instead would read a snapshot taken at enroll
+        # time, which drifts the moment a sequence is reassigned. The inner
+        # join also drops mailbox-synced mail (enrollment_id is NULL), which
+        # no sequence -- and therefore no project -- is responsible for.
+        message_stmt = (
+            message_stmt.join(Enrollment, Enrollment.id == Message.enrollment_id)
+            .join(Sequence, Sequence.id == Enrollment.sequence_id)
+            .where(Sequence.project_id == project_id)
+        )
     messages = db.scalars(message_stmt).all()
 
     sent = sum(1 for m in messages if m.status == "sent")

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../../components/common.jsx';
 import { ReviewReason } from '../../components/ReviewReason.jsx';
+import { groupCalls } from '../../lib/intakeGroups.js';
 import { formatComp, formatTimeline, intakeApi } from '../../lib/intake.js';
 import { formatPhone } from '../../lib/phone.js';
 import { useAsync } from '../../lib/useAsync.js';
@@ -73,32 +74,17 @@ function CallDetail({ callId }) {
   );
 }
 
-function CallCard({ row }) {
+/** One call inside a caller's group. The advisory blocks live here, not on the
+ *  group header -- hoisting them would undo the consolidation. */
+function CallRow({ row }) {
   const [open, setOpen] = useState(false);
-  // Same precedence the thread cards use: what they called themselves beats
-  // the number they called from. A phone number is the last resort, not the
-  // headline -- a queue of numbers tells a recruiter nothing about who to ring.
-  const number = formatPhone(row.from_number);
-  const who = row.contact_name || row.contact_email || number || 'unknown caller';
   return (
-    <div className="card stack" data-testid="intake-call-row">
-      <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
-        <span className="thread-head">
-          <span className="thread-subject">
-            {open ? '▾' : '▸'} {who}
-          </span>
-          <span className="thread-meta muted small">
-            {when(row.started_at || row.created_at)}
-          </span>
-        </span>
-      </button>
-      {row.contact_name || row.contact_email ? (
-        <div className="small muted" data-testid="intake-call-contact">
-          {[number, row.contact_email].filter(Boolean).join(' · ')}
-        </div>
-      ) : null}
+    <div className="stack" style={{ gap: 6 }} data-testid="intake-call-row">
       <div className="row spread">
-        <div className="row" style={{ gap: 8 }}>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <button type="button" className="tiny ghost" onClick={() => setOpen((value) => !value)}>
+            {open ? '▾' : '▸'} {when(row.started_at || row.created_at)}
+          </button>
           <Badge tone={row.review_needed ? 'partial' : ''}>{row.status}</Badge>
           <span className="small muted">
             {row.gate_mode}
@@ -106,16 +92,51 @@ function CallCard({ row }) {
             {row.required_complete ? '' : ' · gate open'}
           </span>
         </div>
-        {row.candidate_id ? (
-          <Link to={`/contacts/${row.candidate_id}`}>Open record</Link>
+      </div>
+      {row.review_needed ? <ReviewReason reason={row.review_reason} /> : null}
+      {open ? <CallDetail callId={row.id} /> : null}
+    </div>
+  );
+}
+
+function CallerCard({ group }) {
+  const [open, setOpen] = useState(false);
+  const number = formatPhone(group.number);
+  // What they called themselves beats the number they called from. A phone
+  // number is the last resort, not the headline -- a queue of numbers tells a
+  // recruiter nothing about who to ring.
+  const who = group.contactName || group.contactEmail || number || 'unknown caller';
+  const count = group.calls.length;
+  return (
+    <div className="card stack" data-testid="intake-caller">
+      <button type="button" className="option" onClick={() => setOpen((value) => !value)}>
+        <span className="thread-head">
+          <span className="thread-subject">
+            {open ? '▾' : '▸'} {who}
+          </span>
+          <span className="thread-meta muted small">
+            {count} call{count === 1 ? '' : 's'} · {when(group.latest)}
+          </span>
+        </span>
+      </button>
+      <div className="row spread">
+        <div className="small muted">
+          {[number, group.contactEmail].filter(Boolean).join(' · ')}
+          {group.reviewCount ? ` · ${group.reviewCount} needing review` : ''}
+        </div>
+        {group.candidateId ? (
+          <Link to={`/contacts/${group.candidateId}`}>Open record</Link>
         ) : (
           <span className="muted small">unattributed</span>
         )}
       </div>
-      {row.review_needed ? (
-        <ReviewReason reason={row.review_reason} />
+      {open ? (
+        <div className="stack" style={{ gap: 10 }}>
+          {group.calls.map((row) => (
+            <CallRow key={row.id} row={row} />
+          ))}
+        </div>
       ) : null}
-      {open ? <CallDetail callId={row.id} /> : null}
     </div>
   );
 }
@@ -126,14 +147,14 @@ export function IntakeCalls({ reviewNeeded, title } = {}) {
     [reviewNeeded],
   );
 
-  const rows = calls.data ?? [];
+  const groups = groupCalls(calls.data);
 
   return (
     <div className="stack" data-testid={reviewNeeded ? 'intake-review' : 'intake-calls'}>
       {title ? <h2>{title}</h2> : null}
       {calls.loading ? <Loading label="Loading calls…" /> : null}
       <ErrorBox error={calls.error} />
-      {!calls.loading && !rows.length ? (
+      {!calls.loading && !groups.length ? (
         <Empty>
           {reviewNeeded
             ? 'Nothing waiting on review.'
@@ -141,8 +162,8 @@ export function IntakeCalls({ reviewNeeded, title } = {}) {
         </Empty>
       ) : (
         <div className="stack" style={{ gap: 8 }}>
-          {rows.map((row) => (
-            <CallCard key={row.id} row={row} />
+          {groups.map((group) => (
+            <CallerCard key={group.key} group={group} />
           ))}
         </div>
       )}

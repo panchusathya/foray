@@ -146,26 +146,22 @@ nine-holding ETF rebalance across KONG and FORH.
 editorial, at 19.
 Case competitions: **Dodge & Cox FA23 — 1st**; MSD Partners FA22 — 2nd; Goldman Sachs Tech
 IB SP24 — finalist; Undergraduate Investment Competition — finalist.
-**FIRST robotics — coder, then lead programmer, then captain.** Built the **first four-wheel
-dead-wheel odometry system in FIRST** (four encoders fused through a Kalman filter with a
-decision algorithm), winner of the **Johns Hopkins Applied Physics Laboratory Software Innovation
-Award** at the Maryland Tech Invitational. Then built **simulation software for the team's own
-local testing and scaled it to 10,000 users across FTC teams** — the only distribution number
-either founder has, earned before college, and stronger than any prize on this page because
-adoption is chosen rather than awarded. **All repos public.** `GAP: the URLs.`
-Two World Championships (one as captain), Inspire Award
-winners in Virginia 2020 and Ohio 2022 (the program's highest team honour), multiple state
-season-scoring records. Self-funded the team through Gene Haas and Siemens Foundation grants,
-awarded to fewer than 50 teams nationally.
-
-**Tushar — the mid-funnel work he has already done by hand.** At J.P. Morgan, ~30–35 recruiting
-calls with undergraduate juniors, several of whom he referred and who were hired. At Nova he
-watched the team go from **3 people including him to ~15 in under a year**, and his own part was
-the mid-funnel: outbound to interesting candidates, working alongside the in-house Conviction
-recruiter, coordinating and scheduling calls, and taking engineering candidates to closing
-dinners. **That is precisely the stretch of the funnel Foray automates, done manually, at a
-company that 5×'d around him.** It belongs in A5 as the sharpest founder–market-fit line either
-founder has: he has personally been the system he is now building.
+**FIRST robotics — Team 8719 "Quantum Leap", Mason OH. ⚠️ ROLE CORRECTED 29 Aug.** The 243-page
+engineering notebook lists him as **a mechanic in grade 11**, with **Eashan Vytla as lead
+programmer** and **Shankar Kalavakolanu as captain**. The four-wheel odometry localizer, the
+Kalman/T265 fusion and the MyBot Simulator are credited in that notebook to Eashan Vytla.
+**None of those may be claimed as Sathya's** — see `block-b-sathya.md` B4. A captaincy in
+2021–22 is possible and uncovered by this notebook; unverified.
+**What is documented as his, and is strong:** cold-called and closed **four corporate sponsorships
+at 16** (Misumi — 30% off the shooter's linear slides; Curbell Plastics — donated Delrin, ~$96;
+Interstate Plastics — 8 Delrin boards, ~$250; REV Robotics), **carried the largest prospecting
+list on the team at 20 companies, more than the captain's 19**, and **owned a national $25,000
+sponsorship application end to end**, compiling a ~400-page notebook into one submission. The team
+had no school funding and families were absorbing $10,000+/year. **He is the reason a team with no
+budget could build a custom Delrin robot** — and cold-calling twenty companies and closing four is
+the same muscle this company runs on.
+On a team that: went #1-ranked at every qualifier it entered in 2020–21, won the Inspire Award,
+placed 19th in the world at Detroit 2019 and 1st of 500+ North Region teams in 2019–20.
 
 **Together — WestBridge:**
 

@@ -148,10 +148,40 @@ Applied Physics Laboratory Software Innovation Award** at the Maryland Tech Invi
 Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to fewer than
 50 teams nationally.
 
-**Together:** ~1K companies spoken to and 2–3× that outreached in a year at a high-volume
-fund; monitoring APIs across X; web agents tracking fundraising announcements; 8–10 sourcing
-tools tested in production. Sourcing candidates is the same muscle pointed at a different
-graph.
+**Together — WestBridge:**
+
+- **Both ranked top of their level** — Tushar the top-ranked and youngest associate, Sathya the
+  top-ranked analyst and **the first hire out of college for the WestBridge office.** A clean,
+  symmetric line worth using verbatim.
+- **Sourced deals that have drawn close to $2.5B in acquisition offers.** Named so far: Prior
+  Labs (acquired by SAP), Natoma, Hathora, Metis. `GAP — see §10: the company→acquirer mapping
+  must be exact before this number is used.`
+- **Built Biz2Credit's partnerships business from the ground up**, including its credit-card
+  partnership with **Mastercard** and its healthcare-provider partnership with **Optum /
+  UnitedHealth.**
+- **Took point on WestBridge's internal recruiting.** Together with Tushar's campus and lateral
+  recruiting remit at J.P. Morgan, that is **two institutions where they have personally run
+  hiring** — the strongest founder–market-fit fact in the pack and absent from every prior
+  application.
+- **Sourced the Head of Applied Research at OpenAI**, plus others across the network. `GAP —
+  see §10: recruited into a role, or sourced for an event? The claim changes shape entirely.`
+- ~1K companies spoken to and 2–3× that outreached in a year; monitoring APIs across X; web
+  agents tracking fundraising announcements; 8–10 sourcing tools run in production. **Sourcing
+  candidates is the same muscle pointed at a different graph** — and they started with it built.
+
+## 10. Claims that need precision before use
+
+Both are strong. Both are also the kind of thing a16z and Greylock can check in one message,
+and these two firms are more likely than anyone to know these exact deals.
+
+- **The $2.5B acquisition figure.** As given it doesn't reconcile: Zoom and Snowflake are large
+  public acquirers, not acquisitions, and "Natoma/Netoma" appears twice with different
+  acquirers. Needed: **each sourced company mapped to its actual acquirer**, and whether $2.5B
+  is offers received or deals closed. A precise $2.5B is a superb line. A number with one wrong
+  acquirer attached costs the credibility of every other claim in the application.
+- **The OpenAI sourcing claim.** "Sourced the Head of Applied Research at OpenAI" means one
+  thing if a person was recruited into a role and a very different thing if they were sourced
+  as a speaker or contact for an event. Both are usable; they are not the same sentence.
 
 ## 7. Talent pipeline
 

@@ -185,6 +185,33 @@ than proven. These questions turn a claim into evidence.
     whether "things you made exist." Options: make the drone work or the Walmart tool public,
     or lean entirely on links and Looms instead. Which?
 
+# 7c · WestBridge — two claims that need to be exact
+
+Both are strong. Both are also checkable in one message by **exactly the two firms you're
+applying to who are most likely to know these deals.**
+
+68. 🔴 **The $2.5B figure — map each company to its actual acquirer.** As you sent it, it
+    doesn't reconcile: Zoom and Snowflake are large public acquirers rather than acquisitions,
+    and Natoma appears twice with two different acquirers. I have Prior Labs → SAP. I need the
+    rest: which company, acquired by whom, roughly when. Also: is **$2.5B offers received or
+    deals closed?** A precise $2.5B is one of the best lines in the pack; a number with one
+    wrong acquirer attached costs the credibility of everything else on the page.
+69. 🔴 **Which of those deals were sourced by which of you**, and how did you find them? For
+    these forms the sourcing *method* matters more than the outcome — it's the same muscle
+    you're claiming transfers to candidates.
+70. 🔴 **"Sourced the Head of Applied Research at OpenAI" — recruited into a role, or sourced
+    as a contact/speaker for an event?** Both are usable, they are just not the same sentence,
+    and only one of them is a recruiting claim.
+71. 🟡 **WestBridge internal recruiting — what did taking point actually involve?** Roles, how
+    many candidates, how many hires, who owned the decision. **Combined with Tushar's J.P.
+    Morgan campus and lateral remit, this makes two institutions where you have personally run
+    hiring — that's your strongest founder–market-fit fact and it has never appeared in a
+    pitch.** Give me enough to make it concrete.
+72. 🟡 **Biz2Credit partnerships** — what did "from the ground up" mean? Was the Mastercard
+    partnership yours end-to-end? What about Optum? Any numbers — volume, revenue, launch date?
+73. ⚪ **Sathya, "first hire out of college for the WestBridge office"** — first ever for the
+    office, or first of that year? Worth getting right; it's a good line.
+
 # 8 · The gap I can't fill
 
 63. 🔴 **Ansh Gupta (Dartmouth) — paste his background.** LinkedIn is blocked by this

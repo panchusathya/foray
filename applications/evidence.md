@@ -153,9 +153,20 @@ Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to
 - **Both ranked top of their level** — Tushar the top-ranked and youngest associate, Sathya the
   top-ranked analyst and **the first hire out of college for the WestBridge office.** A clean,
   symmetric line worth using verbatim.
-- **Sourced deals that have drawn close to $2.5B in acquisition offers.** Named so far: Prior
-  Labs (acquired by SAP), Natoma, Hathora, Metis. `GAP — see §10: the company→acquirer mapping
-  must be exact before this number is used.`
+- **The anti-portfolio — companies evaluated at WestBridge, and where they ended up.**
+  Seven acquired: **Common Room → Zoom**, **Natoma → Snowflake**, **Prior Labs → SAP**,
+  **Metis → DoorDash**, **AnswersAI → Quizlet**, **Hathora → Nitrado**, **Offset → Rogo**.
+  Fourteen more went on to raise from the top of the market: **Ornn** (a16z led the A),
+  **Merendil** (a16z led the seed), **Tessera** (a16z Series A), **Trajectory** (Bessemer and
+  Radical seed+, Sequoia led the A), **Broccoli** and **Sanjay Kalra** (Khosla), **Sycamore**
+  (Coatue/Lightspeed), **Doss** (Madrona B), **Triomics** (Battery A), **Accordance**
+  (Altimeter A), **Anything** (Footwork A), **Actively** (TCV and First Harmonic B),
+  **JustAI** (Base10 A), **Integral** (Venrex A).
+  `GAP — see §10. This is an "evaluated" list, not a "sourced" list; the two claims are not
+  interchangeable and the $2.5B figure needs to be attached to the right one.`
+  **Tactical note for the a16z form specifically:** three of these took a16z money after they
+  saw them. *"We evaluated Ornn, Merendil and Tessera before you funded them"* is checkable,
+  flattering and high-signal — use it there and nowhere else.
 - **Built Biz2Credit's partnerships business from the ground up**, including its credit-card
   partnership with **Mastercard** and its healthcare-provider partnership with **Optum /
   UnitedHealth.**
@@ -174,11 +185,15 @@ Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to
 Both are strong. Both are also the kind of thing a16z and Greylock can check in one message,
 and these two firms are more likely than anyone to know these exact deals.
 
-- **The $2.5B acquisition figure.** As given it doesn't reconcile: Zoom and Snowflake are large
-  public acquirers, not acquisitions, and "Natoma/Netoma" appears twice with different
-  acquirers. Needed: **each sourced company mapped to its actual acquirer**, and whether $2.5B
-  is offers received or deals closed. A precise $2.5B is a superb line. A number with one wrong
-  acquirer attached costs the credibility of every other claim in the application.
+- **"Sourced" versus "evaluated" — the distinction that matters most in this pack.** The
+  anti-portfolio is headed *"outcomes of companies I evaluated."* Evaluating a company that
+  later gets acquired is a claim about **judgement and access**: real, impressive, and the
+  honest frame for that list. The YC application instead said *"sourced 6 deals for the
+  WestBridge team that have resulted in strategic acquisitions"* — a claim about **origination**,
+  which is stronger and narrower. Presenting the anti-portfolio as sourcing would be caught:
+  **a16z is on that list three times** and knows these companies. Needed: which six were
+  genuinely sourced, and whether **$2.5B** attaches to the seven acquisitions or to something
+  else, offers or closes.
 - **The OpenAI sourcing claim.** "Sourced the Head of Applied Research at OpenAI" means one
   thing if a person was recruited into a role and a very different thing if they were sourced
   as a speaker or contact for an event. Both are usable; they are not the same sentence.

@@ -3,12 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge, Empty, ErrorBox } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { foray } from '../lib/foray.js';
-import {
-  describeFindEmails,
-  forayHitToCandidate,
-  mergeFoundEmails,
-  partitionByEmail,
-} from '../lib/forayImport.js';
+import { forayHitToCandidate } from '../lib/forayImport.js';
 import {
   countOnPage,
   pageWindow,
@@ -20,11 +15,6 @@ import {
 
 const PAGE_SIZE = 40;
 
-// Matches the server's ceiling on /v1/sourcing/find-emails. A selection larger
-// than this is looked up in batches rather than silently trimmed -- a truncated
-// lookup reads as "nobody else had an address", which is worse than slower.
-const FIND_EMAILS_CAP = 100;
-
 const EXAMPLES = [
   'founding ML engineer, shipped training infrastructure, 3-8 years',
   'senior backend engineer in Go with 5+ years',
@@ -33,51 +23,33 @@ const EXAMPLES = [
   'gpu systems engineer writing cuda kernels',
 ];
 
-// A reason is required server-side and is the only record of why a credit was
-// spent, so pre-fill it with the search that produced the shortlist. Trimmed
-// well inside the server's 200-character limit.
-function defaultReason(query) {
-  const text = (query ?? '').trim().replace(/\s+/g, ' ');
-  if (!text) return 'sourcing shortlist';
-  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+// The marker files are lowercase keys (packages/foray/data/markers/*.txt); this
+// is purely how they read on a card. Anything not listed -- a marker file added
+// later -- falls back to a capitalised key rather than rendering blank.
+const MARKER_LABELS = {
+  data: 'Data',
+  db: 'DB',
+  devtools: 'Devtools',
+  embedded: 'Embedded',
+  frontend: 'Frontend',
+  gpu: 'GPU',
+  infra: 'Infra',
+  ml: 'ML',
+  mobile: 'Mobile',
+  security: 'Security',
+  sre: 'SRE',
+};
+
+function markerLabel(marker) {
+  return MARKER_LABELS[marker] ?? marker.charAt(0).toUpperCase() + marker.slice(1);
 }
 
 /**
  * One sourced candidate. The archetype score is intentionally NOT rendered —
  * Foray shows rank + evidence only. Highlights carry the recommendation.
  */
-function ContactChip({ hit }) {
-  const primary = (hit.emails ?? [])[0];
-  if (primary) {
-    // Show the SOURCE, never "verified" unless the flag is set — a recruiter
-    // must be able to tell a published profile address from a mined one.
-    // reach_score is the free corroboration floor, not a re-rank.
-    const bits = [`email · ${primary.source}`];
-    if (primary.verified) bits.push('✓');
-    if (primary.reach_score != null) bits.push(String(primary.reach_score));
-    return <Badge tone="strong">{bits.join(' · ')}</Badge>;
-  }
-  if (hit.linkedin_url) return <Badge>LinkedIn only</Badge>;
-  return <Badge tone="partial">no email</Badge>;
-}
-
 function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
-  const [enrich, setEnrich] = useState(null);
-  const [enriching, setEnriching] = useState(false);
-
-  const linkedin = enrich?.linkedin?.linkedin_url ?? hit.linkedin_url;
-  const badge = enrich?.freshness?.badge;
-
-  async function resolve() {
-    setEnriching(true);
-    try {
-      setEnrich(await foray.enrich(hit.login));
-    } catch {
-      setEnrich({ error: true });
-    } finally {
-      setEnriching(false);
-    }
-  }
+  const linkedin = hit.linkedin_url;
 
   const meta = [
     hit.employer ? `${hit.employer}` : 'employer unknown',
@@ -91,7 +63,10 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
     .join(' · ');
 
   const highlights = hit.evidence?.highlights ?? hit.highlights ?? [];
-  const highlightSource = hit.highlight_source ?? hit.evidence?.highlight_source;
+  // GitHub first where we have it, then LinkedIn -- a LinkedIn-sourced person
+  // used to get a dead plain-text name, which is the one profile link that
+  // matters for them.
+  const nameHref = hit.github_url || linkedin || null;
 
   return (
     <div className="card hit">
@@ -113,37 +88,17 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
         <div className="spread">
           <div>
             <h3>
-              {hit.github_url ? (
-                <a href={hit.github_url} target="_blank" rel="noreferrer noopener">
+              {nameHref ? (
+                <a href={nameHref} target="_blank" rel="noreferrer noopener">
                   {hit.name || hit.login}
                 </a>
               ) : (
                 <span>{hit.name || hit.login}</span>
               )}
-              {hit.source === 'linkedin' ? (
-                <span className="badge" style={{ marginLeft: 8 }} data-testid="source-badge">
-                  LinkedIn
-                </span>
-              ) : null}
             </h3>
-            <div className="meta">
-              {meta}
-              {hit.inferred?.employer ? <span className="badge" style={{ marginLeft: 6 }}>inferred</span> : null}
-              {highlightSource ? (
-                <span className="badge" style={{ marginLeft: 6 }} data-testid="highlight-source">
-                  {highlightSource}
-                </span>
-              ) : null}
-            </div>
+            <div className="meta">{meta}</div>
           </div>
-          <ContactChip hit={hit} />
         </div>
-
-        {badge ? (
-          <p className="small" style={{ color: 'var(--accent-light)', marginBottom: 0 }}>
-            {badge}
-          </p>
-        ) : null}
 
         {highlights.length ? (
           <div className="criteria">
@@ -156,16 +111,13 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
           </div>
         ) : null}
 
-        <div className="row wrap" style={{ marginTop: 10 }}>
-          {(hit.domain_markers ?? []).map((marker) => (
-            <Badge key={marker}>{marker}</Badge>
-          ))}
-          {(hit.flags ?? []).map((flag) => (
-            <Badge key={flag} tone="partial">
-              {flag}
-            </Badge>
-          ))}
-        </div>
+        {hit.domain_markers?.length ? (
+          <div className="row wrap" style={{ marginTop: 10 }}>
+            {hit.domain_markers.map((marker) => (
+              <Badge key={marker}>{markerLabel(marker)}</Badge>
+            ))}
+          </div>
+        ) : null}
 
         {hit.top_repos?.length ? (
           <div className="small muted" style={{ marginTop: 8 }}>
@@ -186,11 +138,7 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
             <a className="badge" href={linkedin} target="_blank" rel="noreferrer noopener">
               LinkedIn
             </a>
-          ) : (
-            <button type="button" className="tiny ghost" onClick={resolve} disabled={enriching}>
-              {enriching ? 'Resolving…' : 'Resolve LinkedIn / refresh'}
-            </button>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
@@ -202,20 +150,17 @@ export function SourcingPage() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [elapsed, setElapsed] = useState(null);
   const [contactableOnly, setContactableOnly] = useState(false);
   const [activeQuery, setActiveQuery] = useState(null);
   const [activeContactable, setActiveContactable] = useState(false);
   const [page, setPage] = useState(0);
   const [nonce, setNonce] = useState(0);
-  const [parserLabel, setParserLabel] = useState(null);
   const [selectingAll, setSelectingAll] = useState(false);
 
   const [selected, setSelected] = useState(new Map()); // login -> hit
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
   const [addState, setAddState] = useState('');
-  const [findingEmails, setFindingEmails] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(false);
   const lastIndex = useRef(null);
   const searchRequest = useRef(0);
@@ -242,7 +187,6 @@ export function SourcingPage() {
 
     const controller = new AbortController();
     const request = ++searchRequest.current;
-    const started = performance.now();
     setBusy(true);
     setError(null);
 
@@ -260,8 +204,6 @@ export function SourcingPage() {
         if (request !== searchRequest.current) return;
         pageStride.current = response.page_size || PAGE_SIZE;
         setResult(response);
-        setElapsed(Math.round(performance.now() - started));
-        if (page === 0) setParserLabel(response.parser);
         lastIndex.current = null;
       })
       .catch((caught) => {
@@ -350,75 +292,13 @@ export function SourcingPage() {
     }
   }
 
-  async function findEmailsForSelected() {
-    const missing = partitionByEmail([...selected.values()]).withoutEmail;
-    if (!missing.length) return;
-    // The reason is stored against every candidate looked up, and is the only
-    // record afterwards of why a credit was spent. Required, not optional.
-    const reason = window.prompt(
-      `Look up personal email addresses for ${missing.length} candidate` +
-        `${missing.length === 1 ? '' : 's'} without one.\n\n` +
-        'Candidates already checked, or who already have a personal address, are ' +
-        'skipped and cost nothing.\n\nWhat is this for?',
-      defaultReason(activeQuery),
-    );
-    if (!reason || reason.trim().length < 3) return;
-
-    setFindingEmails(true);
-    setError(null);
-    setAddState('');
-    try {
-      // The server caps one call at 100, so a bigger selection goes in batches.
-      // Slicing to the first 100 instead would report "nothing found" for the
-      // rest, which is indistinguishable from having looked and failed.
-      const logins = missing.map((hit) => hit.login);
-      const merged = { summary: {}, results: {} };
-      for (let start = 0; start < logins.length; start += FIND_EMAILS_CAP) {
-        const response = await api.findEmails({
-          logins: logins.slice(start, start + FIND_EMAILS_CAP),
-          reason: reason.trim(),
-        });
-        Object.assign(merged.results, response.results ?? {});
-        for (const [key, value] of Object.entries(response.summary ?? {})) {
-          merged.summary[key] = (merged.summary[key] ?? 0) + value;
-        }
-      }
-      // Patch the selection from the response rather than waiting for the
-      // refetch, so the Add button's "(N without email)" count is not stale the
-      // moment the lookup finishes.
-      setSelected((previous) => {
-        const patched = mergeFoundEmails([...previous.values()], merged.results);
-        return new Map(patched.map((hit) => [hit.login, hit]));
-      });
-      setAddState(describeFindEmails(merged.summary, merged.results));
-      // Refresh the visible page so the contact chips agree with the selection.
-      setNonce((value) => value + 1);
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      setFindingEmails(false);
-    }
-  }
-
   function onAddClick() {
     const hits = [...selected.values()];
     if (!hits.length) return;
-    const { withEmail, withoutEmail } = partitionByEmail(hits);
-    if (withoutEmail.length === 0) {
-      importSelected(hits);
-      return;
-    }
-    // The sequencer permanently kills an enrollment for an email-less candidate
-    // (even after an address is found later), so make the consequence explicit.
-    const ok = window.confirm(
-      `${withoutEmail.length} of ${hits.length} selected have no email. If you enroll them in ` +
-        `a sequence, that step fails permanently — even after you find their address later.\n\n` +
-        `OK = import only the ${withEmail.length} with an email.\n` +
-        `Cancel = import all ${hits.length} anyway (they'll sit in the project uncontactable).\n\n` +
-        `Or cancel and use "Find emails" first — most LinkedIn-sourced candidates ` +
-        `have a personal address available.`,
-    );
-    importSelected(ok ? withEmail : hits);
+    // Import the whole selection. This matches what the old confirm dialog's
+    // Cancel branch did, so nothing the recruiter ticked is dropped on their
+    // behalf.
+    importSelected(hits);
   }
 
   const pageHits = result?.results ?? [];
@@ -489,20 +369,6 @@ export function SourcingPage() {
 
       {result ? (
         <div className="results-col stack" style={{ opacity: busy ? 0.55 : 1 }} aria-busy={busy}>
-          <div className="card spread">
-            <span className="small muted">
-              {result.archetype ? result.archetype.label : 'semantic search'} · parser:{' '}
-              {parserLabel ?? result.parser} · {result.returned} shown · page {result.page} of{' '}
-              {result.page_count} · {result.total_matched} matched
-              {result.min_evidence != null ? ` · min evidence ${result.min_evidence}` : ''}
-              {` · reranked ${result.reranked ? result.rerank_depth : 'off'}`}
-              {elapsed != null ? ` · ${elapsed}ms` : ''}
-            </span>
-            <span className="small muted">display floor {result.display_floor}</span>
-          </div>
-
-          {result.message ? <div className="card small">{result.message}</div> : null}
-
           {result.results.length > 0 ? (
             <div className="card spread">
               <div className="row" style={{ gap: 8, alignItems: 'center' }}>
@@ -549,34 +415,13 @@ export function SourcingPage() {
                     </option>
                   ))}
                 </select>
-                {(() => {
-                  const missing = partitionByEmail([...selected.values()]).withoutEmail.length;
-                  if (!missing) return null;
-                  return (
-                    <button
-                      type="button"
-                      className="tiny"
-                      data-testid="find-emails-button"
-                      onClick={findEmailsForSelected}
-                      disabled={findingEmails || addState === 'saving'}
-                    >
-                      {findingEmails ? 'Finding emails…' : `Find emails (${missing})`}
-                    </button>
-                  );
-                })()}
                 <button
                   type="button"
                   className="primary"
                   onClick={onAddClick}
-                  disabled={selected.size === 0 || addState === 'saving' || findingEmails}
+                  disabled={selected.size === 0 || addState === 'saving'}
                 >
-                  {addState === 'saving'
-                    ? 'Importing…'
-                    : (() => {
-                        const hits = [...selected.values()];
-                        const missing = partitionByEmail(hits).withoutEmail.length;
-                        return `Add ${hits.length}${missing ? ` (${missing} without email)` : ''}`;
-                      })()}
+                  {addState === 'saving' ? 'Importing…' : `Add ${selected.size}`}
                 </button>
               </div>
               {addState && addState !== 'saving' ? (
@@ -589,37 +434,17 @@ export function SourcingPage() {
             <Empty>Nothing cleared the bar. Widen the search — drop a filter or lower the experience.</Empty>
           ) : (
             <div className="stack">
-              {result.results.map((hit, index) => {
-                const depth = result.rerank_depth || 0;
-                const divider =
-                  result.reranked &&
-                  depth > 0 &&
-                  hit.rank === depth + 1;
-                return (
-                  <div key={hit.login}>
-                    {divider ? (
-                      <div className="small muted" style={{ margin: '8px 0' }}>
-                        Reranked top {depth}. Rows below keep retrieval order.
-                      </div>
-                    ) : null}
-                    <ForayHit
-                      hit={hit}
-                      selected={selected.has(hit.login)}
-                      selectionDisabled={busy || selectingAll}
-                      onToggle={(event) => toggle(hit, index, event)}
-                    />
-                  </div>
-                );
-              })}
+              {result.results.map((hit, index) => (
+                <ForayHit
+                  key={hit.login}
+                  hit={hit}
+                  selected={selected.has(hit.login)}
+                  selectionDisabled={busy || selectingAll}
+                  onToggle={(event) => toggle(hit, index, event)}
+                />
+              ))}
             </div>
           )}
-
-          {result.truncated ? (
-            <div className="small muted">
-              {result.total_matched} matched; {result.paginable} ranked candidates are reachable
-              from the bounded retrieval pool. Narrow the query to reach the rest.
-            </div>
-          ) : null}
 
           {result.page_count > 1 ? (
             <div className="row" style={{ justifyContent: 'center', gap: 8 }}>

@@ -181,8 +181,7 @@ export function SearchPage() {
 
           {result.results.length === 0 ? (
             <Empty>
-              Nothing matched. Loosen a filter — or import more people with{' '}
-              <code className="mono">juicebox seed</code>.
+              Nothing matched. Loosen a filter, or bring more people in from Import.
             </Empty>
           ) : (
             <div className="stack">

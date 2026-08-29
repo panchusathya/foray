@@ -315,8 +315,8 @@ def generate_candidates(count: int = 120, *, seed: int = SEED) -> list[dict[str,
 
 # Must be a routable-looking domain: reserved TLDs (.local, .test, .invalid)
 # are rejected by the EmailStr validator on the login endpoint.
-DEMO_EMAIL = "demo@juicebox.dev"
-DEMO_PASSWORD = "juicebox-demo"
+DEMO_EMAIL = "demo@goforay.io"
+DEMO_PASSWORD = "foray-demo"
 
 SEQUENCE_STEPS = [
     {
@@ -364,7 +364,7 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
 
     org = db.scalar(select(Org).where(Org.slug == "demo"))
     if org is None:
-        org = Org(name="Juicebox Demo", slug="demo")
+        org = Org(name="Foray Demo", slug="demo")
         db.add(org)
         db.flush()
 
@@ -397,7 +397,7 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
                 "evaluation harness. Small team, high autonomy, production LLM systems."
             ),
             location="San Francisco, CA",
-            company="Juicebox",
+            company="Foray",
             created_by=user.id,
         )
         db.add(project)
@@ -410,8 +410,8 @@ def seed_demo(db: Session, *, candidate_count: int = 120) -> dict[str, Any]:
             org_id=org.id,
             project_id=project.id,
             name="ML Engineer — 3 touch",
-            from_email="talent@juicebox.dev",
-            from_name="Juicebox Talent",
+            from_email="talent@goforay.io",
+            from_name="Foray Talent",
         )
         db.add(sequence)
         db.flush()

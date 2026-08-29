@@ -80,7 +80,7 @@ _DEFAULT_APPLY_UA = (
 @dataclass(frozen=True)
 class Settings:
     # --- app -------------------------------------------------------------
-    app_name: str = "Juicebox"
+    app_name: str = "Foray"
     env: str = field(default_factory=lambda: _env("JUICEBOX_ENV", "development"))
     base_url: str = field(default_factory=lambda: _env("BASE_URL", "http://localhost:8000"))
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY", DEV_SECRET_KEY))

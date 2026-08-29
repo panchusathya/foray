@@ -328,7 +328,7 @@ export function ImportPage() {
     <div className="stack">
       <PageHeader
         title="Import from CSV"
-        subtitle="Upload a Juicebox export, pick who to take, and enroll them in a sequence."
+        subtitle="Upload a sourcing export, pick who to take, and enroll them in a sequence."
       />
 
       <div className="card stack">
@@ -347,7 +347,7 @@ export function ImportPage() {
           ) : null}
         </div>
         <div className="small muted">
-          A Juicebox export (.csv) or an Excel workbook (.xlsx), with the contact columns
+          A sourcing export (.csv) or an Excel workbook (.xlsx), with the contact columns
           ticked — “Personal Email” and “Work Email”. An export without them imports
           profiles nobody can be mailed.
         </div>
@@ -372,13 +372,13 @@ export function ImportPage() {
             {!emailColumnPresent ? (
               <Empty>
                 This export has no email columns at all, so nobody in it can be sequenced.
-                Re-export from Juicebox with “Personal Email” ticked.
+                Re-export with “Personal Email” ticked.
               </Empty>
             ) : null}
             {summary.undeliverableOnly ? (
               <div className="small muted">
                 {summary.undeliverableOnly} row
-                {summary.undeliverableOnly === 1 ? '' : 's'} had only an address Juicebox marked
+                {summary.undeliverableOnly === 1 ? '' : 's'} had only an address the export marked
                 undeliverable. Those are left out — mailing a known-bad address costs sending
                 reputation for every other candidate.
               </div>

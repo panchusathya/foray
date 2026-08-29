@@ -7,8 +7,8 @@ export function LoginPage() {
   const { login, signup } = useAuth();
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState({
-    email: 'demo@juicebox.dev',
-    password: 'juicebox-demo',
+    email: 'demo@goforay.io',
+    password: 'foray-demo',
     org_name: '',
     name: '',
   });
@@ -105,11 +105,6 @@ export function LoginPage() {
         <button type="submit" className="primary" disabled={busy}>
           {busy ? 'Working…' : mode === 'login' ? 'Log in' : 'Create workspace'}
         </button>
-
-        <p className="small muted" style={{ margin: 0 }}>
-          Seeded demo account: <code className="mono">demo@juicebox.dev</code> /{' '}
-          <code className="mono">juicebox-demo</code>
-        </p>
       </form>
     </div>
   );

@@ -7,15 +7,16 @@ each form from them. Full plan and reasoning: `/root/.claude/plans/linked-discov
 
 The SPC application was rejected while describing a company far weaker than the one that
 actually exists. Its progress answer was five bullets, three of them "we talked to people," one
-volunteering that the outbound doesn't work — and it never mentioned candidates delivered to
-eight AI startups, an interview in process at LangChain, a placement closing at Kyber, a voice
-agent, a text agent, a browser agent that autonomously submitted a real application, a
-200K-profile index, or an eval harness.
+volunteering that the outbound doesn't work — and it never mentioned ~20 candidates delivered to
+eight AI startups, an interview in process at LangChain, a role closed off their referral at Kyber,
+a voice agent, a text agent, a browser agent, a 200K-profile index, or an eval harness reporting
+nDCG@10.
 
 The same undersell runs through the founder material. Sathya's resume buries a Berkeley CS
 degree, the first four-wheel odometry system in FIRST, and production sourcing tooling shipped
-inside an $8B fund. Tushar's YC form describes founding a drone company that won awards and
-grant funding as *"prototyped a fixed-wing aircraft."*
+inside an $8B fund. Tushar's YC form gives one clause to a college venture that won the ABC
+Innovation Prize, was a Blackstone Launchpad finalist and raised grant funding — and never mentions
+that he led campus and lateral recruiting at J.P. Morgan, which is the most on-thesis fact he has.
 
 **The task is not to be more impressive. It is to stop underselling.** Hence `evidence.md`.
 
@@ -28,7 +29,7 @@ grant funding as *"prototyped a fixed-wing aircraft."*
 | `block-b-tushar.md` | Tushar's 10 personal answers. Harvested from the YC application; gaps marked. |
 | `block-b-sathya.md` | Sathya's 10 personal answers. Harvested from resume + SPC; gaps marked. |
 | `shared.md` | B10 talent density, B11 referrer map, B12 anything-else. |
-| `interview.md` | **Open — 67 questions still needed from both founders.** Start here. |
+| `interview.md` | **Open — the remaining questions for both founders.** Start here. |
 | `forms/*.md` | The five assembled submissions, at each form's own lengths. Not written yet. |
 | `check_lengths.py` | Character-limit assertions for `forms/z-fellows.md`. |
 
@@ -53,8 +54,9 @@ grant funding as *"prototyped a fixed-wing aircraft."*
   to be discovered — every form asks about exclusive commitment and HF0 is a residency.
 - **Dwayne has expressed interest, not committed.** Never written as a co-founder.
 - **Strata does not appear anywhere.** Arkash appears only as a prospective hire.
-- **Nobody unsigned is called a co-founder.** With no entity and no papered equity, "three
-  people asked to be co-founders" reads as an unsettled cap table, not as talent density.
+- **Nobody unsigned is called a co-founder.** Entities are incorporated and equity is 50/50
+  between the two founders; naming three more people as co-founders would read as an unsettled
+  cap table rather than as talent density.
 
 ## Blocking, in order
 

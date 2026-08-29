@@ -102,30 +102,56 @@ None. a16z says most people don't have them; leave it blank rather than stretchi
 
 ## B6 — When you started building unprompted, and what you were doing growing up
 
-`GAP — needed from you. Two parts:`
-- **a16z's version:** when did you start building software on your own volition, and why? A
-  specific age and a specific first thing beats any general statement.
-- **Z-Fellows' version:** what non-traditional things were you doing growing up? Not
-  achievements — the odd, self-directed stuff. The drone company suggests this thread starts
-  well before USC; where does it actually start?
+**a16z cut — "when did you start building software on your own volition and why":**
 
-## B7 — What drives you
+> I was 14 or 15. I built a marketplace called Traqde In for second-hand phones — people listed
+> what they had, found what they wanted, and we put a few real exchanges through it. I got there
+> because nobody could find each other or agree on what a used phone was worth, and that gap
+> annoyed me enough to build the place where they could.
 
-`GAP — needed. ~40 words (250 characters). Give me the raw version and I'll compress it.`
+*(Leave the parallel to Foray unstated. A reader who notices that he built a two-sided
+marketplace for hard-to-value, hard-to-find things at fourteen will enjoy noticing it; a founder
+who points at it deflates it.)*
 
-## B8 — The nerdiest thing about you
+**Z-Fellows cut — "what non-traditional things were you doing growing up":**
 
-`GAP — needed. ~40 words. Can share a root with B6 but shouldn't repeat it verbatim. The
-genuinely specific and slightly embarrassing answer beats the impressive one here.`
+> Eight schools in sixteen years — we kept moving. Being the new kid that many times teaches you
+> to build your own way into a place rather than wait to be let in. I was also the kid who liked
+> number crunching for fun, which became a maths degree I finished in three years alongside
+> economics, and sitting the SAT and ACT ten times to move my score more than 450 points.
+
+## B7 — What drives you  `(250 char cap)`
+
+> Learning as much as I can as fast as I can, by putting myself in rooms where people my age
+> usually aren't. Speed is the point — the earlier you're in the room, the more of what happens
+> there you can still change.
+
+## B8 — The nerdiest thing about you  `(250 char cap)`
+
+> I don't use a mouse. Banking trained it into me — I can build most financial models on keyboard
+> shortcuts alone — and now I'm genuinely irritated by software that makes me reach for one.
 
 ## B9 — A risk or challenge, and what it revealed
 
-`GAP — needed.` Z-Fellows explicitly asks whether you failed or succeeded, so **a real failure
-reads better than a managed one.** Candidates worth considering:
-- Leaving J.P. Morgan after seven months for a pre-revenue first-hire seat at Nova.
-- Leaving Nova for WestBridge, or leaving WestBridge for this.
-- Whatever happened with the drone company — if it ended, that is likely the strongest answer
-  on this page, and it is the kind of thing every one of these programs is actually asking for.
+**This is the DroneCo answer, and it is a good one.** Z-Fellows asks explicitly whether you
+failed or succeeded; a real failure, diagnosed honestly, reads better than any clean win.
+
+> In college I founded DroneCo, an autonomous drone delivery company. I did the CAD, the
+> Raspberry Pi work, taught myself aerodynamics out of a book, wrote the grants, and recruited
+> master's students onto the team. We won the ABC Innovation Prize, made Blackstone Launchpad
+> finals and raised about $10K. We assembled the plane. It never flew.
+>
+> I wasn't a hardware specialist. I loved drones — but loving a thing isn't an edge. What I took
+> from it is to pick problems where your edge is actually real, and it's the reason I'm certain
+> about this one.
+
+**Framing rule, settled 29 Aug.** Never write the "better off nerding about drones than building
+them" line as a general statement about himself — he is the non-technical founder and it will be
+read as one. It is a statement about **hardware specifically**, and the lesson is
+**edge-selection**: at DroneCo his edge was nothing; at Foray it is the network, the sourcing
+muscle and having run hiring from the employer's chair, with Sathya as the builder. DroneCo is
+not a story about failing to build. It is the story of learning what he is for — which is exactly
+what makes A5 credible rather than boastful.
 
 ## B13 — One-minute video
 

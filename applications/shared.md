@@ -13,10 +13,15 @@ Two different questions get conflated here; keep the answers distinct.
 Soma wants people, with LinkedIn URLs, who are impressive on their own terms — not a hiring
 plan. Lead with the two who are genuinely unusual, not the two most convenient.
 
+- **Ansh Gupta** — **Applied AI, Startups at OpenAI.** Founding AI engineer twice over before
+  that: at Anything, building autonomous agents that debug, refactor and ship production
+  software, and at Harper (YC W25), whose multi-agent systems cut insurance processing from days
+  to minutes on the way to $1.2M ARR. Before that, enterprise multi-agent systems handling 150K
+  calls a day, and hallucination detection in Amazon's AGI organisation. Dartmouth MS, BU CS.
+  **And a detail worth the sentence: Anything is on our own sourcing list — Tushar sourced the
+  company Ansh was a founding engineer at, before Footwork led its Series A.**
 - **Abhay Singhal** — Member of Technical Staff, Factory AI. One of the most technical people
-  we know and a friend of Sathya's from high school. Drove major product development at Factory
-  over the last year, with a background in agent performance and evaluation that is directly
-  relevant to what we're building.
+  we know and a friend of Sathya's from high school. Agent performance and evaluation.
 - **Niki Nguyen and Vivian Nguyen** — recruiters at Conviction. Tushar was the first hire at a
   Conviction-backed startup and both were instrumental in every hire that followed. Their
   velocity, resume books and candidate quality are the reason we believe a great recruiter is
@@ -25,8 +30,16 @@ plan. Lead with the two who are genuinely unusual, not the two most convenient.
   gets ~40% response on cold DMs when he has mutuals, which is 15× what the industry gets on
   email.
 
-> **TODO:** LinkedIn URLs for Abhay, Niki and Vivian. Dwayne:
-> `linkedin.com/in/dwaynenonales`
+**Recommendation, against the instruction to use the recruiter roster here.** Soma is asking who
+the most impressive *people you know* are — not who is most relevant to your business. **Ansh at
+OpenAI is the strongest name either of you has** and he should lead this answer; Dwayne earns his
+place on the strength of the referral and DM numbers. The eight-recruiter roster is genuinely
+valuable, but as **evidence of market access in A4 and A5**, where it proves you did the work —
+not as an answer to "most impressive people," where a list of agency contacts reads as a
+Rolodex rather than a peer group.
+
+> URLs: Ansh `linkedin.com/in/ansh-gupta-dartmouth` · Dwayne `linkedin.com/in/dwaynenonales`.
+> Abhay's still needed if he stays in.
 
 ### B10b — "Who would you recruit next, and why" (SPC-style / talent-density questions)
 
@@ -43,8 +56,11 @@ who you can name and what they'd bring. Name them as the first three hires you c
 - **Arkash Jain** — engineer, employee #2 running an entire engineering organisation at an
   AI-for-services company, where he bootstrapped a services business from $150K to $3M ARR in
   ten months. Tushar has built with him before. He has asked to join.
-- **Ansh Gupta** — Dartmouth. *`GAP: background needed — LinkedIn is blocked by this
-  environment's egress policy, so paste it in.` (`linkedin.com/in/ansh-gupta-dartmouth`)*
+- **Ansh Gupta** — Applied AI at OpenAI; founding AI engineer at Anything and at Harper (YC W25);
+  multi-agent systems, agentic debugging, voice interfaces. ⚠️ He works at OpenAI today: say he
+  is someone you'd recruit and why he's exceptional, but **do not assert in writing that he is
+  leaving OpenAI for you.** That is a claim about a third party's employment intentions, and
+  applications circulate.
 
 Then the honest close: we are two people who have shipped a sourcing engine, a voice agent, a
 text agent, a browser agent and two front-ends in six weeks. The reason three strong people have

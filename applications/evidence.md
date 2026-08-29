@@ -93,8 +93,8 @@ Eight companies have received candidates from us.
 arrangements, several done to earn the business. **No money has changed hands.**
 
 Separately, and not counted above: referrals made through the network during the day job.
-**Every one of those referrals has converted to an interview.** `GAP: how many? A denominator
-turns this from a nice line into the best conversion stat in the pack.`
+**10+ referrals, and every one has converted to an interview.** That is the best conversion
+number in the pack and the only one with a clean denominator.
 
 Inbound: none yet. Referrals have come from outbound.
 
@@ -158,6 +158,15 @@ winners in Virginia 2020 and Ohio 2022 (the program's highest team honour), mult
 season-scoring records. Self-funded the team through Gene Haas and Siemens Foundation grants,
 awarded to fewer than 50 teams nationally.
 
+**Tushar — the mid-funnel work he has already done by hand.** At J.P. Morgan, ~30–35 recruiting
+calls with undergraduate juniors, several of whom he referred and who were hired. At Nova he
+watched the team go from **3 people including him to ~15 in under a year**, and his own part was
+the mid-funnel: outbound to interesting candidates, working alongside the in-house Conviction
+recruiter, coordinating and scheduling calls, and taking engineering candidates to closing
+dinners. **That is precisely the stretch of the funnel Foray automates, done manually, at a
+company that 5×'d around him.** It belongs in A5 as the sharpest founder–market-fit line either
+founder has: he has personally been the system he is now building.
+
 **Together — WestBridge:**
 
 - **Both ranked top of their level** — Tushar the top-ranked and youngest associate, Sathya the
@@ -201,9 +210,15 @@ awarded to fewer than 50 teams nationally.
 Both are strong. Both are also the kind of thing a16z and Greylock can check in one message,
 and these two firms are more likely than anyone to know these exact deals.
 
-- ~~"Sourced" vs "evaluated"~~ **Resolved 29 Aug: all 21 were sourced by Tushar.** Use the
-  origination framing. Still open: whether **$2.5B** is offers received or deals closed, and
-  across which subset — that number stays out until it's pinned to something checkable.
+- **$2.5B: drop the number, keep the list. Decided 29 Aug.** Of the seven acquisitions, only
+  **Prior Labs → SAP** is publicly announced with terms. An aggregate that cannot be sourced is
+  worse than no aggregate: the first question is "how do you get there," and "I can't say" costs
+  more than the number was ever worth. **The verifiable version is stronger anyway** — the *fact*
+  of each acquisition is public even where terms aren't, and every funding round is:
+  *"21 companies sourced in a year. Seven acquired — Prior Labs by SAP, Common Room by Zoom,
+  Natoma by Snowflake, Metis by DoorDash. Fourteen more went on to raise from a16z, Sequoia,
+  Khosla, Bessemer, Coatue and Madrona."* Every clause of that survives a check, and the list
+  reads bigger than the number did.
 
 - **"Will be running" versus "have run" — the same distinction, one week later.** See §11.
   This is now the most valuable unverified claim in the pack, so it gets the most care.
@@ -219,7 +234,21 @@ and these two firms are more likely than anyone to know these exact deals.
 - **Arkash Jain** — engineer, employee #2 running an AI-for-services company's entire
   engineering organisation; bootstrapped a services business from $150K to $3M ARR in ten
   months. Has asked to join.
-- **Ansh Gupta** (Dartmouth) — *background pending.*
+- **Ansh Gupta** — **Applied AI, Startups @ OpenAI**, San Francisco. Previously founding AI
+  engineer at **Anything** (formerly Create.xyz) building autonomous agents that debug, refactor
+  and ship production software — multi-agent orchestration, agentic debugging, memory
+  architectures, prompt caching. Before that founding AI engineer at **Harper (YC W25)**, whose
+  multi-agent systems cut insurance processing from days to minutes on the way to $1.2M ARR and
+  600+ customers. Before that, enterprise multi-agent systems at Blue Health Intelligence
+  handling **150K calls a day**, and hallucination detection at **Amazon's AGI org**. Dartmouth
+  MS Data Science, Boston University CS. Ships side projects (TubeChat AI, on the Chrome Web
+  Store). His own profile cites voice-enabled interfaces that lift conversion — directly the
+  Foray stack.
+  **The checkable connection worth naming: "Anything" is on Tushar's own sourcing list** — he
+  sourced the company Ansh was a founding engineer at, before Footwork led its Series A.
+  ⚠️ **Care:** he currently works at OpenAI. Name him as someone you'd recruit and say why he is
+  exceptional; do not assert in writing that he is leaving OpenAI for you. That is a claim about
+  a third party's employment intentions, and applications circulate.
 - **Niki Nguyen and Vivian Nguyen** — recruiters at Conviction. Tushar was the first hire at
   a Conviction-backed startup and both were instrumental in the hires that followed.
 - **Abhay Singhal** — MTS at Factory AI; agent performance and evals background.
@@ -228,10 +257,14 @@ and these two firms are more likely than anyone to know these exact deals.
 
 - **Revenue: $0.** Everything delivered so far has been free — pilots and POCs, several run to
   earn the business.
-- **Neither founder is full-time.** Both are still employed at WestBridge and working on this
-  around the job. They intend to go full-time. **Every one of the five forms asks about
-  exclusive commitment, and HF0 is a residency**, so this gets stated plainly with the trigger
-  for going full-time attached, rather than left for someone to discover.
+- **Neither founder is full-time yet. Both go full-time at the end of the year.** They are at
+  WestBridge and building around the job. **Write it exactly that way — flatly, with the date.**
+  "We're basically full-time" is not an answer to a binary question; it reads as hedging and
+  invites the follow-up you least want. The flat version converts the weakness into evidence:
+  *"not full-time until year end — and in six weeks around the day job we shipped a sourcing
+  engine, a voice agent, a text agent, a browser agent, a CRM and two front-ends."* The output
+  is the proof. The hours are not: grind-signalling reads badly to every one of these five, and
+  259 commits in five days already says it better.
 - **Dwayne has expressed interest but has not committed.** A good data point, not a co-founder,
   and not to be written as one.
 - Cold email response rate 2–3%, inbox previously flagged for spam; migrated to Zoho.

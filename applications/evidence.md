@@ -155,15 +155,15 @@ either founder has, earned before college, and stronger than any prize on this p
 adoption is chosen rather than awarded. **All repos public.** `GAP: the URLs.`
 Two World Championships (one as captain), Inspire Award
 winners in Virginia 2020 and Ohio 2022 (the program's highest team honour), multiple state
-season-scoring records. Built the **first four-wheel odometry Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to fewer than
-50 teams nationally.
+season-scoring records. Self-funded the team through Gene Haas and Siemens Foundation grants,
+awarded to fewer than 50 teams nationally.
 
 **Together — WestBridge:**
 
 - **Both ranked top of their level** — Tushar the top-ranked and youngest associate, Sathya the
   top-ranked analyst and **the first hire out of college for the WestBridge office.** A clean,
   symmetric line worth using verbatim.
-- **The anti-portfolio — companies evaluated at WestBridge, and where they ended up.**
+- **Sourcing record — 21 companies Tushar sourced at WestBridge, and where they ended up.**
   Seven acquired: **Common Room → Zoom**, **Natoma → Snowflake**, **Prior Labs → SAP**,
   **Metis → DoorDash**, **AnswersAI → Quizlet**, **Hathora → Nitrado**, **Offset → Rogo**.
   Fourteen more went on to raise from the top of the market: **Ornn** (a16z led the A),

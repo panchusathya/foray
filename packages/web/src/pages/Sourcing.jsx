@@ -73,6 +73,17 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
               ) : (
                 <span>{hit.name || hit.login}</span>
               )}
+              {linkedin ? (
+                <a
+                  className="badge"
+                  style={{ marginLeft: 8 }}
+                  href={linkedin}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  LinkedIn
+                </a>
+              ) : null}
             </h3>
             <div className="meta">{meta}</div>
           </div>

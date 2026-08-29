@@ -335,12 +335,23 @@ thesis.
   doorstep."*
 - A real market thesis: India's post-2021 drone liberalisation, Swiggy/Instamart delivery trials,
   Tata 1mg medical delivery in Dehradun.
-- Four people including **master's students Tushar recruited onto the team** — the earliest
-  instance of him recruiting for something he was building. ~**$10K in grant funding.** Multiple
-  advisors. **ABC Innovation Prize** winner and **Blackstone Launchpad finalist.**
+- **Sole founder.** He did the designing, the CAD, the Raspberry Pi work, taught himself
+  aerodynamics from a book, wrote the grants — and **recruited master's students onto the team**
+  as an undergraduate, which is the earliest instance of him recruiting for something he was
+  building. Team of four at peak, multiple advisors, ~**$10K in grant funding.** **ABC Innovation
+  Prize** winner and **Blackstone Launchpad finalist.**
 - **They assembled the plane. It never flew.**
 
-His own read: *"I think it wasn't the best founder–market fit. I realised that as I built it."*
+His own read: *"I was not a hardware specialist. I always had a passion for drones, but I quickly
+learnt I was better off nerding about them than building them."*
+
+⚠️ **Handle that line carefully.** It is honest and it is the right failure answer — but Tushar
+is the non-technical founder, so "better off nerding than building" can be misread as a general
+statement about himself rather than a specific one about hardware. **Land it as the lesson it
+actually is:** he learned to choose problems where his own edge is real. At DroneCo his edge was
+nothing; at Foray his edge is the network, the sourcing muscle and having run hiring from the
+employer's chair, and Sathya is the builder. DroneCo is not a story about failing to build — it
+is the story of learning what he is for.
 
 **How to use it.** The deck itself is the artifact — a16z asks for things you made that exist,
 and a product spec with a consumer flow and a go-to-market is exactly that. Attach it or host it.
@@ -353,6 +364,18 @@ company credible.
 
 Volunteered 29 Aug, and it is the through-line the whole application was missing:
 
+- **Eight schools in sixteen years**, moving constantly as a child. This is the origin of
+  everything below it: someone who was the new kid eight times learns to manufacture access from
+  nothing, which is precisely what the offer ladder, the sourcing record and the conference hack
+  all are. **It turns a list of hustle anecdotes into a person**, and it belongs early in the
+  a16z and Z-Fellows answers.
+- **First software at 14 or 15: "Traqde In"** — a marketplace for listing and buying second-hand
+  phones. It made real exchanges. Worth one clause of notice: **at fourteen he built a two-sided
+  marketplace matching supply and demand for something people can't easily find or value.** That
+  is the same shape as the company he is building now, and it is a better answer to a16z's "when
+  did you start building software on your own volition" than anything else in his history.
+- Loved number crunching as a kid; studied mathematics at USC alongside economics and **finished
+  in three years.**
 - **Sat and ACT ten times, improving by more than 450 points.** Ten sittings.
 - **Laddered into banking:** won a Moelis offer, used it to get Evercore, used that to get
   J.P. Morgan. Youngest full-time analyst there. `GAP: he says 20 — the YC form gives DOB
@@ -380,4 +403,8 @@ the employer side — that is a genuinely unusual pair of vantage points. It bel
 
 **What drives him, in his words:** hunger to learn a great deal in a short time, by being in
 places where people his age traditionally aren't, in order to have broad impact.
+
+**Nerdiest thing:** he operates a computer without touching a mouse, and can build most financial
+models on keyboard shortcuts alone. Small, true, specific — and quietly on-pattern: removing
+friction to raise throughput is the same instinct as sitting the SAT ten times.
 

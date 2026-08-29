@@ -10,18 +10,18 @@ form, which his robotics answer leads.
 
 ---
 
-## Tushar — 9
+## Tushar — 4 left (all links, plus one fact to pin)
 
-1. 🔴 **When did you first build software because you wanted to, not because someone asked?**
+1. ✅ ~~When did you first build software because you wanted to, not because someone asked?**
    Age, and the specific first thing. a16z asks this verbatim. The hustle stories answer *what
    drives you* — they don't answer this one, and it's a separate box.
-2. 🔴 **Nerdiest thing about you.** ~40 words. What do you know an absurd amount about for no
+2. ✅ ~~Nerdiest thing~~ ~40 words. What do you know an absurd amount about for no
    professional reason? (The street-naming answer is Sathya's.)
-3. 🟡 **Anything else non-standard growing up?** Ten SAT/ACT sittings is a strong answer on its
+3. ✅ ~~Non-standard growing up~~ Ten SAT/ACT sittings is a strong answer on its
    own — anything before or beside it makes it stronger.
-4. 🟡 **DroneCo — what was specifically yours?** CAD, the print process, the code, the grant
+4. ✅ ~~DroneCo, your role~~ CAD, the print process, the code, the grant
    writing, the recruiting? Greylock asks for your role, and "founder" isn't an answer.
-5. 🟡 **DroneCo — what actually went wrong?** You've given me the lesson (founder–market fit).
+5. ✅ ~~DroneCo, what went wrong~~ You've given me the lesson (founder–market fit).
    Z-Fellows asks what happened. One or two concrete things.
 6. 🔴 **DroneCo link** — the deck is the artifact. Host it, or a Drive link, or photos.
 7. 🔴 **Walmart procurement tool** — URL or a 60-second Loom of it working.

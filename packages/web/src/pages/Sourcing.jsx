@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { Badge, Empty, ErrorBox } from '../components/common.jsx';
+import { Empty, ErrorBox } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import { foray } from '../lib/foray.js';
 import { forayHitToCandidate } from '../lib/forayImport.js';
 import {
   countOnPage,
   pageWindow,
-  selectAllFrom,
   toggleOne,
   togglePage,
   toggleRange,
@@ -22,27 +21,6 @@ const EXAMPLES = [
   'data engineer with spark and airflow',
   'gpu systems engineer writing cuda kernels',
 ];
-
-// The marker files are lowercase keys (packages/foray/data/markers/*.txt); this
-// is purely how they read on a card. Anything not listed -- a marker file added
-// later -- falls back to a capitalised key rather than rendering blank.
-const MARKER_LABELS = {
-  data: 'Data',
-  db: 'DB',
-  devtools: 'Devtools',
-  embedded: 'Embedded',
-  frontend: 'Frontend',
-  gpu: 'GPU',
-  infra: 'Infra',
-  ml: 'ML',
-  mobile: 'Mobile',
-  security: 'Security',
-  sre: 'SRE',
-};
-
-function markerLabel(marker) {
-  return MARKER_LABELS[marker] ?? marker.charAt(0).toUpperCase() + marker.slice(1);
-}
 
 /**
  * One sourced candidate. The archetype score is intentionally NOT rendered —
@@ -111,14 +89,6 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
           </div>
         ) : null}
 
-        {hit.domain_markers?.length ? (
-          <div className="row wrap" style={{ marginTop: 10 }}>
-            {hit.domain_markers.map((marker) => (
-              <Badge key={marker}>{markerLabel(marker)}</Badge>
-            ))}
-          </div>
-        ) : null}
-
         {hit.top_repos?.length ? (
           <div className="small muted" style={{ marginTop: 8 }}>
             {hit.top_repos
@@ -127,19 +97,6 @@ function ForayHit({ hit, selected, onToggle, selectionDisabled = false }) {
               .join(' · ')}
           </div>
         ) : null}
-
-        <div className="row" style={{ marginTop: 10 }}>
-          {hit.github_url ? (
-            <a className="badge" href={hit.github_url} target="_blank" rel="noreferrer noopener">
-              GitHub
-            </a>
-          ) : null}
-          {linkedin ? (
-            <a className="badge" href={linkedin} target="_blank" rel="noreferrer noopener">
-              LinkedIn
-            </a>
-          ) : null}
-        </div>
       </div>
     </div>
   );
@@ -155,7 +112,6 @@ export function SourcingPage() {
   const [activeContactable, setActiveContactable] = useState(false);
   const [page, setPage] = useState(0);
   const [nonce, setNonce] = useState(0);
-  const [selectingAll, setSelectingAll] = useState(false);
 
   const [selected, setSelected] = useState(new Map()); // login -> hit
   const [projects, setProjects] = useState([]);
@@ -164,7 +120,6 @@ export function SourcingPage() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const lastIndex = useRef(null);
   const searchRequest = useRef(0);
-  const selectAllRequest = useRef(0);
   // The server's page stride, learned from the first response. PAGE_SIZE is
   // only the pre-first-response default; page 0 asks for offset 0 either way.
   const pageStride = useRef(PAGE_SIZE);
@@ -237,38 +192,14 @@ export function SourcingPage() {
     const value = (text ?? query).trim();
     if (!value) return;
     searchRequest.current += 1;
-    selectAllRequest.current += 1;
     setError(null);
     setAddState('');
-    setSelectingAll(false);
     setActiveQuery(value);
     setActiveContactable(contactableOnly);
     setPage(0);
     setNonce((value) => value + 1);
     setSelected(new Map());
-    setParserLabel(null);
     lastIndex.current = null;
-  }
-
-  async function selectAllMatching() {
-    if (!activeQuery || !result?.paginable) return;
-    const request = ++selectAllRequest.current;
-    setSelectingAll(true);
-    setError(null);
-    try {
-      const response = await foray.search(activeQuery, {
-        limit: result.paginable,
-        offset: 0,
-        hasContact: activeContactable,
-      });
-      if (request === selectAllRequest.current) {
-        setSelected(selectAllFrom(response.results));
-      }
-    } catch (caught) {
-      if (request === selectAllRequest.current) setError(caught);
-    } finally {
-      if (request === selectAllRequest.current) setSelectingAll(false);
-    }
   }
 
   async function importSelected(hits) {
@@ -379,7 +310,7 @@ export function SourcingPage() {
                       result.results.length > 0 &&
                       result.results.every((hit) => selected.has(hit.login))
                     }
-                    disabled={busy || selectingAll}
+                    disabled={busy}
                     ref={(node) => {
                       if (node) {
                         const some = result.results.some((hit) => selected.has(hit.login));
@@ -390,20 +321,8 @@ export function SourcingPage() {
                     onChange={selectPage}
                     aria-label="Select all on this page"
                   />
-                  Select all {result.results.length} on this page
+                  {result.results.length}
                 </label>
-                {result.paginable > result.results.length ? (
-                  <button
-                    type="button"
-                    className="tiny ghost"
-                    onClick={selectAllMatching}
-                    disabled={busy || selectingAll}
-                  >
-                    {selectingAll
-                      ? 'Selecting…'
-                      : `Select all ${result.paginable} matching (${Math.min(result.rerank_depth || 0, result.paginable)} reranked)`}
-                  </button>
-                ) : null}
                 <span className="small muted">
                   {selected.size} selected ({selectedOnPage} on this page)
                 </span>
@@ -439,7 +358,7 @@ export function SourcingPage() {
                   key={hit.login}
                   hit={hit}
                   selected={selected.has(hit.login)}
-                  selectionDisabled={busy || selectingAll}
+                  selectionDisabled={busy}
                   onToggle={(event) => toggle(hit, index, event)}
                 />
               ))}

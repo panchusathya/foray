@@ -286,21 +286,65 @@ what has been built and what has been delivered.
 So the three-segment problem resolves cleanly: **volume is the engine, quality is the product,
 executive search is background experience rather than a line of business.**
 
-## 13. Tushar — the drone company, as actually told
+## 13. Tushar — DroneCo (2023)
 
-College venture project, four people including **master's students he recruited onto the team**
-(worth noting: the earliest instance of him recruiting for something he was building).
-3D-printed drones, prototyped in CAD, multiple advisors. **~$10K in grant funding.** Won the
-**ABC Innovation Prize** and was a **Blackstone Launchpad finalist.** They assembled the plane;
-**it never flew.**
+**Upgraded 29 Aug on seeing the deck.** This is not "a fixed-wing aircraft prototype," and it
+is not a 3D-printing hobby either. It is a designed product with a business model and a market
+thesis.
+
+- **Ultra-fast autonomous delivery drones**, drone-as-a-service, with a named partner model.
+- Two SKUs — **X** (lightweight, <2 lb payload) and **Y** (standard, <6 lb).
+- Engineered spec: fixed-wing foam airframe, 8 lift propellers plus 2 front-facing, downward and
+  navigation sensors, **tether-based release system**; 100 km/h cruise, 30 km on a single charge,
+  1 hour flight time, 400 ft operational ceiling, 5 ft wingspan, 12 m LiDAR range, 2 camera
+  sensors.
+- A designed consumer flow: order → live track with ETA → *"we gently lower your package at your
+  doorstep."*
+- A real market thesis: India's post-2021 drone liberalisation, Swiggy/Instamart delivery trials,
+  Tata 1mg medical delivery in Dehradun.
+- Four people including **master's students Tushar recruited onto the team** — the earliest
+  instance of him recruiting for something he was building. ~**$10K in grant funding.** Multiple
+  advisors. **ABC Innovation Prize** winner and **Blackstone Launchpad finalist.**
+- **They assembled the plane. It never flew.**
 
 His own read: *"I think it wasn't the best founder–market fit. I realised that as I built it."*
 
-**How to use it.** Not as "I founded a company" — four people, $10K and a plane that didn't fly
-is a serious college project, and calling it more invites a correction. Use it where it is
-genuinely strong: **this is the Z-Fellows risk-and-failure answer**, and a good one, because it
-is specific, it failed, and the lesson is exactly the one that makes the current company
-credible — he has now chosen a problem where the founder–market fit is real, and he knows the
-difference because he got it wrong once. Programs reward that far more than a clean win.
+**How to use it.** The deck itself is the artifact — a16z asks for things you made that exist,
+and a product spec with a consumer flow and a go-to-market is exactly that. Attach it or host it.
+And it is still the **Z-Fellows risk-and-failure answer**, now a much better one: he didn't fail
+for lack of ambition or rigour — the product was properly specified — he failed on
+founder–market fit and diagnosed it himself. That is the precise lesson that makes the current
+company credible.
 
-`GAP: name of the project, year, and any photos or CAD renders — a link would still help.`
+## 14. Tushar — the pattern underneath the resume
+
+Volunteered 29 Aug, and it is the through-line the whole application was missing:
+
+- **Sat and ACT ten times, improving by more than 450 points.** Ten sittings.
+- **Laddered into banking:** won a Moelis offer, used it to get Evercore, used that to get
+  J.P. Morgan. Youngest full-time analyst there. `GAP: he says 20 — the YC form gives DOB
+  31 Jan 2002 and a June 2023 start, which is 21. Pin this down; it is exactly the kind of
+  detail that gets checked.`
+- **Talked his way into a technical Chief of Staff seat at Nova Intelligence as employee one**,
+  then built GTM, hiring and sales from nothing.
+- Sourced 21 companies, sourced speakers, built lab relationships, ~20 investor relationships.
+- At SAP Sapphire, couldn't afford a booth, so built a scheduling app for attendees instead.
+
+**The pattern: he treats systems everyone accepts as fixed as things you can simply run more
+iterations against.** A standardised test is not a one-shot event, it is ten. A banking offer is
+not an outcome, it is leverage for the next one. A conference is not booth space, it is
+attention. That is one trait, stated five ways, and it is directly load-bearing for this company
+— **recruiting is the largest system everybody accepts as irreducibly slow.**
+
+Use it as the spine of B6, B7 and B9, and echo one clause of it in A5. Sathya's equivalent
+through-line is navigation without instruments; Tushar's is more iterations than the system
+expects. Two coherent founders beat two lists of accomplishments.
+
+**Founder–market fit nobody has noticed yet:** the Moelis → Evercore → J.P. Morgan ladder is him
+**hacking the recruiting funnel from the candidate side**, years before deciding to rebuild it.
+Paired with the J.P. Morgan campus and lateral recruiting remit — running the same funnel from
+the employer side — that is a genuinely unusual pair of vantage points. It belongs in A4 and A5.
+
+**What drives him, in his words:** hunger to learn a great deal in a short time, by being in
+places where people his age traditionally aren't, in order to have broad impact.
+

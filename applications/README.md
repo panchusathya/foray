@@ -37,7 +37,7 @@ grant funding as *"prototyped a fixed-wing aircraft."*
 | | State |
 |---|---|
 | Evidence inventory | Written |
-| Block A (7 company answers) | Written — **A3 traction to be refreshed last** |
+| Block A (7 company answers) | Written, then **corrected 29 Aug** against the founders' own answers — several drafts were running ahead of the facts |
 | Block B — Tushar | Harvested; 6 gaps |
 | Block B — Sathya | Harvested; 7 gaps |
 | Shared (B10/B11/B12) | Written — B11 referrer map is `TODO` and worth more than any essay |
@@ -47,20 +47,23 @@ grant funding as *"prototyped a fixed-wing aircraft."*
 
 - **Applicants:** Tushar and Sathya. Dwayne appears as the recruiting domain expert, not a
   third applicant.
-- **Positioning:** engineering hires are the destination; founding GTM/ops at seed AI startups
-  is the beachhead. Makes existing traction on-thesis rather than off-thesis.
+- **Positioning (settled 29 Aug):** not executive search. Early GTM/ops at AI startups plus
+  engineering hires, run high-volume, funnelling the best candidates into client work.
+- **Not full-time.** Both still employed at WestBridge. Stated plainly in A3 rather than left
+  to be discovered — every form asks about exclusive commitment and HF0 is a residency.
+- **Dwayne has expressed interest, not committed.** Never written as a co-founder.
 - **Strata does not appear anywhere.** Arkash appears only as a prospective hire.
 - **Nobody unsigned is called a co-founder.** With no entity and no papered equity, "three
   people asked to be co-founders" reads as an unsettled cap table, not as talent density.
 
 ## Blocking, in order
 
-1. **`VC_Portcos` → private.** Public repo on the technical co-founder's account that screens
-   founders by inferred ethnicity. See `evidence.md` §9.
-2. **`interview.md`** — 67 questions, both founders, answerable in bullets.
+1. **`VC_Portcos` → private.** Confirmed as agreed; not yet done. See `evidence.md` §9.
+2. **`interview.md`** — the remaining questions, mostly Block B personal material and links.
 3. **Ansh Gupta's background** — LinkedIn is blocked by this environment's egress policy.
-4. **Entity + Dwayne's agreement** — A5 is a materially different answer with a signed
-   recruiting co-founder than with an unnamed advisor.
+4. **Browser agent status** — test submissions count, ATSs covered, live date.
+5. **Referral→interview denominator** — "every referral converted to an interview" is the best
+   conversion stat in the pack and it currently has no number attached.
 
 ## Verification before submitting
 

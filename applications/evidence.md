@@ -20,8 +20,8 @@ Last verified against the repo at `7d056d5`, 29 Aug 2026.
 | Voice agent — live, taking real intake calls | `packages/core/juicebox/intake/`, `VOICE_INTAKE_PLAN.md` |
 | Text agent — live | `packages/core/juicebox/messaging/`, `MESSAGING_INTAKE_PLAN.md` |
 | Voice, text and email unified on one CRM: context given in any channel is known to the agent in the others | `packages/core/juicebox/crm.py`, `integrations/sync.py` |
-| Browser agent submits job applications end-to-end | `packages/core/juicebox/applications/`, `AUTO_APPLY_SETUP.md` |
-| **First fully autonomous end-to-end application submitted 27 Aug 2026** | notes 8/27 |
+| Browser agent that fills and submits job applications, built end-to-end | `packages/core/juicebox/applications/`, `AUTO_APPLY_SETUP.md` |
+| **Multiple applications submitted successfully in testing.** Not yet live; no application submitted on behalf of a real candidate. `GAP: how many test submissions, against which ATSs, and what is the live date?` | confirmed 29 Aug |
 | Two shipped front-ends: recruiter SPA and candidate portal | `packages/web/`, `packages/portal/` |
 | Gmail, Outlook and GitHub connectors shipped | `packages/core/juicebox/connectors/google.py`, `microsoft.py`, `github.py` |
 | Durable job queue with `FOR UPDATE SKIP LOCKED`, backoff and parking | `README.md` "Scale notes"; `juicebox/worker.py` |
@@ -80,7 +80,7 @@ Eight companies have received candidates from us.
 
 | Company | What happened |
 |---|---|
-| **Kyber** | Head of Engineering. Connection made Jan 2026 via the SingleSprout team; candidate closing Aug 2026 — a 7-month cycle that is itself the problem statement |
+| **Kyber** | Head of Engineering — **closed Aug 2026.** A referral we made, not a search we ran; connection made Jan 2026 via the SingleSprout team. A real outcome and a real seven-month cycle that is itself the problem statement, but **it is a referral, not a placement, and must never be written as one.** |
 | **OneRobot** | 3–4 confirmed applications from ~50 cold outbound; 2-day turnaround; founder confirmed he wants more |
 | **Baseten** | 6 candidates delivered to the head of talent for the BizOps team, 5 sourced by cold outbound; 1 interested candidate |
 | **LangChain** | Chief of Staff candidate — **interview in process** |
@@ -89,8 +89,14 @@ Eight companies have received candidates from us.
 | **NeoSigma** | 2 connections for Founding Business Generalist |
 | **Vapi** | 1 connection for Chief of Staff |
 
-Roughly 20 candidate connections across 8 companies, 1 interview in process, 1 placement
-closing, in under six weeks.
+**~20 candidates delivered across 8 companies in under six weeks**, all under pilot / POC
+arrangements, several done to earn the business. **No money has changed hands.**
+
+Separately, and not counted above: referrals made through the network during the day job.
+**Every one of those referrals has converted to an interview.** `GAP: how many? A denominator
+turns this from a nice line into the best conversion stat in the pack.`
+
+Inbound: none yet. Referrals have come from outbound.
 
 ## 5. Market research
 
@@ -174,12 +180,14 @@ Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to
 - **Built Biz2Credit's partnerships business from the ground up**, including its credit-card
   partnership with **Mastercard** and its healthcare-provider partnership with **Optum /
   UnitedHealth.**
-- **Took point on WestBridge's internal recruiting.** Together with Tushar's campus and lateral
-  recruiting remit at J.P. Morgan, that is **two institutions where they have personally run
-  hiring** — the strongest founder–market-fit fact in the pack and absent from every prior
-  application.
-- **Sourced the Head of Applied Research at OpenAI**, plus others across the network. `GAP —
-  see §10: recruited into a role, or sourced for an event? The claim changes shape entirely.`
+- **Worked alongside WestBridge's recruiting on internal hiring** — coordinating closely with
+  recruiters, maintaining touchpoints with portfolio recruiting teams, and watching how long and
+  painful those processes were up close. **This is observation and coordination, not running
+  hiring.** The only place either founder has personally *run* a hiring process is Tushar's
+  campus and lateral recruiting remit at J.P. Morgan; that one stands on its own and doesn't
+  need a second example propped beside it.
+- **Sourced the Head of Applied AI Research at OpenAI as a speaker for an event** — access and
+  network reach, **not a recruiting placement.** Usable as evidence of reach; never as a hire.
 - ~1K companies spoken to and 2–3× that outreached in a year; monitoring APIs across X; web
   agents tracking fundraising announcements; 8–10 sourcing tools run in production. **Sourcing
   candidates is the same muscle pointed at a different graph** — and they started with it built.
@@ -214,12 +222,17 @@ and these two firms are more likely than anyone to know these exact deals.
 
 ## 8. Honest gaps — stated, never hidden
 
-- **Revenue: $0.** Everything delivered to the eight companies so far has been free.
-- **No legal entity yet.** In progress.
+- **Revenue: $0.** Everything delivered so far has been free — pilots and POCs, several run to
+  earn the business.
+- **Neither founder is full-time.** Both are still employed at WestBridge and working on this
+  around the job. They intend to go full-time. **Every one of the five forms asks about
+  exclusive commitment, and HF0 is a residency**, so this gets stated plainly with the trigger
+  for going full-time attached, rather than left for someone to discover.
+- **Dwayne has expressed interest but has not committed.** A good data point, not a co-founder,
+  and not to be written as one.
 - Cold email response rate 2–3%, inbox previously flagged for spam; migrated to Zoho.
   We know this channel is our weakest and the recruiter interviews say LinkedIn beats it
   10–15× (Patrick: 30–40% InMail; Dwayne: ~40% DM with mutuals).
-- Dwayne's co-founder agreement is not yet papered.
 
 ## 9. Do not link, do not mention
 
@@ -238,53 +251,52 @@ and these two firms are more likely than anyone to know these exact deals.
 An accelerator will find all four of these. Volunteering them costs nothing and buys the
 credibility that carries every other claim on this page.
 
-## 11. Portfolio-company hiring pipeline — the biggest claim in the pack
+## 11. Client-side executive search experience
 
-Stated 29 Aug: Foray will be running hiring for WestBridge portfolio companies —
-**Duplo (CMO, CFO), Biz2Credit (CFO), Innovaccer (multiple C-suite), Turing (multiple).**
+**Corrected 29 Aug.** The earlier reading of this — Foray holding mandates to run C-suite
+search at portfolio companies — was wrong, and the real version is a different and smaller
+claim that is still worth having.
 
-**Why this outranks everything else on this page.** Innovaccer is Series F and Turing is
-Series E. C-suite search at that stage is retained work at 30–33% of first-year comp; a single
-CFO placement is a six-figure fee. Four companies with multiple executive roles each is not a
-seed-stage experiment — it is enterprise demand with a named, checkable customer list, arriving
-at a company that currently reports $0 in revenue. Nothing else in this pack changes the read
-of A3 as much.
+What actually happened: across WestBridge portfolio companies — **Duplo (CMO, CFO), Biz2Credit
+(CFO), Innovaccer (multiple C-suite), Turing (multiple)** — they **supported completed
+executive searches while representing WestBridge**, on contingency and retained engagements
+where **the recruiting firms were their clients.** These are finished roles, not Foray
+mandates. No Foray revenue, no engagement letters, no pipeline.
 
-**Which is exactly why the tense has to be right.** "We'll be running hiring for" is not
-"we have run hiring for", and the gap between them is the difference between the best line in
-the application and a claim that unravels in diligence. Required before use:
+**What it is worth, stated correctly:** they have sat on the *buyer's* side of a dozen
+executive searches at real scale — writing the brief, judging the slates, watching the cycle
+run for months. That is genuine founder–market fit and a much better claim than most people
+building recruiting software can make. It belongs in A4 (how they landed on the problem) and
+A5 (why them), where it is strong.
 
-- Per company and per role: **verbal interest, agreed mandate, or signed engagement?**
-- **Fee terms agreed?** Retained, contingent, percentage, or unpriced?
-- **Exclusive, or alongside incumbent search firms?**
-- **Started?** Any candidate delivered, any interview scheduled, any search kicked off?
-- Who at each company is the counterparty, and did they ask you or did you offer?
+**What it is not:** demand, traction, revenue, or pipeline. It does not go in A3 and it never
+gets written as "we run hiring for portfolio companies."
 
-Write A3 to whatever is actually true. **Even the weakest honest version — "four portfolio
-companies have asked us to run eight executive searches, starting in September" — is stronger
-than anything else in this pack**, because it is demand that arrived unsolicited from
-late-stage companies. It does not need inflating.
+## 12. Positioning — settled 29 Aug
 
-**Two consequences to handle deliberately:**
+Not executive search. Current work is **early GTM/ops roles at AI startups plus engineering
+hires**, and the plan is to run high volume and funnel the highest-quality candidates into
+client work. That is the two-tier thesis from the August notes, and it is coherent with both
+what has been built and what has been delivered.
 
-**a) The conflict question stops being hypothetical.** Taking placement fees from portfolio
-companies while employed as investors at the fund that owns those positions is a real
-governance question, and every one of these five programs will reach it in about ninety
-seconds. Needed: has WestBridge approved this in writing, who at the firm signed off, and how
-are fees handled. A clean answer is completely fine. Not having one is the problem.
+So the three-segment problem resolves cleanly: **volume is the engine, quality is the product,
+executive search is background experience rather than a line of business.**
 
-**b) There are now three segments, and an application can only carry one story.**
-1. Founding GTM/ops at seed AI startups — where the work has actually been done, free.
-2. **C-suite search at growth-stage portcos — where the money and the demand are.**
-3. Mid-level engineering volume — the stated destination and the venture story.
+## 13. Tushar — the drone company, as actually told
 
-Executive search is the least automatable of the three: small n, relationship-driven, long
-cycles — the Kyber placement took seven months. It is the opposite of the "one recruiter does
-the work of ten" thesis that makes this fundable. So do not blur them into one paragraph.
+College venture project, four people including **master's students he recruited onto the team**
+(worth noting: the earliest instance of him recruiting for something he was building).
+3D-printed drones, prototyped in CAD, multiple advisors. **~$10K in grant funding.** Won the
+**ABC Innovation Prize** and was a **Blackstone Launchpad finalist.** They assembled the plane;
+**it never flew.**
 
-**The framing that holds all three honestly:** executive search inside a fund network is the
-revenue engine that funds the build and proves we can close; seed GTM/ops is where the product
-was forged against real reqs; volume engineering hiring is where the software thesis pays off.
-That is the Crosby shape — the firm funds the software — and it is the story a16z speedrun and
-HF0 are actually set up to reward. It is also a much better answer to "how will you support
-yourselves" than any of the alternatives.
+His own read: *"I think it wasn't the best founder–market fit. I realised that as I built it."*
+
+**How to use it.** Not as "I founded a company" — four people, $10K and a plane that didn't fly
+is a serious college project, and calling it more invites a correction. Use it where it is
+genuinely strong: **this is the Z-Fellows risk-and-failure answer**, and a good one, because it
+is specific, it failed, and the lesson is exactly the one that makes the current company
+credible — he has now chosen a problem where the founder–market fit is real, and he knows the
+difference because he got it wrong once. Programs reward that far more than a clean win.
+
+`GAP: name of the project, year, and any photos or CAD renders — a link would still help.`

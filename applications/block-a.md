@@ -23,8 +23,8 @@ Hiring is the highest-stakes repeated decision a company makes, and structurally
 the outcome. Recruiting ops owns the process, agencies own a slice of sourcing, referrals
 arrive through nobody in particular, inbound piles up in an ATS, and each handoff is a place
 a good candidate goes quiet. Time to close runs months and sometimes years. Our own last
-internal hire took about seven months even while working with multiple agencies, and a
-placement we're closing this month started as a connection made in January.
+internal hire took about seven months even while working with multiple agencies, and a role that
+closed this month off a referral we made started as a connection back in January.
 
 Discovery has gotten worse, not better. LinkedIn is saturated with AI-generated outreach that
 has trained everyone to ignore it. Candidates fire applications into the void on Indeed and
@@ -76,15 +76,17 @@ rather than bolted on: AI disclosure and recording consent, salary history never
 used, work authorisation reduced to exactly two lawful questions, TCPA consent captured at
 the right moment.
 
-**Execution.** A browser agent that fills and submits applications end to end. Our first fully
-autonomous submission went out on 27 August 2026. Plus a recruiter SPA and a candidate portal.
+**Execution.** A browser agent that fills and submits applications end to end. It has submitted
+applications successfully in testing and goes live shortly. Plus a recruiter SPA and a candidate
+portal.
 
-**Where we start and where we're going.** Engineering hires are the destination: highest
-volume, worst existing process, and the segment where the throughput advantage compounds
-hardest. Founding GTM, BizOps, chief-of-staff and deployment roles at seed-stage AI startups
-are the beachhead, because that is where we have unfair access through our fund network and
-where we have already placed. We would rather earn the right to the big segment from a
-position of real traction in a small one than claim the big one on day one.
+**Where we start and where we're going.** Today we work early GTM and ops roles at AI startups
+alongside engineering hires. The model is volume first, quality second: run high volume through
+the system, and funnel the highest-quality candidates into client work where the fee is. Engineering
+is where that compounds hardest — highest volume, worst existing process — so it is the destination,
+and the seed-stage GTM and ops roles are the beachhead, because that is where our fund network gives
+us unfair access. We would rather earn the right to the big segment from real traction in a small one
+than claim it on day one.
 
 ---
 
@@ -96,32 +98,33 @@ position of real traction in a small one than claim the big one on day one.
 
 **Current state, honest:**
 
-Eight companies have received candidates from us in under six weeks: Kyber, OneRobot, Baseten,
-LangChain, Vela, Aaru, NeoSigma and Vapi.
+**~20 candidates delivered to eight companies in under six weeks** — Kyber, OneRobot, Baseten,
+LangChain, Vela, Aaru, NeoSigma and Vapi — under pilot and POC arrangements, several run to earn
+the business. **No money has changed hands yet, deliberately: we wanted the right to go back with
+a price, and that conversation is happening now.**
 
-- **Kyber** — Head of Engineering. Connection made January, candidate closing this month. A
-  seven-month cycle that is itself our problem statement.
 - **LangChain** — Chief of Staff candidate currently **in interview process.**
-- **OneRobot** — 3–4 confirmed applications from ~50 cold outbound, two-day turnaround, founder
-  has asked for more.
-- **Baseten** — six candidates delivered to the head of talent for the BizOps team, five of
-  them cold-sourced; one interested.
-- **Vela** — three intros offered from ~10 inbound, with a **$10K referral fee on offer in
-  writing.**
+- **Kyber** — Head of Engineering, **closed this month.** That one came through a referral we made
+  rather than a search we ran, and the connection dates to January: a seven-month cycle that is
+  itself our problem statement.
+- **OneRobot** — 3–4 confirmed applications from ~50 cold outbound, two-day turnaround, founder has
+  asked for more.
+- **Baseten** — six candidates to the head of talent for BizOps, five cold-sourced; one interested.
+- **Vela** — three intros offered from ~10 inbound, with a **$10K referral fee on offer in writing.**
 - **Aaru, NeoSigma, Vapi** — five further connections across Deployment Lead, Founding Business
   Generalist and Chief of Staff.
 
-Roughly 20 candidate connections, one interview in process, one placement closing.
+Separately, and not counted in the twenty: referrals made through our own network alongside the day
+job. **Every one of those has converted to an interview.**
 
-On the product side, in the same window: first fully autonomous application submitted 27
-August; ~161K lines across a sourcing engine, voice agent, text agent, browser agent, CRM and
-two front-ends; 185 test files and CI; an offline search eval harness; a 200K-profile index.
-259 commits in the five days to 28 August.
+On the product side, in the same window: a sourcing engine over a 200K-profile index with an offline
+eval harness reporting nDCG@10, MRR and P@k; a voice agent and a text agent unified with email on one
+CRM; a browser agent submitting applications successfully in testing and going live shortly; a
+recruiter SPA and a candidate portal. ~161K lines, 185 test files, CI. 259 commits in the five days
+to 28 August — while both of us were still working full-time jobs.
 
-**Revenue is $0** — everything so far has been delivered free, deliberately, to earn the right
-to go back with a price. That conversation is happening this week.
-
----
+**Revenue is $0** and **neither of us is full-time yet.** Both are true, both are about to change,
+and we would rather you hear them from us.
 
 ## A4 — How we landed on this problem space
 
@@ -167,10 +170,13 @@ monitoring APIs across X, built web agents that track fundraising announcements,
 sourcing tools in production to find what works. Sourcing candidates is that muscle pointed at
 a different graph, and we started with it already built.
 
-**We have run the hiring process from the employer's side.** Tushar led campus and lateral
-recruiting at J.P. Morgan and was the first hire at a Conviction-backed startup that scaled its
-team more than 5× around him. Very few people building recruiting software have sat in the
-seat where the requisition is written, the slate is rejected, and the offer is negotiated.
+**We have sat on the buying side of hiring, repeatedly.** Tushar led campus and lateral recruiting
+at J.P. Morgan and was the first hire at a Conviction-backed startup that scaled its team more than
+5× around him. Between us we have supported executive searches across WestBridge portfolio companies
+— Duplo, Biz2Credit, Innovaccer, Turing — writing briefs, judging slates and coordinating with the
+search firms we had engaged, across roles from CFO to CMO. Very few people building recruiting
+software have spent that much time in the seat where the requisition is written, the slate is
+rejected and the cycle drags past month four.
 
 **We can build it.** Sathya holds a BA in Computer Science from Berkeley alongside his Haas
 honours degree, built the first four-wheel odometry system in FIRST robotics — four dead wheel
@@ -184,9 +190,10 @@ real access into Cognition, Cursor and OpenAI circles, so we can aim attention a
 candidates rather than casting wide. Strong recruiters get three to four referrals from every
 person they place; that compounding is the whole game.
 
-**And we have the domain expert.** Dwayne Nonales — founder of Kyth, Conviction-embedded, ~50–60%
-of his placements sourced from referrals and ~40% DM response when he has mutuals — has asked
-to join us. What we are automating is his desk, designed with him rather than guessed at.
+**And we are designing with a practitioner, not guessing.** Dwayne Nonales — founder of Kyth,
+Conviction-embedded, ~50–60% of his placements sourced from referrals and ~40% DM response when he
+has mutuals — has been close to this from the start and has expressed interest in joining. What we
+are automating is a desk like his, built against how he actually works.
 
 **We move fast.** In the first two days on this idea we cold-outreached ~45 engineering
 candidates and got two inbound. In the six weeks since we have built and shipped the sourcing

@@ -11,6 +11,8 @@ from juicebox.models import (
     ApplicationSubmission,
     Candidate,
     CandidateDocument,
+    IntakeMessage,
+    IntakeThread,
     JobPosting,
     JobMatch,
     OpenInstinctApplicationTask,
@@ -35,6 +37,17 @@ def _service_headers(*, subject: str = "better-auth:openinstinct-user", identiti
 def _enable_bridge(monkeypatch) -> None:
     monkeypatch.setenv("OPENINSTINCT_SHARED_SECRET", "s" * 32)
     reset_settings_cache()
+
+
+def _event_payload(*, conversation_id="linq:foray-1", provider_native_id="carrier-1", direction="inbound"):
+    return {
+        "conversation_id": conversation_id,
+        "provider_native_id": provider_native_id,
+        "direction": direction,
+        "body": "please apply to this role",
+        "channel": "linq",
+        "display_name": "New Candidate",
+    }
 
 
 def _candidate(session, account, sample_candidates) -> Candidate:
@@ -104,6 +117,90 @@ def test_identity_link_requires_verified_claim(client, session, account, sample_
         headers=_service_headers(identities=[]),
     )
     assert response.status_code == 403
+
+
+def test_conversation_event_creates_candidate_and_is_idempotent(
+    client, session, account, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    monkeypatch.setenv("OPENINSTINCT_DEFAULT_ORG_ID", account["org_id"])
+    reset_settings_cache()
+    identities = [
+        {"kind": "email", "value": "new-candidate@example.com", "verified": True},
+        {"kind": "phone", "value": "+14155550124", "verified": True},
+    ]
+    headers = _service_headers(subject="better-auth:new-candidate", identities=identities)
+
+    created = client.post(
+        "/v1/internal/openinstinct/conversation-events",
+        json=_event_payload(),
+        headers=headers,
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["created"] is True
+    duplicate = client.post(
+        "/v1/internal/openinstinct/conversation-events",
+        json=_event_payload(),
+        headers=headers,
+    )
+    assert duplicate.status_code == 202, duplicate.text
+    assert duplicate.json()["created"] is False
+
+    thread = session.get(IntakeThread, created.json()["thread_id"])
+    assert thread is not None
+    assert thread.channel == "openinstinct"
+    assert thread.mode == "managing"
+    assert thread.entry_point == "openinstinct"
+    assert thread.review_needed is False
+    candidate = session.get(Candidate, thread.candidate_id)
+    assert candidate is not None
+    assert candidate.emails == ["new-candidate@example.com"]
+    assert candidate.phones == ["+14155550124"]
+    assert session.query(IntakeMessage).filter_by(thread_id=thread.id).count() == 1
+
+
+def test_conversation_event_fails_closed_without_a_default_org(client, monkeypatch):
+    _enable_bridge(monkeypatch)
+    response = client.post(
+        "/v1/internal/openinstinct/conversation-events",
+        json=_event_payload(),
+        headers=_service_headers(
+            subject="better-auth:unconfigured-candidate",
+            identities=[
+                {
+                    "kind": "email",
+                    "value": "unconfigured-candidate@example.com",
+                    "verified": True,
+                }
+            ],
+        ),
+    )
+    assert response.status_code == 422
+    assert "default organization" in response.json()["detail"]
+
+
+def test_mirrored_thread_suppresses_legacy_openinstinct_pull(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    candidate = _candidate(session, account, sample_candidates)
+    _link(client)
+    response = client.post(
+        "/v1/internal/openinstinct/conversation-events",
+        json=_event_payload(),
+        headers=_service_headers(),
+    )
+    assert response.status_code == 202, response.text
+
+    with patch(
+        "juicebox.routers.candidates.fetch_candidate_conversations",
+        return_value={"available": True, "conversations": [{"id": "legacy"}]},
+    ):
+        timeline = client.get(
+            f"/v1/candidates/{candidate.id}/timeline", headers=account["headers"]
+        )
+    assert timeline.status_code == 200, timeline.text
+    assert timeline.json()["openinstinct_conversations"] == []
 
 
 def test_linked_candidate_can_upload_a_protected_resume(client, session, account, sample_candidates, monkeypatch):
@@ -229,6 +326,14 @@ def test_job_feed_returns_only_linked_candidates_actionable_matches(
     assert cards[0]["posting_id"] == posting.id
     assert cards[0]["title"] == "Machine Learning Engineer"
     assert "recruiter_only" not in cards[0]
+
+    card = client.get(
+        f"/v1/internal/openinstinct/job-cards/{posting.id}?index=1&total=5",
+        headers=_service_headers(),
+    )
+    assert card.status_code == 200, card.text
+    assert card.headers["content-type"] == "image/png"
+    assert card.content.startswith(b"\x89PNG")
 
 
 def test_task_cannot_cross_org_and_recruiter_timeline_keeps_voice_plus_openinstinct(

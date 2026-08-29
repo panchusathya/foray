@@ -21,14 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import Application, JobPosting, JobProposal, utcnow
 
 APPLICATIONS_PER_COMPANY_PER_30D = 2
-SUBMISSIONS_PER_WEEK = 5
 # Defaults only. The live values come from settings so a deployment can run a
 # different cadence (our own end-to-end testing needs one) without editing the
 # rule. Read through the ``_per_week`` / ``_per_message`` / ``_per_day``
@@ -122,45 +121,11 @@ def may_create_application(
 def may_submit(
     db: Session, *, application: Application, now: datetime | None = None
 ) -> LimitDecision:
-    """Five submissions per rolling week. Above that we are not representing
-    somebody, we are spraying.
+    """Applications have no weekly volume cap.
 
-    An application already in flight spends the budget too. Counting only
-    ``submitted_at`` made everything in `submitting` -- queued, running, or
-    parked on a portal's verification mail -- invisible here, which defeats the
-    guarantee ``state.transition`` is written for: an in-flight run would pass
-    the gate on the way in, five others would fill the week while it waited,
-    and the move to `submitted` would then be refused *after* the employer
-    already had the application.
-
-    The application being decided never counts itself, or the second half of
-    that same round trip would refuse the pursuit its own in-flight row.
+    The durable anti-spam rules stay in force: one pursuit per posting and no
+    more than two applications to one company in 30 days.
     """
-    now = now or utcnow()
-    since = now - timedelta(days=7)
-    count = (
-        db.scalar(
-            select(func.count())
-            .select_from(Application)
-            .where(
-                Application.org_id == application.org_id,
-                Application.candidate_id == application.candidate_id,
-                Application.id != application.id,
-                or_(
-                    Application.submitted_at >= since,
-                    and_(
-                        Application.status == "submitting",
-                        Application.submitting_at >= since,
-                    ),
-                ),
-            )
-        )
-        or 0
-    )
-    if count >= SUBMISSIONS_PER_WEEK:
-        return LimitDecision(
-            False, REASON_SUBMISSION_BUDGET, f"{count} submissions in the last 7 days"
-        )
     return _OK
 
 

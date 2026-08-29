@@ -736,6 +736,10 @@ def get_candidate_timeline(
     openinstinct = fetch_candidate_conversations(
         org_id=principal.org_id, candidate_id=candidate_id
     )
+    # Mirrored service events are native Intake threads now. Keep the old pull
+    # only for pre-migration conversations so recruiters never see a thread
+    # twice in the same candidate timeline.
+    mirrored_openinstinct = any(thread.channel == "openinstinct" for thread in intake_threads)
     application_tasks = db.scalars(
         select(OpenInstinctApplicationTask)
         .where(
@@ -780,7 +784,9 @@ def get_candidate_timeline(
             )
             for thread in intake_threads
         ],
-        openinstinct_conversations=list(openinstinct["conversations"]),
+        openinstinct_conversations=(
+            [] if mirrored_openinstinct else list(openinstinct["conversations"])
+        ),
         openinstinct_available=bool(openinstinct["available"]),
         openinstinct_application_tasks=[
             {

@@ -113,6 +113,12 @@ class Settings:
     openinstinct_shared_secret: str = field(
         default_factory=lambda: _env("OPENINSTINCT_SHARED_SECRET", "")
     )
+    # Default CRM workspace for a verified Foray candidate who is not already
+    # represented in JuiceBox. The bridge never accepts an organization from a
+    # browser or signed service payload.
+    openinstinct_default_org_id: str = field(
+        default_factory=lambda: _env("OPENINSTINCT_DEFAULT_ORG_ID", "").strip()
+    )
     openinstinct_request_timeout_seconds: float = field(
         default_factory=lambda: _env_float("OPENINSTINCT_REQUEST_TIMEOUT_SECONDS", 8.0)
     )

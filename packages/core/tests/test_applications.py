@@ -13,7 +13,6 @@ from juicebox.applications.limits import (
     APPLICATIONS_PER_COMPANY_PER_30D,
     IGNORED_PROPOSAL_BREAKER,
     PROPOSALS_PER_WEEK,
-    SUBMISSIONS_PER_WEEK,
 )
 from juicebox.applications.service import (
     ApplicationError,
@@ -24,7 +23,7 @@ from juicebox.applications.service import (
     current_documents,
     request_package,
 )
-from juicebox.applications.state import TransitionError, can_transition, transition
+from juicebox.applications.state import can_transition, transition
 from juicebox.jobs import KIND_APP_PACKAGE
 from juicebox.models import (
     APPLICATION_STATUSES,
@@ -224,10 +223,10 @@ class TestCreateGuards:
 
 
 class TestSubmissionBudget:
-    def test_five_a_week_then_stop(self, session, account, candidate):
+    def test_sixth_weekly_submission_is_allowed(self, session, account, candidate):
         org_id = account["org_id"]
         now = utcnow()
-        for index in range(SUBMISSIONS_PER_WEEK):
+        for index in range(5):
             posting = _posting(session, org_id, company=f"Company{index}", suffix=str(index))
             application = create_application(
                 db=session, org_id=org_id, candidate_id=candidate.id, job_posting_id=posting.id
@@ -242,8 +241,8 @@ class TestSubmissionBudget:
         )
         transition(session, application, to_status="prepared", actor="agent")
         _consented(application, session)
-        with pytest.raises(TransitionError, match="budget"):
-            transition(session, application, to_status="submitted", actor="candidate")
+        transition(session, application, to_status="submitted", actor="candidate")
+        assert application.status == "submitted"
 
 
 class TestProposalBudgets:

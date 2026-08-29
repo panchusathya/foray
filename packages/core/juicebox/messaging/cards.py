@@ -92,6 +92,63 @@ def card_media(
     )
 
 
+def card_png(
+    db: Session,
+    *,
+    org_id: str,
+    posting: JobPosting,
+    card: dict[str, Any],
+    index: int = 1,
+    total: int = 1,
+) -> bytes:
+    """Return the cached candidate-safe PNG without talking to Linq.
+
+    The OpenInstinct bridge consumes these bytes directly, while native Intake
+    delivery also stores the same asset before uploading it to Linq.  Keeping
+    this in the presentation boundary prevents a second renderer from slowly
+    drifting away from the recruiter-facing cards.
+    """
+    version = asset_version()
+    variant = _variant(index, total)
+    row = db.scalar(
+        select(JobCardAsset).where(
+            JobCardAsset.org_id == org_id,
+            JobCardAsset.job_posting_id == posting.id,
+            JobCardAsset.variant == variant,
+        )
+    )
+    if row is not None and row.card_version == version and row.storage_path:
+        try:
+            return storage.read_bytes(row.storage_path)
+        except Exception as exc:  # noqa: BLE001 - render a fresh card below
+            logger.info("job card cache read missed for %s: %s", posting.id, exc)
+
+    logo = b""
+    domain = posting_domain(posting)
+    if domain:
+        try:
+            logo = fetch_logo(domain) or b""
+        except Exception as exc:  # noqa: BLE001 - a missing logo is a plain card
+            logger.info("logo fetch missed for %s: %s", domain, exc)
+    png = render_card_png(
+        card,
+        brand=palettemod.brand_from_logo(logo, domain=domain),
+        logo=logo,
+        index=index,
+        total=total,
+    )
+    relpath = storage.card_relpath(org_id=org_id, posting_id=posting.id, variant=variant)
+    storage.save_bytes(relpath, png)
+    if row is None:
+        row = JobCardAsset(org_id=org_id, job_posting_id=posting.id, variant=variant)
+        db.add(row)
+    row.storage_path = relpath
+    row.card_version = version
+    row.rendered_at = utcnow()
+    db.flush()
+    return png
+
+
 def _variant(index: int, total: int) -> str:
     """The cache key's position half. Solo cards keep the original name."""
     return VARIANT_CARD if total <= 1 else f"{VARIANT_CARD}-{index}of{total}"

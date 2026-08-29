@@ -30,10 +30,14 @@ from ..models import (
     Application,
     ApplicationSubmission,
     Candidate,
+    CandidateEmail,
     CandidateDocument,
+    CandidatePhone,
     JobMatch,
     JobPosting,
     JobProposal,
+    IntakeMessage,
+    Org,
     OpenInstinctApplicationTask,
     OpenInstinctIdentityLink,
     utcnow,
@@ -46,6 +50,11 @@ from ..openinstinct import (
 )
 from ..portal.schemas import portal_card
 from ..presentation.jobcard import jobcard
+from ..messaging.cards import card_png
+from ..messaging.channels import DeliveryResult, OutboundMessage
+from ..messaging.threads import find_by_provider_id, open_thread, record_inbound, record_outbound
+from ..repository import merge_contact_details
+from ..intake.phones import lookup_key
 
 router = APIRouter(
     route_class=CommittingRoute,
@@ -67,8 +76,18 @@ def _service_principal(
 
 class IdentityLinkIn(BaseModel):
     external_user_id: str = Field(min_length=1, max_length=160)
+    name: str = Field(default="", max_length=200)
     email: str = Field(default="", max_length=255)
     phone: str = Field(default="", max_length=64)
+
+
+class ConversationEventIn(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=200)
+    provider_native_id: str = Field(min_length=1, max_length=300)
+    direction: str = Field(pattern="^(inbound|outbound)$")
+    body: str = Field(min_length=1, max_length=20_000)
+    channel: str = Field(default="linq", max_length=32)
+    display_name: str = Field(default="", max_length=200)
 
 
 class ApplicationTaskIn(BaseModel):
@@ -202,6 +221,7 @@ def job_feed(
     q: str = Query(default="", max_length=120),
     location: str = Query(default="", max_length=120),
     limit: int = Query(default=5, ge=1, le=10),
+    exclude_posting_id: list[str] = Query(default=[]),
     db: Session = Depends(get_db),
     principal: OpenInstinctPrincipal = Depends(_service_principal),
 ) -> dict:
@@ -213,7 +233,10 @@ def job_feed(
     only when the candidate explicitly asks to apply to that concrete role.
     """
     link = _link_for(db, principal.subject)
-    answered_postings = set(
+    if len(exclude_posting_id) > 100:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Too many excluded postings")
+    answered_postings = set(exclude_posting_id)
+    answered_postings.update(
         db.scalars(
             select(JobProposal.job_posting_id).where(
                 JobProposal.org_id == link.org_id,
@@ -260,12 +283,152 @@ def job_feed(
     return {"cards": cards}
 
 
+@router.get("/job-cards/{posting_id}")
+def job_card_png(
+    posting_id: str,
+    index: int = Query(default=1, ge=1, le=5),
+    total: int = Query(default=1, ge=1, le=5),
+    db: Session = Depends(get_db),
+    principal: OpenInstinctPrincipal = Depends(_service_principal),
+) -> Response:
+    """Render a candidate-authorized card, never a recruiter-only score view."""
+    if index > total:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Card index exceeds total")
+    link = _link_for(db, principal.subject)
+    pair = db.execute(
+        select(JobMatch, JobPosting)
+        .join(JobPosting, JobPosting.id == JobMatch.job_posting_id)
+        .where(
+            JobMatch.org_id == link.org_id,
+            JobMatch.candidate_id == link.candidate_id,
+            JobPosting.id == posting_id,
+            JobMatch.status != "dismissed",
+            JobPosting.status == "open",
+        )
+    ).first()
+    if pair is None or not passes_bar(pair[0], pair[1]).ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job card is unavailable")
+    already_answered = db.scalar(
+        select(Application.id).where(
+            Application.org_id == link.org_id,
+            Application.candidate_id == link.candidate_id,
+            Application.job_posting_id == posting_id,
+        )
+    ) or db.scalar(
+        select(JobProposal.id).where(
+            JobProposal.org_id == link.org_id,
+            JobProposal.candidate_id == link.candidate_id,
+            JobProposal.job_posting_id == posting_id,
+        )
+    )
+    if already_answered:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job card is unavailable")
+    return Response(
+        card_png(
+            db,
+            org_id=link.org_id,
+            posting=pair[1],
+            card=portal_card(jobcard(pair[1], pair[0])),
+            index=index,
+            total=total,
+        ),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
 def _identity_value(principal: OpenInstinctPrincipal, *, kind: str) -> set[str]:
     return {
         item["value"].strip().lower()
         for item in principal.identities
         if item["kind"] == kind and item["value"].strip()
     }
+
+
+def _verified_contact(principal: OpenInstinctPrincipal, kind: str) -> str:
+    value = next(iter(_identity_value(principal, kind=kind)), "")
+    return lookup_key(value) if kind == "phone" and value else value
+
+
+def _matching_candidates(db: Session, *, email: str, phone: str) -> list[Candidate]:
+    """Resolve contacts through their indexed projections, never a JSON table scan."""
+    ids: set[str] = set()
+    if email:
+        ids.update(
+            db.scalars(select(CandidateEmail.candidate_id).where(CandidateEmail.email == email)).all()
+        )
+    if phone:
+        ids.update(
+            db.scalars(select(CandidatePhone.candidate_id).where(CandidatePhone.phone == phone)).all()
+        )
+    if not ids:
+        return []
+    return list(db.scalars(select(Candidate).where(Candidate.id.in_(ids))).all())
+
+
+def _link_candidate(
+    db: Session,
+    *,
+    principal: OpenInstinctPrincipal,
+    name: str = "",
+) -> OpenInstinctIdentityLink:
+    """Resolve one verified Foray identity or create it in the configured CRM org."""
+    email = _verified_contact(principal, "email")
+    phone = _verified_contact(principal, "phone")
+    if not email and not phone:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A verified email or phone is required")
+
+    existing = db.scalar(
+        select(OpenInstinctIdentityLink).where(
+            OpenInstinctIdentityLink.external_user_id == principal.subject
+        )
+    )
+    if existing is not None:
+        candidate = db.get(Candidate, existing.candidate_id)
+        if candidate is None or candidate.org_id != existing.org_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="OpenInstinct link is stale")
+        merge_contact_details(db, candidate, name=name, email=email, phone=phone)
+        existing.verified_email = email or existing.verified_email
+        existing.verified_phone = phone or existing.verified_phone
+        db.flush()
+        return existing
+
+    matches = _matching_candidates(db, email=email, phone=phone)
+    if len(matches) > 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Identity matches multiple candidates")
+    candidate = matches[0] if matches else None
+    if candidate is None:
+        org_id = get_settings().openinstinct_default_org_id
+        if not org_id or db.get(Org, org_id) is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="OpenInstinct default organization is not configured")
+        fallback_name = (name or email or phone or "Foray candidate").strip()
+        candidate = Candidate(
+            org_id=org_id,
+            source="openinstinct",
+            source_id=principal.subject,
+            full_name=fallback_name[:200],
+            crm_tracked=True,
+        )
+        db.add(candidate)
+        db.flush()
+    merge_contact_details(db, candidate, name=name, email=email, phone=phone)
+    if db.scalar(
+        select(OpenInstinctIdentityLink).where(
+            OpenInstinctIdentityLink.org_id == candidate.org_id,
+            OpenInstinctIdentityLink.candidate_id == candidate.id,
+        )
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Candidate is already linked")
+    link = OpenInstinctIdentityLink(
+        org_id=candidate.org_id,
+        candidate_id=candidate.id,
+        external_user_id=principal.subject,
+        verified_email=email,
+        verified_phone=phone,
+    )
+    db.add(link)
+    db.flush()
+    return link
 
 
 def _link_for(db: Session, external_user_id: str) -> OpenInstinctIdentityLink:
@@ -340,45 +503,65 @@ def link_identity(
         phone and phone not in _identity_value(principal, kind="phone")
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Identity is not verified")
-    if not email and not phone:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A verified email or phone is required")
+    link = _link_candidate(db, principal=principal, name=payload.name)
+    return {"org_id": link.org_id, "candidate_id": link.candidate_id, "linked": True}
+
+
+@router.post("/conversation-events", status_code=status.HTTP_202_ACCEPTED)
+def record_conversation_event(
+    payload: ConversationEventIn,
+    db: Session = Depends(get_db),
+    principal: OpenInstinctPrincipal = Depends(_service_principal),
+) -> dict:
+    """Mirror a delivered Foray message without invoking JuiceBox's intake agent."""
+    link = _link_candidate(db, principal=principal, name=payload.display_name)
+    thread = find_by_provider_id(
+        db, provider="openinstinct", provider_thread_id=payload.conversation_id
+    )
+    if thread is None:
+        thread = open_thread(
+            db,
+            org_id=link.org_id,
+            candidate_id=link.candidate_id,
+            channel="openinstinct",
+            provider="openinstinct",
+            provider_thread_id=payload.conversation_id,
+            entry_point="openinstinct",
+            from_address=_verified_contact(principal, "phone") or _verified_contact(principal, "email"),
+            consent_messaging=True,
+            contact_name=payload.display_name,
+            contact_email=_verified_contact(principal, "email"),
+            mode="managing",
+        )
+        thread.review_needed = False
+        db.flush()
+    elif thread.org_id != link.org_id or thread.candidate_id != link.candidate_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conversation is already linked to another candidate")
 
     existing = db.scalar(
-        select(OpenInstinctIdentityLink).where(
-            OpenInstinctIdentityLink.external_user_id == payload.external_user_id
+        select(IntakeMessage).where(
+            IntakeMessage.thread_id == thread.id,
+            IntakeMessage.provider_native_id == payload.provider_native_id,
         )
     )
-    candidates = [
-        candidate
-        for candidate in db.scalars(select(Candidate)).all()
-        if (email and email in {str(value).strip().lower() for value in (candidate.emails or [])})
-        or (phone and phone in {str(value).strip().lower() for value in (candidate.phones or [])})
-    ]
-    if len(candidates) != 1:
-        detail = "No candidate matches this verified identity" if not candidates else "Identity matches multiple candidates"
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-    candidate = candidates[0]
     if existing is not None:
-        if existing.candidate_id != candidate.id:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="OpenInstinct account is already linked")
-        return {"org_id": existing.org_id, "candidate_id": existing.candidate_id, "linked": True}
-    if db.scalar(
-        select(OpenInstinctIdentityLink).where(
-            OpenInstinctIdentityLink.org_id == candidate.org_id,
-            OpenInstinctIdentityLink.candidate_id == candidate.id,
+        return {"thread_id": thread.id, "message_id": existing.id, "created": False}
+    if payload.direction == "inbound":
+        message, created = record_inbound(
+            db,
+            thread=thread,
+            body=payload.body,
+            provider_native_id=payload.provider_native_id,
+            raw={"channel": payload.channel, "source": "openinstinct"},
         )
-    ):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Candidate is already linked")
-    link = OpenInstinctIdentityLink(
-        org_id=candidate.org_id,
-        candidate_id=candidate.id,
-        external_user_id=payload.external_user_id,
-        verified_email=email,
-        verified_phone=phone,
+        return {"thread_id": thread.id, "message_id": message.id, "created": created}
+    message = record_outbound(
+        db,
+        thread=thread,
+        message=OutboundMessage(body=payload.body, verbatim=True),
+        result=DeliveryResult(status="sent", provider_native_id=payload.provider_native_id),
     )
-    db.add(link)
-    db.flush()
-    return {"org_id": link.org_id, "candidate_id": link.candidate_id, "linked": True}
+    return {"thread_id": thread.id, "message_id": message.id, "created": True}
 
 
 @router.post("/application-tasks", status_code=status.HTTP_202_ACCEPTED)

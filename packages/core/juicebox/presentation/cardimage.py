@@ -259,7 +259,7 @@ def render_card_png(
         content_bottom += 14 + 40 * len(reasons)
 
     rule_y = content_bottom + 40
-    height = rule_y + 20 + footer_font.size + PAD
+    height = rule_y + 20 + footer_font.size * 2 + PAD
 
     image = Image.new("RGB", (WIDTH, height), palette.ground)
     draw = ImageDraw.Draw(image)
@@ -298,6 +298,13 @@ def render_card_png(
     draw.text(
         (WIDTH - PAD - draw.textlength(via, font=footer_font), rule_y + 20),
         via,
+        font=footer_font,
+        fill=palette.muted,
+    )
+    apply = f'reply "apply {index}"'
+    draw.text(
+        ((WIDTH - draw.textlength(apply, font=footer_font)) / 2, rule_y + 20 + footer_font.size),
+        apply,
         font=footer_font,
         fill=palette.muted,
     )

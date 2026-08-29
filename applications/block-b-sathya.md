@@ -2,6 +2,22 @@
 
 Harvested from the resume and the SPC application. `GAP` marks what still needs input.
 
+> ## The pattern — Sathya builds instruments
+>
+> Tushar's through-line is *more iterations than the system expects.* Sathya's is different and
+> just as consistent: **when he can't see something directly, he builds the thing that measures
+> it.**
+>
+> - **Odometry** — measuring position with no external reference
+> - **The simulator** — measuring robot behaviour without a robot
+> - **The VC Twitter follower bot** — measuring what's moving in a market before it's announced
+> - **The finance tooling** — instrumenting his own workflow
+> - Even **GeoGuessr and naming every street** — locating yourself from partial signal
+>
+> **And Foray is an instrument.** The intent graph is a measuring device pointed at a market
+> nobody can currently see. That is the "why this person for this company" answer, and it doesn't
+> need to be stated — put the facts in order and a reader assembles it themselves.
+>
 > **The governing note for this whole file.** The resume is a *finance* resume. It leads with
 > investment coverage and buries the BA in Computer Science, the FIRST odometry system, and the
 > fact that production sourcing tooling was shipped inside a fund. For these five programs that

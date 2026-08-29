@@ -51,7 +51,8 @@ form, which his robotics answer leads.
 16. 🟡 **Team number and name**, so it's checkable.
 
 **The simulator — 10,000 users**
-17. 🔴 **What does it actually do?** Physics sim, path replay, auton testing?
+17. 🔴 **What does it actually do?** Physics sim, path replay, auton testing? *(Weight went up:
+    10,000 users is a **distribution** proof, and the new positioning is a distribution story.)*
 18. 🔴 **When did you build it, and over what period did it reach 10,000 users?**
 19. 🔴 **How did it spread?** FTC forums, Discord, word of mouth?
 20. 🟡 **Still live? Still maintained after you left?**
@@ -72,9 +73,11 @@ form, which his robotics answer leads.
 
 **Links and detail**
 27. 🔴 **The finance tooling portfolio link** your SPC answer refers to ("the link above").
-28. 🟡 **The VC Twitter follower bot and AI outreach decks** — what do they do, how many people
-    use them, what did they replace? This is *sourcing infrastructure shipped inside a fund*, the
-    most on-thesis technical fact you have, and the resume gives it one line.
+28. 🔴 **The VC Twitter follower bot and AI outreach decks — upgraded to blocking.** The
+    positioning is now *"every surface we run is an intent sensor."* You built a sensor that
+    watches a market for signal before it's announced, in production, at an $8B fund, in your
+    first year out of college. **That is the thesis, already shipped, by the technical founder.**
+    What does it watch, how does it decide something matters, who uses it, what did it replace?
 
 ---
 

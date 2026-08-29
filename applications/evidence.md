@@ -146,12 +146,16 @@ nine-holding ETF rebalance across KONG and FORH.
 editorial, at 19.
 Case competitions: **Dodge & Cox FA23 — 1st**; MSD Partners FA22 — 2nd; Goldman Sachs Tech
 IB SP24 — finalist; Undergraduate Investment Competition — finalist.
-**FIRST robotics captain** — two World Championships (one as captain), Inspire Award
+**FIRST robotics — coder, then lead programmer, then captain.** Built the **first four-wheel
+dead-wheel odometry system in FIRST** (four encoders fused through a Kalman filter with a
+decision algorithm), winner of the **Johns Hopkins Applied Physics Laboratory Software Innovation
+Award** at the Maryland Tech Invitational. Then built **simulation software for the team's own
+local testing and scaled it to 10,000 users across FTC teams** — the only distribution number
+either founder has, earned before college, and stronger than any prize on this page because
+adoption is chosen rather than awarded. **All repos public.** `GAP: the URLs.`
+Two World Championships (one as captain), Inspire Award
 winners in Virginia 2020 and Ohio 2022 (the program's highest team honour), multiple state
-season-scoring records. Built the **first four-wheel odometry system in FIRST** — four dead
-wheel encoders, a Kalman filter and a decision algorithm — which won the **Johns Hopkins
-Applied Physics Laboratory Software Innovation Award** at the Maryland Tech Invitational.
-Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to fewer than
+season-scoring records. Built the **first four-wheel odometry Self-funded the team through Gene Haas and Siemens Foundation grants, awarded to fewer than
 50 teams nationally.
 
 **Together — WestBridge:**

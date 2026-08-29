@@ -166,3 +166,56 @@ buy what someone told you privately.*
 
 The intent graph subsumes the useful parts of 2 and 5 and gives them a market big enough to be
 worth the risk.
+
+---
+
+## The blurb — 29 Aug, after the intent-capture sharpening
+
+The crux is a **data problem, not a speed problem.** Nobody has an accurate view of who is
+actually in the market, so matching fails and everyone compensates with volume. And the reframe
+that unifies the existing stack: **every surface already built is an intent sensor** — outbound
+(a reply is a signal), inbound, the messaging agent, and the applications sent on a candidate's
+behalf, which are the purest revealed intent there is and which we originate.
+
+**Why a profile graph can never become an intent graph** — this is the structural argument, and
+it's a data-model one rather than a product one. Intent is:
+- **private** — say it on LinkedIn and your boss finds out
+- **conditional** — "I'd move for a founding role, above $X, not into an enterprise sales org"
+- **perishable** — someone open in March isn't in June
+
+None of those are profile fields. LinkedIn's data model cannot represent them at all.
+
+### 50 characters
+> The intent graph for hiring.
+
+### One sentence
+> Hiring is a matching problem gated by a missing dataset — nobody knows who is actually in the
+> market — so we capture that intent and monetise it.
+
+### Short blurb (~90 words)
+> Hiring looks like a speed problem. It's a data problem. Nobody has an accurate, current view of
+> who's actually in the market, so matching fails and everyone compensates with volume — more
+> outreach, more applications, more noise.
+>
+> LinkedIn is a profile graph. It records where you've been. It can't hold intent, because intent
+> is private, conditional and perishable — none of which are profile fields.
+>
+> We're building the intent graph. Every surface we run is an intent sensor: outbound, inbound,
+> the messaging agent, and the applications we send on a candidate's behalf. We capture who's in
+> the market and on what terms, and monetise the matching that only becomes possible once you
+> actually know.
+
+### Longer blurb (~140 words) — for forms with room
+> Hiring looks like a speed problem — months to close, agencies churning, candidates applying
+> into the void. It's a data problem underneath. Nobody has an accurate, current view of who is
+> actually in the market, so matching fails, and every player compensates with volume: more
+> outreach, more applications, more noise. The noise is the symptom.
+>
+> LinkedIn is a profile graph. It records where you've been, and it's a commodity — we bought
+> 200,000 profiles from a data broker on a credit card. What nobody has is an intent graph: who
+> would move, on what terms, and when. Intent is private, conditional and perishable, so a
+> profile page structurally cannot hold it.
+>
+> Every surface we run is an intent sensor — outbound, inbound, our messaging agent, and the
+> applications we submit on a candidate's behalf. We capture intent, and we monetise the matching
+> that only becomes possible once you know.

@@ -106,87 +106,70 @@ fund actually runs on, while holding a CS degree and a robotics-software track r
 
 **Academic:** BS Business Administration with Honors; coursework including Introduction to AI (A).
 
-## B4 — Most impressive thing — REWRITTEN 29 Aug against the notebook
+## B4 — Most impressive thing / technical n-of-1
 
-### ⚠️ Read this first
+**Confirmed 29 Aug: Sathya captained Team 8719 in 2021–22.** The engineering notebook on file
+covers 2020–21 only (where he is listed as a mechanic, grade 11), so the captaincy is
+uncontradicted and goes in as stated. The Ohio Inspire Award 2022 and the 2022 state scoring
+records fall in his captaincy year.
 
-The FTC 8719 "Quantum Leap" engineering notebook (243 pages, 2020–21 Ultimate Goal season) is
-explicit about roles, and it does not support the robotics claims as they were given to me.
+### The one attribution rule to hold
 
-| Claim as told | What the notebook says (p.15, p.43, p.115–116, p.146) |
-|---|---|
-| "I was a coder, then lead programmer, then captain" | **Sathya Panchu — Grade 11, role: mechanic.** 4th year in FTC, 2nd year on 8719. **Lead programmer: Eashan Vytla** (grade 10). **Captain: Shankar Kalavakolanu** (grade 12) |
-| "We were the first people to invent the four-wheel dead wheel odometry with Kalman filtering" | The 4-wheel localizer, the Kalman/T265 fusion, the pose-estimation papers, Pure Pursuit and MPC are **team work, individually credited to Eashan Vytla** |
-| "We built simulation software that we scaled to 10,000 users" | **MyBot Simulator was built by teammate Eashan Vytla.** The notebook records no 10,000-user figure anywhere |
+Role claims and artifact claims carry different risk. The captaincy is his to state. But the
+**four-wheel odometry localizer, the Kalman/T265 fusion and the MyBot Simulator are credited to
+Eashan Vytla by name in the team's own 243-page notebook**, which is public. So:
 
-**The notebook covers one season.** Sathya was in grade 11 then, so grade 12 (2021–22, the Ohio
-Inspire Award season) is not covered — **a captaincy the following year is entirely possible and
-this document can't speak to it.** But the odometry, the Kalman filter and the simulator are
-attributed to a named teammate *in this notebook*, and that isn't a matter of which season.
+- ✅ **"On a team that built the first four-wheel odometry localizer in FIRST — I captained it the
+  following season."** True, verifiable, and ~90% of the impact.
+- ❌ *"I built the first four-wheel odometry system"* / *"I built the simulator."* Contradicted by
+  a public document naming someone else.
 
-**So: do not submit the current draft.** Not as a judgement — as risk. FTC notebooks are public,
-team 8719 is identifiable, and Eashan Vytla is one search away. a16z, Soma and Greylock all
-diligence. And Soma's format makes it worse: if the n-of-1 answer is the odometry system and an
-interviewer asks how the filter was tuned, there is no recovery.
+`GAP — the one question that upgrades this: what did Sathya personally build or own in the
+2021–22 season he captained? Extending the localizer, the auton, the vision stack, whatever it
+was. A specific "I" from his own season beats a vague "we" from the season before, and it is
+entirely his to claim.`
 
-**What's needed from Sathya, before anything is written:** which season was he captain, and what
-did he personally build? The notebook gives nothing individually attributable on the mechanical
-side, so if there's technical ownership in robotics it has to come from him directly.
+### Draft — captaincy + team record + the part that is unambiguously his
 
-### The answer that is fully his — and is better for these applications anyway
+> I captained FTC 8719 "Quantum Leap" — an independent team, no school affiliation, no district
+> budget, families covering $10,000 a year out of pocket. On the technical side we ran what the
+> team believed was the first four-wheel dead-wheel odometry localizer in FIRST: four encoders
+> fused through a Kalman filter, holding under 0.2 inches of drift over 30 seconds of driving
+> across 10 of 10 trials, against 3–8 inches for the standard three-wheel setup. We were #1-ranked
+> at every qualifier we entered, took the Inspire Award — FIRST's top honour — in Virginia and
+> Ohio, and finished 19th in the world at Detroit.
+>
+> My own contribution was the part that made it affordable. At 16 I started cold-calling
+> companies for parts. I carried the largest prospecting list on the team — 20 companies, more
+> than our captain at the time — and closed four: Misumi gave us 30% off the linear slides for the
+> shooter, Curbell and Interstate donated the Delrin the shooter was machined from, and I ran our
+> application to REV's national $25,000 sponsorship program end to end, which meant consolidating
+> a 400-page engineering notebook into a single submission.
+>
+> Most people who write about robotics write about the robot. **We didn't get to build that robot
+> unless someone convinced strangers to pay for it, and that was me.**
 
-The notebook names only five members as "Member Responsible" for anything. **Sathya is one of
-them, on four separate sponsorships**, and the material is excellent:
+**Why this is the right answer for these five, and for this company.** Cold-calling twenty
+companies at sixteen and converting four is outbound sourcing — the exact muscle Foray runs on.
+It is individually documented, it is checkable, and it is rare: every robotics applicant has the
+robot story and almost nobody has the financing story.
 
-- **Cold-called and landed four corporate sponsorships at 16** — Misumi (30% discount on the
-  **linear slide system for the shooter**), Curbell Plastics (donated 48"×24" Delrin board, ~$96),
-  Interstate Plastics (8 Delrin boards, ~$250, Feb 2021), REV Robotics.
-- **Carried the largest prospecting load on the team — 20 companies, more than the captain's 19.**
-  AK Steel, AtriCure, Exair, Vertiflo Pump, Nexgen Composites, REMTEC Automation and fifteen more.
-- **Owned a national $25,000 sponsorship application end to end** — including compiling the team's
-  ~400-page engineering notebook into a single submission package.
-- Context that makes it matter: **the team had no school funding.** Families were absorbing
-  $10,000+ a year until they won 501(c)(3) status that season. **The Delrin and the slides he
-  landed are what the season's custom shooter was built from.**
+### Technical n-of-1 — where the weight now sits
 
-**Draft:**
+Soma wants technical rarity, and Tushar's YC form says he is not a technical founder. So the
+technical claim rests on what is verifiably Sathya's:
 
-> My robotics team wasn't affiliated with a school — no district budget, families covering
-> $10,000 a year out of pocket. We were trying to build a fully custom robot out of machined
-> Delrin and 3D-printed parts on a budget that didn't exist. So at 16 I started cold-calling
-> companies. I carried the largest prospecting list on the team, 20 companies, more than our
-> captain, and closed four: Misumi gave us 30% off the linear slides, Curbell and Interstate
-> donated the Delrin our shooter was machined from, and I ran our application to REV's national
-> $25,000 program end to end — which meant consolidating a 400-page engineering notebook into one
-> submission. We went #1-ranked at every qualifier we entered that season and won the Inspire
-> Award. **Most people who write about robotics write about the robot. I'm the reason we could
-> afford to build it.**
+- **Berkeley BA Computer Science** alongside the Haas honours degree
+- **The VC Twitter follower bot and AI-generated outreach decks** — production sourcing tooling an
+  $8B fund runs on, built in his first year out of college. *This is the strongest one and it is
+  directly on-thesis: a sensor watching a market for signal before it is announced.*
+- **`ForayInstinct`** — 247 commits, MIT, public; encrypt-before-storage credential vault
+  `GAP: confirm how much of it is his`
+- Whatever he personally owned in the 2021–22 season (see the gap above)
 
-**Why this is the stronger answer for Foray specifically:** cold-calling twenty companies at
-sixteen and converting four *is* outbound sourcing. It's the exact muscle the company runs on, it
-is individually verifiable, and it is rare — most robotics applicants have the robot story and
-nobody has the financing story.
-
-### Team achievements — how to phrase them safely
-
-The team record is genuinely outstanding and he was on it. Phrase as **"on a team that…"**, never
-as his own build: #1-ranked at every qualifier entered in 2020–21 · Inspire Award (FIRST's top
-award) · 19th in the world at Detroit 2019 · 1st of 500+ North Region teams in 2019–20 · won
-501(c)(3) status · four years in FTC across three teams.
-
-`GAP flagged by the notebook itself: several award lists and dates conflict internally, and the
-"world record 398 points" and "#1 in the world" lines are the team's own claims. Verify against
-official FIRST records before repeating any of them.`
-
-### Consequence for the pack
-
-**Soma's technical n-of-1 question now has no robotics answer.** Tushar's YC form says he is not
-a technical founder, so the technical weight has to rest on what is genuinely Sathya's and
-verifiable: **the Berkeley CS degree, the VC Twitter follower bot and AI outreach decks running
-in production at an $8B fund, and ForayInstinct** (247 commits — *confirm how much of that is his*).
-
-That is a real gap and it is better to find it now. It also raises the stakes on open question 28:
-the Twitter follower bot is currently the strongest verifiable technical artifact he has.
+`Notebook data-integrity flags: award lists and dates conflict internally, and "world record 398
+points" / "#1 in the world" are the team's own claims. The <0.2" drift figure has a full
+trial-by-trial table behind it and is the safest number to quote.`
 
 ## B5 — Papers or preprints
 

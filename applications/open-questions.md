@@ -37,26 +37,28 @@ form, which his robotics answer leads.
 ## Sathya — 19
 
 **Robotics: the repos and the "first"**
-10. 🔴 **Repo URLs** — the odometry stack *and* the simulator. Highest-value links in either
+10. 🟡 **Repo URLs** — the odometry stack *and* the simulator. Highest-value links in either
     application, and one paste away.
-11. 🔴 **What were other teams doing for localisation?** Two dead wheels, IMU-only, motor
+11. 🟡 **What were other teams doing for localisation?** Two dead wheels, IMU-only, motor
     encoders? Name the standard you beat.
-12. 🔴 **Why hadn't anyone done four-wheel before?** Slip, sensor fusion, compute on the control
+12. 🟡 **Why hadn't anyone done four-wheel before?** Slip, sensor fusion, compute on the control
     hub? One clause of real obstacle turns "first" from a claim into proof.
-13. 🔴 **Did you personally write the Kalman filter?** "I was a coder on the team" isn't specific
-    enough for the technical n-of-1 answer. Which parts of that stack were yours?
-14. 🟡 **How much better was it — a number.** Positional error before/after, auton consistency,
-    anything quantitative.
+13. 🔴 **What did you personally build or own in the 2021–22 season you captained?** The notebook
+    covers 2020–21 only, so that year is entirely yours to claim — extending the localizer, the
+    auton, vision, whatever it was. **A specific "I" from your own season beats a vague "we" from
+    the season before**, and it's the cleanest way to make the technical claim unambiguously yours.
+14. ✅ **Answered by the notebook:** <0.2" drift over 30s, 10/10 trials, vs 3–8" for the standard
+    3-wheel setup — with a full trial table behind it. Safest number in the whole robotics section.
 15. 🟡 **Did other teams adopt it afterwards?** If it propagated, that's the proof of "first."
-16. 🟡 **Team number and name**, so it's checkable.
+16. ✅ **FTC Team 8719 "Quantum Leap", Mason OH.**
 
 **The simulator — 10,000 users**
-17. 🔴 **What does it actually do?** Physics sim, path replay, auton testing? *(Weight went up:
-    10,000 users is a **distribution** proof, and the new positioning is a distribution story.)*
-18. 🔴 **When did you build it, and over what period did it reach 10,000 users?**
-19. 🔴 **How did it spread?** FTC forums, Discord, word of mouth?
-20. 🟡 **Still live? Still maintained after you left?**
-21. 🟡 **Who else worked on it, and what was specifically yours?**
+17. ⚠️ **Simulator — do not claim.** The notebook credits MyBot Simulator to Eashan Vytla and
+    records no 10,000-user figure. Questions 18–21 are withdrawn.
+~~18. 🔴 withdrawn~~ , and over what period did it reach 10,000 users?**
+~~19. 🔴 withdrawn~~  FTC forums, Discord, word of mouth?
+~~20. 🟡 withdrawn~~  Still maintained after you left?**
+~~21. 🟡 withdrawn~~ , and what was specifically yours?**
 
 **Personal**
 22. 🔴 **When did you first build software because you wanted to?** Age, specific first thing.

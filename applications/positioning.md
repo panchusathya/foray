@@ -219,3 +219,117 @@ None of those are profile fields. LinkedIn's data model cannot represent them at
 > Every surface we run is an intent sensor — outbound, inbound, our messaging agent, and the
 > applications we submit on a candidate's behalf. We capture intent, and we monetise the matching
 > that only becomes possible once you know.
+
+---
+
+## Taking it to the next level — the infra layer
+
+The blurb is right and it stops one level too early. It describes a *dataset*. Infrastructure is
+a dataset with an **interface**, that other systems **call**, and that they eventually **depend
+on**. Three levels:
+
+### Level 1 — the graph *(where you are)*
+Capture intent, match better than anyone can with profiles. A product.
+
+### Level 2 — the intent layer *(the infra move)*
+Three components, and you have the beginnings of all three:
+
+**a) Capture — the sensors.** Voice, text, outbound, inbound, and the applications you submit on
+someone's behalf. Already built.
+
+**b) Represent — the intent object, and this is the part nobody has.** There is no standard
+representation of career intent. LinkedIn's "open to work" is a **boolean** — the crudest
+possible encoding of something that is actually conditional, private, timestamped and decaying:
+
+> comp floor · stage · timing window · no-go list · what would have to be true · confidence ·
+> **half-life**
+
+**Freshness is the technical differentiator worth naming.** Intent is perishable — someone open
+in March isn't in June — and nobody models decay. An intent record with a confidence score and a
+half-life is real systems work, it's defensible, and it's the kind of primitive that sounds like
+infrastructure because it is. *Segment didn't win by owning data; it won by owning the event
+schema everyone standardised on.*
+
+**c) Serve — and split this into two products, because it solves the density problem.**
+
+| | Aggregate | Individual |
+|---|---|---|
+| What | *"At $200K for a founding engineer, 12 people who'd fit are open in the next six months. You're 15% below the bar."* | A consented introduction to a specific person |
+| Names | None | Yes, with consent |
+| Needs marketplace density | **No** | Yes |
+| Sellable | **Today** | Later |
+
+**The aggregate layer is the wedge**, and it directly answers the bear case: intent data is worth
+nothing at 1,000 briefs *for matching* — but it's worth real money at 1,000 briefs as **market
+truth**. A founder deciding a comp band will pay for that before any marketplace exists.
+
+### Level 3 — the framing that makes the market interesting
+
+**The labor market is the largest market on earth with no price discovery and no availability
+discovery.** Equities have a tape. Housing has comps. Freight has spot rates. Labour has
+Glassdoor and vibes — self-reported, stale, and silent on the only question that matters: *who
+would actually move, and for what.*
+
+That's not a recruiting pitch. It's a market-structure pitch, and it's why the intent graph is
+worth building rather than merely useful.
+
+> **We're building the tape for the labour market.**
+
+---
+
+## Two moves that make it infrastructure rather than a database
+
+**1. "Apply with Foray" — the write path, and the best growth mechanic available.**
+One button on any careers page: click, and a verified human arrives with structured intent
+attached instead of a parsed PDF. For the company it kills the form and the slop. For the
+candidate it's one click instead of forty fields. For you it's **an acquisition surface on
+someone else's website** — which is how Stripe and Plaid actually grew. It turns every employer
+you serve into a sensor, and it's the inverse of scraping: they pull you in.
+
+**2. The agent-facing API — and this is your "why now."**
+Hiring is moving to agents on both sides: candidates' agents applying, companies' agents
+screening. **An agent cannot ask ten thousand people whether they're open. It has to call
+something.** When both sides are generated, verified intent is the only signal left — the slop
+problem *creates* the need for an authoritative source.
+
+So: a read API (and an MCP server) over consented, decayed intent, that hiring agents call the
+way they call a search index today. *You already think this way — the Strata pitch made exactly
+this move with market data.*
+
+---
+
+## The upgraded blurb
+
+> Hiring looks like a speed problem. It's a data problem. Nobody has an accurate, current view of
+> who's actually in the market, so matching fails and everyone compensates with volume.
+>
+> LinkedIn is a profile graph. It records where you've been. It can't hold intent — intent is
+> private, conditional and perishable, and none of those are profile fields. "Open to work" is a
+> boolean.
+>
+> We're building the intent layer. Every surface we run is a sensor — outbound, inbound, the
+> voice and messaging agents, and the applications we submit on a candidate's behalf. We capture
+> who's in the market and on what terms, hold it as a decaying, consented record, and serve it
+> two ways: aggregate market truth that any employer can query today, and consented matches once
+> there's density. As hiring moves to agents on both sides, that's the thing they have to call.
+>
+> The labour market is the largest market on earth with no price or availability discovery. We're
+> building the tape.
+
+---
+
+## Honesty guardrails on all of the above
+
+Everything in Level 2 and 3 is **roadmap, not shipped**, and the pack's discipline holds: the
+thesis can be ambitious as long as the traction section is exact. Say it as *"here's what we're
+building toward and here's what runs today"* and it reads as vision. Blur the two and it reads as
+the SPC application again.
+
+What is genuinely real today: the sensors (voice, text, outbound, applications), the intake
+schema, the reply classification, the funnel state machine, the 200K index and the eval harness.
+What is not: the intent object as a schema, decay scoring, the aggregate product, the API, and
+"Apply with Foray."
+
+**The falsifiable near-term milestone**, worth putting in A7: *N standing briefs captured, and a
+brief converts to a match at a rate a resume never does.* That is the whole thesis in one
+measurable claim, and twelve weeks is enough to prove or kill it.

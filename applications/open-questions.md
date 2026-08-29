@@ -34,52 +34,46 @@ form, which his robotics answer leads.
 
 ---
 
-## Sathya — 19
+## Sathya — 12 (7 blocking, 5 strengthening)
 
-**Robotics: the repos and the "first"**
-10. 🟡 **Repo URLs** — the odometry stack *and* the simulator. Highest-value links in either
-    application, and one paste away.
-11. 🟡 **What were other teams doing for localisation?** Two dead wheels, IMU-only, motor
-    encoders? Name the standard you beat.
-12. 🟡 **Why hadn't anyone done four-wheel before?** Slip, sensor fusion, compute on the control
-    hub? One clause of real obstacle turns "first" from a claim into proof.
-13. 🔴 **What did you personally build or own in the 2021–22 season you captained?** The notebook
-    covers 2020–21 only, so that year is entirely yours to claim — extending the localizer, the
-    auton, vision, whatever it was. **A specific "I" from your own season beats a vague "we" from
-    the season before**, and it's the cleanest way to make the technical claim unambiguously yours.
-14. ✅ **Answered by the notebook:** <0.2" drift over 30s, 10/10 trials, vs 3–8" for the standard
-    3-wheel setup — with a full trial table behind it. Safest number in the whole robotics section.
-15. 🟡 **Did other teams adopt it afterwards?** If it propagated, that's the proof of "first."
-16. ✅ **FTC Team 8719 "Quantum Leap", Mason OH.**
+**Already settled — don't re-answer:** team is FTC 8719 "Quantum Leap", Mason OH · the drift
+figure is <0.2" over 30s across 10/10 trials vs 3–8" for the standard 3-wheel setup · captaincy
+was 2021–22 · the simulator is withdrawn (credited to Eashan Vytla in the notebook) · the
+sponsorship story is fully written from the notebook.
 
-**The simulator — 10,000 users**
-17. ⚠️ **Simulator — do not claim.** The notebook credits MyBot Simulator to Eashan Vytla and
-    records no 10,000-user figure. Questions 18–21 are withdrawn.
-~~18. 🔴 withdrawn~~ , and over what period did it reach 10,000 users?**
-~~19. 🔴 withdrawn~~  FTC forums, Discord, word of mouth?
-~~20. 🟡 withdrawn~~  Still maintained after you left?**
-~~21. 🟡 withdrawn~~ , and what was specifically yours?**
+**Robotics**
+1. 🔴 **What did you personally build or own in the 2021–22 season you captained?** The notebook
+   covers 2020–21 only, so that year is entirely yours — extending the localizer, the auton,
+   vision, whatever it was. **A specific "I" from your own season beats a vague "we" from the year
+   before**, and it's the clean way to make the technical claim unambiguously yours.
+2. 🟡 **Repo URLs** — whatever is public and yours.
+3. 🟡 **What were other teams doing for localisation?** Two dead wheels, IMU-only, motor encoders?
+   Names the standard the team beat.
+4. 🟡 **Why hadn't anyone done four-wheel before?** Slip, sensor fusion, compute on the control
+   hub? One clause of real obstacle.
+5. 🟡 **Did other teams adopt it afterwards?** If it propagated, that's the proof of "first."
 
-**Personal**
-22. 🔴 **When did you first build software because you wanted to?** Age, specific first thing.
-    Did software come first, or did you get there through the hardware?
-23. 🔴 **What were you doing growing up that wasn't standard?** Running and self-funding a
-    championship robotics program on national grants in high school is already an answer — what
-    else?
-24. 🔴 **What drives you?** Raw version. Your SPC line — "the technical growth and the bonds from
-    those years are still my most fulfilling personal experience" — is a good seed. What's under it?
-25. 🔴 **A real risk or failure.** Inheriting a World-Championship team and having to beat it?
-    Chasing national grants as a high schooler? Leaving the hedge-fund track? What actually went
-    wrong?
-26. 🔴 **Any papers or preprints?** Probably none — just confirm so a16z's field can be answered.
+**Personal — all five blocking, none answerable from any document**
+6. 🔴 **When did you first build software because you wanted to?** Age, and the specific first
+   thing. Did software come first, or did you get there through the hardware?
+7. 🔴 **What were you doing growing up that wasn't standard?** Running and self-funding a
+   championship robotics program on national grants in high school is already an answer — what else?
+8. 🔴 **What drives you?** Raw version, any length. Your SPC line — *"the technical growth and the
+   bonds from those years are still my most fulfilling personal experience"* — is a good seed.
+   What's underneath it?
+9. 🔴 **A real risk or failure.** Taking the captaincy of a team that had already won? Chasing
+   national grants as a high schooler? Leaving the hedge-fund track? What actually went wrong?
+10. 🔴 **Any papers or preprints?** Probably none — just confirm so a16z's field can be answered.
 
 **Links and detail**
-27. 🔴 **The finance tooling portfolio link** your SPC answer refers to ("the link above").
-28. 🔴 **The VC Twitter follower bot and AI outreach decks — upgraded to blocking.** The
-    positioning is now *"every surface we run is an intent sensor."* You built a sensor that
-    watches a market for signal before it's announced, in production, at an $8B fund, in your
-    first year out of college. **That is the thesis, already shipped, by the technical founder.**
-    What does it watch, how does it decide something matters, who uses it, what did it replace?
+11. 🔴 **The finance tooling portfolio link** your SPC answer refers to ("the link above").
+12. 🔴 **The VC Twitter follower bot and AI-generated outreach decks — now the most important
+    question on your list.** With the simulator gone and the localizer team-attributed, **this is
+    the strongest verifiable technical artifact you have** — and it's directly on-thesis: a sensor
+    watching a market for signal before it's announced, in production at an $8B fund, built in
+    your first year out of college. What does it watch? How does it decide something matters? Who
+    uses it? What did it replace?
+    *(Also: how much of `ForayInstinct`'s 247 commits are yours?)*
 
 ---
 

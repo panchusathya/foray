@@ -360,6 +360,31 @@ class TestThreadLookup:
             is None
         )
 
+    def test_openinstinct_threads_do_not_steal_notify(self, session, account, channel, thread):
+        candidate_id = thread.candidate_id
+        foray = open_thread(
+            session,
+            org_id=account["org_id"],
+            candidate_id=candidate_id,
+            channel="openinstinct",
+            provider="openinstinct",
+            provider_thread_id="linq:foray-1",
+            entry_point="openinstinct",
+            from_address="ada-notify@example.com",
+            consent_messaging=True,
+            mode=MODE_MANAGING,
+        )
+        record_inbound(
+            session, thread=foray, body="find me roles", provider_native_id="foray-1"
+        )
+        session.flush()
+        assert (
+            manager_thread_for(
+                session, org_id=account["org_id"], candidate_id=candidate_id
+            ).id
+            == thread.id
+        )
+
 
 class TestConfirmationScreenshot:
     """The receipt PNG rides on the existing application.sent text."""

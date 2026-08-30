@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..jobs import KIND_JOBS_DISCOVER_ONE, OPEN_STATUSES, Job, enqueue
 from ..models import Candidate, CandidatePreference, JobPosting, utcnow
@@ -63,6 +64,30 @@ def queries_for(preference: CandidatePreference) -> list[str]:
     return queries[:MAX_QUERIES]
 
 
+def queries_for_request(
+    preference: CandidatePreference | None = None,
+    *,
+    query: str = "",
+    location: str = "",
+) -> list[str]:
+    """Preference queries plus an explicit ask from Foray Instinct or chat.
+
+    A typed "rust jobs in NYC" is the search they asked for. The stored spec
+    is what we already knew. Both go to Exa; neither is invented here.
+    """
+    queries = queries_for(preference) if preference is not None else []
+    focus = query.strip()
+    if not focus:
+        return queries
+    extra = f"{focus} jobs"
+    where = location.strip()
+    if where:
+        extra = f"{extra} in {where}"
+    if extra not in queries:
+        return [extra, *queries][:MAX_QUERIES]
+    return queries[:MAX_QUERIES]
+
+
 def enqueue_discovery_for_candidate(
     db: Session, *, candidate: Candidate, preference: CandidatePreference
 ) -> Job | None:
@@ -80,7 +105,13 @@ def enqueue_discovery_for_candidate(
 
 
 def enqueue_discovery_on_request(
-    db: Session, *, candidate: Candidate, preference: CandidatePreference, now=None
+    db: Session,
+    *,
+    candidate: Candidate,
+    preference: CandidatePreference | None = None,
+    now=None,
+    query: str = "",
+    location: str = "",
 ) -> Job | None:
     """Go and look now, because the candidate just asked us to.
 
@@ -94,14 +125,20 @@ def enqueue_discovery_on_request(
     Keyed per candidate per day instead. Asking twice in an afternoon costs
     nothing, and the cap is what keeps a bored candidate from spending the
     Exa budget one text at a time.
+
+    ``query`` / ``location`` are the words Foray Instinct (or chat) just
+    handed us. They ride on the job payload so Exa searches what was asked,
+    not only what intake stored last week.
     """
-    if not queries_for(preference):
+    queries = queries_for_request(preference, query=query, location=location)
+    if not queries:
         return None
 
     # A search already waiting to run is the search they just asked for. The
     # automatic enqueue keys on `preference.updated_at` and this one keys on
     # the day, so the same turn can produce both -- and both would buy the same
-    # queries twice. Reuse whichever is already pending.
+    # queries twice. Reuse whichever is already pending, but fold in any new
+    # explicit query so "rust jobs" is not swallowed by a preference-only wait.
     pending = db.scalar(
         select(Job).where(
             Job.org_id == candidate.org_id,
@@ -110,6 +147,14 @@ def enqueue_discovery_on_request(
         )
     )
     if pending is not None and (pending.payload or {}).get("candidate_id") == candidate.id:
+        existing = [
+            str(item).strip()
+            for item in (pending.payload or {}).get("queries") or []
+            if str(item).strip()
+        ]
+        merged = list(dict.fromkeys([*existing, *queries]))
+        pending.payload = {**(pending.payload or {}), "queries": merged}
+        flag_modified(pending, "payload")
         return pending
 
     day = (now or utcnow()).strftime("%Y%m%d")
@@ -118,7 +163,11 @@ def enqueue_discovery_on_request(
         org_id=candidate.org_id,
         kind=KIND_JOBS_DISCOVER_ONE,
         idempotency_key=f"{KIND_JOBS_DISCOVER_ONE}:req:{candidate.id}:{day}",
-        payload={"org_id": candidate.org_id, "candidate_id": candidate.id},
+        payload={
+            "org_id": candidate.org_id,
+            "candidate_id": candidate.id,
+            "queries": queries,
+        },
     )
 
 
@@ -137,10 +186,11 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
             CandidatePreference.candidate_id == candidate_id,
         )
     )
-    if preference is None:
-        return {"skipped": "no preference"}
-
-    queries = queries_for(preference)
+    queries = [
+        str(item).strip()
+        for item in (job.payload.get("queries") or [])
+        if str(item).strip()
+    ] or (queries_for(preference) if preference is not None else [])
     if not queries:
         return {"skipped": "not enough of a spec to search on"}
 
@@ -180,8 +230,10 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
         enqueue_parse(db, posting)
 
     # Rescore last: the matches this candidate cares about are against the
-    # postings we just added.
-    enqueue_match_for_candidate(db, candidate, preference=preference, now=now)
+    # postings we just added. A Foray ask can search before intake has a
+    # preference row; ingest still runs, matching waits for a spec.
+    if preference is not None:
+        enqueue_match_for_candidate(db, candidate, preference=preference, now=now)
     return {
         "queries": ran,
         "results": len(results),

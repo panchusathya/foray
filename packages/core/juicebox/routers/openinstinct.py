@@ -33,6 +33,7 @@ from ..models import (
     CandidateEmail,
     CandidateDocument,
     CandidatePhone,
+    CandidatePreference,
     JobMatch,
     JobPosting,
     JobProposal,
@@ -225,12 +226,13 @@ def job_feed(
     db: Session = Depends(get_db),
     principal: OpenInstinctPrincipal = Depends(_service_principal),
 ) -> dict:
-    """Return the linked candidate's current, actionable JuiceBox matches.
+    """Return the linked candidate's current matches, or start looking.
 
-    The bridge projects the same candidate-safe cards as the portal feed: no
-    recruiter score, no cross-org rows, and no roles the candidate has already
-    dismissed or started pursuing.  OpenInstinct uses the returned posting id
-    only when the candidate explicitly asks to apply to that concrete role.
+    Same book the messaging bot reads: bar-passing, still-open, not already
+    answered.  An empty book is not a shrug -- Foray Instinct asked us to
+    find roles, so we enqueue the same Exa discovery ``present_matches``
+    uses.  OpenInstinct then applies by driving the card's URL; it does not
+    start a GoForay application task.
     """
     link = _link_for(db, principal.subject)
     if len(exclude_posting_id) > 100:
@@ -280,7 +282,29 @@ def job_feed(
         cards.append(portal_card(jobcard(posting, match)))
         if len(cards) >= limit:
             break
-    return {"cards": cards}
+    searching = False
+    if not cards:
+        from ..jobmatch.discover_candidate import enqueue_discovery_on_request
+
+        preference = db.scalar(
+            select(CandidatePreference).where(
+                CandidatePreference.org_id == link.org_id,
+                CandidatePreference.candidate_id == link.candidate_id,
+            )
+        )
+        candidate = db.get(Candidate, link.candidate_id)
+        if candidate is not None:
+            searching = (
+                enqueue_discovery_on_request(
+                    db,
+                    candidate=candidate,
+                    preference=preference,
+                    query=q,
+                    location=location,
+                )
+                is not None
+            )
+    return {"cards": cards, "searching": searching}
 
 
 @router.get("/job-cards/{posting_id}")

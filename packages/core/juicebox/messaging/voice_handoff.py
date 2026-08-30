@@ -1,7 +1,7 @@
 """The live voice-call handoff: verify the number before sending job cards.
 
 After a candidate hears a preview and explicitly asks for details by text,
-``start_text_verification`` sends one canned Go4A message while they are still
+``start_text_verification`` sends one canned Foray message while they are still
 on the call. It is deliberately the only outbound-first caller of
 ``linq.start_chat``. The tool event and recorded call are the consent evidence;
 it must never become a generic cold-outreach seam.
@@ -60,9 +60,9 @@ FRESHNESS_PATIENCE = timedelta(minutes=30)
 MODE_VOICE_VERIFY = "voice_verify"
 
 VERIFICATION_GUIDANCE = (
-    "The verification text was sent. Ask them to reply with 'hey' or 'hello' "
-    "when it arrives, then thank them and end the call. Do not read or send "
-    "the role details until they reply by text."
+    "The verification text was sent. Ask them to reply YES when it arrives, "
+    "then thank them and end the call. Do not read or send the role details "
+    "until they reply by text."
 )
 
 

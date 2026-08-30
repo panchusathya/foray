@@ -197,8 +197,20 @@ class Settings:
     # is a dead line. The endpoint degrades to heuristics on timeout, so failing
     # fast costs one slightly worse next question and saves the call. Anything
     # a caller waits on in real time should use this, not the one above.
+    # The ceiling on how long a caller sits in silence while `check_coverage`
+    # reads the transcript. Retell speaks one filler sentence and then waits, so
+    # this budget minus the length of that sentence is the dead air -- at 3.5s
+    # a caller heard "let's move quick then", then nothing, and interrupted to
+    # ask if anyone was there.
+    #
+    # Dropped to 2.5 rather than lower because the fallback is not free: a
+    # timeout degrades the gate to regexes, and an under-read transcript asks a
+    # question already answered. That is the right direction to fail in -- a
+    # repeated question is a worse call, a wrongly-closed gate is no intake at
+    # all -- but it is still a cost, so this is the shortest budget that leaves
+    # the fast model room to answer rather than the shortest one imaginable.
     llm_voice_timeout_seconds: float = field(
-        default_factory=lambda: _env_float("LLM_VOICE_TIMEOUT_SECONDS", 3.5)
+        default_factory=lambda: _env_float("LLM_VOICE_TIMEOUT_SECONDS", 2.5)
     )
     llm_retry_initial_delay: float = field(
         default_factory=lambda: _env_float("LLM_RETRY_INITIAL_DELAY", 0.5)

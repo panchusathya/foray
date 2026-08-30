@@ -17,6 +17,8 @@ from sqlalchemy import select
 from juicebox.intake.contact import scan_transcript
 from juicebox.intake.schema import CORE_KEYS, GATE_PRIORITY, coverage
 from juicebox.intake.service import (
+    apply_budget,
+    elapsed_since_budget,
     UNVERIFIED_NUMBER_REASON,
     drop_reason,
     elapsed_seconds,
@@ -27,7 +29,7 @@ from juicebox.messaging.channels import LINQ
 from juicebox.messaging.threads import open_thread
 from juicebox.messaging.voice_handoff import MODE_VOICE_VERIFY, confirm_text_verification
 from juicebox.models import Candidate, CandidatePhone, IntakeCall, utcnow
-from juicebox.repository import sync_candidate_emails
+from juicebox.repository import sync_candidate_emails, sync_candidate_phones
 
 OUR_NUMBER = "+16283865454"
 CALLER = "+12134317465"
@@ -199,6 +201,66 @@ class TestElapsedIsOnlyTrustedWhenPlausible:
     def test_a_live_call_is_measured(self):
         live = IntakeCall(started_at=utcnow() - timedelta(seconds=45))
         assert 40 <= elapsed_seconds(live) <= 60
+
+
+class TestTheBudgetClockStartsWhenTheBudgetIsStated:
+    """The bug that ended a call without asking anything.
+
+    A caller said "just a minute" about fifty seconds in -- after the greeting,
+    the recording question, the role question and spelling out an email. The
+    gate charged all fifty against the sixty they had just offered, found ten
+    seconds left, and ten seconds buys zero exchanges. So the gate shrank to its
+    single highest-priority question, that question was already answered, and
+    the agent thanked them and wrapped up without asking a thing.
+
+    A budget is a promise about the future. Everything before it was our time.
+    """
+
+    def test_the_anchor_is_stamped_with_the_budget(self):
+        call = IntakeCall(started_at=utcnow() - timedelta(seconds=50))
+        assert call.budget_started_at is None
+        apply_budget(call, 1)
+        assert call.budget_started_at is not None
+
+    def test_no_budget_stamps_no_anchor(self):
+        call = IntakeCall(started_at=utcnow() - timedelta(seconds=50))
+        apply_budget(call, None)
+        assert call.budget_started_at is None
+
+    def test_the_anchor_latches_like_the_budget_does(self):
+        """A second reading must not restart the clock they are spending."""
+        call = IntakeCall(started_at=utcnow())
+        apply_budget(call, 1)
+        first = call.budget_started_at
+        apply_budget(call, 5)
+        assert call.budget_started_at == first
+        assert call.minutes_available == 1
+
+    def test_time_before_the_budget_is_not_charged_against_it(self):
+        """The regression itself, in the arithmetic that produced it."""
+        call = IntakeCall(started_at=utcnow() - timedelta(seconds=50))
+        apply_budget(call, 1)
+        assert elapsed_since_budget(call) < 5
+        # The whole minute is still theirs, so the gate is the core set rather
+        # than the single question fifty spent seconds would have left.
+        assert gate_keys_for(1, elapsed_since_budget(call)) == GATE_PRIORITY[: len(CORE_KEYS)]
+
+    def test_time_after_the_budget_still_is(self):
+        """The sizing this was always meant to do is untouched."""
+        call = IntakeCall(started_at=utcnow() - timedelta(seconds=120))
+        apply_budget(call, 1)
+        call.budget_started_at = utcnow() - timedelta(seconds=50)
+        assert 45 <= elapsed_since_budget(call) <= 60
+        assert len(gate_keys_for(1, elapsed_since_budget(call))) == 1
+
+    def test_a_call_with_no_anchor_reads_as_zero(self):
+        """Rows written before the column existed size on the stated total."""
+        assert elapsed_since_budget(None) == 0
+        assert elapsed_since_budget(IntakeCall(budget_started_at=None)) == 0
+
+    def test_a_stale_anchor_is_refused_like_a_stale_start(self):
+        old = IntakeCall(budget_started_at=utcnow() - timedelta(days=400))
+        assert elapsed_since_budget(old) == 0
 
 
 # --------------------------------------------------------------------------
@@ -373,13 +435,21 @@ def _numbers(session, candidate_id):
     ]
 
 
-class TestAMatchByEmailWithholdsTheNumber:
-    def test_the_call_attaches_but_the_number_does_not(self, session, account):
-        """Caller ID is what a handset claims, and ANI is spoofable.
+class TestAMatchByEmailClaimsTheNumber:
+    """Changed 2026-08-29, deliberately, with the trade written down.
 
-        The record is theirs -- they spoke the address -- but "somebody who
-        knows this address rang from this phone" is not "this is their phone".
-        """
+    The number is what a handset claims and ANI is spoofable, so this is not
+    proof. It is accepted anyway, on the same reasoning ``resolve_candidate_id``
+    already accepted it on the read side: the dial-in line holds what a person
+    said they want from a job, not an account anybody can spend, and requiring a
+    recruiter to promote every number by hand meant no caller was ever
+    recognised twice in practice.
+
+    What is NOT accepted is a number moving between people -- see
+    ``test_a_number_somebody_else_owns_is_still_refused``.
+    """
+
+    def test_the_call_attaches_and_so_does_the_number(self, session, account):
         person = Candidate(
             org_id=account["org_id"], source="test", source_id="t1",
             full_name="Tushar Gupta", emails=[EMAIL], phones=[],
@@ -392,9 +462,42 @@ class TestAMatchByEmailWithholdsTheNumber:
         link_caller(session, call)
 
         assert call.candidate_id == person.id
-        assert _numbers(session, person.id) == []
-        assert UNVERIFIED_NUMBER_REASON in call.review_reason
+        assert _numbers(session, person.id) != [], "the caller is still a stranger next time"
+        assert UNVERIFIED_NUMBER_REASON not in call.review_reason
+
+    def test_a_number_somebody_else_owns_is_still_refused(self, session, account):
+        """The bound on the damage. First claim wins, and the clash is surfaced.
+
+        A shared handset is the likely way this goes wrong -- a partner's
+        phone, a desk line, a recycled number -- and it needs nobody's bad
+        intent. Moving the number to whoever rang most recently would make the
+        dial-in line greet each of them as the other.
+        """
+        first = Candidate(
+            org_id=account["org_id"], source="test", source_id="t1",
+            full_name="Priya Raman", emails=["priya@example.com"], phones=[CALLER],
+        )
+        session.add(first)
+        session.flush()
+        sync_candidate_emails(session, first)
+        sync_candidate_phones(session, first)
+
+        second = Candidate(
+            org_id=account["org_id"], source="test", source_id="t2",
+            full_name="Tushar Gupta", emails=[EMAIL], phones=[],
+        )
+        session.add(second)
+        session.flush()
+        sync_candidate_emails(session, second)
+
+        call = _call(session, account["org_id"])
+        link_caller(session, call)
+
+        assert call.candidate_id == second.id
+        assert _numbers(session, second.id) == [], "a claimed number was moved"
+        assert _numbers(session, first.id) != []
         assert call.review_needed is True
+        assert "already owned by somebody else" in call.review_reason
 
 
 class TestAReplyPromotesTheNumber:
@@ -426,7 +529,11 @@ class TestAReplyPromotesTheNumber:
         )
         call = _call(session, account["org_id"])
         link_caller(session, call)
-        assert _numbers(session, person.id) == []
+        # Since 2026-08-29 the number is already on the row by this point. The
+        # reply path still has to be idempotent rather than redundant: it also
+        # runs for callers link_caller could not attribute at all, and writing
+        # a row that exists must not raise or duplicate.
+        assert _numbers(session, person.id) == [CALLER]
 
         call.text_verification_thread_id = thread.id
         call.text_verification_status = "sent"

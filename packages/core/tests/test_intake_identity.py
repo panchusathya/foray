@@ -386,12 +386,13 @@ class TestLinkCaller:
         assert link_caller(session, call) == owner.id
         assert call.candidate_id == owner.id
 
-    def test_an_email_match_does_not_claim_the_number(self, session, account):
-        """The rule caller ID cannot satisfy.
+    def test_an_email_match_claims_the_number(self, session, account):
+        """Changed 2026-08-29. The number now rides on the address.
 
-        Somebody who knows Priya's address called from this phone. That is not
-        "this is Priya's phone", and a wrong row here points the dial-in line
-        at the wrong person's comp and pipeline.
+        The caller spoke this address, on this call, from this number. That is
+        not proof -- ANI is spoofable -- but it is the same evidence the
+        attribution itself rests on, and withholding the number meant the
+        dial-in line never recognised anybody a second time.
         """
         owner = a_candidate(
             session, account, name="Priya Raman", email="priya.raman@gmail.com"
@@ -404,9 +405,8 @@ class TestLinkCaller:
                 select(CandidatePhone.phone).where(CandidatePhone.candidate_id == owner.id)
             )
         )
-        assert CALLER not in keys, "an unverified number reached candidate_phones"
-        assert call.review_needed
-        assert UNVERIFIED_NUMBER_REASON in call.review_reason
+        assert CALLER in keys, "the caller will be a stranger on their next call"
+        assert UNVERIFIED_NUMBER_REASON not in call.review_reason
 
     def test_a_name_alone_creates_nobody(self, session, account):
         call = a_call(session, account, contact_name="Priya Raman")
@@ -601,8 +601,10 @@ class TestAttribution:
         )
         call = a_call(session, account, contact_email="priya.raman@gmail.com")
         link_caller(session, call)
-        assert UNVERIFIED_NUMBER_REASON in call.review_reason
 
+        # Attribution is now a confirmation rather than the only route: the
+        # number went on at link time. It must still be idempotent, because a
+        # recruiter working the queue will attribute calls that already match.
         attribute_call(session, call=call, candidate_id=owner.id)
         keys = set(
             session.scalars(

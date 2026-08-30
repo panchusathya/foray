@@ -208,8 +208,11 @@ def merge_contact_details(
     **A new address for a suppressed person is suppressed too.** Otherwise
     do-not-contact is defeated by the person mentioning a second mailbox.
 
-    Passing ``phone`` asserts this number belongs to this candidate. Caller ID
-    is not that assertion -- see ``intake.service.link_caller``.
+    Passing ``phone`` asserts this number belongs to this candidate. Since
+    2026-08-29 ``intake.service.link_caller`` makes that assertion from caller
+    ID plus the address the caller spoke on the same call; the assertion is
+    still checked here, and a number another candidate already claims is
+    reported as a conflict rather than moved.
     """
     from .outreach.suppressions import is_suppressed, normalize_email, suppress
 

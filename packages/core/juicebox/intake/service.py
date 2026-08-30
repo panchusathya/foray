@@ -90,13 +90,12 @@ UNIDENTIFIED_REASON = "caller not identified"
 # owns the review-reason vocabulary alongside UNIDENTIFIED_REASON.
 TEXT_PROMISE_REASON = "match list promised by text; no channel can send it -- follow up manually"
 
-# The number is what the caller's *device* claims, and ANI is spoofable. So a
-# call matched to a person by the email they spoke is attributed -- the record
-# is theirs -- but the number is not written onto their row, because "somebody
-# who knows Priya's address called from this phone" is not "this is Priya's
-# phone", and a wrong row in ``candidate_phones`` points the dial-in line at
-# the wrong person's comp and pipeline. ``attribute_call`` is where a human
-# promotes it.
+# Historical. Until 2026-08-29 a call matched to a person by the email they
+# spoke was attributed without its number being written, so the dial-in line
+# never recognised that caller again and the promotion waited on a human in the
+# review queue. The number is now written on the same evidence that attributed
+# the call (see ``link_caller``), and this reason is kept only so
+# ``attribute_call`` can still clear it off rows written under the old rule.
 # No "; " inside the text: ``_join_reasons`` uses it as the separator, so a
 # reason containing one splits into two segments and stops matching itself --
 # which is how the first version of this left every attributed call on the
@@ -513,10 +512,29 @@ def link_caller(db: Session, call: IntakeCall) -> str | None:
         candidate = db.get(Candidate, owner)
         if candidate is not None:
             call.candidate_id = candidate.id
-            # No phone: see UNVERIFIED_NUMBER_REASON.
-            merge_contact_details(db, candidate, name=name)
-            call.review_needed = True
-            call.review_reason = _join_reasons(call.review_reason, UNVERIFIED_NUMBER_REASON)
+            # The number goes on the row, on the same evidence that attributed
+            # the call: this caller said this address out loud, on this call,
+            # from this number. ANI is spoofable and that risk is accepted here
+            # exactly as ``resolve_candidate_id`` already accepts it on the
+            # read side -- what the dial-in line holds is what a person said
+            # they want from a job, not an account anybody can spend.
+            #
+            # The likelier way this goes wrong is not an attacker but a shared
+            # handset: a partner's phone, a work desk line, a recycled number.
+            # `merge_contact_details` still refuses a number another candidate
+            # already owns and reports it rather than moving it, so the damage
+            # is bounded to the first claim -- and that claim is sticky, which
+            # is why the conflict lands on the review queue instead of being
+            # swallowed.
+            merged = merge_contact_details(
+                db, candidate, name=name, phone=counterparty_number(call)
+            )
+            if merged.conflicts:
+                call.review_needed = True
+                call.review_reason = _join_reasons(
+                    call.review_reason,
+                    f"already owned by somebody else: {', '.join(merged.conflicts)}",
+                )
             _track(db, candidate)
             return candidate.id
 
@@ -1387,6 +1405,27 @@ def has_room_for_another_question(minutes_available: int | None, elapsed_seconds
     return left is None or left >= SECONDS_PER_EXCHANGE
 
 
+def elapsed_since_budget(call: IntakeCall | None) -> int:
+    """How long since the caller stated their budget, or 0 when they have not.
+
+    The clock the gate is sized against. Deliberately not ``elapsed_seconds``:
+    that measures the whole call, and spending the greeting, the recording
+    consent and the name-and-email exchange out of a budget stated afterwards
+    is what closed the gate on a caller who had just offered a minute of their
+    time. Everything before the offer was our time, not theirs.
+
+    Zero for every uncertain case, matching ``elapsed_seconds`` -- a budget
+    with no usable anchor is sized on the stated total alone.
+    """
+    if call is None or call.budget_started_at is None:
+        return 0
+    started = _aware(call.budget_started_at)
+    seconds = int((utcnow() - started).total_seconds())
+    if seconds < 0 or seconds > MAX_PLAUSIBLE_CALL_SECONDS:
+        return 0
+    return seconds
+
+
 def elapsed_seconds(call: IntakeCall | None) -> int:
     """How long this call has been running, or 0 when we cannot tell.
 
@@ -1426,11 +1465,19 @@ def parse_minutes_available(args: dict[str, Any] | None) -> int | None:
 
 
 def apply_budget(call: IntakeCall, minutes_available: int | None) -> None:
-    """Persist the budget on first sight. Later values do not overwrite."""
+    """Persist the budget on first sight. Later values do not overwrite.
+
+    The anchor is stamped with the budget and latched the same way, because
+    "I have a minute" is a promise measured from the moment it is made. Stamped
+    here rather than in ``coverage_snapshot`` so the two cannot drift: a budget
+    with no anchor would be sized against a zero clock forever, and an anchor
+    with no budget is meaningless.
+    """
     if minutes_available is None:
         return
     if call.minutes_available is None:
         call.minutes_available = minutes_available
+        call.budget_started_at = utcnow()
     if core_only_for(call.minutes_available):
         call.gate_mode = "core"
     else:
@@ -1709,7 +1756,7 @@ def coverage_snapshot(
         apply_budget(call, minutes_available)
         minutes_available = call.minutes_available
     # Sized to the time actually left, not to a binary "short call" flag.
-    spent = elapsed_seconds(call)
+    spent = elapsed_since_budget(call)
     gate = gate_keys_for(minutes_available, spent)
     # `live_call`: this runs while the caller sits in silence, so it takes the
     # voice budget rather than the general one. See `llm_voice_timeout_seconds`.

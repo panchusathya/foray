@@ -96,8 +96,8 @@ def test_live_tool_sends_only_the_verification_prompt(session, account, linq_on,
     result = start_text_verification(session, call)
 
     assert result["sent"] is True
-    assert "reply with 'hey' or 'hello'" in result["guidance"]
-    assert "Go4A" in started[0]["body"]
+    assert "reply YES" in result["guidance"]
+    assert "Foray" in started[0]["body"]
     assert call.text_verification_status == "sent"
     assert call.sms_opt_in is True
     thread = session.scalar(select(IntakeThread))

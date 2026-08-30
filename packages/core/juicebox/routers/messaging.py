@@ -770,7 +770,11 @@ def linq_webhook(
         # confirms. Routed through `deliver` deliberately: `run_turn` refuses
         # to send to a stopped thread, which is the correct rule everywhere
         # except this one message.
-        deliver(db, thread=thread, message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT))
+        deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT, verbatim=True),
+        )
         return {"status": "accepted", "stopped": True, "message_id": message.id}
 
     # This sender may be somebody a group chat pointed here. Reaching us
@@ -783,7 +787,11 @@ def linq_webhook(
     confirm_pending(db, org_id=org_id, address=thread.from_address, thread=thread)
 
     if looks_like_help(inbound.body):
-        deliver(db, thread=thread, message=OutboundMessage(body=prompts.HELP_REPLY))
+        deliver(
+            db,
+            thread=thread,
+            message=OutboundMessage(body=prompts.HELP_REPLY, verbatim=True),
+        )
         return {"status": "accepted", "help": True, "message_id": message.id}
 
     if inbound.attachments:
@@ -808,7 +816,7 @@ def linq_webhook(
         return {"status": "accepted", "ignored": True, "message_id": message.id}
 
     # A live voice handoff sends only a number-verification prompt. Any real
-    # reply (the agent asks for "hey" or "hello") proves that the caller owns
+    # reply (the agent asks for "YES") proves that the caller owns
     # this address and unlocks the job cards. It must happen before the normal
     # conversation turn, or a generic manager reply could race the cards.
     verified = confirm_text_verification(db, thread=thread)

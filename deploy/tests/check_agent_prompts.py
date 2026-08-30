@@ -303,36 +303,46 @@ def check_every_slot_has_a_default() -> None:
     )
 
 
-def check_the_pitch_reads_only_composed_lines() -> None:
-    """The wrap-up pitch must stay a read-back, never an improvisation.
+def _flat(text: str) -> str:
+    """The prompt with its hard wrapping collapsed.
 
-    ``preview_matches`` hands the agent finished sentences precisely so a
-    company name, a pay figure, or a count of roles can never be invented on a
-    recorded call. The prompt has to keep saying so, in both agents, or the
-    model will helpfully embellish -- and it must keep framing the lines as a
-    match with what the candidate ASKED FOR, because a fit judgement of the
-    candidate is the thing the intake channel must never emit.
+    These are wrapped paragraphs, so a pinned sentence can be split across two
+    lines by a reflow that changed nothing about its meaning. Matching on the
+    flattened text stops a cosmetic rewrap from reading as a lost rule.
+
+    Lowercased for the same reason: the prompt is emitted in the house
+    lowercase voice, so a rule pinned in the casing it was written in fails
+    against the casing it is actually sent in.
+    """
+    return " ".join(text.split()).lower()
+
+
+def check_no_role_is_ever_described() -> None:
+    """The wrap-up pitch is gone, and the prompt must close the hole it left.
+
+    Removing ``preview_matches`` removed the only sanctioned source of a company
+    name or a pay figure -- but a model asked "so what do you have?" by a real
+    person will answer, and with the tool gone every word of that answer is
+    invented. So absence of the tool is not enough on its own: the prompt has to
+    say, in the imperative, that no opening may be described and that the honest
+    answer is a recruiter follow-up.
     """
     for name, prompt in (("inbound", INBOUND), ("outbound", OUTBOUND)):
         _must(
-            "preview_matches" in prompt,
-            f"{name} prompt no longer calls preview_matches at wrap-up",
+            "preview_matches" not in prompt,
+            f"{name} prompt still calls preview_matches; the pitch was removed",
         )
         _must(
-            "exactly as written" in prompt,
-            f"{name} prompt must require the pitch lines be read as written",
+            "never describe a role, a company, or a pay figure." in _flat(prompt),
+            f"{name} prompt must forbid describing an opening",
         )
         _must(
-            "never as a judgement of the candidate" in prompt
-            or "never how good the candidate is" in prompt
-            or "never as a judgement" in prompt,
-            f"{name} prompt must frame the pitch as preference fit, not a verdict "
-            "on the candidate",
+            "a recruiter will come back to them with roles that fit" in _flat(prompt),
+            f"{name} prompt must give the honest answer to \"what do you have?\"",
         )
         _must(
-            "close the way `check_coverage`'s `guidance` told you to" in prompt,
-            f"{name} prompt must keep the no-lines fallback: close normally and "
-            "mention no roles",
+            "never describe an opening" in _flat(prompt),
+            f"{name} prompt must keep the hard rule against describing openings",
         )
 
 
@@ -343,8 +353,13 @@ def check_the_live_text_verification_flow_is_pinned() -> None:
             "start_text_verification" in prompt,
             f"{name} prompt lost the live text-verification tool",
         )
+        # YES rather than the friendlier "hey"/"hello" this used to pin. The
+        # mechanism still takes any non-STOP reply, but the word we ASK for has
+        # to be one the 10DLC campaign declares as an opt-in keyword -- a
+        # confirmation prompt naming a word on no keyword list is what carrier
+        # vetting reads as an unverifiable call to action.
         _must(
-            'reply "hey" or "hello"' in prompt,
+            "reply yes to the actual text" in _flat(prompt),
             f"{name} prompt must ask for the verification reply",
         )
         # The phrase, not one exact sentence. The consent ask carries the
@@ -353,21 +368,17 @@ def check_the_live_text_verification_flow_is_pinned() -> None:
         # pinning a single sentence made restoring that wording look like a
         # regression when it was the opposite.
         _must(
-            "explicit, unambiguous yes" in prompt,
+            "explicit, unambiguous yes" in _flat(prompt),
             f"{name} prompt must not allow a vague answer to trigger a text",
         )
         _must(
-            '"email is better"' in prompt and "re-ask or reframe" in prompt,
+            '"email is better"' in prompt and "re-ask or reframe" in _flat(prompt),
             f"{name} prompt must say what is NOT consent and forbid re-asking "
             "until a yes appears",
         )
         _must(
-            "never say the detailed role list was texted yet" in prompt,
-            f"{name} prompt must hold cards until the reply arrives",
-        )
-        _must(
-            "`preview_matches` again" in prompt,
-            f"{name} prompt must support refining an unwanted first preview",
+            "never say that anything else has been texted yet" in _flat(prompt),
+            f"{name} prompt must not claim anything was already sent",
         )
 
 
@@ -431,7 +442,7 @@ def main() -> int:
         check_unknown_callers_still_get_a_clean_first_intake,
         check_recording_consent_survives_both_branches,
         check_every_slot_has_a_default,
-        check_the_pitch_reads_only_composed_lines,
+        check_no_role_is_ever_described,
         check_the_live_text_verification_flow_is_pinned,
         check_outbound_is_unchanged_in_posture,
         check_the_persona_is_introduced_once,

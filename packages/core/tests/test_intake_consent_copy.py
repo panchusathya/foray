@@ -128,3 +128,33 @@ class TestKeywordsStillWork:
         """Held out for the same reason URLs are: they are not our prose."""
         assert "STOP" in prompts.lowercase_outbound("Reply STOP to opt out")
         assert "HELP" in prompts.lowercase_outbound("Reply HELP for info")
+
+
+class TestCarrierReplyCopy:
+    """The two strings a 10DLC vetter compares against the registration.
+
+    Campaign CM8460efcf3183cf6b3a79ffec2f5da4b1 was rejected twice on consent
+    verification, and one reason a reviewer could not tie the number to the
+    brand was that HELP answered as "juicebox intake assistant" -- a name on no
+    website and no filing. These assert the properties CTIA actually requires,
+    not the exact wording, so the copy can still be tuned.
+    """
+
+    def test_help_identifies_the_brand_and_a_way_to_reach_a_human(self):
+        reply = prompts.HELP_REPLY
+        assert "Foray" in reply
+        assert "@goforay.io" in reply or "goforay.io" in reply
+        assert "STOP" in reply
+        assert "juicebox" not in reply.lower()
+
+    def test_opt_out_confirmation_identifies_the_brand(self):
+        assert "Foray" in prompts.STOP_ACKNOWLEDGEMENT
+
+    def test_first_text_names_the_registered_brand_not_the_old_one(self):
+        greeting = prompts.VOICE_VERIFICATION_GREETING
+        assert "Foray" in greeting
+        assert "Go4A" not in greeting
+
+    def test_first_text_asks_for_a_declared_opt_in_keyword(self):
+        """The sample message and the campaign's opt-in keywords must agree."""
+        assert "YES" in prompts.VOICE_VERIFICATION_GREETING

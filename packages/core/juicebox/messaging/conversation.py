@@ -160,7 +160,9 @@ def run_turn(db: Session, *, thread: IntakeThread) -> TurnResult:
         # thread will ever send. Deliberately not routed through _send, which
         # refuses to send to a stopped thread.
         sent = _deliver(
-            db, thread=thread, message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT)
+            db,
+            thread=thread,
+            message=OutboundMessage(body=prompts.STOP_ACKNOWLEDGEMENT, verbatim=True),
         )
         return TurnResult(
             ACTION_STOPPED, thread, _coverage_for(thread), sent=[s for s in [sent] if s]

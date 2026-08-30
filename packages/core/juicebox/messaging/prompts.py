@@ -304,11 +304,28 @@ WRAP_UP_PARTIAL = (
     "need anything else."
 )
 
-STOP_ACKNOWLEDGEMENT = "understood — i won't message you again."
+# Carrier-mandated copy, and the exact string filed on the 10DLC campaign as
+# the opt-out message. A vetter compares what was registered against what the
+# number actually sends, so this and HELP_REPLY are the two places in the file
+# where our lowercase house voice loses to the registration: both go out
+# `verbatim` (see routers/messaging.py) precisely so the brand name is legible
+# as the brand rather than styled down to "foray".
+STOP_ACKNOWLEDGEMENT = (
+    "Foray: You have been unsubscribed and will get no further messages from "
+    "this number. Reply START to resubscribe."
+)
 
+# Named the product, not the repo, and then named the *program*. This was
+# "juicebox intake assistant" until the de-Juicebox sweep made it "foray intake
+# assistant" -- which fixed the brand and left the real problem, that a HELP
+# reply must identify the messaging program and give a way to reach a human.
+# CTIA requires both; a carrier audit checks for both. So it now carries the
+# program name, a support address, and the rate disclosure, and the address is
+# the one published on goforay.io/privacy so the two agree when a vetter looks.
 HELP_REPLY = (
-    "foray intake assistant. reply stop to opt out. "
-    "for help, contact the recruiter who shared this number."
+    "Foray by GoForay: recruiting updates about your own job search. "
+    "Help: tushar@goforay.io or https://www.goforay.io/messaging. "
+    "Msg&data rates may apply. Reply STOP to unsubscribe."
 )
 
 
@@ -529,10 +546,22 @@ NOTIFY_REFERRAL_CONFIRMED = (
 # recorded call (messaging/voice_handoff.py). Canned like every notification.
 # No time promise ("in a moment") — the match cards behind it ride the notify
 # queue and may defer to the send window.
+# "Go4A" was the name before the Foray rename and survived only here, on the
+# one message a candidate receives before anything else -- so the first text
+# from us cited a brand that matches neither the site nor the 10DLC brand
+# registration.
+#
+# The asked-for word is "YES" rather than the friendlier "hey"/"hello" it used
+# to be. INTAKE_COMPLIANCE section 6 wanted a human word, and the mechanism is
+# unchanged -- `confirm_text_verification` still takes any non-STOP reply as
+# proof of control, so nobody who answers "hey" is turned away. What changed is
+# only what we *ask* for, because a confirmation prompt naming a declared
+# opt-in keyword is what carrier vetting reads as double opt-in; asking for a
+# word that appears on no keyword list is what it reads as an unverifiable CTA.
 VOICE_VERIFICATION_GREETING = (
-    "Hi{name} — it's {recruiter} with Go4A. Great talking just now. Reply "
-    "\"hey\" or \"hello\" so I know this is the right number, and I'll send "
-    "the roles we discussed here."
+    "Hi{name} — it's {recruiter} with GoForay. Great talking just now. Reply "
+    "YES so I know this is the right number, and I'll send the roles we "
+    "discussed here. Msg&data rates may apply. Reply STOP to opt out."
 )
 
 # Apply-by-link refusals. A link that vanishes into silence reads as the

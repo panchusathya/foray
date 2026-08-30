@@ -1234,6 +1234,17 @@ class IntakeCall(Base, TimestampMixin):
     # narrow the required set (gate_mode=core); it never adds questions.
     minutes_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gate_mode: Mapped[str] = mapped_column(String(8), default="full", server_default="full")
+    # When the budget above was stated -- NOT when the call started. "I have a
+    # minute" said fifty seconds in means a minute from that moment; charging
+    # the preceding fifty against it left ten seconds, which bought zero
+    # exchanges, which closed the gate on the one question already answered.
+    # The caller was then thanked and wrapped up without being asked anything.
+    # Null for a call that never stated a budget, and for calls that predate
+    # this column -- both fall back to a zero clock, which is the behaviour
+    # from before the clock existed.
+    budget_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # What the caller said their name and email were. The inbound agent has
     # always asked for both -- "so a recruiter can find them" -- and until

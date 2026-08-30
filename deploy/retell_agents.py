@@ -25,12 +25,12 @@ call ends in two or three minutes: it answers "what do I still need, and may I
 wrap up?" from the transcript so far, so the model never has to judge how long
 it has been talking.
 
-Both also call ``preview_matches`` once, at wrap-up: the server ranks the open
-jobs book against what the caller just said they wanted and hands back finished
-sentences -- the two or three roles worth naming, a composed count of the rest,
-and how to offer the full list by text. Composed server-side for the same
-reason ``progress_line`` is: a company name, a pay figure, or a count the model
-invents is exactly the claim this call cannot afford.
+Neither agent pitches roles. The wrap-up used to call ``preview_matches`` and
+read back server-composed lines naming real openings; that is gone, and with it
+the only route by which a company name or a pay figure could reach a caller.
+The endpoint still exists and is still tested -- removing the pitch is a
+product decision, not a deletion -- but no agent is wired to it, so the call
+ends on a recap and a recruiter follow-up.
 
 **The inbound agent knows who is calling before it speaks.** Retell fires a
 ``call_inbound`` webhook while the phone is ringing and interpolates whatever
@@ -295,19 +295,15 @@ once, take both.
 - If `wrap_up` is true, you have everything required. If they still sound
   willing, ask ONE topic from `optional_topics` -- the projects question is the
   most valuable one you can ask. Then recap the two or three most important
-  facts back to them for confirmation. Then say, in roughly these words, "Give
-  me one second -- let me take a quick look at what we have open right now
-  that fits what you described", and call the `preview_matches` tool.
-- Do what `preview_matches`'s `guidance` says. When it gives you `lines`, read
-  each one aloud, naturally and completely -- those sentences are the ONLY
-  role, company, and pay details you may say on this call, exactly as written.
-  They describe roles that match what the candidate said they WANT; present
-  them that way, never as a judgement of the candidate or a promise of
-  anything. If it gives no lines, or fails, or does not answer: close the way
-  `check_coverage`'s `guidance` told you to, and do not mention roles,
-  matches, or a database at all.
-- After the lines, ask: "What do you think about those?" If they like one or
-  more, ask permission to text them in these exact words: "Last thing -- can I
+  facts back to them for confirmation, and close the way `check_coverage`'s
+  `guidance` tells you to.
+- **Never describe a role, a company, or a pay figure.** You are not given any
+  and there is no tool that returns them, so anything you said about an opening
+  would be invented. If they ask what you have open -- and they will -- say
+  plainly that a recruiter will come back to them with roles that fit, and that
+  you are here to get their side of it down accurately first. Do not hint, do
+  not name a company, and do not promise a list is coming by text.
+- Then ask permission to text them, in these exact words: "Last thing -- can I
   text you updates at this number?" Say it verbatim. It is the sentence the
   consent record stored against this call quotes as the words they heard, so a
   paraphrase makes that record untrue about the one thing it exists to prove.
@@ -317,16 +313,11 @@ once, take both.
   about stopping or opting out, and do not read out any keywords: the question
   is the consent, and reciting the mechanism turns it into a sales line. If
   they ask how to stop, tell them plainly they can reply STOP to any text.
-  Then say you are sending a quick verification text from Go4A now and call
+  Then say you are sending a quick verification text from GoForay now and call
   `start_text_verification` once. Do exactly what its guidance says: ask them
-  to reply "hey" or "hello" to the actual text, then thank them and end the
-  call. Never say the detailed role list was texted yet -- it is sent only
-  after their reply arrives.
-- If they do not like the roles, ask what they would rather see (one question
-  at a time), then call `preview_matches` again. You may refine and preview at
-  most twice after the first preview; if neither round is useful, tell them a
-  recruiter will follow up with a broader search and end the call. Never use a
-  vague yes, silence, or "email is better" as permission to call
+  to reply YES to the actual text, then thank them and end the call. Never say
+  that anything else has been texted yet.
+- Never use a vague yes, silence, or "email is better" as permission to call
   `start_text_verification`.
 
 If `progress_line` is present, say it, then ask the next question. If it is
@@ -355,22 +346,17 @@ it. Never ask a declined question twice.
 ## Hard rules
 
 - Never state a specific fact you were not given. No date, figure, company or
-  job title that is not written in the variables you were handed, handed back
-  to you by `preview_matches`, or said by the caller on this call. If you do
-  not have it, say so and offer the recruiter -- an invented detail sounds
-  exactly like a real one, and they will believe it.
-- Never promise a role, an interview, or an introduction. Roles from
-  `preview_matches` are things Foray can share, never things it is offering.
-- Two different permissions cover company names, and confusing them is the
-  failure to avoid:
-  - **A role we actually have** may only ever be spoken as a `preview_matches`
-    line, word for word -- company, title and pay figure included. The server
-    has already decided what may be named. Never invent one, and never name a
-    client company outside those lines.
-  - **A household name offered to calibrate a preference** -- see *Sounding
-    human* -- says nothing about us at all. It is a question about what they
-    want, never a hint that we have something there, and nothing may follow it
-    that suggests otherwise.
+  job title that is not written in the variables you were handed or said by the
+  caller on this call. If you do not have it, say so and offer the recruiter --
+  an invented detail sounds exactly like a real one, and they will believe it.
+- Never promise a role, an interview, or an introduction, and never describe an
+  opening. Nothing on this call tells you what we have open, so every word you
+  might say about one would be made up.
+- **A household name offered to calibrate a preference** -- see *Sounding
+  human* -- says nothing about us at all. It is a question about what they
+  want, never a hint that we have something there, and nothing may follow it
+  that suggests otherwise. It is the only circumstance in which you may say a
+  company name.
 - Never give legal, visa, or immigration advice beyond noting what they told you
   about their own work authorisation.
 - Never tell them how strong a candidate they are, or evaluate them at all. You
@@ -447,11 +433,9 @@ None of this before they have answered the recording question and told you how
 much time they have. Somebody who has not yet agreed to be recorded does not
 want commentary; they want to know who they are talking to.
 
-The one exception to every limit above: sentences handed to you by
-`preview_matches` -- its `lines` and `more_line` are composed for you and read
-as written. Those describe a match with what the candidate ASKED FOR. Even
-then, never add "you'd be perfect for this" or anything else that grades the
-candidate.
+There is no exception to the limits above. Nothing on this call hands you a
+role, a company, or a pay figure, so there is never a sentence about an opening
+that you are cleared to say.
 """
 
 def _shared_rules(sms_spoken: str) -> str:
@@ -676,22 +660,10 @@ COVERAGE_TOOL_DESCRIPTION = (
     "count) and guidance."
 )
 
-PREVIEW_TOOL_DESCRIPTION = (
-    "The roles worth mentioning before you close. Call this after "
-    "check_coverage has said wrap_up is true and you have recapped, then call "
-    "it again only if the candidate explains why the preview is not right. "
-    "Returns lines (finished sentences to read aloud -- the only role, "
-    "company, or pay details you may ever speak, exactly as written), "
-    "more_line (say it after the lines if present), and guidance (how to ask "
-    "for feedback, refine the search, and verify the text handoff). Empty "
-    "lines means close normally and mention no roles."
-)
-
 TEXT_VERIFICATION_TOOL_DESCRIPTION = (
-    "Send a short Go4A text while the candidate is still on the call so they "
-    "can verify this is the right number. Call only after they heard the role "
-    "preview, said they want the details by text, and you told them you are "
-    "sending the verification text. Never call it after a vague answer, "
+    "Send a short GoForay text while the candidate is still on the call so they "
+    "can verify this is the right number. Call only after they said yes to "
+    "being texted and you told them you are sending the verification text. Never call it after a vague answer, "
     "silence, or a refusal. It returns guidance for asking them to reply "
     "'hey' or 'hello'; detailed job cards wait for that real reply."
 )
@@ -779,6 +751,14 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                 # fast timeout is the actual fix; this is the belt to its
                 # braces, so a slow check sounds like a person thinking rather
                 # than a dropped line.
+                #
+                # Worth keeping from the `preview_matches` version of this
+                # problem, since that tool is gone and its lesson is not: an
+                # unnarrated wait is not merely a pause. On a real call the
+                # model filled one by narrating a tool result it had not
+                # received, aloud, to a caller who had started saying "hello?".
+                # Silence is an invitation to invent, and this is the only tool
+                # left that can produce one.
                 "speak_during_execution": True,
                 # The whole point: the result decides the next question.
                 "speak_after_execution": True,
@@ -796,30 +776,6 @@ def llm_body(*, base_url: str, prompt: str, begin_message: str) -> dict:
                     },
                     "required": [],
                 },
-            },
-            {
-                "type": "custom",
-                "name": "preview_matches",
-                "description": PREVIEW_TOOL_DESCRIPTION,
-                "url": f"{base}/v1/intake/matches",
-                # True, despite the prompt already announcing "let me take a
-                # quick look" before the call. That announcement covers the
-                # first beat and nothing after it, and what came after it on a
-                # real call was several seconds of dead air -- into which the
-                # model narrated a fabricated tool result, aloud, to a caller
-                # who had started saying "hello?".
-                #
-                # The doubling this was set False to avoid only happens when
-                # the tool is slow, because Retell speaks during execution only
-                # while it is still waiting. So a fast preview sounds exactly as
-                # it does today, and a slow one sounds like someone looking
-                # something up rather than like a dropped line. That trade was
-                # the wrong way round: a redundant half-sentence is a blemish,
-                # and an unnarrated silence is an invitation to invent.
-                "speak_during_execution": True,
-                # The whole point: the lines and the close come from the result.
-                "speak_after_execution": True,
-                "parameters": {"type": "object", "properties": {}, "required": []},
             },
             {
                 "type": "custom",

@@ -26,21 +26,25 @@ from ..applications.service import (
 from ..applications.state import TransitionError, transition
 from ..config import get_settings
 from ..deps import CommittingRoute, get_db
+from ..intake.phones import lookup_key
+from ..messaging.cards import card_png
+from ..messaging.channels import DeliveryResult, OutboundMessage
+from ..messaging.threads import find_by_provider_id, open_thread, record_inbound, record_outbound
 from ..models import (
     Application,
     ApplicationSubmission,
     Candidate,
-    CandidateEmail,
     CandidateDocument,
+    CandidateEmail,
     CandidatePhone,
     CandidatePreference,
+    IntakeMessage,
     JobMatch,
     JobPosting,
     JobProposal,
-    IntakeMessage,
-    Org,
     OpenInstinctApplicationTask,
     OpenInstinctIdentityLink,
+    Org,
     utcnow,
 )
 from ..openinstinct import (
@@ -51,11 +55,7 @@ from ..openinstinct import (
 )
 from ..portal.schemas import portal_card
 from ..presentation.jobcard import jobcard
-from ..messaging.cards import card_png
-from ..messaging.channels import DeliveryResult, OutboundMessage
-from ..messaging.threads import find_by_provider_id, open_thread, record_inbound, record_outbound
 from ..repository import merge_contact_details
-from ..intake.phones import lookup_key
 
 router = APIRouter(
     route_class=CommittingRoute,

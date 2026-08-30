@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from juicebox.applications.state import transition
 from juicebox.config import reset_settings_cache
+from juicebox.jobs import KIND_JOBS_DISCOVER_ONE
 from juicebox.models import (
     Application,
     ApplicationSubmission,
@@ -15,11 +16,10 @@ from juicebox.models import (
     IntakeMessage,
     IntakeThread,
     Job,
-    JobPosting,
     JobMatch,
+    JobPosting,
     OpenInstinctApplicationTask,
 )
-from juicebox.jobs import KIND_JOBS_DISCOVER_ONE
 from juicebox.openinstinct import JUICEBOX_AUDIENCE, mint_bridge_token
 from juicebox.repository import upsert_candidates
 

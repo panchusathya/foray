@@ -7,11 +7,12 @@
  * else on the dashboard.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { PIPELINE_STAGES, api } from '../lib/api.js';
+import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
 
 // "contacted" and "replied" are driven by outreach (a send / a reply), not by
@@ -21,9 +22,21 @@ const OUTREACH_DRIVEN_STAGES = new Set(['contacted', 'replied']);
 
 export function ProjectDetailPage() {
   const { projectId } = useParams();
+  const { projects, project, setProject } = useCurrentProject();
   const pipeline = useAsync(() => api.getPipeline(projectId), [projectId]);
   const funnel = useAsync(() => api.funnel(projectId), [projectId]);
   const [error, setError] = useState(null);
+
+  // Opening a board *is* switching project. Reaching this page from Home's
+  // roster used to leave the sidebar naming a different one, and now that the
+  // picker has a Pipeline link under it that mismatch is a straight
+  // contradiction: the switcher would say one project while the board showed
+  // another. Guarded on the id being real so a stale link cannot select a
+  // project that is not in the list.
+  const known = projects.some((p) => p.id === projectId);
+  useEffect(() => {
+    if (known && projectId !== project?.id) setProject(projectId);
+  }, [known, projectId, project?.id, setProject]);
 
   async function move(entry, stage, { override = false } = {}) {
     setError(null);
@@ -58,7 +71,11 @@ export function ProjectDetailPage() {
     <div className="stack">
       <PageHeader
         title="Pipeline"
-        subtitle="Every card keeps the match evidence that put the person here."
+        // Named from the list rather than from `project`, which trails the URL
+        // by one render while the effect above catches up.
+        subtitle={`${
+          projects.find((p) => p.id === projectId)?.name ?? 'This project'
+        } · every card keeps the match evidence that put the person here.`}
         actions={<Link className="badge" to="/">Back to home</Link>}
       />
       <div className="card small muted">

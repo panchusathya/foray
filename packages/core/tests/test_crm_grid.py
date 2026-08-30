@@ -408,3 +408,103 @@ class TestMidSequencePeopleAreNotHidden:
             _grid(client, account["headers"], relationship="never_replied", limit=100)
         )
         assert candidate not in rows
+
+
+class TestProjectScope:
+    """The grid, narrowed to one mandate.
+
+    "Who replied to the robot role?" is a question about a project, and the
+    answer has to include people the project only ever emailed -- enrolling
+    somebody does not put them on the board, so a pipeline-only filter would
+    drop the repliers this view exists to find.
+    """
+
+    def _project(self, client, headers, name="Robot Role"):
+        response = client.post("/v1/projects", json={"name": name}, headers=headers)
+        assert response.status_code in (200, 201), response.text
+        return response.json()["id"]
+
+    def _enroll(self, session, org_id, candidate_id, project_id):
+        from juicebox.models import Enrollment, Sequence
+
+        sequence = Sequence(org_id=org_id, name="Robot outreach", project_id=project_id)
+        session.add(sequence)
+        session.flush()
+        session.add(
+            Enrollment(
+                sequence_id=sequence.id,
+                candidate_id=candidate_id,
+                project_id=project_id,
+                status="active",
+            )
+        )
+
+    def test_filters_to_people_on_the_board(self, client, session, account):
+        people = _population(client, session, account)
+        headers = account["headers"]
+        project = self._project(client, headers)
+        client.post(
+            f"/v1/projects/{project}/candidates",
+            json={"candidate_ids": [people["cold"]]},
+            headers=headers,
+        )
+
+        rows = _ids(_grid(client, headers, project_id=project, limit=100))
+        assert rows == [people["cold"]]
+
+    def test_includes_people_the_project_only_emailed(self, client, session, account):
+        """Enrolment creates no pipeline row, so this is the case a
+        membership-only filter gets wrong."""
+        people = _population(client, session, account)
+        project = self._project(client, account["headers"])
+        self._enroll(session, account["org_id"], people["quiet"], project)
+        session.commit()
+
+        rows = _ids(_grid(client, account["headers"], project_id=project, limit=100))
+        assert rows == [people["quiet"]]
+
+    def test_composes_with_the_relationship_filters(self, client, session, account):
+        """The actual question: who replied to *this* project's outreach."""
+        people = _population(client, session, account)
+        project = self._project(client, account["headers"])
+        # "quiet" answered 280 days ago; "cold" never did.
+        self._enroll(session, account["org_id"], people["quiet"], project)
+        self._enroll(session, account["org_id"], people["cold"], project)
+        session.commit()
+
+        rows = _ids(
+            _grid(
+                client,
+                account["headers"],
+                project_id=project,
+                scope="crm",
+                relationship="replied",
+                limit=100,
+            )
+        )
+        assert rows == [people["quiet"]]
+
+    def test_the_count_agrees_with_the_listing(self, client, session, account):
+        people = _population(client, session, account)
+        project = self._project(client, account["headers"])
+        self._enroll(session, account["org_id"], people["cold"], project)
+        session.commit()
+
+        params = {"project_id": project, "scope": "crm"}
+        assert _count(client, account["headers"], **params) == len(
+            _ids(_grid(client, account["headers"], limit=100, **params))
+        )
+
+    def test_an_unknown_project_matches_nobody(self, client, session, account):
+        """A deleted or foreign project id is empty, never unfiltered."""
+        _population(client, session, account)
+        rows = _ids(_grid(client, account["headers"], project_id="proj_nope", limit=100))
+        assert rows == []
+
+    def test_omitting_it_leaves_the_grid_org_wide(self, client, session, account):
+        people = _population(client, session, account)
+        project = self._project(client, account["headers"])
+        self._enroll(session, account["org_id"], people["cold"], project)
+        session.commit()
+
+        assert len(_ids(_grid(client, account["headers"], limit=100))) == len(people)

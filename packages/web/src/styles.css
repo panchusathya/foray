@@ -147,22 +147,16 @@ button, input, textarea, select {
 .nav-link:hover { background: rgba(255, 255, 255, 0.7); color: var(--text); }
 .nav-link.active { background: var(--tint); color: var(--accent-light); font-weight: 500; }
 
+/* Every group is one of these, Project included -- a rule that applies to one
+   section and not the others is how you get an island that reads as an
+   anomaly rather than as a heading. */
 .sidebar-section {
   margin-top: 20px;
   border-top: 1px solid var(--border);
   padding-top: 14px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-}
-/* Above the nav rather than below it: this is the context every link runs in,
-   so it reads as a setting, not as a twelfth destination. */
-.project-picker {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 12px;
-  margin-bottom: 10px;
-  display: flex;
-  flex-direction: column;
+  gap: 2px;
 }
 .sidebar-heading {
   font-size: 11px;
@@ -192,7 +186,22 @@ button, input, textarea, select {
   padding-top: 12px;
   font-size: 13px;
   color: var(--muted);
+  /* Shares the nav links' left edge -- the sidebar reads as one column or it
+     reads as two things stacked. */
+  padding-left: 10px;
 }
+/* Settings sits beside Log out rather than in a flow: both are things you do
+   to your account, not steps in filling a role or placing someone. */
+.sidebar-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+/* Already inside the footer's padding, so this one starts at the edge. */
+.sidebar-account .nav-link { padding: 4px 0; font-size: 13px; }
+.sidebar-account .nav-link:hover { background: none; text-decoration: underline; }
+.sidebar-account .nav-link.active { background: none; font-weight: 600; }
 
 .main { flex: 1; min-width: 0; padding: 28px 32px 64px; }
 
@@ -668,6 +677,43 @@ a.todo-row:hover { background: var(--tint); }
 }
 .viewtabs a:hover { color: var(--text); background: var(--tint3); }
 .viewtabs a.active { color: var(--accent-light); border-bottom-color: var(--accent); font-weight: 600; }
+/* Project scope: two states, both visible. A dropdown would hide which
+   population the grid is showing behind a click, and on a page whose job is
+   telling you who is missing, that is the one thing that cannot be hidden. */
+.scope {
+  display: inline-flex;
+  /* Never squeezed by the search box beside it: the population you are
+     looking at has to stay readable at any width. */
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--tint3);
+}
+.scope button {
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scope button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: transparent;
+  transform: none;
+  box-shadow: none;
+}
+.scope button[aria-pressed='true'] {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  font-weight: 600;
+}
+
 .dgrid .pick { width: 34px; text-align: center; }
 .dgrid .pick input { margin: 0; cursor: pointer; }
 .dgrid tbody tr.selected { background: var(--tint); }

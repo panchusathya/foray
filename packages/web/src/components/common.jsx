@@ -107,13 +107,26 @@ export function ScoreBar({ value }) {
   );
 }
 
-export function ViewTabs({ views, activeId, basePath }) {
+/**
+ * The preset-view tab strip.
+ *
+ * Each tab is a plain link that drops every other param on purpose: search,
+ * sort and page all belong to the view you are leaving. `carry` names the
+ * exceptions — params that describe *which population* you are looking at
+ * rather than how you are looking at it, and which would be maddening to
+ * re-pick on every tab.
+ */
+export function ViewTabs({ views, activeId, basePath, carry = {} }) {
+  const kept = Object.entries(carry)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `&${key}=${encodeURIComponent(value)}`)
+    .join('');
   return (
     <nav className="viewtabs" data-testid="view-tabs">
       {views.map((view) => (
         <Link
           key={view.id}
-          to={`${basePath}?view=${view.id}`}
+          to={`${basePath}?view=${view.id}${kept}`}
           className={view.id === activeId ? 'active' : ''}
         >
           {view.label}

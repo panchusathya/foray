@@ -8,6 +8,13 @@
  * `resolveParams` is a pure function of (view, now) so the date boundaries —
  * which decide who is "going cold" and who has simply not answered yet — are
  * unit-testable rather than a thing you discover is wrong in production.
+ *
+ * `projectScoped` says whether the sidebar's current project narrows the view.
+ * The relationship views are all about a mandate — "who replied to the robot
+ * role" is the question they exist to answer — so they are. The two views
+ * whose blurbs promise the whole workspace are not: the sourced pool is
+ * defined as everything, and an intake call arrives before anyone has decided
+ * which project it belongs to.
  */
 
 export const DEFAULT_STALE_DAYS = 90;
@@ -63,6 +70,7 @@ const DEFAULT_COLUMNS = [
 export const CONTACT_VIEWS = [
   {
     id: 'crm',
+    projectScoped: true,
     label: 'Contacts',
     blurb: 'Everyone you have emailed, shortlisted, or put in a sequence.',
     columns: DEFAULT_COLUMNS,
@@ -73,6 +81,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'going_cold',
+    projectScoped: true,
     label: 'Going cold',
     blurb: 'Contacted, then quiet on both sides for 90 days.',
     columns: DEFAULT_COLUMNS,
@@ -86,6 +95,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'no_reply',
+    projectScoped: true,
     label: 'No reply',
     blurb: 'Emailed at least once, never answered.',
     columns: DEFAULT_COLUMNS,
@@ -98,6 +108,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'replied',
+    projectScoped: true,
     label: 'Replied',
     blurb: 'People who wrote back.',
     columns: DEFAULT_COLUMNS,
@@ -108,6 +119,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'recent',
+    projectScoped: true,
     label: 'Recently added',
     blurb: `Added in the last ${RECENTLY_ADDED_DAYS} days.`,
     columns: ['full_name', 'current_title', 'current_company', 'emails', 'created_at'],
@@ -120,6 +132,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'duplicates',
+    projectScoped: false,
     label: 'Possible duplicates',
     blurb: 'People who may be in the CRM twice.',
     // Its own panel, like the tray: groups of records rather than rows, and
@@ -133,6 +146,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'discovered',
+    projectScoped: false,
     label: 'Discovered',
     blurb: 'People you have emailed who are not in Contacts yet.',
     // Rendered by DiscoveredTray, not the grid: different rows, different
@@ -147,6 +161,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'voice_intake',
+    projectScoped: false,
     label: 'Intake',
     blurb: 'People who completed a call or text intake, with the preferences they stated.',
     columns: [
@@ -167,6 +182,7 @@ export const CONTACT_VIEWS = [
   },
   {
     id: 'all',
+    projectScoped: false,
     label: 'Sourced pool',
     blurb: 'Every profile in the workspace, contacted or not.',
     columns: ['full_name', 'current_title', 'current_company', 'emails', 'created_at'],
@@ -194,7 +210,10 @@ function daysAgo(now, days) {
  * than being recomputed at three call sites with three different ideas of
  * "90 days".
  */
-export function resolveParams(viewId, { q = '', sort, dir, page = 0, now = new Date() } = {}) {
+export function resolveParams(
+  viewId,
+  { q = '', sort, dir, page = 0, projectId = null, now = new Date() } = {},
+) {
   const view = viewById(viewId);
   const params = {
     ...view.params,
@@ -205,6 +224,9 @@ export function resolveParams(viewId, { q = '', sort, dir, page = 0, now = new D
   };
 
   if (q) params.q = q;
+  // Only where the view claims to be about a mandate. Sending it on the
+  // sourced pool would quietly contradict the blurb over the grid.
+  if (projectId && view.projectScoped) params.project_id = projectId;
 
   if (view.id === 'no_reply') {
     // The API applies the same grace period; sending it explicitly keeps the

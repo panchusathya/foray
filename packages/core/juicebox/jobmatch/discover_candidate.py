@@ -178,6 +178,7 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
     candidate_id = str(job.payload.get("candidate_id") or "")
     candidate = db.get(Candidate, candidate_id)
     if candidate is None or candidate.org_id != job.org_id:
+        _record_discovery_outcome(job, "failed", "candidate not found")
         return {"skipped": "candidate not found"}
 
     preference = db.scalar(
@@ -192,6 +193,7 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
         if str(item).strip()
     ] or (queries_for(preference) if preference is not None else [])
     if not queries:
+        _record_discovery_outcome(job, "empty", "not enough of a spec to search on")
         return {"skipped": "not enough of a spec to search on"}
 
     client = get_exa()
@@ -203,7 +205,9 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
         except ExaUnavailable as exc:
             # No key: say so once and stop, rather than failing per query.
             logger.warning("candidate discovery skipped, exa unavailable: %s", exc)
-            return {"skipped": "exa not configured"}
+            detail = str(exc) or "exa not configured"
+            _record_discovery_outcome(job, "unavailable", detail)
+            return {"skipped": detail}
         except Exception as exc:  # noqa: BLE001 - one bad query must not lose the rest
             logger.warning("candidate discovery query %r failed: %s", query, exc)
             continue
@@ -234,9 +238,25 @@ def handle_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
     # preference row; ingest still runs, matching waits for a spec.
     if preference is not None:
         enqueue_match_for_candidate(db, candidate, preference=preference, now=now)
+    outcome = "ready" if results else "empty"
+    _record_discovery_outcome(
+        job,
+        outcome,
+        "" if results else "No open roles were found for this search.",
+    )
     return {
         "queries": ran,
         "results": len(results),
         "created": summary.get("created", 0),
         "queued_parse": len(pending),
     }
+
+
+def _record_discovery_outcome(job: Job, state: str, detail: str) -> None:
+    """Persist a user-facing terminal outcome alongside the durable job."""
+    job.payload = {
+        **(job.payload or {}),
+        "discovery_state": state,
+        "discovery_detail": detail[:500],
+    }
+    flag_modified(job, "payload")

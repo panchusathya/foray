@@ -282,6 +282,7 @@ def job_feed(
         cards.append(portal_card(jobcard(posting, match)))
         if len(cards) >= limit:
             break
+    discovery = {"state": "ready" if cards else "empty"}
     searching = False
     if not cards:
         from ..jobmatch.discover_candidate import enqueue_discovery_on_request
@@ -294,17 +295,31 @@ def job_feed(
         )
         candidate = db.get(Candidate, link.candidate_id)
         if candidate is not None:
-            searching = (
-                enqueue_discovery_on_request(
+            job = enqueue_discovery_on_request(
                     db,
                     candidate=candidate,
                     preference=preference,
                     query=q,
                     location=location,
                 )
-                is not None
-            )
-    return {"cards": cards, "searching": searching}
+            if job is None:
+                discovery = {
+                    "state": "empty",
+                    "detail": "Add a target role or search query before looking for openings.",
+                }
+            elif job.status in {"queued", "running"}:
+                discovery = {"state": job.status, "job_id": job.id}
+                searching = True
+            elif job.status == "failed":
+                discovery = {"state": "failed", "detail": (job.last_error or "Role discovery failed.")[:500]}
+            else:
+                payload = job.payload or {}
+                discovery = {
+                    "state": payload.get("discovery_state", "empty"),
+                    "detail": payload.get("discovery_detail", ""),
+                    "job_id": job.id,
+                }
+    return {"cards": cards, "searching": searching, "discovery": discovery}
 
 
 @router.get("/job-cards/{posting_id}")
@@ -436,13 +451,22 @@ def _link_candidate(
         db.add(candidate)
         db.flush()
     merge_contact_details(db, candidate, name=name, email=email, phone=phone)
-    if db.scalar(
+    # Phone-backed Foray workspaces replace the old web-account subject. This
+    # is an identity adoption, not a second candidate: move the one canonical
+    # link to the new subject so later requests resolve the same resume and
+    # job history regardless of whether they arrived by text or web.
+    existing_candidate_link = db.scalar(
         select(OpenInstinctIdentityLink).where(
             OpenInstinctIdentityLink.org_id == candidate.org_id,
             OpenInstinctIdentityLink.candidate_id == candidate.id,
         )
-    ):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Candidate is already linked")
+    )
+    if existing_candidate_link is not None:
+        existing_candidate_link.external_user_id = principal.subject
+        existing_candidate_link.verified_email = email or existing_candidate_link.verified_email
+        existing_candidate_link.verified_phone = phone or existing_candidate_link.verified_phone
+        db.flush()
+        return existing_candidate_link
     link = OpenInstinctIdentityLink(
         org_id=candidate.org_id,
         candidate_id=candidate.id,

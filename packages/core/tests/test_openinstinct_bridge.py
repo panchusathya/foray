@@ -122,6 +122,33 @@ def test_identity_link_requires_verified_claim(client, session, account, sample_
     assert response.status_code == 403
 
 
+def test_identity_link_adopts_a_web_account_to_its_phone_workspace(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    candidate = _candidate(session, account, sample_candidates)
+    _link(client)
+
+    response = client.post(
+        "/v1/internal/openinstinct/identity-links",
+        json={
+            "external_user_id": "phone:workspace-digest",
+            "email": "ada@example.com",
+            "phone": "+14155550123",
+        },
+        headers=_service_headers(
+            subject="phone:workspace-digest",
+            identities=[
+                {"kind": "email", "value": "ada@example.com", "verified": True},
+                {"kind": "phone", "value": "+14155550123", "verified": True},
+            ],
+        ),
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["candidate_id"] == candidate.id
+
+
 def test_conversation_event_creates_candidate_and_is_idempotent(
     client, session, account, monkeypatch
 ):
@@ -419,7 +446,11 @@ def test_empty_job_feed_queues_the_same_exa_search_the_messaging_bot_uses(
         headers=_service_headers(),
     )
     assert response.status_code == 200, response.text
-    assert response.json() == {"cards": [], "searching": True}
+    payload = response.json()
+    assert payload["cards"] == []
+    assert payload["searching"] is True
+    assert payload["discovery"]["state"] == "queued"
+    assert payload["discovery"]["job_id"]
     job = session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).one()
     assert job.payload["candidate_id"] == candidate.id
     assert "rust jobs in NYC" in job.payload["queries"]
@@ -434,6 +465,13 @@ def test_empty_job_feed_without_a_spec_or_query_does_not_spend_exa(
 
     response = client.get("/v1/internal/openinstinct/job-feed", headers=_service_headers())
     assert response.status_code == 200, response.text
-    assert response.json() == {"cards": [], "searching": False}
+    assert response.json() == {
+        "cards": [],
+        "searching": False,
+        "discovery": {
+            "state": "empty",
+            "detail": "Add a target role or search query before looking for openings.",
+        },
+    }
     assert session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).count() == 0
 

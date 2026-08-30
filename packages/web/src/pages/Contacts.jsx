@@ -13,6 +13,12 @@
  * Selection is *not* in the URL: it survives paging within a visit but is not
  * something you would want to send to someone, and a thousand ids in a query
  * string is not a link.
+ *
+ * The grid is scoped to the sidebar's project by default. Recruiters work one
+ * mandate at a time, and "who replied to the robot role" is the question the
+ * relationship views exist to answer -- org-wide they answer a question nobody
+ * asked. `?project=all` is the way back out, and the views that promise the
+ * whole workspace (Sourced pool, Intake) ignore the scope entirely.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -47,6 +53,9 @@ import { useAsync } from '../lib/useAsync.js';
 
 const MINUTE = 60000;
 const DAY = 86400000;
+
+/** The only value the `project` param ever holds: "ignore the sidebar". */
+const ALL_PROJECTS = 'all';
 
 /** Contacts key selection by candidate id; Sourcing keys by GitHub login. */
 const byId = (row) => row.id;
@@ -214,11 +223,45 @@ function Cell({ column, row }) {
   }
 }
 
+/**
+ * Which population you are looking at: this project, or everybody.
+ *
+ * Two buttons rather than a select. There are exactly two answers, and a
+ * closed dropdown hides which one is in force -- on a grid whose whole job is
+ * telling you who is missing, that is the one thing you cannot hide.
+ */
+function ProjectScope({ project, scoped, onChange }) {
+  return (
+    <div className="scope" role="group" aria-label="Project scope" data-testid="project-scope">
+      <button
+        type="button"
+        className="tiny"
+        aria-pressed={scoped}
+        data-testid="scope-project"
+        title={`${project.name} — only people this project has shortlisted or emailed`}
+        onClick={() => onChange(true)}
+      >
+        {project.name}
+      </button>
+      <button
+        type="button"
+        className="tiny"
+        aria-pressed={!scoped}
+        data-testid="scope-all"
+        title="All contacts — everyone in the workspace, whatever project they are on"
+        onClick={() => onChange(false)}
+      >
+        All contacts
+      </button>
+    </div>
+  );
+}
+
 export function ContactsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   // The project list is already in context for the sidebar switcher; a
   // second fetch here would just be the same rows again.
-  const { project, projects } = useCurrentProject();
+  const { project, projects, loading: projectsLoading } = useCurrentProject();
   const navigate = useNavigate();
 
   const viewId = searchParams.get('view') ?? DEFAULT_VIEW_ID;
@@ -227,6 +270,18 @@ export function ContactsPage() {
   const dir = searchParams.get('dir') ?? view.dir;
   const page = Number(searchParams.get('page') ?? 0);
   const urlQuery = searchParams.get('q') ?? '';
+
+  // The param only ever holds 'all'. *Which* project is the sidebar's business,
+  // the same way Sequences reads it -- pinning an id here would let a pasted
+  // link and the switcher directly above the grid name two different projects,
+  // and there is no reading of that screen where the user is not being lied to.
+  const scopedToProject = searchParams.get('project') !== ALL_PROJECTS;
+  // Nothing to scope by on a workspace-wide view, or in an org with no projects.
+  const canScope = Boolean(view.projectScoped && project);
+  const projectId = canScope && scopedToProject ? project.id : null;
+  // Fetching before the sidebar has resolved would paint org-wide rows for a
+  // frame and then swap them for the scoped ones.
+  const holdForProject = Boolean(view.projectScoped && projectsLoading);
 
   // The text box is the one thing that cannot live in the URL directly —
   // a param write per keystroke would push a history entry per keystroke.
@@ -275,24 +330,22 @@ export function ContactsPage() {
   const nowKey = Math.floor(Date.now() / MINUTE);
   const now = useMemo(() => new Date(nowKey * MINUTE), [nowKey]);
 
-  const listParams = resolveParams(viewId, { q: urlQuery, sort, dir, page, now });
-  const totalParams = countParams(viewId, { q: urlQuery, now });
+  const listParams = resolveParams(viewId, { q: urlQuery, sort, dir, page, projectId, now });
+  const totalParams = countParams(viewId, { q: urlQuery, projectId, now });
   const listKey = JSON.stringify(listParams);
   const totalKey = JSON.stringify(totalParams);
 
   // Hooks cannot be conditional, so the tray view short-circuits the loader
   // rather than skipping it: otherwise opening Discovered would also fetch a
   // page of candidates nobody is going to look at.
+  const idle = view.panel || holdForProject;
   const rows = useAsync(
-    () =>
-      view.panel
-        ? Promise.resolve([])
-        : api.contactsGrid({ ...listParams, include_history: true }),
-    [listKey, view.panel],
+    () => (idle ? Promise.resolve([]) : api.contactsGrid({ ...listParams, include_history: true })),
+    [listKey, idle],
   );
   const total = useAsync(
-    () => (view.panel ? Promise.resolve(null) : api.contactsCount(totalParams)),
-    [totalKey, view.panel],
+    () => (idle ? Promise.resolve(null) : api.contactsCount(totalParams)),
+    [totalKey, idle],
   );
   const sequences = useAsync(() => api.listSequences(), []);
 
@@ -308,7 +361,12 @@ export function ContactsPage() {
     setSelectionIsIdsOnly(false);
     setBulkNote('');
     lastIndex.current = null;
-  }, [viewId, urlQuery]);
+  }, [viewId, urlQuery, projectId]);
+
+  /** Absent means "the sidebar's project", so scoping back in is a delete. */
+  function setScope(toProject) {
+    patchParams({ project: toProject ? null : ALL_PROJECTS });
+  }
 
   function toggleSort(key) {
     if (sort !== key) return patchParams({ sort: key, dir: 'asc' });
@@ -343,9 +401,13 @@ export function ContactsPage() {
     <>
       <PageHeader
         title="Contacts"
+        // Says which project out loud as well as showing it in the control:
+        // a count nobody can attribute to a population is not a fact.
         subtitle={
           count != null
-            ? `${count.toLocaleString()} ${count === 1 ? 'person' : 'people'} · ${view.blurb}`
+            ? `${count.toLocaleString()} ${count === 1 ? 'person' : 'people'}${
+                projectId ? ` in ${project.name}` : ''
+              } · ${view.blurb}`
             : view.blurb
         }
         actions={
@@ -366,19 +428,32 @@ export function ContactsPage() {
         />
       ) : null}
 
-      <ViewTabs views={CONTACT_VIEWS} activeId={view.id} basePath="/contacts" />
+      <ViewTabs
+        views={CONTACT_VIEWS}
+        activeId={view.id}
+        basePath="/contacts"
+        // Search, sort and page belong to the tab you are leaving; the scope
+        // does not -- re-picking it on every tab is the whole friction this
+        // page exists to remove.
+        carry={{ project: searchParams.get('project') }}
+      />
 
       {view.panel ? (
         view.panel === 'duplicates' ? <DuplicatesPanel /> : <DiscoveredTray />
       ) : (
       <div className="stack">
-        <input
-          type="text"
-          placeholder="Search by name, title, or company…"
-          value={typed}
-          data-testid="contacts-search"
-          onChange={(event) => setTyped(event.target.value)}
-        />
+        <div className="row">
+          <input
+            type="text"
+            placeholder="Search by name, title, or company…"
+            value={typed}
+            data-testid="contacts-search"
+            onChange={(event) => setTyped(event.target.value)}
+          />
+          {canScope ? (
+            <ProjectScope project={project} scoped={scopedToProject} onChange={setScope} />
+          ) : null}
+        </div>
 
         <BulkBar
           selected={selected}
@@ -406,7 +481,7 @@ export function ContactsPage() {
 
         <ErrorBox error={rows.error} />
 
-        {rows.loading ? (
+        {rows.loading || holdForProject ? (
           <Loading label="Loading contacts…" />
         ) : data.length ? (
           <div className="card dgrid-wrap">
@@ -497,7 +572,24 @@ export function ContactsPage() {
             </table>
           </div>
         ) : (
-          <Empty>{urlQuery ? `No contacts match “${urlQuery}”.` : view.empty}</Empty>
+          <Empty>
+            {urlQuery ? `No contacts match “${urlQuery}”.` : view.empty}
+            {/* An empty grid that does not say it is filtered reads as "you
+                have nobody", which is a different and much worse claim. */}
+            {projectId ? (
+              <div className="small" style={{ marginTop: 12 }}>
+                Scoped to {project.name}.{' '}
+                <button
+                  type="button"
+                  className="tiny ghost"
+                  data-testid="empty-scope-all"
+                  onClick={() => setScope(false)}
+                >
+                  Look at all contacts
+                </button>
+              </div>
+            ) : null}
+          </Empty>
         )}
 
         {(page > 0 || data.length === PAGE_SIZE) && (

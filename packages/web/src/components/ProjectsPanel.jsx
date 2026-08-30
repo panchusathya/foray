@@ -80,8 +80,8 @@ export function ProjectsPanel() {
         </button>
       </div>
       <p className="muted small" style={{ margin: 0 }}>
-        One project per role you&apos;re filling. The one in the sidebar is the one searches and
-        sequences default to.
+        One project per role you&apos;re filling. The one in the sidebar scopes the pages under
+        it — its pipeline, its contacts, its sequences. Everything else is workspace-wide.
       </p>
       <ErrorBox error={error} />
 

@@ -243,6 +243,32 @@ def _in_crm_scope():
     )
 
 
+def _in_project(project_id: str):
+    """Everyone one project has touched -- the board *and* the outreach.
+
+    Not just ``ProjectCandidate``: ``enroll_candidates`` never creates a
+    pipeline row, so a membership-only filter would hide exactly the people
+    the project emailed and is waiting on -- which is the question the filter
+    exists to answer.
+
+    Neither subquery needs its own org guard. ``Candidate.org_id`` is already
+    pinned by the caller, and a candidate can only be attached to a project or
+    an enrolment inside their own org, so a foreign project id matches nothing
+    rather than leaking.
+    """
+    return exists(
+        select(ProjectCandidate.id).where(
+            ProjectCandidate.candidate_id == Candidate.id,
+            ProjectCandidate.project_id == project_id,
+        )
+    ) | exists(
+        select(Enrollment.id).where(
+            Enrollment.candidate_id == Candidate.id,
+            Enrollment.project_id == project_id,
+        )
+    )
+
+
 def _candidate_query(
     *,
     org_id,
@@ -250,6 +276,7 @@ def _candidate_query(
     q=None,
     seniority=None,
     scope="all",
+    project_id=None,
     relationship=None,
     stale_days=DEFAULT_STALE_DAYS,
     contacted_before=None,
@@ -301,6 +328,8 @@ def _candidate_query(
         stmt = stmt.where(_in_crm_scope())
     elif scope == "voice_intake":
         stmt = stmt.where(_in_voice_intake_scope())
+    if project_id:
+        stmt = stmt.where(_in_project(project_id))
     if needs_name:
         # Promotion falls back to the address when nothing carried a name, so
         # an @ in the full name is exactly "we never learned who this is".
@@ -392,6 +421,10 @@ def list_candidates(
     skill: list[str] | None = Query(default=None),
     seniority: list[str] | None = Query(default=None),
     scope: str = Query(default="all", description="all (sourced pool) | crm | voice_intake"),
+    project_id: str | None = Query(
+        default=None,
+        description="Only people this project has touched: its pipeline or its outreach",
+    ),
     sort: str = Query(default="name"),
     dir: str = Query(default="asc", description="asc | desc"),
     relationship: str | None = Query(default=None),
@@ -430,6 +463,7 @@ def list_candidates(
         q=q,
         seniority=seniority,
         scope=scope,
+        project_id=project_id,
         relationship=relationship,
         stale_days=stale_days,
         contacted_before=contacted_before,
@@ -474,6 +508,10 @@ def count_candidates(
     q: str | None = Query(default=None),
     seniority: list[str] | None = Query(default=None),
     scope: str = Query(default="all"),
+    project_id: str | None = Query(
+        default=None,
+        description="Only people this project has touched: its pipeline or its outreach",
+    ),
     relationship: str | None = Query(default=None),
     stale_days: int = Query(default=DEFAULT_STALE_DAYS, ge=1, le=3650),
     contacted_before: datetime | None = Query(default=None),
@@ -504,6 +542,7 @@ def count_candidates(
         q=q,
         seniority=seniority,
         scope=scope,
+        project_id=project_id,
         relationship=relationship,
         stale_days=stale_days,
         contacted_before=contacted_before,
@@ -525,6 +564,10 @@ def candidate_ids(
     q: str | None = Query(default=None),
     seniority: list[str] | None = Query(default=None),
     scope: str = Query(default="all"),
+    project_id: str | None = Query(
+        default=None,
+        description="Only people this project has touched: its pipeline or its outreach",
+    ),
     relationship: str | None = Query(default=None),
     stale_days: int = Query(default=DEFAULT_STALE_DAYS, ge=1, le=3650),
     contacted_before: datetime | None = Query(default=None),
@@ -559,6 +602,7 @@ def candidate_ids(
         q=q,
         seniority=seniority,
         scope=scope,
+        project_id=project_id,
         relationship=relationship,
         stale_days=stale_days,
         contacted_before=contacted_before,

@@ -6,15 +6,18 @@ from unittest.mock import patch
 
 from juicebox.applications.state import transition
 from juicebox.config import reset_settings_cache
+from juicebox.jobs import KIND_JOBS_DISCOVER_ONE
 from juicebox.models import (
     Application,
     ApplicationSubmission,
     Candidate,
     CandidateDocument,
+    CandidatePreference,
     IntakeMessage,
     IntakeThread,
-    JobPosting,
+    Job,
     JobMatch,
+    JobPosting,
     OpenInstinctApplicationTask,
 )
 from juicebox.openinstinct import JUICEBOX_AUDIENCE, mint_bridge_token
@@ -326,6 +329,7 @@ def test_job_feed_returns_only_linked_candidates_actionable_matches(
     assert cards[0]["posting_id"] == posting.id
     assert cards[0]["title"] == "Machine Learning Engineer"
     assert "recruiter_only" not in cards[0]
+    assert response.json()["searching"] is False
 
     card = client.get(
         f"/v1/internal/openinstinct/job-cards/{posting.id}?index=1&total=5",
@@ -393,3 +397,43 @@ def test_task_cannot_cross_org_and_recruiter_timeline_keeps_voice_plus_openinsti
     assert body["openinstinct_available"] is True
     assert body["openinstinct_conversations"][0]["channel"] == "linq"
     assert body["openinstinct_application_tasks"][0]["status"] == "needs_human"
+
+
+def test_empty_job_feed_queues_the_same_exa_search_the_messaging_bot_uses(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    candidate = _candidate(session, account, sample_candidates)
+    session.add(
+        CandidatePreference(
+            org_id=candidate.org_id,
+            candidate_id=candidate.id,
+            spec={"job_titles": ["platform engineer"], "locations": ["Remote"]},
+        )
+    )
+    session.commit()
+    _link(client)
+
+    response = client.get(
+        "/v1/internal/openinstinct/job-feed?q=rust&location=NYC",
+        headers=_service_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"cards": [], "searching": True}
+    job = session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).one()
+    assert job.payload["candidate_id"] == candidate.id
+    assert "rust jobs in NYC" in job.payload["queries"]
+
+
+def test_empty_job_feed_without_a_spec_or_query_does_not_spend_exa(
+    client, session, account, sample_candidates, monkeypatch
+):
+    _enable_bridge(monkeypatch)
+    _candidate(session, account, sample_candidates)
+    _link(client)
+
+    response = client.get("/v1/internal/openinstinct/job-feed", headers=_service_headers())
+    assert response.status_code == 200, response.text
+    assert response.json() == {"cards": [], "searching": False}
+    assert session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).count() == 0
+

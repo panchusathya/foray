@@ -27,6 +27,7 @@ from juicebox.jobmatch.discover_candidate import (
     enqueue_discovery_on_request,
     handle_discover_one,
     queries_for,
+    queries_for_request,
 )
 from juicebox.jobmatch.exa import ExaClient, set_exa
 from juicebox.jobmatch.preference import preference_term
@@ -317,6 +318,30 @@ class TestAskingGoesLooking:
         assert enqueue_discovery_on_request(
             session, candidate=candidate, preference=pref
         ) is None
+
+    def test_a_typed_query_is_enough_to_search_without_a_spec(self, session, account):
+        candidate = _candidate(session, account["org_id"], source_id="cand-foray-q")
+        assert queries_for_request(None, query="rust engineer", location="NYC") == [
+            "rust engineer jobs in NYC"
+        ]
+        job = enqueue_discovery_on_request(
+            session, candidate=candidate, query="rust engineer", location="NYC"
+        )
+        assert job is not None
+        assert job.payload["queries"] == ["rust engineer jobs in NYC"]
+
+    def test_a_pending_search_picks_up_a_later_typed_query(self, session, account):
+        candidate = _candidate(session, account["org_id"], source_id="cand-merge-q")
+        pref = _preference(session, candidate)
+        first = enqueue_discovery_on_request(session, candidate=candidate, preference=pref)
+        second = enqueue_discovery_on_request(
+            session, candidate=candidate, preference=pref, query="rust"
+        )
+        assert first is not None and second is not None
+        assert first.id == second.id
+        queries = second.payload["queries"]
+        assert "rust jobs" in queries
+        assert any("strategic finance" in q for q in queries)
 
 
 class TestTheWholeChain:

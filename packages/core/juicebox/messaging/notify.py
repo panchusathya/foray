@@ -71,6 +71,11 @@ def manager_thread_for(db: Session, *, org_id: str, candidate_id: str) -> Intake
             IntakeThread.candidate_id == candidate_id,
             IntakeThread.status == STATUS_ACTIVE,
             IntakeThread.mode.in_(tuple(MANAGER_MODES)),
+            # Foray Instinct owns these threads and pulls the job feed
+            # itself.  Notifying through a channel we cannot send on would
+            # drop the cards, and a mirrored inbound must not steal the
+            # standing Linq line if the candidate still has one.
+            IntakeThread.channel != "openinstinct",
         )
         .order_by(IntakeThread.last_inbound_at.desc(), IntakeThread.created_at.desc())
         .limit(1)

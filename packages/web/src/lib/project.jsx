@@ -50,6 +50,16 @@ export function CurrentProjectProvider({ children }) {
     return projects.find((p) => p.id === projectId) ?? projects[0];
   }, [projects, projectId]);
 
+  // Write the fallback back. Without this, a stored id that is not in the list
+  // -- a deleted project, a project from another account on the same browser --
+  // leaves `projectId` and the effective `project` permanently disagreeing, so
+  // every consumer that reads the raw id instead of `project.id` silently
+  // scopes to the wrong thing. `list_projects` is newest-first, so the
+  // fallback is the newest project, not an arbitrary one.
+  useEffect(() => {
+    if (!loading && project && project.id !== projectId) setProject(project.id);
+  }, [loading, project, projectId, setProject]);
+
   const value = useMemo(
     () => ({ projects, project, loading, setProject, reload }),
     [projects, project, loading, setProject, reload],

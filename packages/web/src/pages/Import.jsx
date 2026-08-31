@@ -5,16 +5,20 @@ import { Badge, Empty, ErrorBox, PageHeader, Stat } from '../components/common.j
 import { api } from '../lib/api.js';
 import {
   IMPORT_STATE_KEY,
+  applyKnownMatches,
   buildImportRows,
   chunk,
   describeImport,
   detectColumns,
   hasEmailColumn,
+  knownLookupPayload,
   parseDelimited,
   pruneChosen,
   readImportDraft,
   summarizeImport,
+  withoutDuplicates,
 } from '../lib/csvImport.js';
+import { newestOnly } from '../lib/race.js';
 
 // Import candidates from a Juicebox CSV export and drop them straight into a
 // sequence. The whole point is that the sequencing side is unchanged: this
@@ -27,11 +31,44 @@ import {
 // the whole file is on screen, with the address we would actually mail shown
 // per row, before any of it becomes a record.
 
+// The badge tones the stylesheet actually defines. This used to say
+// good/partial/bad, and .badge.good and .badge.bad do not exist -- so only
+// "risky" ever rendered styled.
 const VERIFICATION_TONE = {
-  deliverable: 'good',
+  deliverable: 'strong',
   risky: 'partial',
-  undeliverable: 'bad',
+  undeliverable: 'miss',
 };
+
+// Strongest first, same order as duplicates.MATCHED_ON on the server. A
+// name-and-company match is the weakest of the three and the one worth reading
+// sceptically, so it is toned differently rather than presented as certain.
+const MATCH_TONE = {
+  email: 'strong',
+  linkedin: 'strong',
+  name_and_company: 'partial',
+};
+
+const MATCH_LABEL = {
+  email: 'same email',
+  linkedin: 'same LinkedIn',
+  name_and_company: 'same name & company',
+};
+
+function DuplicateCell({ row }) {
+  if (!row.duplicateOf) return <span className="small muted">—</span>;
+  const { candidateId, fullName, matchedOn, reason } = row.duplicateOf;
+  return (
+    <div className="cell-stack" data-testid="import-duplicate">
+      <Link to={`/contacts/${candidateId}`} className="small">
+        {fullName || 'existing contact'}
+      </Link>
+      <span className="cell-sub small muted" title={reason}>
+        <Badge tone={MATCH_TONE[matchedOn] ?? ''}>{MATCH_LABEL[matchedOn] ?? matchedOn}</Badge>
+      </span>
+    </div>
+  );
+}
 
 function EmailCell({ row }) {
   if (row.primaryEmail) {
@@ -77,7 +114,15 @@ export function ImportPage() {
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState('');
   const [error, setError] = useState(null);
+  // True while the CRM check is in flight; the buttons stay live, because an
+  // import with no duplicate information is still a correct import.
+  const [checking, setChecking] = useState(false);
+  const [dupeScanTruncated, setDupeScanTruncated] = useState(false);
   const inputRef = useRef(null);
+  // A second file dropped while the first check is in flight resolves in
+  // whatever order the network gives them, and without this the slower answer
+  // wins -- flagging rows in file B against the identities of file A.
+  const startCheck = useRef(newestOnly()).current;
 
   // Restore a draft before anything else, so coming back from Sequences lands
   // on the same table you left.
@@ -91,7 +136,11 @@ export function ImportPage() {
     if (!draft) return;
     setFileName(draft.fileName);
     setSheetNote(draft.sheetNote);
-    load(draft.text, { keep: draft.chosen });
+    const restored = load(draft.text, { keep: draft.chosen });
+    // Matches are derived, not stored: re-deriving on restore is cheaper than
+    // widening the draft shape, and it also picks up anything imported from
+    // another tab while this page was away.
+    checkKnown(restored.rows);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -164,20 +213,53 @@ export function ImportPage() {
       }
     }
 
-    const keys = load(text, { keep: null });
+    const { keys, rows } = load(text, { keep: null });
     remember({ text, fileName: file.name, sheetNote: note, chosen: keys });
+    checkKnown(rows);
+  }
+
+  // Ask the server which rows are already contacts, then untick them. Nothing
+  // here blocks the import: a failure leaves the table unflagged, the same
+  // forgiveness the sequence picker takes, because "we could not check" must
+  // not become "you cannot import".
+  async function checkKnown(rows) {
+    const people = knownLookupPayload(rows);
+    if (!people.length) return;
+    const isNewest = startCheck();
+    setChecking(true);
+    setDupeScanTruncated(false);
+    try {
+      const answer = await api.knownContacts({ people });
+      if (!isNewest()) return;
+      const flagged = applyKnownMatches(rows, answer?.matches);
+      setImportRows(flagged);
+      setDupeScanTruncated(Boolean(answer?.truncated));
+      // Pruned from whatever is selected *now*, not from the selection this
+      // check started with: the recruiter can tick and untick while it is in
+      // flight, and replacing the set wholesale threw that work away.
+      setChosen((previous) => {
+        const next = new Set(withoutDuplicates([...previous], flagged));
+        persistChosen(next);
+        return next;
+      });
+    } catch {
+      /* the table just stays unflagged; importing still works */
+    } finally {
+      if (isNewest()) setChecking(false);
+    }
   }
 
   // One place that turns delimited text into the review table, used by both a
-  // fresh file and a restored draft. Returns the keys it selected, because the
-  // caller has to write them to the draft before React has re-rendered.
+  // fresh file and a restored draft. Returns the keys it selected AND the rows
+  // it built, because the caller has to write the keys to the draft and hand
+  // the rows to the duplicate check before React has re-rendered.
   function load(text, { keep }) {
     const { headers, rows } = parseDelimited(text);
     if (!rows.length) {
       setImportRows([]);
       setColumns({});
       setParseError('No rows in that file — is it the right export?');
-      return [];
+      return { keys: [], rows: [] };
     }
     const detected = detectColumns(headers);
     const built = buildImportRows(rows, detected);
@@ -189,7 +271,7 @@ export function ImportPage() {
     const keys = keep ? pruneChosen(keep, built) : built.filter((r) => r.sendable).map((r) => r.key);
     setChosen(new Set(keys));
     setShowAll(false);
-    return keys;
+    return { keys, rows: built };
   }
 
   // sessionStorage, not state: routing to Sequences unmounts this page, and
@@ -264,6 +346,14 @@ export function ImportPage() {
     });
   }
 
+  function removeDuplicates() {
+    setChosen((previous) => {
+      const next = new Set(withoutDuplicates([...previous], importRows));
+      persistChosen(next);
+      return next;
+    });
+  }
+
   function reset() {
     setFileName('');
     setImportRows([]);
@@ -274,6 +364,8 @@ export function ImportPage() {
     setSheetNote('');
     setLanded(null);
     setError(null);
+    setChecking(false);
+    setDupeScanTruncated(false);
     forget();
     if (inputRef.current) inputRef.current.value = '';
   }
@@ -374,6 +466,27 @@ export function ImportPage() {
                 This export has no email columns at all, so nobody in it can be sequenced.
                 Re-export with “Personal Email” ticked.
               </Empty>
+            ) : null}
+            {checking ? (
+              <div className="small muted" data-testid="import-checking">
+                Checking these against your contacts…
+              </div>
+            ) : null}
+            {summary.duplicates ? (
+              <div className="small muted" data-testid="import-duplicate-note">
+                {summary.duplicates} row{summary.duplicates === 1 ? '' : 's'} already
+                {summary.duplicates === 1 ? ' matches' : ' match'} someone in Contacts and
+                {summary.duplicates === 1 ? ' has' : ' have'} been unticked. Importing one
+                anyway is safe — it updates the record it matched rather than adding a second —
+                but a match on name and company alone can be two different people, so check
+                before you re-tick it.
+              </div>
+            ) : null}
+            {dupeScanTruncated ? (
+              <div className="small muted" data-testid="import-duplicate-truncated">
+                This workspace has more contacts than the LinkedIn check scans, so a row with no
+                badge is not proof it is new. Address matches are unaffected.
+              </div>
             ) : null}
             {summary.undeliverableOnly ? (
               <div className="small muted">
@@ -479,6 +592,17 @@ export function ImportPage() {
                 Show the {summary.total - summary.sendable} row
                 {summary.total - summary.sendable === 1 ? '' : 's'} that cannot be mailed
               </label>
+              {summary.duplicates ? (
+                <button
+                  type="button"
+                  className="tiny"
+                  onClick={removeDuplicates}
+                  data-testid="import-remove-duplicates"
+                >
+                  Remove {summary.duplicates} duplicate
+                  {summary.duplicates === 1 ? '' : 's'} from the selection
+                </button>
+              ) : null}
             </div>
 
             <table className="jobs-table">
@@ -489,6 +613,7 @@ export function ImportPage() {
                   <th>Title</th>
                   <th>Company</th>
                   <th>Email we would use</th>
+                  <th>Already in contacts</th>
                 </tr>
               </thead>
               <tbody>
@@ -507,6 +632,9 @@ export function ImportPage() {
                     <td className="small">{row.company || '—'}</td>
                     <td>
                       <EmailCell row={row} />
+                    </td>
+                    <td>
+                      <DuplicateCell row={row} />
                     </td>
                   </tr>
                 ))}

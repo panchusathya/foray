@@ -166,6 +166,10 @@ export const api = {
   bulkCandidates: (payload) => request('/v1/candidates/bulk', { method: 'POST', body: payload }),
   // Converts an uploaded .xlsx to CSV text; the browser does the mapping.
   workbookToCsv: (file) => upload('/v1/imports/workbook', file),
+  // Which rows of an import are already contacts. Read-only -- the browser
+  // parses the file but has no view of the CRM, and this is the one question
+  // it cannot answer for itself.
+  knownContacts: (payload) => request('/v1/imports/known', { method: 'POST', body: payload }),
   // Buys contact details for sourced candidates. Goes through /v1 rather than
   // lib/foray.js on purpose: /foray/* is unauthenticated, and this one spends
   // money, so it needs a principal and a reason attached.
@@ -226,7 +230,11 @@ export const api = {
   getSequence: (id) => request(`/v1/sequences/${id}`),
   updateSequence: (id, payload) => request(`/v1/sequences/${id}`, { method: 'PATCH', body: payload }),
   replaceSteps: (id, steps) => request(`/v1/sequences/${id}/steps`, { method: 'PUT', body: steps }),
-  cloneSequence: (id) => request(`/v1/sequences/${id}/clone`, { method: 'POST' }),
+  // The copy's project is the caller's to choose. Omitted, it inherits the
+  // source's -- which is what used to happen unconditionally, filing a clone
+  // of another project's sequence under that project instead of this one.
+  cloneSequence: (id, payload = {}) =>
+    request(`/v1/sequences/${id}/clone`, { method: 'POST', body: payload }),
   generateSequence: (payload) => request('/v1/sequences/generate', { method: 'POST', body: payload }),
   setSequenceStatus: (id, value) =>
     request(`/v1/sequences/${id}/status?value=${encodeURIComponent(value)}`, { method: 'PATCH' }),

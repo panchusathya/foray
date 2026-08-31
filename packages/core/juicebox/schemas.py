@@ -205,6 +205,44 @@ class BulkUpsertResult(BaseModel):
     ids: list[str]
 
 
+class KnownContactIdentity(BaseModel):
+    """One row of an import, before it is a record.
+
+    ``key`` is the client's own row key and is echoed back untouched -- the
+    server never sees the file, so it cannot say "row 41" and the caller must
+    be able to line the answer up with its own table. Every identifying field
+    is optional because a Juicebox export carries whichever columns the user
+    ticked.
+    """
+
+    key: str = Field(min_length=1, max_length=200)
+    emails: list[str] = Field(default_factory=list, max_length=10)
+    linkedin_url: str = ""
+    full_name: str = ""
+    company: str = ""
+
+
+class KnownContactsRequest(BaseModel):
+    people: list[KnownContactIdentity] = Field(default_factory=list)
+
+
+class KnownContactMatch(BaseModel):
+    key: str
+    candidate_id: str
+    full_name: str
+    # email | linkedin | name_and_company -- duplicates.MATCHED_ON, strongest
+    # first. The client renders the reason; it must not re-derive it.
+    matched_on: str
+    reason: str
+
+
+class KnownContactsResponse(BaseModel):
+    matches: list[KnownContactMatch]
+    # True when the LinkedIn pass hit its scan cap, so "no match" stops meaning
+    # "definitely new". The page says so rather than implying a clean file.
+    truncated: bool = False
+
+
 class ExperienceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -620,6 +658,22 @@ class SequenceOut(BaseModel):
     sender_mode: str
     mailbox_id: str | None
     steps: list[SequenceStepOut]
+
+
+class CloneSequenceRequest(BaseModel):
+    """Where the copy goes. Both fields optional; omitting both is the old behaviour.
+
+    ``project_id`` exists because the copy used to inherit the source's project
+    unconditionally, which put a sequence cloned from another project's template
+    into *that* project while the recruiter was looking at their own -- and the
+    Sequences list filters on project, so the copy simply was not there.
+
+    ``None`` means "keep the source's", not "clear it": clearing would strand
+    the copy outside every project view. Use PATCH to detach one deliberately.
+    """
+
+    project_id: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class SequenceUpdate(BaseModel):

@@ -199,6 +199,86 @@ class TestCloneSequence:
         copy = client.post(f"/v1/sequences/{sequence['id']}/clone", headers=headers).json()
         assert copy["mailbox_id"] == connection.id
 
+    def test_clone_with_no_body_inherits_the_source_project(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        project = client.post(
+            "/v1/projects", json={"name": "One Robot"}, headers=headers
+        ).json()
+        sequence = _create_sequence(client, headers, project_id=project["id"])
+
+        copy = client.post(f"/v1/sequences/{sequence['id']}/clone", headers=headers).json()
+        assert copy["project_id"] == project["id"]
+
+    def test_clone_lands_in_the_project_the_caller_asks_for(self, client, loaded_org):
+        # The bug this covers: the copy used to inherit the source's project
+        # unconditionally, so cloning another project's sequence as a starting
+        # point filed the copy under *that* project -- and the Sequences list
+        # filters on project, so it was not there when the recruiter looked.
+        headers = loaded_org["headers"]
+        source_project = client.post(
+            "/v1/projects", json={"name": "Baseten"}, headers=headers
+        ).json()
+        target_project = client.post(
+            "/v1/projects", json={"name": "3 Startups"}, headers=headers
+        ).json()
+        sequence = _create_sequence(client, headers, project_id=source_project["id"])
+
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/clone",
+            json={"project_id": target_project["id"]},
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+        copy = response.json()
+        assert copy["project_id"] == target_project["id"]
+        assert copy["project_id"] != sequence["project_id"]
+
+    def test_clone_takes_a_name(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        copy = client.post(
+            f"/v1/sequences/{sequence['id']}/clone",
+            json={"name": "Founding ML engineers"},
+            headers=headers,
+        ).json()
+        assert copy["name"] == "Founding ML engineers"
+
+    def test_clone_into_another_orgs_project_is_rejected(self, client, loaded_org):
+        # Same guard create, patch and enroll make: the FK only asks that the
+        # project row exist, and a cross-tenant one is read back out through
+        # /preview as that org's role_title, project_name and location.
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        rival = client.post(
+            "/v1/auth/signup",
+            json={
+                "org_name": "Rival",
+                "email": "rival-clone@rival-talent.com",
+                "password": "supersecret1",
+            },
+        ).json()
+        rival_headers = {"Authorization": f"Bearer {rival['access_token']}"}
+        rival_project = client.post(
+            "/v1/projects", json={"name": "Rival role"}, headers=rival_headers
+        ).json()
+
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/clone",
+            json={"project_id": rival_project["id"]},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
+    def test_clone_with_an_unknown_project_is_a_404_not_a_500(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        response = client.post(
+            f"/v1/sequences/{sequence['id']}/clone",
+            json={"project_id": "proj_does_not_exist"},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
 
 class TestEnrollGuards:
     def test_enrolling_into_another_orgs_project_is_rejected(self, client, loaded_org):

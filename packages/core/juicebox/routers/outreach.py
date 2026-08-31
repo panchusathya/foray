@@ -35,6 +35,7 @@ from ..outreach.sequencer import (
     suggested_date_context,
 )
 from ..schemas import (
+    CloneSequenceRequest,
     EnrollmentOut,
     EnrollRequest,
     GenerateSequenceRequest,
@@ -68,6 +69,23 @@ def _load_sequence(db: Session, sequence_id: str, org_id: str) -> Sequence:
     if sequence is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sequence not found")
     return sequence
+
+
+def _load_project(db: Session, project_id: str | None, org_id: str) -> Project | None:
+    """Resolve a project id inside the caller's org, or 404. Falsy id -> None.
+
+    The FK only asks that the project row *exist*, so an id from another org
+    would be pinned to a sequence or an enrolment and then read back out
+    through /preview, which renders that org's role_title, project_name and
+    location. Every route that accepts a project_id goes through here rather
+    than repeating the query -- there were four copies, and clone had none.
+    """
+    if not project_id:
+        return None
+    project = db.scalar(select(Project).where(Project.id == project_id, Project.org_id == org_id))
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
 
 
 def _step_from_payload(sequence_id: str, order: int, step: SequenceStepIn) -> SequenceStep:
@@ -113,18 +131,7 @@ def create_sequence(
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> SequenceOut:
-    # Same check update_sequence and enroll make: the FK only asks that the
-    # project row exist, so an id from another org would be pinned here and
-    # then read back out through /preview, which renders that org's role_title,
-    # project_name and location.
-    if payload.project_id is not None:
-        project = db.scalar(
-            select(Project).where(
-                Project.id == payload.project_id, Project.org_id == principal.org_id
-            )
-        )
-        if project is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    _load_project(db, payload.project_id, principal.org_id)
     if payload.mailbox_id:
         mailbox = db.get(MailboxConnection, payload.mailbox_id)
         if mailbox is None or mailbox.org_id != principal.org_id:
@@ -158,15 +165,7 @@ def generate_sequence(
     db: Session = Depends(get_db),
 ) -> GenerateSequenceResponse:
     """Draft a sequence from a brief. Returns an editable draft; persists nothing."""
-    project = None
-    if payload.project_id:
-        project = db.scalar(
-            select(Project).where(
-                Project.id == payload.project_id, Project.org_id == principal.org_id
-            )
-        )
-        if project is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = _load_project(db, payload.project_id, principal.org_id)
     draft, generated_by = draft_sequence(
         brief=payload.prompt, project=project, num_steps=payload.num_steps
     )
@@ -207,14 +206,8 @@ def update_sequence(
 ) -> SequenceOut:
     sequence = _load_sequence(db, sequence_id, principal.org_id)
     updates = payload.model_dump(exclude_unset=True)
-    if "project_id" in updates and updates["project_id"] is not None:
-        project = db.scalar(
-            select(Project).where(
-                Project.id == updates["project_id"], Project.org_id == principal.org_id
-            )
-        )
-        if project is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if "project_id" in updates:
+        _load_project(db, updates["project_id"], principal.org_id)
     if updates.get("mailbox_id") is not None:
         mailbox = db.get(MailboxConnection, updates["mailbox_id"])
         if mailbox is None or mailbox.org_id != principal.org_id:
@@ -287,15 +280,34 @@ def replace_steps(
 @router.post("/{sequence_id}/clone", response_model=SequenceOut, status_code=status.HTTP_201_CREATED)
 def clone_sequence(
     sequence_id: str,
+    payload: CloneSequenceRequest | None = None,
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> SequenceOut:
-    """Copy a sequence and its steps. The copy starts paused."""
+    """Copy a sequence and its steps into a project. The copy starts paused.
+
+    The project is the caller's to choose, and defaults to the source's. It
+    used to be the source's unconditionally, with no way to say otherwise --
+    so cloning another project's sequence as a starting point silently filed
+    the copy under *that* project, where the Sequences list (which filters on
+    project) could not show it to the recruiter who made it.
+    """
     source = _load_sequence(db, sequence_id, principal.org_id)
+    # None means "keep the source's", not "clear it": a copy with no project
+    # is filtered out of every project view and reads as lost. Detaching one
+    # is a deliberate PATCH.
+    project_id = source.project_id
+    name = f"{source.name} (copy)"
+    if payload is not None:
+        if payload.project_id:
+            _load_project(db, payload.project_id, principal.org_id)
+            project_id = payload.project_id
+        if payload.name:
+            name = payload.name
     copy = Sequence(
         org_id=source.org_id,
-        project_id=source.project_id,
-        name=f"{source.name} (copy)"[:200],
+        project_id=project_id,
+        name=name[:200],
         status="paused",
         personalize=source.personalize,
         stop_on_reply=source.stop_on_reply,
@@ -442,16 +454,7 @@ def enroll(
     db: Session = Depends(get_db),
 ) -> list[EnrollmentOut]:
     sequence = _load_sequence(db, sequence_id, principal.org_id)
-    # A project id from another org would otherwise reach the FK unchecked:
-    # a bogus one 500s, and a real one pins the enrolment cross-tenant.
-    if payload.project_id is not None:
-        project = db.scalar(
-            select(Project).where(
-                Project.id == payload.project_id, Project.org_id == principal.org_id
-            )
-        )
-        if project is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    _load_project(db, payload.project_id, principal.org_id)
     enrollments = enroll_candidates(
         db,
         sequence=sequence,

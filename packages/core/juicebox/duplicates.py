@@ -419,3 +419,217 @@ def merge(
     primary.updated_at = utcnow()
     db.flush()
     return {"merged": len(others), "primary_id": primary.id, "moved": moved, "error": ""}
+
+
+# --------------------------------------------------------------------------
+# "is this person already a contact?" -- asked by the CSV importer, before
+# anything is written
+# --------------------------------------------------------------------------
+#
+# Different question from ``suggestions`` above, which asks it of the CRM
+# against itself and proposes merges. This one is asked of *inbound rows* that
+# are not records yet, so the recruiter can drop them in the review table
+# rather than discover the duplicate afterwards.
+#
+# ``upsert_candidates`` already dedupes on ``(org_id, source, source_id)``, so
+# re-uploading the same export merges cleanly. What it cannot see is the same
+# human under a different ``source``: a Foray-sourced profile, a hand-added
+# contact, or somebody who rang the intake line all carry a different key, and
+# a CSV row for them creates a second row. ``uq_candidate_email_org`` looks
+# like it would stop that, but ``sync_candidate_emails`` *skips* an address
+# another candidate already owns rather than raising -- so the duplicate lands
+# with the address in its ``emails`` JSON and no projection row at all.
+
+# Ordered strongest first, like CONFIDENCE. The UI shows the strongest match.
+MATCHED_ON = ("email", "linkedin", "name_and_company")
+
+# How many IN-clause values to send at once. SQLite's default parameter
+# ceiling is what forces this, not the planner: a 5000-row file carries more
+# addresses than a single statement may bind.
+_IN_CHUNK = 400
+
+# LinkedIn is stored as it arrived -- ``normalize_candidate`` only strips it --
+# so a profile can be on file under any of a dozen spellings and there is no
+# indexed slug to join on. The match is therefore one projected scan, folded
+# in Python. Bounded, because "load every candidate into a dict" is fine once
+# per sync job and not fine inside a request; past the cap LinkedIn stops
+# contributing and ``truncated`` says so out loud rather than letting a big
+# workspace look clean.
+MAX_LINKEDIN_SCAN = 50_000
+
+
+@dataclass(frozen=True)
+class Identity:
+    """One inbound row: everything we can use to recognise who it is."""
+
+    key: str
+    emails: tuple[str, ...] = ()
+    linkedin_url: str = ""
+    full_name: str = ""
+    company: str = ""
+
+
+@dataclass(frozen=True)
+class KnownMatch:
+    key: str
+    candidate_id: str
+    full_name: str
+    matched_on: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class KnownResult:
+    matches: tuple[KnownMatch, ...] = ()
+    # True when the LinkedIn scan hit MAX_LINKEDIN_SCAN, so the answer is
+    # "these are duplicates" and never "these are all of them".
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class _Folded:
+    """An Identity with every field normalised the way the DB stores it."""
+
+    key: str
+    emails: tuple[str, ...]
+    slug: str
+    name: str
+    company: str
+
+
+def _batched(values: list[str], size: int = _IN_CHUNK):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
+def _fold(identities: list[Identity]) -> list[_Folded]:
+    from .enrich.linkedin_url import linkedin_slug
+    from .enrich.normalize import clean_emails
+    from .enrich.taxonomy import normalize_company
+
+    out: list[_Folded] = []
+    for identity in identities:
+        # The slug is computed here, server-side, and never taken from the
+        # client: the browser's linkedinSlug does not rstrip "._-" the way
+        # enrich.linkedin_url does, and a slug folded two ways silently misses.
+        out.append(
+            _Folded(
+                key=identity.key,
+                emails=tuple(clean_emails(list(identity.emails))),
+                slug=linkedin_slug(identity.linkedin_url),
+                # Gated on _is_person_name: a single token matches every
+                # "Info" and first-name-only contact in the workspace, and an
+                # address-as-name would pair people for having no name at all.
+                name=(
+                    normalise_name(identity.full_name)
+                    if _is_person_name(identity.full_name)
+                    else ""
+                ),
+                company=normalize_company(identity.company),
+            )
+        )
+    return out
+
+
+def known_contacts(db: Session, *, org_id: str, identities: list[Identity]) -> KnownResult:
+    """Which of these inbound rows are already contacts, and on what evidence.
+
+    Reads only. Set-based regardless of how many rows arrive:
+    ``repository.owner_of_email`` is a point lookup and ``owner_of_linkedin``
+    is a LIKE scan, so calling either per row would be hundreds of round
+    trips over one import. Their *predicates* are reused; the functions are
+    not.
+    """
+    folded = _fold(identities)
+    if not folded:
+        return KnownResult()
+
+    truncated = False
+    # key -> (rank in MATCHED_ON, candidate_id, name, matched_on, reason).
+    # Strongest wins, so email beats LinkedIn beats name-and-company.
+    best: dict[str, tuple[int, str, str, str, str]] = {}
+
+    def offer(key: str, candidate_id: str, name: str, matched_on: str, reason: str) -> None:
+        rank = MATCHED_ON.index(matched_on)
+        current = best.get(key)
+        if current is None or rank < current[0]:
+            best[key] = (rank, candidate_id, name, matched_on, reason)
+
+    # 1. Address. The same indexed projection owner_of_email reads, and the one
+    #    create_candidate's 409 already treats as authoritative.
+    wanted_emails = sorted({address for row in folded for address in row.emails})
+    owners: dict[str, tuple[str, str]] = {}
+    for batch in _batched(wanted_emails):
+        for address, candidate_id, name in db.execute(
+            select(CandidateEmail.email, CandidateEmail.candidate_id, Candidate.full_name)
+            .join(Candidate, Candidate.id == CandidateEmail.candidate_id)
+            .where(CandidateEmail.org_id == org_id, CandidateEmail.email.in_(batch))
+        ).all():
+            owners[address] = (candidate_id, name)
+    for row in folded:
+        for address in row.emails:
+            hit = owners.get(address)
+            if hit:
+                offer(row.key, hit[0], hit[1], "email", f"same email: {address}")
+                break
+
+    # 2. LinkedIn. One projected scan; see MAX_LINKEDIN_SCAN.
+    wanted_slugs = {row.slug for row in folded if row.slug}
+    if wanted_slugs:
+        from .enrich.linkedin_url import linkedin_slug
+
+        by_slug: dict[str, tuple[str, str]] = {}
+        # One over the cap, so a full page is distinguishable from a truncated one.
+        rows = db.execute(
+            select(Candidate.id, Candidate.full_name, Candidate.linkedin_url)
+            .where(Candidate.org_id == org_id, Candidate.linkedin_url != "")
+            .limit(MAX_LINKEDIN_SCAN + 1)
+        ).all()
+        truncated = len(rows) > MAX_LINKEDIN_SCAN
+        for candidate_id, name, url in rows[:MAX_LINKEDIN_SCAN]:
+            slug = linkedin_slug(url)
+            if slug and slug in wanted_slugs and slug not in by_slug:
+                by_slug[slug] = (candidate_id, name)
+        for row in folded:
+            hit = by_slug.get(row.slug) if row.slug else None
+            if hit:
+                offer(row.key, hit[0], hit[1], "linkedin", "same LinkedIn profile")
+
+    # 3. Name at the same company. current_company_normalized is indexed, so
+    #    this is the one match that filters in SQL; the names are folded in
+    #    Python with the same normalise_name suggestions() uses.
+    wanted_companies = sorted({row.company for row in folded if row.company and row.name})
+    if wanted_companies:
+        by_name_company: dict[tuple[str, str], tuple[str, str]] = {}
+        for batch in _batched(wanted_companies):
+            for candidate_id, name, company in db.execute(
+                select(
+                    Candidate.id,
+                    Candidate.full_name,
+                    Candidate.current_company_normalized,
+                ).where(
+                    Candidate.org_id == org_id,
+                    Candidate.current_company_normalized.in_(batch),
+                )
+            ).all():
+                if not _is_person_name(name):
+                    continue
+                by_name_company.setdefault((normalise_name(name), company), (candidate_id, name))
+        for row in folded:
+            if not (row.name and row.company):
+                continue
+            hit = by_name_company.get((row.name, row.company))
+            if hit:
+                offer(row.key, hit[0], hit[1], "name_and_company", f"same name at {row.company}")
+
+    matches = tuple(
+        KnownMatch(
+            key=key,
+            candidate_id=candidate_id,
+            full_name=name,
+            matched_on=matched_on,
+            reason=reason,
+        )
+        for key, (_, candidate_id, name, matched_on, reason) in sorted(best.items())
+    )
+    return KnownResult(matches=matches, truncated=truncated)

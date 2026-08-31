@@ -390,13 +390,19 @@ export function summarizeImport(importRows) {
   const noEmail = importRows.filter((r) => r.blocked === 'no email').length;
   const unnamed = importRows.filter((r) => r.blocked === 'no name').length;
   const unidentified = importRows.filter((r) => r.blocked === 'nothing to identify them by').length;
-  return { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified };
+  // Only counted among the sendable ones: an unmailable row is already off and
+  // reporting it twice, once as blocked and once as a duplicate, reads as two
+  // separate problems.
+  const duplicates = importRows.filter((r) => r.sendable && r.duplicateOf).length;
+  return { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified, duplicates };
 }
 
 export function describeImport(summary) {
-  const { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified } = summary;
+  const { total, sendable, undeliverableOnly, noEmail, unnamed, unidentified, duplicates } =
+    summary;
   if (!total) return 'No rows in that file.';
   const parts = [`${total} ${total === 1 ? 'row' : 'rows'}`, `${sendable} with a usable email`];
+  if (duplicates) parts.push(`${duplicates} already in contacts`);
   if (noEmail) parts.push(`${noEmail} with no email`);
   if (undeliverableOnly) {
     parts.push(`${undeliverableOnly} whose only address is undeliverable`);
@@ -404,6 +410,80 @@ export function describeImport(summary) {
   if (unnamed) parts.push(`${unnamed} with no name`);
   if (unidentified) parts.push(`${unidentified} with nothing to identify them by`);
   return `${parts.join(', ')}.`;
+}
+
+// --------------------------------------------------------------------------
+// already in contacts
+// --------------------------------------------------------------------------
+
+// `upsert_candidates` dedupes on (source, source_id), so re-uploading this same
+// export merges rather than duplicates -- that is what `sourceIdFor` buys. What
+// it cannot see is the same human under a different source: a Foray-sourced
+// profile, a hand-added contact or an intake caller each carry a different key,
+// and a row for them lands as a second record. So the page asks the server,
+// which is the only side that can see the CRM.
+
+// Matches the request schema's own ceiling. No real export row carries more
+// than three or four addresses; the cap is there so a malformed cell cannot
+// send an unbounded list.
+const MAX_LOOKUP_EMAILS = 10;
+
+export function knownLookupPayload(importRows) {
+  return importRows
+    .filter((row) => row.sendable && row.payload)
+    .map((row) => {
+      // Every address on the row, not just the ones we would mail: matching is
+      // exact, so an undeliverable work address is a bad one to send to and a
+      // perfectly good one to recognise somebody by.
+      const emails = [];
+      for (const address of [
+        ...(row.payload.emails ?? []),
+        ...(row.excludedEmails ?? []).map((entry) => entry.email),
+      ]) {
+        const clean = normalizeEmail(address);
+        if (clean && !emails.includes(clean)) emails.push(clean);
+      }
+      return {
+        key: row.key,
+        emails: emails.slice(0, MAX_LOOKUP_EMAILS),
+        linkedin_url: row.payload.linkedin_url ?? '',
+        full_name: row.payload.full_name ?? '',
+        company: row.payload.current_company ?? '',
+      };
+    })
+    // A row with nothing to match on is not worth a round trip, and asking
+    // about it would only invite a name-only guess.
+    .filter(
+      (person) =>
+        person.emails.length || person.linkedin_url || (person.full_name && person.company),
+    );
+}
+
+// Returns new rows rather than mutating: the table renders straight off them,
+// and a stale answer arriving after a second file has to be droppable.
+export function applyKnownMatches(importRows, matches) {
+  const byKey = new Map((matches ?? []).map((match) => [match.key, match]));
+  return importRows.map((row) => {
+    const match = byKey.get(row.key);
+    if (!match) return row.duplicateOf ? { ...row, duplicateOf: null } : row;
+    return {
+      ...row,
+      duplicateOf: {
+        candidateId: match.candidate_id,
+        fullName: match.full_name,
+        matchedOn: match.matched_on,
+        reason: match.reason,
+      },
+    };
+  });
+}
+
+// The selection with every known duplicate dropped. Used twice: once when the
+// answer lands (so the default action is never the surprising one) and once
+// when "Remove duplicates" is pressed.
+export function withoutDuplicates(keys, importRows) {
+  const duplicates = new Set(importRows.filter((row) => row.duplicateOf).map((row) => row.key));
+  return [...(keys ?? [])].filter((key) => !duplicates.has(key));
 }
 
 // Chunked because /v1/candidates/bulk caps a request at 5000 candidates, and a

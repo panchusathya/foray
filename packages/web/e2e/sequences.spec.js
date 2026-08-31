@@ -310,3 +310,120 @@ test.describe('sequence email rich text', () => {
     );
   });
 });
+
+test.describe('a new sequence lands in the project you are in', () => {
+  /** Two projects, with the only existing sequence living in the first. */
+  async function twoProjects(request, tag) {
+    const org = await createOrg(request, tag);
+    // Created first, so it is *older*: /v1/projects is newest-first, which is
+    // what made the source project the head of the org-wide clone list.
+    const source = await createProject(request, org, `${tag} Baseten`);
+    const target = await createProject(request, org, `${tag} Startups`);
+    const sequence = await createSequence(request, org, source.id, {
+      name: `${tag} founding ML`,
+    });
+    return { org, source, target, sequence };
+  }
+
+  test('cloning another project’s sequence puts the copy in this project', async ({
+    page,
+    request,
+  }) => {
+    // The reported bug: the clone dialog is fed the workspace-wide sequence
+    // list, the copy used to inherit the source's project, and the Sequences
+    // page filters by project -- so the copy landed under Baseten while the
+    // switcher said Startups, and was nowhere to be seen.
+    const { org, source, target, sequence } = await twoProjects(request, 'clone');
+    await login(page, org.email);
+    await page.goto('/sequences');
+
+    await page.locator('#project-switcher').selectOption({ label: `${target.name}` });
+    await expect(page.getByText('No sequences for this project yet')).toBeVisible();
+
+    await page.getByRole('button', { name: 'New sequence' }).click();
+    await page.getByRole('button', { name: /Clone an existing sequence/ }).click();
+
+    // The source list is workspace-wide, so it says which project each one is in.
+    await expect(page.getByTestId('clone-source')).toContainText(source.name);
+    // And the copy's destination defaults to the project in the switcher.
+    await expect(page.getByTestId('sequence-project')).toHaveValue(target.id);
+
+    await page.getByRole('button', { name: 'Clone' }).click();
+
+    await expect(page).toHaveURL(/\/sequences\/seq/);
+    await expect(page.getByTestId('sequence-project-picker')).toHaveValue(target.id);
+
+    // And it is on the page it was created from, not the source's.
+    await page.goto('/sequences');
+    await expect(page.locator('#project-switcher')).toHaveValue(target.id);
+    await expect(page.getByTestId('sequence-row')).toHaveCount(1);
+    await expect(page.getByTestId('sequence-row')).toContainText('(copy)');
+
+    await page.locator('#project-switcher').selectOption({ label: `${source.name}` });
+    const sourceRows = page.getByTestId('sequence-row');
+    await expect(sourceRows).toHaveCount(1);
+    await expect(sourceRows).toContainText(sequence.name);
+    await expect(sourceRows).not.toContainText('(copy)');
+  });
+
+  test('a stale ?project= does not outrank the switcher', async ({ page, request }) => {
+    // The Jobs pitch button lands here as /sequences?new=1&project=<id>. Left
+    // in the URL, that param won every later open of the modal, so the picker
+    // could name one project while the list under it showed another.
+    const { org, source, target } = await twoProjects(request, 'stale');
+    await login(page, org.email);
+    await page.goto(`/sequences?new=1&project=${source.id}`);
+
+    // Seeded from the URL on the first open.
+    await page.getByRole('button', { name: '+ Start from scratch' }).click();
+    await expect(page.getByTestId('sequence-project')).toHaveValue(source.id);
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    // ...and then consumed, so it cannot come back.
+    await expect(page).toHaveURL(/\/sequences$/);
+
+    await page.locator('#project-switcher').selectOption({ label: `${target.name}` });
+    await page.getByRole('button', { name: 'New sequence' }).click();
+    await page.getByRole('button', { name: '+ Start from scratch' }).click();
+    await expect(page.getByTestId('sequence-project')).toHaveValue(target.id);
+  });
+
+  test('a sequence in the wrong project can be moved from the editor', async ({
+    page,
+    request,
+  }) => {
+    // How the already-misfiled one gets fixed. PATCH /v1/sequences/{id} always
+    // took project_id; nothing in the UI was calling it.
+    const { org, source, target, sequence } = await twoProjects(request, 'move');
+    await login(page, org.email);
+    await page.goto(`/sequences/${sequence.id}`);
+
+    await expect(page.getByTestId('sequence-project-picker')).toHaveValue(source.id);
+    await page.getByTestId('sequence-project-picker').selectOption(target.id);
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+
+    await page.goto('/sequences');
+    await page.locator('#project-switcher').selectOption({ label: `${target.name}` });
+    await expect(page.getByTestId('sequence-row')).toContainText(sequence.name);
+    await page.locator('#project-switcher').selectOption({ label: `${source.name}` });
+    await expect(page.getByText('No sequences for this project yet')).toBeVisible();
+  });
+
+  test('a sequence in no project is admitted to, not hidden', async ({ page, request }) => {
+    // It is filtered out of every project, so without this it reads as lost.
+    const org = await createOrg(request, 'orphan');
+    const project = await createProject(request, org, 'Orphan Role');
+    await createSequence(request, org, null, { name: 'Unfiled outreach' });
+    await login(page, org.email);
+    await page.goto('/sequences');
+    await expect(page.locator('#project-switcher')).toHaveValue(project.id);
+
+    const panel = page.getByTestId('orphan-sequences');
+    await expect(panel).toContainText('1 sequence in no project');
+    await expect(page.getByTestId('sequence-row')).toHaveCount(0);
+
+    await page.getByTestId('orphan-toggle').click();
+    await expect(panel.getByTestId('sequence-row')).toContainText('Unfiled outreach');
+  });
+});

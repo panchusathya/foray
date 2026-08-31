@@ -983,18 +983,88 @@ package owns only what is different about text. Plan and phasing live in
   two disclosures that survive -- the org is named, the AI is disclosed -- which
   is the part that was always load-bearing.
 
+## Which project a sequence belongs to (`pages/Sequences.jsx`, `lib/project.jsx`)
+
+The Sequences list filters on the project in the sidebar, so `project_id` is
+not metadata -- it decides whether the recruiter can see what they just made.
+Every route that accepts one validates it through `outreach._load_project`
+(org-scoped, 404 on a miss), because the FK only asks that the row exist and a
+cross-tenant id is read straight back out through `/preview` as that org's
+`role_title`, `project_name` and `location`.
+
+- **A clone goes where the caller says, not where the source lives.**
+  `POST /v1/sequences/{id}/clone` takes an optional `project_id`. It used to
+  copy `source.project_id` unconditionally with no way to override, and the
+  clone picker is fed the **workspace-wide** list newest-first -- so cloning
+  another project's sequence as a template filed the copy under *that* project
+  while the switcher said yours, and the page could not show it. The picker now
+  names each source's project out loud. Omitting `project_id` still inherits;
+  `None` means "keep the source's", never "clear it".
+- **Never default a project to `projects[0]`.** That is how the wrong project
+  gets chosen silently. The create modal seeds from the sidebar and syncs in an
+  effect when the context resolves late -- a plain `useState` initialiser runs
+  once, and `/sequences?new=1` mounts the modal before `CurrentProjectProvider`
+  has answered.
+- **`?new=1` and `?project=` are consumed, not read.** `Sequences.jsx` reads
+  them into state, strips them from the URL, and drops the pitch project when
+  the modal closes. All three are needed: left in the URL the param outranks
+  the switcher on every later open and `?new=1` reopens the modal on a refresh;
+  kept in state past the first open it is exactly as sticky as the URL was.
+- **`useCurrentProject` writes its fallback back.** `projects.find(...) ??
+  projects[0]` used to leave the stored id and the effective project disagreeing
+  forever, and `ProjectsPanel.remove` left a dead id in `localStorage`. Both
+  now converge on one value.
+- **A sequence with no `project_id` is filtered out of every project, so the
+  page admits it exists.** An invisible row reads as lost rather than misfiled.
+  `PATCH /v1/sequences/{id}` has always taken `project_id`; the editor's
+  project picker is what finally calls it, and it is how a misfiled sequence
+  gets moved.
+
+
 ## CSV candidate import (`packages/web/src/lib/csvImport.js`)
 
-Import a Juicebox CSV export and enroll the rows in an existing sequence. There
-is deliberately **no new backend**: the page ends in the same
-`POST /v1/candidates/bulk` then `POST /v1/sequences/{id}/enroll` that Sourcing
-calls, so a CSV-sourced enrolment and a search-sourced one are the same row
-afterwards. Non-obvious points:
+Import a Juicebox CSV export and enroll the rows in an existing sequence. The
+**writing** path has deliberately no backend of its own: the page ends in the
+same `POST /v1/candidates/bulk` then `POST /v1/sequences/{id}/enroll` that
+Sourcing calls, so a CSV-sourced enrolment and a search-sourced one are the
+same row afterwards. Two **read-only** routes exist in `routers/imports.py`
+because the browser cannot answer their question for itself — see the workbook
+and duplicate-check points below. Non-obvious points:
 
 - **Parsing is client-side on purpose.** The recruiter sees every row, with the
   address we would actually mail, before anything is written — which is what
   makes "take however many I want" possible. It also means no upload endpoint
   and no half-imported file to clean up.
+- **The duplicate check is advice, and it is the only reason a second backend
+  route exists.** `duplicates.known_contacts` behind `POST /v1/imports/known`
+  answers "which of these rows is already a contact" on **email, LinkedIn, or
+  name-and-company**, and the page unticks what it names. `upsert_candidates`
+  dedupes on `(source, source_id)`, so re-uploading the same export merges --
+  what it cannot see is the same human under a *different* source, and
+  `uq_candidate_email_org` does not save you either: `sync_candidate_emails`
+  **skips** an address somebody else owns rather than raising, so the duplicate
+  lands with the address in its `emails` JSON and no projection row. A flagged
+  row the recruiter re-ticks still imports; the rule is that the *default*
+  action never does.
+- **Fold the identity server-side, never on the client.**
+  `enrich.linkedin_url.linkedin_slug` rstrips `._-` and `csvImport.linkedinSlug`
+  does not, so a slug folded on both sides silently misses. The page sends the
+  raw `linkedin_url` and the server slugs it. Do not "fix" the JS helper to
+  match -- it feeds `sourceIdFor`, and changing it changes the idempotency key
+  of every row already imported.
+- **`known_contacts` is set-based, and stays that way.** `owner_of_email` is a
+  point lookup and `owner_of_linkedin` is a `LIKE` scan; calling either per row
+  is hundreds of round trips over one import. Their predicates are reused, the
+  functions are not. LinkedIn is the weak leg -- there is no indexed slug
+  column, so it is one projected scan capped at `MAX_LINKEDIN_SCAN` and the
+  response says `truncated` rather than letting a big workspace look clean. An
+  indexed `linkedin_slug` on `candidates` would fix that leg *and*
+  `owner_of_linkedin` on the inbound-message path; it needs a migration and a
+  backfill, so it has not been done.
+- **Name-and-company is the weakest match and is presented as such.** Two John
+  Smiths at Stripe are two people. It is gated on `duplicates._is_person_name`
+  (two tokens, never an address), toned `partial` rather than `strong`, and the
+  row says which evidence matched so re-ticking is an informed act.
 - **Personal address before work, always.** `emails[0]` is what
   `sequencer.send_step` mails, so a work address in front of a personal one puts
   a recruiting pitch in somebody's work inbox. Same rule `forayImport.js`

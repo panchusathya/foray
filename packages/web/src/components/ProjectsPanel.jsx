@@ -62,6 +62,11 @@ export function ProjectsPanel() {
     setError(null);
     try {
       await api.deleteProject(project.id);
+      // Drop the selection before reloading if it was the one that just went:
+      // leaving a dead id in localStorage routes every read through the
+      // "?? projects[0]" fallback for good, so the switcher and the stored
+      // value never agree again.
+      if (current?.id === project.id) setProject(null);
       projects.reload();
       await reloadCurrentProject();
     } catch (caught) {

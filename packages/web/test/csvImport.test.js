@@ -5,12 +5,14 @@ import {
   BULK_CHUNK,
   CSV_SOURCE,
   VERIFICATION_SCORES,
+  applyKnownMatches,
   buildImportRows,
   chunk,
   describeImport,
   detectColumns,
   hasEmailColumn,
   juiceboxRowToCandidate,
+  knownLookupPayload,
   linkedinSlug,
   normalizeEmail,
   parseDelimited,
@@ -21,6 +23,7 @@ import {
   selectPhones,
   sourceIdFor,
   summarizeImport,
+  withoutDuplicates,
 } from '../src/lib/csvImport.js';
 
 // The real export header, verbatim from a Juicebox download. Kept exact so a
@@ -277,6 +280,7 @@ describe('buildImportRows and summarizeImport', () => {
       noEmail: 1,
       unnamed: 1,
       unidentified: 0,
+      duplicates: 0,
     });
   });
 
@@ -395,5 +399,125 @@ describe('selectPhones', () => {
       + '"","Engineer","Acme","","","","",""',
     );
     assert.deepEqual(juiceboxRowToCandidate(rows[0], c).phones, []);
+  });
+});
+
+describe('the already-in-contacts check', () => {
+  const { columns, rows } = parsedFixture(
+    // sendable, with a LinkedIn and a company
+    '"Ada","Lovelace","SF","https://linkedin.com/in/ada","ada@gmail.com","Deliverable",'
+    + '"ada@meta.com","Risky","","","","","Research Engineer","Meta","","","","",""',
+    // sendable, second person
+    '"Bo","Diddley","NY","https://linkedin.com/in/bo","bo@x.com","Deliverable","","",'
+    + '"","","","","Engineer","Acme","","","","",""',
+    // not sendable: only an undeliverable address
+    '"Cy","Young","LA","https://linkedin.com/in/cy","dead@x.com","Undeliverable","","",'
+    + '"","","","","Engineer","Acme","","","","",""',
+  );
+  const importRows = buildImportRows(rows, columns);
+
+  it('asks about the rows it would actually import, and no others', () => {
+    const people = knownLookupPayload(importRows);
+    assert.deepEqual(
+      people.map((p) => p.full_name),
+      ['Ada Lovelace', 'Bo Diddley'],
+    );
+    assert.equal(people[0].key, importRows[0].key);
+  });
+
+  it('sends every address on the row, not just the one it would mail', () => {
+    // An address the export marked risky or undeliverable is a bad one to mail
+    // and a perfectly good one to recognise somebody by.
+    const [ada] = knownLookupPayload(importRows);
+    assert.deepEqual(ada.emails, ['ada@gmail.com', 'ada@meta.com']);
+  });
+
+  it('sends the raw LinkedIn URL, leaving the slug to the server', () => {
+    // enrich.linkedin_url.linkedin_slug rstrips "._-" and linkedinSlug here
+    // does not, so folding on the client would make the two disagree.
+    const [ada] = knownLookupPayload(importRows);
+    assert.equal(ada.linkedin_url, 'https://linkedin.com/in/ada');
+    assert.equal(ada.company, 'Meta');
+  });
+
+  it('skips a row with nothing to match on', () => {
+    const { columns: c, rows: r } = parsedFixture(
+      '"Ada","Lovelace","SF","","ada@gmail.com","Deliverable","","","","","","",'
+      + '"Research Engineer","","","","","",""',
+    );
+    const built = buildImportRows(r, c);
+    // Has an address, so it is still worth asking about.
+    assert.equal(knownLookupPayload(built).length, 1);
+    // Strip the address and there is a name but no company, so nothing to ask.
+    const nameOnly = built.map((row) => ({
+      ...row,
+      payload: { ...row.payload, emails: [], linkedin_url: '' },
+      excludedEmails: [],
+    }));
+    assert.deepEqual(knownLookupPayload(nameOnly), []);
+  });
+
+  it('attaches a match to the row it names and leaves the rest alone', () => {
+    const flagged = applyKnownMatches(importRows, [
+      {
+        key: importRows[0].key,
+        candidate_id: 'cand_1',
+        full_name: 'Ada Lovelace',
+        matched_on: 'email',
+        reason: 'same email: ada@gmail.com',
+      },
+    ]);
+    assert.deepEqual(flagged[0].duplicateOf, {
+      candidateId: 'cand_1',
+      fullName: 'Ada Lovelace',
+      matchedOn: 'email',
+      reason: 'same email: ada@gmail.com',
+    });
+    assert.equal(flagged[1].duplicateOf, undefined);
+    // Non-mutating: the table renders off these rows, and a stale answer
+    // arriving after a second file has to be droppable.
+    assert.equal(importRows[0].duplicateOf, undefined);
+  });
+
+  it('clears a flag the newest answer does not repeat', () => {
+    const once = applyKnownMatches(importRows, [
+      { key: importRows[0].key, candidate_id: 'c', full_name: 'A', matched_on: 'email', reason: 'r' },
+    ]);
+    const again = applyKnownMatches(once, []);
+    assert.equal(again[0].duplicateOf, null);
+  });
+
+  it('tolerates a missing or empty match list', () => {
+    assert.equal(applyKnownMatches(importRows, undefined)[0].duplicateOf, undefined);
+    assert.equal(applyKnownMatches(importRows, null).length, 3);
+  });
+
+  it('counts duplicates among the sendable rows only', () => {
+    const flagged = applyKnownMatches(importRows, [
+      { key: importRows[0].key, candidate_id: 'c', full_name: 'A', matched_on: 'email', reason: 'r' },
+      // Cy cannot be mailed, so this must not be counted twice -- once as
+      // blocked and once as a duplicate.
+      { key: importRows[2].key, candidate_id: 'd', full_name: 'C', matched_on: 'email', reason: 'r' },
+    ]);
+    assert.equal(summarizeImport(flagged).duplicates, 1);
+  });
+
+  it('says so in the summary line', () => {
+    const flagged = applyKnownMatches(importRows, [
+      { key: importRows[0].key, candidate_id: 'c', full_name: 'A', matched_on: 'email', reason: 'r' },
+    ]);
+    assert.match(describeImport(summarizeImport(flagged)), /1 already in contacts/);
+    assert.doesNotMatch(describeImport(summarizeImport(importRows)), /already in contacts/);
+  });
+
+  it('drops duplicates from a selection and keeps everything else', () => {
+    const flagged = applyKnownMatches(importRows, [
+      { key: importRows[0].key, candidate_id: 'c', full_name: 'A', matched_on: 'email', reason: 'r' },
+    ]);
+    const chosen = [importRows[0].key, importRows[1].key];
+    assert.deepEqual(withoutDuplicates(chosen, flagged), [importRows[1].key]);
+    // Nothing flagged, nothing removed.
+    assert.deepEqual(withoutDuplicates(chosen, importRows), chosen);
+    assert.deepEqual(withoutDuplicates(null, flagged), []);
   });
 });

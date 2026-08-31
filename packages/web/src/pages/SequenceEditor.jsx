@@ -13,6 +13,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
 import { api, providerLabel } from '../lib/api.js';
+import { useCurrentProject } from '../lib/project.jsx';
 import { malformedInStep } from '../lib/templates.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -271,6 +272,44 @@ function CandidatePicker({ projectId, enrolledIds, busy, firstSendLabel, onCance
 }
 
 /**
+ * Which project this sequence belongs to.
+ *
+ * It decides two things and was previously visible in neither: the role that
+ * fills {{ role_title }} and friends, and whether the sequence appears on the
+ * Sequences page, which filters by the project in the sidebar. Set only at
+ * create time until now -- so a sequence that landed in the wrong project was
+ * both invisible and unfixable. PATCH /v1/sequences/{id} already took and
+ * org-validated project_id; nothing was calling it.
+ */
+function ProjectPicker({ meta, setMeta, projects }) {
+  return (
+    <div className="card row wrap small muted" style={{ alignItems: 'center' }}>
+      <span>Project</span>
+      <select
+        style={{ width: 300 }}
+        data-testid="sequence-project-picker"
+        value={meta.project_id ?? ''}
+        onChange={(event) => setMeta({ ...meta, project_id: event.target.value || null })}
+      >
+        {/* Kept selectable: a sequence can legitimately have no project, and
+            hiding the state a row is actually in reads as a broken picker. */}
+        <option value="">No project</option>
+        {projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.name}
+          </option>
+        ))}
+      </select>
+      <span>
+        {meta.project_id
+          ? "Its role fills {{ role_title }}, and the sequence shows under this project."
+          : 'A sequence in no project is hidden from every project view.'}
+      </span>
+    </div>
+  );
+}
+
+/**
  * Which mailbox this sequence sends from. Sequence-level, not per-step: a
  * conversation that changes address mid-thread arrives as a second email from
  * a stranger, so a step can never pick its own sender.
@@ -327,6 +366,7 @@ function SenderPicker({ meta, setMeta, mailboxes }) {
 export function SequenceEditorPage() {
   const { sequenceId } = useParams();
   const navigate = useNavigate();
+  const { projects } = useCurrentProject();
   const sequence = useAsync(() => api.getSequence(sequenceId), [sequenceId]);
   const enrollments = useAsync(() => api.listEnrollments(sequenceId), [sequenceId]);
   const candidates = useAsync(() => api.listCandidates({ limit: 25 }), []);
@@ -370,6 +410,7 @@ export function SequenceEditorPage() {
       from_name: sequence.data.from_name,
       sender_mode: sequence.data.sender_mode,
       mailbox_id: sequence.data.mailbox_id,
+      project_id: sequence.data.project_id,
     });
     setSteps(normalizeSteps(sequence.data.steps));
     setSelected(0);
@@ -390,6 +431,7 @@ export function SequenceEditorPage() {
           'from_name',
           'sender_mode',
           'mailbox_id',
+          'project_id',
         ].some((key) => meta[key] !== sequence.data[key])
       : false;
   const dirty = stepsDirty || metaDirty;
@@ -616,6 +658,7 @@ export function SequenceEditorPage() {
         </div>
       ) : null}
 
+      <ProjectPicker meta={meta} setMeta={setMeta} projects={projects} />
       <SenderPicker meta={meta} setMeta={setMeta} mailboxes={mailboxes} />
 
       <div className="editor-grid">

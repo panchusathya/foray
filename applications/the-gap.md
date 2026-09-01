@@ -35,21 +35,39 @@ every partner at all five programs has seen, funded once, and learned from. You 
 as two exceptional operators; you are being read as **that pattern**, until something in the
 application breaks the frame.
 
-### It's not only a perception problem — it's mechanically disqualifying at two of the five
+### ✅ Corrected 1 Sep — this is a writing problem, not a commitment problem
 
-Check the current terms yourself, but from what these programs are:
+**Both founders go full-time at the end of 2026. Settled, not under discussion.** That changes the
+size of this issue substantially, and I had it weighted too heavily.
 
-| Program | Format | Compatible with a day job? |
-|---|---|---|
-| **HF0** | Live-in residency | **No.** You move in. There is no part-time version. |
-| **a16z speedrun** | 12 weeks in SF, $1M | **No, in practice.** |
-| **Greylock Edge** | Pre-seed/seed program | Marginal |
-| **Soma Fellows** | Fellowship | Yes |
-| **Z-Fellows** | One week | Yes |
+The reason it mostly dissolves is calendar arithmetic I should have checked first. It is 1 September.
+**If a cohort starts in January 2027 or later, you are full-time before day one and there is no
+conflict at all** — the objection was never about the program, only about whether you'd show up
+for it, and a date that precedes the start date answers that completely.
 
-**HF0 and speedrun are the two you most want and the two where "full-time at year end" is a
-mechanical reject**, regardless of how good the writing is. An application that doesn't resolve
-this in its own text gets resolved for it.
+**So the one thing to verify per program is the cohort start date**, and then:
+
+| If the cohort starts | Then |
+|---|---|
+| **After 1 Jan 2027** | No issue. One sentence, unprompted, and it's closed. |
+| **Before 1 Jan 2027** | Real conflict — HF0 is a live-in residency and speedrun is twelve weeks in SF, and neither has a part-time version. Say explicitly that acceptance accelerates the date. |
+
+**The sentence to use, either way — put it in the application unprompted:**
+
+> *"We're at WestBridge until the end of 2026 and both of us are full-time on Foray from 1 January.
+> That's decided, not aspirational. If the cohort starts before then, acceptance moves the date
+> forward — we're not asking to do this part-time."*
+
+Volunteering it is what converts it. **Left unsaid, a reviewer resolves it for you, and they
+resolve it badly** — that is what happened at SPC. Said flatly with a date, it stops being an
+objection and starts being evidence that you answer hard questions before they're asked.
+
+**What remains, and it's softer than I framed it:** you haven't paid a cost yet, and reviewers
+discount stated future commitment relative to demonstrated past commitment. You can't fix that
+with a sentence — but you don't need to, because the output does it. Six weeks, around two
+demanding day jobs: a sourcing engine, a voice agent, a text agent, a browser agent, a CRM, two
+front-ends, 840 candidates contacted and a consumer waitlist. **State the constraint once, flatly,
+and let the volume of output be the argument.** Do not grind-signal; the numbers already say it.
 
 ---
 
@@ -104,55 +122,66 @@ proprietary supply"* is exactly that paragraph. It's the most important paragrap
 
 # Still missing, ranked by how much it moves the outcome
 
-## Tier 1 — the three that decide this. None is a writing problem.
+## Tier 1 — updated 1 Sep. Two of the original three moved.
 
-**1. 🔴 A date, or one founder out now.**
+**1. ✅ → 🟡 Full-time: resolved as a fact, still open as a sentence.**
 
-Options, best to worst:
+Both full-time from end of 2026, settled. **Verify each program's cohort start date**, then put
+the sentence above in every form, unprompted. Roughly ten minutes of work and it closes the
+largest objection in the pack. Don't let it go unwritten just because it's no longer in doubt
+internally — the reviewer doesn't have access to your certainty.
 
-- **One of you resigns before submitting.** Halves the objection and makes the other's year-end
-  date credible instead of aspirational. This is the single highest-leverage action available to
-  you and it is not a document.
-- **A stated date with a stated trigger:** *"Sathya's last day at WestBridge is 15 December. If we
-  are accepted, both of us are full-time from day one of the program — that is a condition we've
-  already agreed to, not a decision we'd have to make."* Put it **in the application, in writing,
-  unprompted.** Volunteering the hard thing is the only move that converts it.
-- **Say nothing and hope.** This is what the SPC application did.
+**2. 🟡 Revenue → LOIs. Reframed, and the strategy is defensible — but only instrumented.**
 
-There is no version where a reviewer at HF0 reads "full-time at year end" and doesn't act on it.
-**Answer it before they ask it.**
+You're deliberately not converting to paid; you want LOIs and committed interest, earned by
+delivering high-quality candidates free. **That reasoning is sound and belongs on the page** —
+charging now caps the candidate volume you can move, and the graph is the asset, not this quarter's
+invoices. Written out with a number attached, "$0 revenue" stops being a weakness. Written as
+"$0" with nothing beside it, it stays the weakest row in the pack. Full framing in `evidence.md`
+§16.
 
-**2. 🔴 One dollar.**
+**The bar for an LOI that counts:** named company, a number (roles / fee / contract value), a
+trigger condition, and a signature or a decision-maker's email. **Vela's $10K in writing already
+clears it and is the template.** *"They're interested"* clears none of it and is worth nothing in
+an application.
 
-Eight companies hold free work. Vela has **$10K in writing.** You are claiming commercial traction
-and reporting $0, which is a contradiction *inside your own story* — and unlike the dropout, you
-don't get the benefit of "pre-revenue is normal at this stage," because you're the ones who
-brought up eight customers. One invoice deletes the weakest row in the pack. Chase Vela.
+`Needed: how many are signed or in writing today, which companies, what each commits to.`
 
-**3. 🔴 A number for the intent thesis, and it's the same action as the consumer number.**
+**🔴 And one thing worth more than any LOI: quote a price to one of the eight and record the
+answer, even if it's no.** Nobody currently knows whether these companies will pay — including
+you — and a reviewer will notice you've never asked. **A recorded "no, but at $X we would" beats a
+friendly LOI**, because it turns your single biggest unknown into a data point that no other
+applicant can produce about this market. Asking costs nothing and you can still choose not to
+invoice.
 
-Your positioning is *we capture intent, LinkedIn is a profile graph.* Evidence: none in any form
-yet. `intent_report.py` is written and has never been run.
+**3. 🔴 The intent number. Still zero, and now the only Tier 1 item left standing.**
 
-And there's a second, larger hole hiding behind it. **The positioning claims proprietary consumer
-distribution. Zero candidates have come to you.** Every one of the ~20 was pushed out by your
-outbound on behalf of an employer. For a "LinkedIn 2.0, we own the discovery layer" thesis, the
-first question a believing reviewer asks is *"how many candidates have signed up?"* — and the
-answer is nothing.
+The consumer half of this moved last night — **the waitlist is live and has signups, which is the
+first inbound in company history** and kills the "zero candidates have ever come to you" problem.
+Get the count, the launch time and the source; *"N signups in the first 24 hours from one post, no
+spend"* is a real sentence and *"we have a waitlist"* is not.
 
-**One action fixes both.** Get 50–100 candidates through an intake conversation with the agents
-you have already built, and log what they say. That produces, in one week:
+**But the intent number itself is untouched.** Your positioning is *we capture intent; LinkedIn is
+a profile graph.* Not one form contains a number behind it. `intent_report.py` is written and has
+never been run — and the demo already claims *"signals we developed on our own to understand when
+they might be in the market,"* so the thing exists and is unmeasured.
 
-- *"N people have told us, in their own words, what would actually move them — timing, comp floor,
-  competing offers, where they will and won't go. None of it is published anywhere and none of it
-  can be scraped."* ← the sentence the entire positioning needs
-- The consumer-side number
-- The anonymised anecdote (`standing-out.md` #9), which is still the most valuable single sentence
-  available to you
-- The first real rows of the graph
+Two steps, in order:
 
-**Run the report first** — the Zoho corpus may already hold more than you think. Then go get the
-rest.
+1. **Run the report** against production. The Zoho corpus and the 85 engaged candidates may
+   already hold more than you think, and this is an hour.
+2. **Then push the waitlist signups through an intake conversation** with the agents you've
+   already built, and log what they say.
+
+That produces the sentence the whole positioning needs — *"N people have told us in their own
+words what would actually move them: timing, comp floor, competing offers, where they will and
+won't go. None of it is published anywhere and none of it can be scraped"* — plus the anonymised
+anecdote (`standing-out.md` #9), which remains the single most valuable sentence available to you.
+
+**One caution now that 840 and 85 exist.** Do not let the outbound numbers stand in for the intent
+number. *840 contacted, 85 engaged* is an excellent **funnel** claim and it proves you can reach
+people. It says nothing about holding private, durable, structured intent — which is the part
+nobody else can copy. **They are two different claims and the second one is the company.**
 
 ## Tier 2 — the standout moves. Nobody in that pile can copy these.
 
@@ -202,8 +231,12 @@ not supposed to be in."* On a16z and Z-Fellows, where both of you answer, that r
 filling two boxes. Fix is in `block-b-sathya.md` B7 — **Tushar keeps access, Sathya takes
 obligation** (the village line, which is the more unusual answer of the two anyway).
 
-**12. ⚠️ Reconcile 2–3% against 20%.** See `evidence.md` §8. If a reviewer is handed 20% and finds
-2–3% in the same company, every other number you've written dies with it.
+**12. ✅ The outbound numbers reconciled** once the aggregate landed — 2–3% (spam-flagged inbox) →
+**10.1%, 85 of 840** → ~20% on the best sequence, against a ~5% recruiter baseline. **Lead with
+the aggregate and label Baseten's 20% as the ceiling.** Hand a reviewer the best number and let
+them find the average, and every other figure on the page dies with it; lead with the average and
+name the ceiling, and you read as someone who knows their own funnel. See `evidence.md` §8 — the
+curve is a better claim than any single rate.
 
 **13.** **Sathya still has no failure answer**, and Tushar has DroneCo. On a form that asks both,
 the asymmetry is visible.
@@ -235,7 +268,9 @@ nobody can open is the same as blank.
 ## The one-sentence version
 
 > **A reviewer already believes you're good. Give them the scored judgment record so they know why
-> you picked this, one number that proves you hold data nobody else has, and a resignation date so
-> they believe you'll show up — and there is no reason left to reject you.**
+> you picked this, the funnel with its denominators so they know it works, one number that proves
+> you hold data nobody else has, and the full-time date in writing so they believe you'll show up
+> — and there is no reason left to reject you.**
 
-Everything on Tier 1 is an action, not a sentence. **You have a week.**
+Three of those four now exist. **The missing one is the intent number, and it is the one the whole
+positioning rests on.**

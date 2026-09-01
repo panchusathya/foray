@@ -2,10 +2,17 @@
 
 Graded honestly. The last column is the one you asked for.
 
+> **⚠️ Superseded in part — 1 Sep.** Three rows below are out of date and the newer numbers live in
+> `evidence.md`: the funnel is now **840 contacted → 85 engaged and qualified (10.1%) → ~20
+> delivered → 8 companies**; a **consumer waitlist went live 31 Aug** with signups inside 24 hours;
+> and **$0 revenue is a stated strategy** (LOIs earned through free high-quality delivery), not a
+> failure to close. Read `the-gap.md` for the current priority order.
+
 **The finding, before the list:** everything below supports *"we run a recruiting firm."*
 **Almost nothing supports *"we're building the intent graph."*** You have captured standing
 intent from **zero people**. That's the largest gap between the pitch and the evidence, and it's
-the most movable thing on this page.
+the most movable thing on this page. **Still true on 1 Sep** — the waitlist and the 840/85 funnel
+are reach and distribution, not captured intent. They are different claims.
 
 ---
 

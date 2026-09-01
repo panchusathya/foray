@@ -90,8 +90,50 @@ Eight companies have received candidates from us.
 | **NeoSigma** | 2 connections for Founding Business Generalist |
 | **Vapi** | 1 connection for Chief of Staff |
 
+### The funnel, end to end — assembled 1 Sep. This is the answer to "what's your traction?"
+
+Every prior version of this claim was a pile of anecdotes. **These numbers have denominators at
+every stage, which is what an accelerator is actually reading for.**
+
+| Stage | Number | Rate |
+|---|---|---|
+| Profiles indexed | **200,000** | — |
+| Candidates contacted (enterprise motion, aggregate) | **840** | — |
+| **Engaged *and* a good fit for the role** | **85** | **10.1%** |
+| Delivered to companies | **~20** | 24% of engaged |
+| Companies served | **8** | — |
+| Live processes | LangChain CoS interview in process; Vela $10K fee on offer in writing | — |
+
+**Two things make this strong beyond the raw rate.** First, **85 is a *qualified* count, not a
+reply count** — "engaged and a good fit" is a harder and more honest metric than response rate,
+and almost nobody reports it. Second, the trajectory: **2–3% → 10% aggregate → ~20% on the
+best-targeted sequence.** See §8 — that curve is better evidence than any single number.
+
+`GAP: is the 840 all-time or since the Zoho migration? And does "85 engaged" mean 85 replied and
+were qualified, or 85 of a larger reply set were qualified? The second is a better number and a
+different sentence.`
+
 **~20 candidates delivered across 8 companies in under six weeks**, all under pilot / POC
-arrangements, several done to earn the business. **No money has changed hands.**
+arrangements, several done to earn the business. **No money has changed hands — by choice.** See
+§16.
+
+### Consumer waitlist — opened 31 Aug 2026
+
+**The first inbound in the company's history.** A candidate-side waitlist went live the night of
+31 Aug and had signups within 24 hours, with no marketing spend and no launch.
+
+This closes what was, until yesterday, the largest hole in the pitch: the positioning claims
+proprietary consumer distribution and every candidate to date had been pushed out by outbound on
+an employer's behalf. **Zero candidates had ever come to Foray.** That is no longer true.
+
+`GAP — needed before this goes in a form: the signup count, the exact launch time, and where the
+signups came from (X post? DMs? word of mouth?). "N signups in the first 24 hours from a single
+post, no spend" is a real sentence; "we have a waitlist" is not.`
+
+**How to write it:** it is one day old and that is an asset, not a caveat. State the age
+explicitly — *"we opened the candidate waitlist on 31 August and had N signups in the first 24
+hours with no spend"* — because a number attached to a timestamp reads as momentum, while the same
+number unattached reads as a total.
 
 Separately, and not counted above: referrals made through the network during the day job.
 **10+ referrals, and every one has converted to an interview.** That is the best conversion
@@ -253,10 +295,12 @@ and these two firms are more likely than anyone to know these exact deals.
 
 ## 8. Honest gaps — stated, never hidden
 
-- **Revenue: $0.** Everything delivered so far has been free — pilots and POCs, several run to
-  earn the business.
-- **Neither founder is full-time yet. Both go full-time at the end of the year.** They are at
-  WestBridge and building around the job. **Write it exactly that way — flatly, with the date.**
+- **Revenue: $0 — and this is a stated choice, not a failure to close.** See §16. It stops being
+  a gap the moment the reasoning is on the page and an LOI is attached to it; it stays a gap for
+  as long as the form says "$0" and nothing else.
+- **Neither founder is full-time yet. Both go full-time at the end of 2026 — settled, not under
+  discussion.** They are at WestBridge and building around the job. **Write it exactly that way —
+  flatly, with the date.**
   "We're basically full-time" is not an answer to a binary question; it reads as hedging and
   invites the follow-up you least want. The flat version converts the weakness into evidence:
   *"not full-time until year end — and in six weeks around the day job we shipped a sourcing
@@ -265,15 +309,24 @@ and these two firms are more likely than anyone to know these exact deals.
   259 commits in five days already says it better.
 - **Dwayne has expressed interest but has not committed.** A good data point, not a co-founder,
   and not to be written as one.
-- ⚠️ **Two conflicting outbound numbers — reconcile before either one is written down.**
-  The 8/22 notes log a **2–3% cold email response rate** with the inbox flagged for spam
-  (since migrated to Zoho). The 1 Sep demo reports **~20% expressing interest on 162 sends**
-  for the Baseten sequence. Both can be true — different mailboxes, a targeted sequence
-  against a warm-ish ICP versus untargeted blast, better copy, and *interest* is not the same
-  metric as *response*. **But they cannot both appear in an application, and if a reviewer is
-  given 20% and finds 2–3%, every other number on this page dies with it.** Decide which
-  metric, which denominator, and which sends are in scope, then state it once.
-  `GAP: is 20% "replied at all" or "replied positively"? And is 162 all-time or Baseten-only?`
+- ✅ **The outbound numbers — resolved 1 Sep, and the resolution is better than any one figure.**
+  Three numbers existed and looked contradictory. With the aggregate now known they line up as a
+  **curve**, which is the honest and more persuasive way to present them:
+
+  | | Rate | Context |
+  |---|---|---|
+  | 8/22 notes | **2–3%** | shared inbox flagged for spam, pre-Zoho, untargeted |
+  | Aggregate today | **10.1%** — 85 of 840 | post-migration, five-mailbox rotation, engaged *and* qualified |
+  | Best sequence (Baseten) | **~20%** — 162 sends | tightest targeting, best copy |
+  | Recruiter baseline | **~5%** | standard cold outbound, from the recruiter interviews |
+
+  **Write the aggregate as the headline — 10% of 840, twice the industry baseline — and cite
+  Baseten's 20% as the best sequence, explicitly labelled as such.** Never lead with 20% alone:
+  a reviewer who is handed the best number and finds the average has stopped believing the rest
+  of the page. Leading with the average and naming the ceiling does the opposite — it reads as
+  someone who knows their own funnel.
+  **And the curve is the real claim:** 2–3% → 10% → 20% in six weeks is a team that measures and
+  improves, which is a better signal than any static rate.
   Recruiter benchmarks for context: Patrick 30–40% InMail, Dwayne ~40% DM with mutuals — so
   LinkedIn still beats cold email, and **that gap is the argument for owning distribution**
   rather than a weakness to hide.
@@ -414,6 +467,47 @@ places where people his age traditionally aren't, in order to have broad impact.
 **Nerdiest thing:** he operates a computer without touching a mouse, and can build most financial
 models on keyboard shortcuts alone. Small, true, specific — and quietly on-pattern: removing
 friction to raise throughput is the same instinct as sitting the SAT ten times.
+
+## 16. Why revenue is $0 — the LOI strategy, stated 1 Sep
+
+**This is deliberate and it needs to be on the page as a decision rather than discovered as an
+absence.** They are in early discussions with enterprises and startups and are **not** trying to
+convert them into paying customers yet. The goal is **letters of intent and stated commitment to
+work with Foray**, and the instrument for earning them is **delivering high-quality candidates for
+free.**
+
+**The reasoning, which is sound and should be written out:** charging now would cap the number of
+candidates they can move — every req would have to be gated behind a contract — and the asset
+being built is the candidate-side graph, not this quarter's invoices. Free delivery is the cheapest
+way to buy both proof of demand and a signed artifact. **Note also that the pricing already exists
+in the product** (`packages/core/juicebox/jobmatch/fees.py`); this is a decision not to invoice,
+not an absence of a business model. That distinction is worth one clause.
+
+⚠️ **But "we chose not to charge" is what every pre-revenue founder says, so it only works
+instrumented.** The difference between a strategy and an excuse is the artifact:
+
+**An LOI that counts has four things** — a named company, a number (roles, fee, or contract
+value), a trigger (*"upon Foray delivering a hire for X"* / *"when we open the req in Q1"*), and a
+decision-maker's signature or an email in writing. **Vela's $10K referral fee in writing is
+already LOI-grade and is the template** — it has all four.
+
+**"They're interested" has none of them and is worth nothing in an application.**
+
+So the target sentence for A3 is:
+> *"N letters of intent across M companies, representing $X in fees contingent on delivery. We
+> have deliberately not invoiced yet — charging now would cap the volume of candidates we can move,
+> and the candidate graph is the asset."*
+
+`GAP — the three things needed to write that: how many LOIs are signed or in writing today, which
+companies, and what each one commits to.`
+
+### One thing to do this week that is worth more than an LOI
+
+**Quote a price to one of the eight and record the answer — even if it's no.** Right now nobody
+knows whether these companies will pay, including you, and a reviewer will spot that you have
+never asked. **A recorded "no, but at $X we would" is more valuable than a friendly LOI**, because
+it converts your biggest unknown into a data point and it's the one piece of evidence a reviewer
+cannot get from anywhere else. It also costs nothing: you can ask and still not invoice.
 
 ## 15. The demo — recorded 1 Sep 2026
 

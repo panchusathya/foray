@@ -124,10 +124,49 @@ Eashan Vytla by name in the team's own 243-page notebook**, which is public. So:
 - ❌ *"I built the first four-wheel odometry system"* / *"I built the simulator."* Contradicted by
   a public document naming someone else.
 
-`GAP — the one question that upgrades this: what did Sathya personally build or own in the
-2021–22 season he captained? Extending the localizer, the auton, the vision stack, whatever it
-was. A specific "I" from his own season beats a vague "we" from the season before, and it is
-entirely his to claim.`
+### ✅ Answered 1 Sep — the 2021–22 season, and it closes the attribution problem
+
+In his own words: captain **and primary programmer**; maintained most of the codebase; also
+carried robot build, sponsor communication, outreach and the engineering notebook. Technical
+focus was **autonomous reliability** — hardened the four-wheel odometry localizer, started
+building **vision** into the robot, improved **PID tuning**, and pushed for a more customised
+mechanical base *because the software was only as good as the hardware it controlled*: a rigid,
+intentional base made the odometry usable in practice. The season's field had a large central
+structure that was hard to navigate, so precise autonomous movement was the binding constraint.
+His summary: *"I was not just writing code for the robot; I was working through the relationship
+between design, localization, controls, and match strategy until the system was dependable enough
+to use."*
+
+**This is the answer.** It's specific, it's his own season, it's technical, and the last sentence
+is the best thing in it — systems thinking across four layers rather than a component claim.
+
+> ⚠️ **One word to cut: "still."** He wrote *"I was captain and still the primary programmer."*
+> "Still" imports a claim about **2020–21**, and the public 243-page notebook lists him as a
+> mechanic in grade 11 with Eashan Vytla as lead programmer. Write **"I was captain and the
+> team's primary programmer"** — true of the season being described, and it doesn't reach back
+> into the year a public document contradicts. Everything else stands as written.
+
+> ⚠️ **Also soften the propagation claim.** *"After our core team graduated, the approach became
+> more common"* is unverifiable and doesn't need to carry weight. The honest and better version
+> is already in his answer: *"it was not universally better — it cost space, design time and
+> iteration — but it was better for the robot and the game we were building for."* **That
+> sentence is worth more than the adoption claim**, because engineering judgement under tradeoffs
+> is exactly what these reviewers are reading for, and almost no applicant volunteers the cost.
+
+### ✅ The localisation context — answered 1 Sep, use it as one clause
+
+- **What everyone else ran:** the standard three-wheel dead-wheel setup — two parallel tracking
+  wheels, one perpendicular. Simpler to package, easier to reason about, and it drifted.
+- **Why four wheels wasn't the default:** it makes the whole system less forgiving — wheel
+  geometry, vector math, calibration, mounting rigidity and code all have to be right at once.
+  The prevailing intuition was that *if one tracking wheel can introduce drift, more sensors just
+  give you more bad data.*
+- **The insight:** with a rigid base and careful calibration, the extra measurements stop being
+  noise and start being redundancy.
+
+**That third bullet is the whole answer to "are you technical?"** — it is a correct, non-obvious
+claim about sensor fusion, arrived at by a high schooler, with the failure mode named first. One
+sentence of it belongs in the Soma n-of-1 answer.
 
 ### Draft — captaincy + team record + the part that is unambiguously his
 
@@ -173,23 +212,90 @@ trial-by-trial table behind it and is the safest number to quote.`
 
 ## B5 — Papers or preprints
 
-`GAP — confirm. Likely none, which is fine.`
+✅ **Answered 1 Sep: none.** Answer the field as "None" and move on — it costs nothing.
 
 ## B6 — When you started building unprompted, and what you were doing growing up
 
-Partially implied by robotics, but not answered. `GAP — needed:`
-- **a16z's version:** when did you start building *software* on your own volition, and why?
-  Robotics is the obvious thread — but was software the entry point, or did it come through the
-  hardware? The specific first thing, at a specific age.
-- **Z-Fellows' version:** non-traditional things growing up. Building and self-funding a
-  championship robotics program through national grants while in high school is already an
-  answer; anything before or beside it makes it stronger.
+### ✅ First software — answered 1 Sep
+
+**Age twelve, through robotics.** A small robot/arm setup; he wrote the control logic to make it
+move in the directions and sequences he wanted. His words: *"code was not abstract. I could write
+something, upload it, and watch a physical object do something different because of it."*
+
+**Draft (a16z, ~50 words):**
+
+> Twelve, through robotics. We'd built a small arm and I wrote the control logic to make it move
+> the way we wanted. What hooked me was that code wasn't abstract — I could upload something and
+> watch a physical object behave differently because of it. Everything I've built since has been
+> some version of that.
+
+**Note the pairing.** Tushar's first build at 14 was a *marketplace* — matching supply and demand.
+Sathya's at 12 was a *controller* — making a physical system do what he intended. **Those are the
+two halves of this company and they showed up a decade early in each founder.** Worth one clause
+somewhere; not worth stating outright, a reader would rather find it.
+
+### ✅ Growing up — answered 1 Sep
+
+Parents moved farther north of the city for a better school district, adding 40–60 minutes of
+commuting to *their* day. Little of the usual after-school structure, so he *"learned to be hacky
+in almost every sense of the word"* — videos, old parts, half-working projects, whatever he could
+get hold of. *"I learned to make things work before I had the vocabulary to explain why they
+worked."*
+
+**That last line is the keeper** — it is a specific, unusual, and slightly unflattering
+description of how someone learns, which is exactly what makes it credible.
+
+> ⚠️ **This is the weakest answer in either founder's set, and it's worth knowing why.** The
+> content is honest and the sentences are good, but the *fact pattern* is common: a family
+> sacrificed for schooling and a kid taught himself from the internet. Thousands of applicants
+> have that. Tushar's equivalent — **eight schools in sixteen years** — is a fact nobody else in
+> the pile has, and it does the same narrative work.
+>
+> **The fix isn't a better paragraph, it's a harder fact.** The genuinely non-standard thing in
+> Sathya's history is already documented and sitting in B4: **at sixteen he cold-called twenty
+> companies, closed four sponsorships, and ran a national $25,000 grant application end to end
+> for a robotics team with no school funding, while families covered $10,000 a year.** That is
+> not standard by any measure. **Lead the upbringing answer with that and use the "hacky" framing
+> as the explanation for it** — the commute and the missing structure become *why* a sixteen-year
+> old was cold-calling Misumi, instead of being the whole answer.
 
 ## B7 — What drives you
 
-`GAP — needed. ~40 words (250 characters). The SPC application ends on "the technical growth and
-the bonds from those years are still my most fulfilling personal experience," which is a real
-sentence and a plausible seed for this. Give me the raw version.`
+### ✅ Answered 1 Sep
+
+His words: *"I have always wanted to get into rooms I was not supposed to be in and become useful
+once I got there."* Plus: build things that matter, leave systems better than he found them;
+technical growth matters because it expands how much he can contribute; *"it takes a village to
+raise someone"* — he's had people make room for him and feels a responsibility to do the same,
+*"without keeping score."*
+
+**Draft (250 characters — the Z-Fellows cap):**
+
+> Getting into rooms I wasn't supposed to be in, and being useful once I'm there. People made
+> room for me before I'd earned it. Technical growth is how I pay that forward — it's the only
+> thing that expands how much I can actually contribute.
+
+*(248 characters.)*
+
+> 🔴 **Collision to fix before submitting.** Tushar's answer to this same question is *"hunger to
+> learn a great deal in a short time, by being in places where people my age traditionally
+> aren't."* Sathya's is *"get into rooms I was not supposed to be in."* **These are the same
+> sentence.** On a form where both founders answer — a16z and Z-Fellows both do — a reviewer
+> reads two people with one personality, or worse, one person filling in two boxes.
+>
+> **They diverge naturally if you take each to its actual end.** Tushar's driver is *access* —
+> the room is the goal, and he manufactures entry (ten SATs, the offer ladder, the conference
+> hack). Sathya's is *usefulness* — the room is the beginning, and the second half of his answer
+> is the real one: **he wants to be the person who makes room for someone else, without keeping
+> score.** That is a materially different motive, it's the more unusual of the two, and it's
+> already in his raw answer. **Cut "rooms I wasn't supposed to be in" from Sathya's version and
+> give the whole thing to the village line.** Tushar keeps access; Sathya takes obligation.
+>
+> **Alternate draft on that axis (243 characters):**
+>
+> > It takes a village. People made room for me before I'd done anything to deserve it, and I've
+> > never been able to treat that as free. Technical growth is how I make room for the next
+> > person — it's the only thing that scales how much I can give back.
 
 ## B8 — The nerdiest thing about you
 
@@ -209,13 +315,60 @@ nothing if over-explained.
 
 ## B9 — A risk or challenge, and what it revealed
 
-`GAP — needed.` Z-Fellows asks explicitly whether you failed or succeeded, so a genuine failure
-reads better than a managed one. Candidates:
-- Taking on the robotics captaincy after a World Championship win — inheriting a peak and having
-  to beat it.
-- Self-funding the team: pursuing national grants as a high schooler, and whatever was lost along
-  the way.
-- Turning down or leaving a hedge-fund track for this.
+🔴 **Still open, and it is now the largest hole in Sathya's set.** The 1 Sep batch answered
+everything else and skipped this one. Z-Fellows asks explicitly whether you failed or succeeded,
+so **a genuine failure reads better than a managed one** — and Tushar has DroneCo, a real
+failure with a diagnosed cause, which makes an absence on Sathya's side conspicuous.
+
+Candidates, in order of how well they'd work:
+- **The four-wheel odometry bet itself.** He now has the honest version on record — it cost space,
+  design time and iteration, and was *not* universally better. **What went wrong while getting
+  there?** A season, a match, a competition lost to drift or a miscalibration? A technical bet
+  that cost something concrete before it paid is the best possible answer here.
+- Taking the captaincy after a World Championship — inheriting a peak and having to beat it.
+- Self-funding: chasing national grants as a high schooler, and the ones that were lost. Sixteen
+  prospects that said no, out of twenty.
+- Leaving the hedge-fund track.
+
+## B10–B12
+
+See `shared.md`.
+
+## Links — the state of play after 1 Sep
+
+| Item | Status |
+|---|---|
+| **FIRST robotics repo** | 🔴 *"The repository is public: [insert GitHub URL]"* — still a bracket. One paste. |
+| **Finance tooling portfolio** | 🔴 *"available here: [insert portfolio URL]"* — still a bracket. |
+| `ForayInstinct` | ✅ `github.com/panchusathya/ForayInstinct` — link this first |
+| AI-native procurement app | 🟡 URL still needed |
+| `VC_Portcos` | ⚠️ confirmed private — do not link, do not mention |
+
+## The VC Twitter follower bot — 🔴 still unanswered, and it is the most expensive gap in the pack
+
+The 1 Sep response to this question came back as **a template with every substantive field left
+as a bracket**: `[fund/company]`, `[the inputs it watched]`, `[the exact criteria]`, `[the users]`,
+`[the workflow]`, `[what it replaced]`, `[audience and purpose]`. Nothing was answered.
+
+**Why this one matters more than the others.** With the simulator withdrawn and the localizer
+team-attributed, this is **the strongest verifiable technical artifact Sathya has as an adult** —
+production sourcing infrastructure, running inside an $8B fund, built in his first year out of
+college. And it is *directly on-thesis*: a sensor watching a market for signal before it is
+announced is precisely what Foray claims to be, pointed at a different graph. **It is the single
+best answer available to Soma's technical n-of-1 question and to a16z's "what have you built"** —
+and right now it cannot be written at all.
+
+Six specifics needed, one line each:
+1. **What does it watch?** Follower deltas on specific VC accounts? Who follows whom? New account
+   creation? Founder activity? Keyword/topic pairs? Engagement velocity?
+2. **How does it decide something matters?** The actual rule or threshold. *"When three partner
+   accounts follow the same new handle inside a week"* is a real answer; *"early signals"* is not.
+3. **Who uses it, and how often?**
+4. **What did it replace?** Manual browsing, a spreadsheet, ad hoc alerts, nothing?
+5. **Has it produced a deal, an outreach, or a meeting?** One instance is worth the whole answer.
+6. **The outreach decks** — audience, what's generated, what's human.
+
+`Also still open: how much of ForayInstinct's 247 commits are his?`
 
 ## B13 — One-minute video
 

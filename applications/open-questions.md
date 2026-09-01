@@ -5,8 +5,10 @@ Bullets and fragments are fine — I compose, you supply raw material.
 
 🔴 blocks an answer · 🟡 strengthens one
 
-**Load is lopsided: Sathya has ~19 open, Tushar ~9.** Sathya's are the ones holding up the Soma
-form, which his robotics answer leads.
+**Updated 1 Sep.** Sathya's batch landed and took his list from 12 to 4. **The two lists are now
+almost entirely links** — plus two real answers (Sathya's failure, the Twitter bot) and the
+cross-founder items below. See `the-gap.md` for what is missing at the *application* level rather
+than the field level; that is now the bigger problem.
 
 ---
 
@@ -34,46 +36,31 @@ form, which his robotics answer leads.
 
 ---
 
-## Sathya — 12 (7 blocking, 5 strengthening)
+## Sathya — 4 left (down from 12 on 1 Sep)
 
-**Already settled — don't re-answer:** team is FTC 8719 "Quantum Leap", Mason OH · the drift
-figure is <0.2" over 30s across 10/10 trials vs 3–8" for the standard 3-wheel setup · captaincy
-was 2021–22 · the simulator is withdrawn (credited to Eashan Vytla in the notebook) · the
-sponsorship story is fully written from the notebook.
+**Answered 1 Sep and now written into `block-b-sathya.md`:** the 2021–22 season (captain +
+primary programmer; hardened the localizer, added vision, PID tuning, pushed the custom base) ·
+what other teams ran for localisation and why four-wheel wasn't the default · first software at
+twelve, the robot arm control logic · upbringing (the school-district move, "hacky in almost
+every sense of the word") · what drives you (the village line) · no papers.
 
-**Robotics**
-1. 🔴 **What did you personally build or own in the 2021–22 season you captained?** The notebook
-   covers 2020–21 only, so that year is entirely yours — extending the localizer, the auton,
-   vision, whatever it was. **A specific "I" from your own season beats a vague "we" from the year
-   before**, and it's the clean way to make the technical claim unambiguously yours.
-2. 🟡 **Repo URLs** — whatever is public and yours.
-3. 🟡 **What were other teams doing for localisation?** Two dead wheels, IMU-only, motor encoders?
-   Names the standard the team beat.
-4. 🟡 **Why hadn't anyone done four-wheel before?** Slip, sensor fusion, compute on the control
-   hub? One clause of real obstacle.
-5. 🟡 **Did other teams adopt it afterwards?** If it propagated, that's the proof of "first."
+**Also settled earlier — don't re-answer:** team is FTC 8719 "Quantum Leap", Mason OH · drift is
+<0.2" over 30s across 10/10 trials vs 3–8" · the simulator is withdrawn · the sponsorship story
+is fully written from the notebook.
 
-**Personal — all five blocking, none answerable from any document**
-6. 🔴 **When did you first build software because you wanted to?** Age, and the specific first
-   thing. Did software come first, or did you get there through the hardware?
-7. 🔴 **What were you doing growing up that wasn't standard?** Running and self-funding a
-   championship robotics program on national grants in high school is already an answer — what else?
-8. 🔴 **What drives you?** Raw version, any length. Your SPC line — *"the technical growth and the
-   bonds from those years are still my most fulfilling personal experience"* — is a good seed.
-   What's underneath it?
-9. 🔴 **A real risk or failure.** Taking the captaincy of a team that had already won? Chasing
-   national grants as a high schooler? Leaving the hedge-fund track? What actually went wrong?
-10. 🔴 **Any papers or preprints?** Probably none — just confirm so a16z's field can be answered.
-
-**Links and detail**
-11. 🔴 **The finance tooling portfolio link** your SPC answer refers to ("the link above").
-12. 🔴 **The VC Twitter follower bot and AI-generated outreach decks — now the most important
-    question on your list.** With the simulator gone and the localizer team-attributed, **this is
-    the strongest verifiable technical artifact you have** — and it's directly on-thesis: a sensor
-    watching a market for signal before it's announced, in production at an $8B fund, built in
-    your first year out of college. What does it watch? How does it decide something matters? Who
-    uses it? What did it replace?
-    *(Also: how much of `ForayInstinct`'s 247 commits are yours?)*
+1. 🔴 **The VC Twitter follower bot — every field came back as a bracket, and this is the most
+   expensive gap in the entire pack.** It is the strongest verifiable technical artifact you have
+   as an adult and it's directly on-thesis. Six one-line answers unblock it: what it watches; the
+   **actual rule** that decides something matters; who uses it and how often; what it replaced;
+   whether it has produced a deal, an outreach or a meeting; and the decks' audience. See
+   `block-b-sathya.md` for the full list. *(Plus: how much of `ForayInstinct` is yours?)*
+2. 🔴 **A real risk or failure.** The only question from the 1 Sep batch that came back blank, and
+   Tushar has DroneCo — the asymmetry shows. **Best candidate: the odometry bet itself.** You now
+   have the honest tradeoff on record; what did it cost before it paid? A season, a match, a
+   competition lost to drift?
+3. 🔴 **Two links, both one paste:** the robotics repo URL and the finance tooling portfolio URL.
+   Both are still literally `[insert URL]`.
+4. 🟡 **AI-native procurement app URL.**
 
 ---
 

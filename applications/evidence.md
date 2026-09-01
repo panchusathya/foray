@@ -15,7 +15,8 @@ Last verified against the repo at `7d056d5`, 29 Aug 2026.
 | Claim | Source |
 |---|---|
 | Own sourcing engine: parse → filter → retrieve → score → rerank, with evidence attached to every score | `packages/foray/`, `README.md` |
-| 200K-profile talent index, acquired 19 Aug 2026 | Bright Data; notes 8/19 |
+| 200K-profile talent index, acquired 19 Aug 2026 — GitHub, LinkedIn, personal profiles and personal sites, San Francisco | Bright Data; notes 8/19; demo 1 Sep |
+| **Profiles further embedded with in-market signals developed in-house — an attempt to infer *when* someone might be open, not just what they've done** | demo 1 Sep, verbatim; `GAP: which signals, and where in the code` |
 | Hybrid retrieval: Postgres `tsvector` (GIN) + pgvector cosine, fused with reciprocal rank fusion, LLM rerank on top | `README.md` "How search works"; `packages/core/juicebox/search/` |
 | Voice agent — live, taking real intake calls | `packages/core/juicebox/intake/`, `VOICE_INTAKE_PLAN.md` |
 | Text agent — live | `packages/core/juicebox/messaging/`, `MESSAGING_INTAKE_PLAN.md` |
@@ -82,7 +83,7 @@ Eight companies have received candidates from us.
 |---|---|
 | **Kyber** | Head of Engineering — **closed Aug 2026.** A referral we made, not a search we ran; connection made Jan 2026 via the SingleSprout team. A real outcome and a real seven-month cycle that is itself the problem statement, but **it is a referral, not a placement, and must never be written as one.** |
 | **OneRobot** | 3–4 confirmed applications from ~50 cold outbound; 2-day turnaround; founder confirmed he wants more |
-| **Baseten** | 6 candidates delivered to the head of talent for the BizOps team, 5 sourced by cold outbound; 1 interested candidate |
+| **Baseten** | Founding BizOps. **162 outreach emails sent; ~20% of candidates expressed interest, against ~5% for a recruiter's standard cold outbound.** 6 candidates delivered to the head of talent. Interested candidates came from **Meta, Harvey, Apple, Databricks and DeepMind.** *(demo 1 Sep)* |
 | **LangChain** | Chief of Staff candidate — **interview in process** |
 | **Vela** | 1 connection from an X post, 3 intros offered from ~10 inbound; **$10K referral fee on offer in writing** |
 | **Aaru** | 2 connections made to the CEO for Deployment Lead |
@@ -100,7 +101,8 @@ Inbound: none yet. Referrals have come from outbound.
 
 ## 5. Market research
 
-- **~15 recruiter conversations**, 8 recorded in depth: Corky Ribakoff and Nick Tashima
+- **~25 recruiter conversations** (updated 1 Sep from the demo; previously logged as 15–20),
+  8 recorded in depth: Corky Ribakoff and Nick Tashima
   (True Search), Patrick Kellenberger (Betts), Mitchell Barrett and Juan (Daversa), Shlok
   Punjabi (Quantum Talent), Kay Kakish (Candidate Labs), Dan Grosh (Fleming Martin),
   Dwayne Nonales (Kyth).
@@ -263,9 +265,18 @@ and these two firms are more likely than anyone to know these exact deals.
   259 commits in five days already says it better.
 - **Dwayne has expressed interest but has not committed.** A good data point, not a co-founder,
   and not to be written as one.
-- Cold email response rate 2–3%, inbox previously flagged for spam; migrated to Zoho.
-  We know this channel is our weakest and the recruiter interviews say LinkedIn beats it
-  10–15× (Patrick: 30–40% InMail; Dwayne: ~40% DM with mutuals).
+- ⚠️ **Two conflicting outbound numbers — reconcile before either one is written down.**
+  The 8/22 notes log a **2–3% cold email response rate** with the inbox flagged for spam
+  (since migrated to Zoho). The 1 Sep demo reports **~20% expressing interest on 162 sends**
+  for the Baseten sequence. Both can be true — different mailboxes, a targeted sequence
+  against a warm-ish ICP versus untargeted blast, better copy, and *interest* is not the same
+  metric as *response*. **But they cannot both appear in an application, and if a reviewer is
+  given 20% and finds 2–3%, every other number on this page dies with it.** Decide which
+  metric, which denominator, and which sends are in scope, then state it once.
+  `GAP: is 20% "replied at all" or "replied positively"? And is 162 all-time or Baseten-only?`
+  Recruiter benchmarks for context: Patrick 30–40% InMail, Dwayne ~40% DM with mutuals — so
+  LinkedIn still beats cold email, and **that gap is the argument for owning distribution**
+  rather than a weakness to hide.
 
 ## 9. Do not link, do not mention
 
@@ -403,4 +414,47 @@ places where people his age traditionally aren't, in order to have broad impact.
 **Nerdiest thing:** he operates a computer without touching a mouse, and can build most financial
 models on keyboard shortcuts alone. Small, true, specific — and quietly on-pattern: removing
 friction to raise throughput is the same instinct as sitting the SAT ten times.
+
+## 15. The demo — recorded 1 Sep 2026
+
+Four of the five forms have a field for a demo or artifact link. **The SPC application left that
+field blank.** This is the asset that fills it.
+
+**What the recording shows, in order:**
+
+1. **The thesis, in their own words** — *"at the crux of it, we believe, is a data issue."* Worth
+   noting that this is the founders arriving at the intent positioning independently and on
+   camera, before it was written down anywhere.
+2. **The index** — 200K profiles across GitHub, LinkedIn, personal profiles and personal sites,
+   San Francisco.
+3. **The intent layer** — *"we have further embedded these profiles with a few signals that we
+   have developed on our own that might help us understand when they might be in the market."*
+   **This is the first evidence that the intent thesis is built and not just argued**, and it is
+   the most important sentence in the recording.
+4. **Sequences, live** — Founding BizOps under a Baseten project; a 3-step sequence scheduled
+   2/3/4 Sep; **mailbox rotation across five mailboxes** (real deliverability engineering, not a
+   mail-merge).
+5. **The Baseten numbers** — 162 emails, ~20% interest against a 5% baseline. See §4 and the
+   ⚠️ reconciliation note in §8 before quoting.
+6. **The voice agent, live** — *"Hi Tisha, it's Foray."*
+7. **The full loop in five minutes** — a candidate states a pivot into tech over iMessage →
+   Foray spins up agents → surfaces OpenAI PM roles → fills the application → confirms → *"within
+   five minutes, you have expressed interest to move."* A completed application for *product
+   manager, API agents at OpenAI* is on screen.
+8. **Six live candidate resumes** open in-browser.
+
+**Their own framing:** voice and email are top-of-funnel; the goal is to be **the discovery layer
+and the candidate's first point of contact.**
+
+### How to use it
+
+- **Cut it to 90 seconds and lead with §3 above, not the index.** The 200K profiles are the
+  commodity half and every applicant claims a scraper; the in-market signals and the five-minute
+  intent capture are the half nobody else has. The current recording buries the good part.
+- **Two numbers on screen** — 162 → 20% vs 5%, and the five-minute loop. Numbers on screen
+  survive being watched at 2× with the sound off, which is how these get watched.
+- **Do not narrate the architecture.** Show the candidate saying something private, and show the
+  system acting on it thirty seconds later. That is the whole company.
+- `GAP: host it. An unlisted Loom or YouTube link is the deliverable — a video nobody can open is
+  the same as the blank field on the SPC form.`
 

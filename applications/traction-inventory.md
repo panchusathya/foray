@@ -120,3 +120,53 @@ referral denominator, and one Slack message to three WestBridge partners about r
 
 **Don't bother this week:** a ninth logo, more recruiter coffees, more code. You have 161K lines
 and no revenue; another 20K lines changes nothing about how these forms read.
+
+---
+
+## The intent corpus you already have — added 1 Sep
+
+**Correction to this file's headline.** It said standing briefs captured = zero and that nothing
+supports the intent-graph positioning. **That was wrong in one important way.** You already hold
+intent data — candidate timelines, referrals about people at top firms, things people told you and
+told nobody else. It isn't zero. It's **unstructured, sitting in a Zoho inbox, unmined.**
+
+**And you built the tool to mine it.** `packages/core/juicebox/integrations/zoho.py` is a complete
+Zoho Mail client: OAuth, per-folder polling against high-water marks in `sync_state`, message
+fetch. Point it at your own mailboxes, run the reply classifier over the corpus, and extract every
+statement of intent into the CRM.
+
+That single job produces four things at once:
+
+1. **A number for A3** — *"N people have privately told us their timeline, comp floor or what
+   would move them. None of it exists anywhere else."* The sentence the whole positioning needs.
+2. **The anonymised anecdote** — standing-out.md #9, the most valuable sentence available, and you
+   already have candidates for it.
+3. **A working demo** — the intent pipeline running end to end on real data, which is the
+   90-second video.
+4. **The first rows of the actual graph.**
+
+**It is roughly a day of work on code that already exists**, and it converts the thesis from a
+plan into something you are already doing. Do this before you go cold-texting engineers for
+briefs — the corpus is already yours.
+
+*(One thing to get right: this is candidate data given in confidence. Extract and store it under
+the same posture as `INTAKE_COMPLIANCE.md` — and anonymise anything that goes in an application.
+That care is itself part of the pitch.)*
+
+## The recruiter pain points, in their words — sharper than what A1 currently says
+
+From 15–20 recruiter conversations:
+
+- **They're all reaching out to the same candidates as everyone else**
+- **None of them have proprietary distribution**
+- It's hard to scale a business built this way
+- Sourcing for the *right* role is still hard
+- Getting coverage in the areas they work is hard
+
+**The second one is the whole argument, and A1 should be rebuilt on it.** Every recruiter fishes
+the same pond — LinkedIn — with the same tools, so the entire industry competes on who emails
+first. Proprietary supply is the one thing none of them have, and it is exactly what an intent
+graph is.
+
+That is a **market-structure** claim, and it is far stronger than "hiring is slow." Slow is a
+symptom. **A shared, non-proprietary candidate pool is the cause.**

@@ -28,7 +28,7 @@ from ..deps import (
     get_principal,
     require_write,
 )
-from ..integrations.crypto import encrypt_json
+from ..integrations.crypto import decrypt_json, encrypt_json
 from ..integrations.providers import (
     ProviderError,
     get_provider,
@@ -247,7 +247,7 @@ def oauth_callback(
     connection.auth_base = result.auth_base
     if result.sync_state:
         connection.sync_state = result.sync_state
-    connection.token_blob = encrypt_json(result.tokens)
+    connection.token_blob = encrypt_json(_carry_refresh_token(connection, result.tokens))
     connection.status = "active"
     connection.error = ""
     db.flush()
@@ -266,6 +266,31 @@ def oauth_callback(
         "Mailbox connected",
         f"{connection.address} can now send outreach. You can close this tab.",
     )
+
+
+def _carry_refresh_token(connection: MailboxConnection, tokens: dict) -> dict:
+    """Keep the stored refresh token when a re-consent does not return one.
+
+    Neither provider guarantees a refresh token on every consent: Zoho only
+    mints one on the first consent for a client, and Graph omits it when it
+    reuses a still-valid grant. Writing the empty string over a working one
+    leaves a connection that looks active and dies at the next refresh, so
+    reconnecting a mailbox carries the old token forward exactly as the
+    refresh path in each client already does.
+
+    An unreadable blob is not an error here: the key has rotated past every
+    configured secret, and reconnecting is the fix for that -- the fresh
+    tokens win.
+    """
+    if tokens.get("refresh_token") or not connection.token_blob:
+        return tokens
+    try:
+        stored = decrypt_json(connection.token_blob)
+    except ValueError:
+        return tokens
+    if not stored.get("refresh_token"):
+        return tokens
+    return {**tokens, "refresh_token": stored["refresh_token"]}
 
 
 def _baseline_cursors(db: Session, connection: MailboxConnection, provider) -> None:

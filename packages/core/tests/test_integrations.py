@@ -170,6 +170,37 @@ class TestConnectFlow:
         assert len(status["connections"]) == 1
         assert status["connections"][0]["display_name"] == "T. Gupta"
 
+    def test_reconnect_without_a_new_refresh_token_keeps_the_old_one(
+        self, client, account, session, ms_configured, monkeypatch
+    ):
+        _connect(client, account["headers"], monkeypatch)
+        # A consent that reuses a still-valid grant returns no refresh token.
+        # Storing that empty string leaves a connection that reads as active
+        # and dies at the next refresh, so the stored one has to survive.
+        _fake_exchange(monkeypatch)
+        monkeypatch.setattr(
+            microsoft,
+            "exchange_code",
+            lambda code: {
+                "access_token": f"at-{code}",
+                "refresh_token": "",
+                "expires_at": int(time.time()) + 3600,
+            },
+        )
+        auth_url = client.post(
+            "/v1/integrations/microsoft/connect", headers=account["headers"]
+        ).json()["auth_url"]
+        state = auth_url.split("state=")[1].split("&")[0]
+        response = client.get(f"/v1/integrations/microsoft/callback?code=xyz&state={state}")
+        assert response.status_code == 200, response.text
+
+        [connection] = client.get(
+            "/v1/integrations/mailboxes", headers=account["headers"]
+        ).json()["connections"]
+        tokens = decrypt_json(session.get(MailboxConnection, connection["id"]).token_blob)
+        assert tokens["access_token"] == "at-xyz"
+        assert tokens["refresh_token"] == "rt-abc"
+
     def test_forged_state_is_rejected(self, client, account, ms_configured, monkeypatch):
         _fake_exchange(monkeypatch)
         response = client.get("/v1/integrations/microsoft/callback?code=abc&state=forged")

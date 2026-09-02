@@ -17,11 +17,11 @@ from sqlalchemy import select
 from juicebox.intake.contact import scan_transcript
 from juicebox.intake.schema import CORE_KEYS, GATE_PRIORITY, coverage
 from juicebox.intake.service import (
-    apply_budget,
-    elapsed_since_budget,
     UNVERIFIED_NUMBER_REASON,
+    apply_budget,
     drop_reason,
     elapsed_seconds,
+    elapsed_since_budget,
     gate_keys_for,
     link_caller,
 )

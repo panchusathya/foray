@@ -18,9 +18,82 @@ env:
   JUICEBOX_LLM_ENABLED: "false"
 
 jobs:
+  # Which areas this change touches, so a PR does not pay for jobs it cannot
+  # affect. A full run bills ~35 runner-minutes across eleven jobs, and most
+  # PRs are confined to one package.
+  #
+  # Only PRs are trimmed. A push to main runs everything regardless: main is
+  # what the production VM deploys from, so that is the wrong place to be
+  # clever about coverage.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      foray: ${{ steps.filter.outputs.foray }}
+      web: ${{ steps.filter.outputs.web }}
+      ingest: ${{ steps.filter.outputs.ingest }}
+      images: ${{ steps.filter.outputs.images }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+      lock: ${{ steps.filter.outputs.lock }}
+      stack: ${{ steps.filter.outputs.stack }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Every filter includes this workflow: a CI edit runs the lot, which
+          # is how a mistake in these filters gets caught rather than hidden.
+          filters: |
+            core:
+              - 'packages/core/**'
+              - 'eval/**'
+              - '.github/workflows/ci.yml'
+            foray:
+              - 'packages/foray/**'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'packages/web/**'
+              - '.github/workflows/ci.yml'
+            ingest:
+              - 'packages/ingest/**'
+              - '.github/workflows/ci.yml'
+            images:
+              - '**/Dockerfile'
+              - '.dockerignore'
+              - 'packages/*/pyproject.toml'
+              - 'packages/*/package-lock.json'
+              - '.github/workflows/ci.yml'
+            deploy:
+              - 'docker-compose*.yml'
+              - 'deploy/**'
+              - '.github/workflows/ci.yml'
+            lock:
+              - 'packages/core/pyproject.toml'
+              - 'packages/core/uv.lock'
+              - '.github/workflows/ci.yml'
+            # What the booted stack is actually made of. Python tests are
+            # excluded deliberately -- they never run inside the containers,
+            # so a test-only change cannot break a boot or a browser spec.
+            stack:
+              - 'packages/core/juicebox/**'
+              - 'packages/core/migrations/**'
+              - 'packages/foray/**'
+              - 'packages/web/**'
+              - 'packages/ingest/**'
+              - 'docker-compose*.yml'
+              - 'deploy/**'
+              - '**/Dockerfile'
+              - '.github/workflows/ci.yml'
+
   python:
     name: python (sqlite)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.core == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +129,9 @@ jobs:
   postgres:
     name: python (postgres)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.core == 'true'
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -107,6 +183,9 @@ jobs:
     # first proven on the prod VM.
     name: foray (postgres)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.foray == 'true'
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -196,6 +275,9 @@ jobs:
   compose:
     name: compose files
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.deploy == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -223,6 +305,8 @@ jobs:
     # 6-hour default: runs #79, #80 and #83 burned 1h35m, 4h19m and 1h50m on
     # the same deadlocked seed step.
     timeout-minutes: 25
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.stack == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -339,6 +423,9 @@ jobs:
   eval:
     name: search quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.core == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -359,6 +446,9 @@ jobs:
   node:
     name: ingest (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ingest == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -379,6 +469,9 @@ jobs:
   web:
     name: web build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.web == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -399,6 +492,9 @@ jobs:
   lockfile:
     name: uv lock is current
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.lock == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -412,6 +508,9 @@ jobs:
     # is a deploy outage, so CI builds all three (no registry push).
     name: docker images build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.images == 'true'
     steps:
       - uses: actions/checkout@v4
 

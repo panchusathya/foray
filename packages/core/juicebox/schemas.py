@@ -628,6 +628,8 @@ class SequenceIn(BaseModel):
     # explicit here always wins.
     sender_mode: Literal["rotate", "fixed"] | None = None
     mailbox_id: str | None = None
+    # Under "rotate", the mailboxes to rotate over. Empty means all of them.
+    mailbox_ids: list[str] = Field(default_factory=list)
 
 
 class SequenceStepOut(BaseModel):
@@ -657,6 +659,7 @@ class SequenceOut(BaseModel):
     from_name: str
     sender_mode: str
     mailbox_id: str | None
+    mailbox_ids: list[str]
     steps: list[SequenceStepOut]
 
 
@@ -690,6 +693,11 @@ class SequenceUpdate(BaseModel):
     # anyway; with no mailbox connected at all, sends fall through to the
     # globally configured provider.
     mailbox_id: str | None = None
+    # Narrow which mailboxes "rotate" may use. An empty list widens it back to
+    # every eligible mailbox, so it clears the choice rather than meaning
+    # "none" -- a sequence that can never send is not a state worth being able
+    # to save.
+    mailbox_ids: list[str] | None = None
 
 
 class GenerateSequenceRequest(BaseModel):

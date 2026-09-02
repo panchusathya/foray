@@ -496,6 +496,16 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)
 
 
+def _rotation_subset(sequence) -> list[str]:
+    """The mailboxes this sequence's rotation is limited to.
+
+    Empty means the whole pool, which is what every sequence written before
+    the subset existed carries -- and what an untouched one keeps, so a newly
+    connected mailbox joins its rotation without an edit.
+    """
+    return list(getattr(sequence, "mailbox_ids", None) or [])
+
+
 def preview_connection(db, sequence, enrollment=None, *, now=None):
     """Which mailbox a preview should render as, or None for the global provider.
 
@@ -526,14 +536,21 @@ def preview_connection(db, sequence, enrollment=None, *, now=None):
     if getattr(sequence, "sender_mode", "rotate") == "fixed":
         return _owned(sequence.mailbox_id)
 
-    # Rotating: show whoever would send if this went out now. Falling back to
-    # any live mailbox when all are capped keeps the preview truthful about the
-    # kind of signature the candidate will see.
-    chosen = pick_mailbox(db, org_id=sequence.org_id, now=now)
+    # Rotating: show whoever would send if this went out now, within the
+    # sequence's own subset. Falling back to any live mailbox when all are
+    # capped keeps the preview truthful about the kind of signature the
+    # candidate will see.
+    only = _rotation_subset(sequence)
+    chosen = pick_mailbox(db, org_id=sequence.org_id, now=now, only=only)
     if chosen is not None:
         return chosen
-    live = active_mailboxes(db, org_id=sequence.org_id)
-    return live[0] if live else None
+    live = active_mailboxes(db, org_id=sequence.org_id, only=only)
+    if live:
+        return live[0]
+    # Nothing live to show. Under a subset, name the chosen mailbox anyway --
+    # same reasoning as the pinned branch above: a revoked address is exactly
+    # the fact the recruiter needs in order to fix it.
+    return next((c for c in map(_owned, only) if c is not None), None)
 
 
 def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender:
@@ -573,7 +590,19 @@ def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender
         # be wrong about: fall through to the globally configured provider.
         return ResolvedSender(get_sender())
 
-    connection = pick_mailbox(db, org_id=org_id, now=now)
+    only = _rotation_subset(sequence)
+    if only and not active_mailboxes(db, org_id=org_id, only=only):
+        # The sequence names its mailboxes and every one of them is gone or
+        # revoked. The rest of the pool is not a substitute -- naming a subset
+        # is precisely the instruction to keep those other addresses off this
+        # outreach -- so hold until one comes back.
+        return ResolvedSender(
+            FailingSender("this sequence's chosen mailboxes are not connected"),
+            deferred=True,
+            reason="mailbox_unavailable",
+        )
+
+    connection = pick_mailbox(db, org_id=org_id, now=now, only=only)
     if connection is None:
         # Mailboxes exist but none has room (or they are all switched off).
         # Deferring holds the send until one does; falling back to the global

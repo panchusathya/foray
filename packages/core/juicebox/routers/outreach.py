@@ -125,6 +125,27 @@ def _resolve_sender_mode(requested: str | None, mailbox_id: str | None) -> str:
     return "fixed" if mailbox_id else "rotate"
 
 
+def _checked_mailbox_ids(db: Session, org_id: str, mailbox_ids: list[str]) -> list[str]:
+    """Validate a rotation subset, preserving order and dropping duplicates.
+
+    Checked against the org for the same reason ``mailbox_id`` is: the column
+    is JSON and carries no foreign key, so an id from another org would sit
+    there unnoticed until a send tried to use it.
+    """
+    checked: list[str] = []
+    for mailbox_id in mailbox_ids:
+        if mailbox_id in checked:
+            continue
+        mailbox = db.get(MailboxConnection, mailbox_id)
+        if mailbox is None or mailbox.org_id != org_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Mailbox connection not found: {mailbox_id}",
+            )
+        checked.append(mailbox_id)
+    return checked
+
+
 @router.post("", response_model=SequenceOut, status_code=status.HTTP_201_CREATED)
 def create_sequence(
     payload: SequenceIn,
@@ -148,6 +169,7 @@ def create_sequence(
         from_name=payload.from_name,
         sender_mode=_resolve_sender_mode(payload.sender_mode, payload.mailbox_id),
         mailbox_id=payload.mailbox_id,
+        mailbox_ids=_checked_mailbox_ids(db, principal.org_id, payload.mailbox_ids),
     )
     db.add(sequence)
     db.flush()
@@ -214,6 +236,13 @@ def update_sequence(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox connection not found"
             )
+    if updates.get("mailbox_ids") is not None:
+        updates["mailbox_ids"] = _checked_mailbox_ids(
+            db, principal.org_id, updates["mailbox_ids"]
+        )
+    elif "mailbox_ids" in updates:
+        # Explicit null reads the same as an empty list: back to the whole pool.
+        updates["mailbox_ids"] = []
     if "mailbox_id" in updates and "sender_mode" not in updates:
         # Same reasoning as on create: setting a mailbox means pinning to it,
         # clearing it means going back to the pool.
@@ -318,6 +347,7 @@ def clone_sequence(
         # cloned from.
         sender_mode=source.sender_mode,
         mailbox_id=source.mailbox_id,
+        mailbox_ids=list(source.mailbox_ids or []),
     )
     db.add(copy)
     db.flush()

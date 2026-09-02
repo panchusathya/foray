@@ -318,47 +318,97 @@ function SenderPicker({ meta, setMeta, mailboxes }) {
   const active = (mailboxes.data?.connections ?? []).filter(
     (connection) => connection.status === 'active' && connection.send_enabled,
   );
-  const capacity = active.reduce((total, c) => total + c.daily_send_cap, 0);
   const value = meta.sender_mode === 'fixed' && meta.mailbox_id ? meta.mailbox_id : 'rotate';
+  // An empty list is "every mailbox", which is what an untouched sequence
+  // carries -- so a mailbox connected tomorrow joins this rotation without
+  // anyone reopening the sequence. Ticking every box stores it that way again.
+  const chosen = meta.mailbox_ids ?? [];
+  const rotating = active.filter((c) => !chosen.length || chosen.includes(c.id));
+  const capacity = rotating.reduce((total, c) => total + c.daily_send_cap, 0);
+
+  function toggle(id) {
+    const on = new Set(rotating.map((c) => c.id));
+    if (on.has(id)) on.delete(id);
+    else on.add(id);
+    const next = active.filter((c) => on.has(c.id)).map((c) => c.id);
+    setMeta({ ...meta, mailbox_ids: next.length === active.length ? [] : next });
+  }
 
   return (
-    <div className="card row wrap small muted" style={{ alignItems: 'center' }}>
-      <span>Send from</span>
-      <select
-        style={{ width: 300 }}
-        data-testid="sender-picker"
-        value={value}
-        onChange={(event) => {
-          const next = event.target.value;
-          setMeta(
-            next === 'rotate'
-              ? { ...meta, sender_mode: 'rotate', mailbox_id: null }
-              : { ...meta, sender_mode: 'fixed', mailbox_id: next },
-          );
-        }}
-      >
-        <option value="rotate">
-          {active.length
-            ? `Rotate across all mailboxes (${active.length}, ${capacity}/24h)`
-            : 'Rotate across all mailboxes'}
-        </option>
-        {active.map((connection) => (
-          <option key={connection.id} value={connection.id}>
-            Only {connection.address} ({providerLabel(connection.provider)})
+    <div className="card stack small muted">
+      <div className="row wrap" style={{ alignItems: 'center' }}>
+        <span>Send from</span>
+        <select
+          style={{ width: 300 }}
+          data-testid="sender-picker"
+          value={value}
+          onChange={(event) => {
+            const next = event.target.value;
+            setMeta(
+              next === 'rotate'
+                ? { ...meta, sender_mode: 'rotate', mailbox_id: null }
+                : // A pinned sequence has no pool to narrow, so drop the
+                  // subset rather than leave it to reappear on un-pinning.
+                  { ...meta, sender_mode: 'fixed', mailbox_id: next, mailbox_ids: [] },
+            );
+          }}
+        >
+          <option value="rotate">
+            {active.length
+              ? `Rotate across ${
+                  chosen.length ? `${rotating.length} of ${active.length}` : 'all'
+                } mailboxes (${capacity}/24h)`
+              : 'Rotate across all mailboxes'}
           </option>
-        ))}
-      </select>
-      {active.length ? (
-        <span>
-          {value === 'rotate'
-            ? 'Each contact stays on whichever mailbox emailed them first.'
-            : 'Every step goes out from this one address.'}
-        </span>
-      ) : (
-        <span>
-          <Link to="/settings">Connect a mailbox</Link> to send as yourself
-        </span>
-      )}
+          {active.map((connection) => (
+            <option key={connection.id} value={connection.id}>
+              Only {connection.address} ({providerLabel(connection.provider)})
+            </option>
+          ))}
+        </select>
+        {active.length ? (
+          <span>
+            {value === 'rotate'
+              ? 'Each contact stays on whichever mailbox emailed them first.'
+              : 'Every step goes out from this one address.'}
+          </span>
+        ) : (
+          <span>
+            <Link to="/settings">Connect a mailbox</Link> to send as yourself
+          </span>
+        )}
+      </div>
+
+      {value === 'rotate' && active.length > 1 ? (
+        <div className="row wrap" data-testid="rotation-mailboxes" style={{ gap: 14 }}>
+          {active.map((connection) => {
+            const on = rotating.some((c) => c.id === connection.id);
+            return (
+              <label
+                key={connection.id}
+                className="row"
+                style={{ alignItems: 'center', gap: 6 }}
+                title={`${providerLabel(connection.provider)} · ${connection.daily_send_cap}/24h`}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  // Something has to send. Unticking the last one would save a
+                  // sequence that can only ever defer.
+                  disabled={on && rotating.length === 1}
+                  onChange={() => toggle(connection.id)}
+                />
+                {connection.address}
+              </label>
+            );
+          })}
+          <span>
+            {chosen.length
+              ? 'Only these send for this sequence.'
+              : 'All of them, including any mailbox you connect later.'}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -411,6 +461,7 @@ export function SequenceEditorPage() {
       sender_mode: sequence.data.sender_mode,
       mailbox_id: sequence.data.mailbox_id,
       project_id: sequence.data.project_id,
+      mailbox_ids: sequence.data.mailbox_ids ?? [],
     });
     setSteps(normalizeSteps(sequence.data.steps));
     setSelected(0);
@@ -432,7 +483,11 @@ export function SequenceEditorPage() {
           'sender_mode',
           'mailbox_id',
           'project_id',
-        ].some((key) => meta[key] !== sequence.data[key])
+        ].some((key) => meta[key] !== sequence.data[key]) ||
+        // A list compares by identity, so it needs its own check or every
+        // render would read as dirty.
+        JSON.stringify(meta.mailbox_ids ?? []) !==
+          JSON.stringify(sequence.data.mailbox_ids ?? [])
       : false;
   const dirty = stepsDirty || metaDirty;
   dirtyRef.current = dirty;

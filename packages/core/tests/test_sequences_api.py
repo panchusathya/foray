@@ -157,6 +157,90 @@ class TestUpdateSequence:
         assert response.status_code == 404
 
 
+
+class TestRotationSubset:
+    """Which mailboxes a rotating sequence is allowed to use."""
+
+    def _mailbox(self, session, org_id, address):
+        from juicebox.models import MailboxConnection
+
+        connection = MailboxConnection(
+            org_id=org_id, provider="microsoft", address=address, status="active"
+        )
+        session.add(connection)
+        session.commit()
+        return connection
+
+    def test_a_new_sequence_rotates_over_everything(self, client, loaded_org):
+        sequence = _create_sequence(client, loaded_org["headers"])
+        assert sequence["mailbox_ids"] == []
+        assert sequence["sender_mode"] == "rotate"
+
+    def test_the_subset_roundtrips_and_dedupes(self, client, loaded_org, session):
+        headers = loaded_org["headers"]
+        first = self._mailbox(session, loaded_org["org_id"], "one@goforay.io")
+        second = self._mailbox(session, loaded_org["org_id"], "two@goforay.io")
+        sequence = _create_sequence(client, headers)
+
+        response = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_ids": [first.id, second.id, first.id]},
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["mailbox_ids"] == [first.id, second.id]
+        # Naming a subset is not pinning: the sequence still rotates.
+        assert response.json()["sender_mode"] == "rotate"
+
+    def test_an_empty_list_clears_the_subset(self, client, loaded_org, session):
+        headers = loaded_org["headers"]
+        mailbox = self._mailbox(session, loaded_org["org_id"], "one@goforay.io")
+        sequence = _create_sequence(client, headers)
+        client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_ids": [mailbox.id]},
+            headers=headers,
+        )
+        response = client.patch(
+            f"/v1/sequences/{sequence['id']}", json={"mailbox_ids": []}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["mailbox_ids"] == []
+
+    def test_a_mailbox_from_another_org_is_refused(self, client, loaded_org, session):
+        """The column is JSON and carries no foreign key, so nothing else would
+        catch a borrowed id until a send tried to use it."""
+        from juicebox.models import MailboxConnection, Org
+
+        other = Org(name="Other Firm", slug="other-firm")
+        session.add(other)
+        session.flush()
+        foreign = MailboxConnection(
+            org_id=other.id, provider="microsoft", address="them@elsewhere.io", status="active"
+        )
+        session.add(foreign)
+        session.commit()
+
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        response = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_ids": [foreign.id]},
+            headers=headers,
+        )
+        assert response.status_code == 404
+        assert foreign.id in response.json()["detail"]
+
+    def test_an_unknown_mailbox_is_refused(self, client, loaded_org):
+        headers = loaded_org["headers"]
+        sequence = _create_sequence(client, headers)
+        response = client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_ids": ["mbx_nope"]},
+            headers=headers,
+        )
+        assert response.status_code == 404
+
 class TestCloneSequence:
     def test_clone_copies_steps_and_starts_paused(self, client, loaded_org):
         headers = loaded_org["headers"]
@@ -278,6 +362,29 @@ class TestCloneSequence:
             headers=headers,
         )
         assert response.status_code == 404
+    def test_clone_keeps_the_rotation_subset(self, client, loaded_org, session):
+        # Same reasoning as the pinned mailbox: a copy that fell back to the
+        # whole pool would send from addresses the original was kept off.
+        from juicebox.models import MailboxConnection
+
+        headers = loaded_org["headers"]
+        connection = MailboxConnection(
+            org_id=loaded_org["org_id"],
+            provider="microsoft",
+            address="warming@goforay.io",
+            status="active",
+        )
+        session.add(connection)
+        session.commit()
+
+        sequence = _create_sequence(client, headers)
+        client.patch(
+            f"/v1/sequences/{sequence['id']}",
+            json={"mailbox_ids": [connection.id]},
+            headers=headers,
+        )
+        copy = client.post(f"/v1/sequences/{sequence['id']}/clone", headers=headers).json()
+        assert copy["mailbox_ids"] == [connection.id]
 
 
 class TestEnrollGuards:

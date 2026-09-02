@@ -254,6 +254,94 @@ class TestPinning:
         assert set(pool["log"]) == {pinned.address}
 
 
+class TestSubset:
+    """A rotating sequence limited to some of the org's mailboxes.
+
+    The point is negative: the excluded mailbox must never send for this
+    sequence, not even when every chosen one is full or gone. Spilling over
+    would put outreach on an address the recruiter deliberately kept off it.
+    """
+
+    def test_only_the_chosen_mailboxes_send(self, session, pool):
+        alpha, bravo, charlie = pool["connections"]
+        pool["sequence"].mailbox_ids = [alpha.id, bravo.id]
+        session.flush()
+
+        enroll_candidates(
+            session,
+            sequence=pool["sequence"],
+            candidate_ids=[c.id for c in pool["candidates"]],
+        )
+        session.commit()
+        run_due(session, org_id=pool["sequence"].org_id)
+        session.commit()
+
+        assert len(pool["log"]) == 3
+        assert charlie.address not in pool["log"]
+        assert set(pool["log"]) == {alpha.address, bravo.address}
+
+    def test_an_empty_list_still_means_every_mailbox(self, session, pool):
+        """The default an untouched sequence carries, and what makes a mailbox
+        connected later join the rotation without an edit."""
+        assert pool["sequence"].mailbox_ids == []
+        addresses = {
+            c.address for c in eligible_mailboxes(session, org_id=pool["sequence"].org_id, only=[])
+        }
+        assert addresses == {c.address for c in pool["connections"]}
+
+    def test_a_full_subset_defers_instead_of_borrowing_a_spare_mailbox(self, session, pool):
+        alpha, _bravo, charlie = pool["connections"]
+        pool["sequence"].mailbox_ids = [alpha.id]
+        alpha.daily_send_cap = 0
+        session.flush()
+        # charlie has room, and is not allowed to take it.
+        assert charlie.daily_send_cap > 0
+
+        candidate = pool["candidates"][0]
+        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
+        session.commit()
+        enrollment = session.query(Enrollment).one()
+
+        status, message = process_enrollment(session, enrollment, now=utcnow())
+        assert status == "deferred"
+        assert message is None
+        assert pool["log"] == []
+        assert session.query(Message).count() == 0
+
+    def test_a_subset_whose_mailboxes_are_all_revoked_defers(self, session, pool):
+        """Not a fall-through to the global provider: the org still has live
+        mailboxes, they are just not this sequence's."""
+        alpha, _bravo, _charlie = pool["connections"]
+        pool["sequence"].mailbox_ids = [alpha.id]
+        alpha.status = "revoked"
+        session.flush()
+
+        resolved = resolve_sender(session, pool["sequence"], now=utcnow())
+        assert resolved.deferred
+        assert resolved.reason == "mailbox_unavailable"
+        assert resolved.connection is None
+
+    def test_an_enrollment_already_pinned_outranks_the_subset(self, session, pool):
+        """A candidate mid-thread stays on the address that emailed them, even
+        if the sequence's subset later excludes it -- moving them would arrive
+        as a second email from a stranger."""
+        alpha, bravo, _charlie = pool["connections"]
+        pool["sequence"].mailbox_ids = [bravo.id]
+        session.flush()
+
+        enrollment = Enrollment(
+            sequence_id=pool["sequence"].id,
+            candidate_id=pool["candidates"][0].id,
+            mailbox_id=alpha.id,
+        )
+        session.add(enrollment)
+        session.flush()
+
+        resolved = resolve_sender(session, pool["sequence"], enrollment, now=utcnow())
+        assert resolved.connection is not None
+        assert resolved.connection.address == alpha.address
+
+
 class TestDeferral:
     def test_a_full_pool_defers_rather_than_failing(self, session, pool):
         for connection in pool["connections"]:

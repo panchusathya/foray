@@ -51,8 +51,16 @@ def _can_send_via(provider_name: str) -> bool:
         return False
 
 
-def active_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
+def active_mailboxes(
+    db: Session, *, org_id: str, only: list[str] | None = None
+) -> list[MailboxConnection]:
     """Every live connection, regardless of whether it currently has room.
+
+    ``only`` narrows the pool to a sequence's chosen mailboxes. None (and an
+    empty list, which is how "all of them" is stored) means no restriction.
+    Ids that no longer exist are ignored rather than raising: a mailbox can be
+    disconnected long after a sequence named it, and that should stop it being
+    picked, not break every send on the sequence.
 
     The distinction from ``eligible_mailboxes`` decides what happens when
     nothing can send right now. No live connection at all means this org never
@@ -62,19 +70,22 @@ def active_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
     falling back there would send from the wrong identity -- so that defers
     instead.
     """
-    return list(
-        db.scalars(
-            select(MailboxConnection)
-            .where(
-                MailboxConnection.org_id == org_id,
-                MailboxConnection.status == "active",
-            )
-            .order_by(MailboxConnection.id)
-        ).all()
+    query = (
+        select(MailboxConnection)
+        .where(
+            MailboxConnection.org_id == org_id,
+            MailboxConnection.status == "active",
+        )
+        .order_by(MailboxConnection.id)
     )
+    if only:
+        query = query.where(MailboxConnection.id.in_(list(only)))
+    return list(db.scalars(query).all())
 
 
-def eligible_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
+def eligible_mailboxes(
+    db: Session, *, org_id: str, only: list[str] | None = None
+) -> list[MailboxConnection]:
     """Mailboxes that could send, ignoring how much they have sent already.
 
     Ordered by id so the pick is deterministic when utilisation ties, which is
@@ -82,7 +93,7 @@ def eligible_mailboxes(db: Session, *, org_id: str) -> list[MailboxConnection]:
     """
     return [
         row
-        for row in active_mailboxes(db, org_id=org_id)
+        for row in active_mailboxes(db, org_id=org_id, only=only)
         if row.send_enabled and row.daily_send_cap > 0 and _can_send_via(row.provider)
     ]
 
@@ -128,7 +139,7 @@ def pool_capacity(db: Session, *, org_id: str) -> int:
 
 
 def pick_mailbox(
-    db: Session, *, org_id: str, now: datetime
+    db: Session, *, org_id: str, now: datetime, only: list[str] | None = None
 ) -> MailboxConnection | None:
     """The least-utilised mailbox with room left, or None when all are full.
 
@@ -139,7 +150,7 @@ def pick_mailbox(
     """
     best: MailboxConnection | None = None
     best_load = 1.0
-    for connection in eligible_mailboxes(db, org_id=org_id):
+    for connection in eligible_mailboxes(db, org_id=org_id, only=only):
         used = sent_in_window(db, mailbox_id=connection.id, now=now)
         if used >= connection.daily_send_cap:
             continue

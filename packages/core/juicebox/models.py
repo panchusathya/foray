@@ -597,6 +597,14 @@ class Sequence(Base, TimestampMixin):
     mailbox_id: Mapped[str | None] = mapped_column(
         ForeignKey("mailbox_connections.id", ondelete="SET NULL"), nullable=True
     )
+    # Which mailboxes "rotate" is allowed to use. Empty means every eligible
+    # one, which is both the pre-existing behaviour and what an untouched
+    # sequence keeps -- so a newly connected mailbox joins those rotations
+    # automatically. A non-empty list means exactly those and nothing else,
+    # including mailboxes connected later. No FK here (JSON cannot carry one),
+    # so ids are filtered against the live pool at send time rather than
+    # cleaned up on delete: a disconnected mailbox simply stops being picked.
+    mailbox_ids: Mapped[list] = mapped_column(JSON, default=list)
 
     steps: Mapped[list[SequenceStep]] = relationship(
         back_populates="sequence", cascade="all, delete-orphan", order_by="SequenceStep.step_order"

@@ -30,7 +30,7 @@ test.describe('contacts grid', () => {
       data: { candidate_ids: [ids[0]], project_id: project.id },
     });
     await request.post(`/v1/sequences/${sequence.id}/run`, { headers: org.headers });
-    return { org, ids };
+    return { org, ids, project };
   }
 
   test('renders a sortable grid with the expected columns', async ({ page, request }) => {
@@ -61,12 +61,12 @@ test.describe('contacts grid', () => {
     // The address used to need its own column. Folding it under the name is
     // only an improvement if the cell still truncates -- an un-ellipsised
     // address is exactly what pushes a fixed-layout table sideways.
-    const { org } = await population(request, 'grid-identity');
+    const { org, project } = await population(request, 'grid-identity');
     // Deliberately far too long for the column. A fixture-length address
     // fits either way, which would make the layout half of this test pass
     // with the fix removed.
     const longEmail = 'aaaaaaaaaa.bbbbbbbbbb.cccccccccc@a-very-long-company-domain.example.com';
-    await request.post('/v1/candidates', {
+    const created = await request.post('/v1/candidates', {
       headers: org.headers,
       data: {
         source: 'e2e',
@@ -75,6 +75,10 @@ test.describe('contacts grid', () => {
         emails: [longEmail],
       },
     });
+    // Contacts is scoped to the selected project, so a candidate that is on
+    // no board and in no outreach is not in the grid to measure. The rest of
+    // this population arrives via addToProject; this one has to as well.
+    await addToProject(request, org, project.id, [(await created.json()).id]);
 
     await login(page, org.email);
     await page.goto('/contacts');

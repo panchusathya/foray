@@ -305,17 +305,6 @@ class TestSubmissionAuthorization:
         assert job.kind == KIND_APP_SUBMIT
         assert session.query(ApplicationSubmission).count() == 0
 
-    def test_the_submission_budget_applies_to_the_agent_too(
-        self, session, account, candidate, monkeypatch
-    ):
-        from juicebox.applications import limits
-
-        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 0)
-        posting = _posting(session, account["org_id"])
-        application = _ready(session, account["org_id"], candidate, posting)
-        with pytest.raises(TransitionError, match="budget"):
-            transition(session, application, to_status="submitting", actor="agent")
-
     def test_the_machine_allows_the_agent_round_trip(self):
         assert can_transition("prepared", "submitting")
         assert can_transition("awaiting_consent", "submitting")
@@ -1669,10 +1658,22 @@ class TestTheAttemptRowIsOnlyWrittenForARealAttempt:
         """The row went in before the `submitting` move, which can refuse. Each
         retry then left another `running` row nothing sweeps, `attempts_used`
         climbed to the cap, and the application was locked out with "this one
-        needs a person" although no adapter ever ran."""
+        needs a person" although no adapter ever ran.
+
+        Refused here by stubbing the gate rather than by tripping a particular
+        rule. ``may_submit`` allows everything since the weekly cap came out,
+        so no live rule refuses this transition -- but the ordering it protects
+        is a property of the gate, not of whichever rule is behind it, and the
+        next rule to sit there inherits it."""
         from juicebox.applications import limits
 
-        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 0)
+        monkeypatch.setattr(
+            limits,
+            "may_submit",
+            lambda db, *, application, now=None: limits.LimitDecision(
+                False, limits.REASON_SUBMISSION_BUDGET, "stubbed refusal"
+            ),
+        )
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
         application = _ready(session, account["org_id"], candidate, posting)
@@ -1719,59 +1720,6 @@ class TestTheAttemptRowIsOnlyWrittenForARealAttempt:
         assert application.status == "prepared"
         assert "needs a person" in application.status_reason
         reset_settings_cache()
-
-
-class TestTheBudgetCountsWhatIsAlreadyInFlight:
-    """state.py:98 -- both gates apply on the way in *and* on the way out.
-
-    Counting only `submitted_at` made everything in `submitting` invisible, so
-    an admitted run could be refused at the end of a browser session that had
-    already reached the employer.
-    """
-
-    def test_an_in_flight_application_spends_the_budget(
-        self, session, account, candidate, aliased, monkeypatch
-    ):
-        from juicebox.applications import limits
-
-        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 1)
-        first = _ready(
-            session,
-            account["org_id"],
-            candidate,
-            _posting(session, account["org_id"], company="Acme", suffix="a"),
-        )
-        transition(session, first, to_status="submitting", actor="agent")
-
-        second = _ready(
-            session,
-            account["org_id"],
-            candidate,
-            _posting(session, account["org_id"], company="Beta", suffix="b"),
-        )
-        decision = limits.may_submit(session, application=second)
-        assert not decision
-        assert decision.reason == limits.REASON_SUBMISSION_BUDGET
-
-    def test_a_run_already_admitted_can_still_record_itself(
-        self, session, account, candidate, aliased, monkeypatch
-    ):
-        """The other half: an application must not be refused its own in-flight
-        row on the way out, or a submission the employer already has can never
-        be written down."""
-        from juicebox.applications import limits
-
-        monkeypatch.setattr(limits, "SUBMISSIONS_PER_WEEK", 1)
-        application = _ready(
-            session,
-            account["org_id"],
-            candidate,
-            _posting(session, account["org_id"], company="Acme", suffix="a"),
-        )
-        transition(session, application, to_status="submitting", actor="agent")
-        assert limits.may_submit(session, application=application)
-        transition(session, application, to_status="submitted", actor="agent")
-        assert application.status == "submitted"
 
 
 class TestWorkdayReusesTheAccountItAlreadyMade:

@@ -37,7 +37,6 @@ jobs:
       images: ${{ steps.filter.outputs.images }}
       deploy: ${{ steps.filter.outputs.deploy }}
       lock: ${{ steps.filter.outputs.lock }}
-      stack: ${{ steps.filter.outputs.stack }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -74,26 +73,24 @@ jobs:
               - 'packages/core/pyproject.toml'
               - 'packages/core/uv.lock'
               - '.github/workflows/ci.yml'
-            # What the booted stack is actually made of. Python tests are
-            # excluded deliberately -- they never run inside the containers,
-            # so a test-only change cannot break a boot or a browser spec.
-            stack:
-              - 'packages/core/juicebox/**'
-              - 'packages/core/migrations/**'
-              - 'packages/foray/**'
-              - 'packages/web/**'
-              - 'packages/ingest/**'
-              - 'docker-compose*.yml'
-              - 'deploy/**'
-              - '**/Dockerfile'
-              - '.github/workflows/ci.yml'
 
+  # Main and workflow_dispatch only. PRs run the postgres job instead: it is
+  # the production backend and it carries the schema-drift check, so paying
+  # ~7 more minutes to run the same 2600 tests on a second engine was the
+  # single most duplicated cost in the run.
+  #
+  # This job still gates every merge, because a push to main runs everything
+  # -- which with three merges in a day is more often than a nightly cron
+  # would fire, and a nightly full run would cost more than the PR trimming
+  # saves. What it no longer catches is a *sqlite-only* break during review:
+  # a dialect difference lands on main and is caught there rather than in the
+  # PR. Local `pytest` is sqlite, so that gap is mostly covered by whoever
+  # wrote the change.
   python:
     name: python (sqlite)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.core == 'true'
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
@@ -305,8 +302,12 @@ jobs:
     # 6-hour default: runs #79, #80 and #83 burned 1h35m, 4h19m and 1h50m on
     # the same deadlocked seed step.
     timeout-minutes: 25
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.stack == 'true'
+    # Main and workflow_dispatch only: 7 minutes, most of it building the 3 GB
+    # Foray image, and a PR is pushed to far more often than it is merged.
+    # The trade is real and worth naming -- a browser regression now lands on
+    # main and is fixed there rather than in review. Run it on a branch before
+    # merging with: gh workflow run ci.yml --ref <branch>
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
 

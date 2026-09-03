@@ -22,7 +22,8 @@ Last verified against the repo at `7d056d5`, 29 Aug 2026.
 | Text agent — live | `packages/core/juicebox/messaging/`, `MESSAGING_INTAKE_PLAN.md` |
 | Voice, text and email unified on one CRM: context given in any channel is known to the agent in the others | `packages/core/juicebox/crm.py`, `integrations/sync.py` |
 | Browser agent that fills and submits job applications, built end-to-end | `packages/core/juicebox/applications/`, `AUTO_APPLY_SETUP.md` |
-| **Multiple applications submitted successfully in testing.** Not yet live; no application submitted on behalf of a real candidate. `GAP: how many test submissions, against which ATSs, and what is the live date?` | confirmed 29 Aug |
+| ✅ **UPGRADED 3 Sep — the browser agent works against real ATSs.** First end-to-end submission on their own architecture 26 Aug; **submissions landed against Greenhouse and Ashby (28 Aug) and Workday (29 Aug)** after solving the login/vault handoff and building a generalisable multi-step router. Workday was the hard one — captcha — and it took a switch to Bright Data's Browser API with residential proxies. `GAP: were any of these on behalf of a real candidate for a real role, or all test submissions? The answer changes the sentence, and both versions are now good.` | daily log 26–29 Aug |
+| **Why browser agents rather than ATS adapters — a deliberate architectural bet, and it's the best "taste" evidence in the pack.** Tsenta hand-builds adapters for 29 ATSs and hand-rolls HTTPS to dodge captcha and spam detection. That works until it doesn't. Generality beats coverage over any horizon that matters, so they forked OpenInstinct for its browser capability instead. | 26–27 Aug; Tsenta call |
 | Two shipped front-ends: recruiter SPA and candidate portal | `packages/web/`, `packages/portal/` |
 | Gmail, Outlook and GitHub connectors shipped | `packages/core/juicebox/connectors/google.py`, `microsoft.py`, `github.py` |
 | Durable job queue with `FOR UPDATE SKIP LOCKED`, backoff and parking | `README.md` "Scale notes"; `juicebox/worker.py` |
@@ -77,13 +78,58 @@ across companies — and outcome data is the one asset in recruiting that compou
 
 ## 4. Commercial traction
 
-Eight companies have received candidates from us.
+### 🔴 THE HEADLINE — two client engagements agreed, 1 Sep 2026
+
+**This is the single biggest change since the pack was started, and it deletes the weakest row in
+it.** Until 1 September there were eight companies holding free work and no commercial terms
+anywhere. Now:
+
+| Client | Roles | Terms |
+|---|---|---|
+| **Echelon** (Bain Ventures-backed) | Enterprise AE | ~20% of base as a success fee |
+| **FlowGen Labs** | FDE · Software Engineering Lead · Research Engineer *(deprioritised for now)* | ~20% of base as a success fee |
+
+**Four roles across two clients at 20% of base, worth roughly $232K in fees if all four close** —
+computed off the midpoint of each role's band: two roles at $200–375K, one at $225–450K, one at
+$150–350K.
+
+⚠️ **State it exactly this way and no other way:** *contingent* fee value on *agreed* engagements.
+It is not revenue, not ARR, not booked, and not signed until it's papered. Nothing closes until a
+candidate is hired. Their own words: *"in theory if we execute on all this, we have more than $230K
+of visible revenue, but for now we have to close the roles to even get close to that."* That
+sentence is the right posture — use its honesty, not just its number.
+
+**And the strongest signal in the whole pack: the Echelon founder offered to angel invest.** A
+customer who wants equity after one engagement is a better reference than any quote. It belongs in
+every form.
+
+`🔴 ACTION, worth more than any edit to these applications: get both engagements in writing this
+week. "Agreed to work with us" and "signed at 20% with a defined trigger" are different artifacts,
+and only the second one survives diligence. See §16.`
+
+**How they landed both — and this is the proof of the thesis, not just the outcome.** They ran two
+acquisition strategies in parallel on 1 Sep:
+
+1. **Cold:** recycled the best resumes they held into interesting-looking opportunities.
+   **Response: zero.**
+2. **Warm:** went to founders they already had a relationship with. **Both said yes. 2 for 2.**
+
+**That is their own distribution thesis, tested on themselves, in one day.** The entire pitch is
+that recruiting is broken because nobody has proprietary distribution and everyone fishes the same
+pond — and the first time they went fishing in the same pond as everyone else they caught nothing,
+while their own network converted at 100%. **Use it in A4 and A5.** It is far more persuasive than
+asserting the thesis, and volunteering the failed half is what makes it land.
+
+**Delivery commitment:** 10 high-quality candidates to FlowGen Labs and 5 to Echelon, in their
+inboxes by Tuesday. New inboxes stood up to reach candidates faster.
+
+### Eight companies had already received candidates before that
 
 | Company | What happened |
 |---|---|
 | **Kyber** | Head of Engineering — **closed Aug 2026.** A referral we made, not a search we ran; connection made Jan 2026 via the SingleSprout team. A real outcome and a real seven-month cycle that is itself the problem statement, but **it is a referral, not a placement, and must never be written as one.** |
 | **OneRobot** | 3–4 confirmed applications from ~50 cold outbound; 2-day turnaround; founder confirmed he wants more |
-| **Baseten** | Founding BizOps. **162 outreach emails sent; ~20% of candidates expressed interest, against ~5% for a recruiter's standard cold outbound.** 6 candidates delivered to the head of talent. Interested candidates came from **Meta, Harvey, Apple, Databricks and DeepMind.** *(demo 1 Sep)* |
+| **Baseten** | Founding BizOps. **~150–162 outreach emails; ~70% opened; ~20% of candidates expressed interest, against ~5% for a recruiter's standard cold outbound.** 6 candidates delivered to the head of talent, 5 cold-sourced. Interested candidates came from **Meta, Harvey, Apple, Databricks and DeepMind.** `GAP: the demo said 162 in one telling and ~150 in another — pin one number.` **The 70% open rate is new and worth having: it separates "our email lands" from "our targeting is good," and both are true.** *(demo 1 Sep)* |
 | **LangChain** | Chief of Staff candidate — **interview in process** |
 | **Vela** | 1 connection from an X post, 3 intros offered from ~10 inbound; **$10K referral fee on offer in writing** |
 | **Aaru** | 2 connections made to the CEO for Deployment Lead |
@@ -117,10 +163,17 @@ different sentence.`
 arrangements, several done to earn the business. **No money has changed hands — by choice.** See
 §16.
 
-### Consumer waitlist — opened 31 Aug 2026
+### Consumer waitlist — live since 29 Aug 2026
 
-**The first inbound in the company's history.** A candidate-side waitlist went live the night of
-31 Aug and had signups within 24 hours, with no marketing spend and no launch.
+**The first inbound in the company's history.** The new website went live on **29 Aug** with a
+candidate waitlist on it — deliberately a waitlist rather than the product, because the text and
+voice interfaces weren't fully ready and they wanted to see whether anyone would join at all. It
+had signups with no marketing spend and no launch.
+
+> ⚠️ **Date conflict to settle before this goes in a form.** The 29 Aug daily note says the site and
+> waitlist went live that day; on 1 Sep it was described as *"we just opened up a waitlist last
+> night."* **Say "live since late August" until you've checked**, or check and be exact. It's a
+> trivial fact and exactly the kind that gets asked about in an interview.
 
 This closes what was, until yesterday, the largest hole in the pitch: the positioning claims
 proprietary consumer distribution and every candidate to date had been pushed out by outbound on
@@ -295,9 +348,12 @@ and these two firms are more likely than anyone to know these exact deals.
 
 ## 8. Honest gaps — stated, never hidden
 
-- **Revenue: $0 — and this is a stated choice, not a failure to close.** See §16. It stops being
-  a gap the moment the reasoning is on the page and an LOI is attached to it; it stays a gap for
-  as long as the form says "$0" and nothing else.
+- **Cash collected: still $0 — but the shape of this gap changed completely on 1 Sep.** There are
+  now **two client engagements agreed at ~20% of base, four roles, ~$232K of contingent fee value**,
+  and a customer founder who has offered to angel invest. See §4. What remains true and must be
+  said: **no money has changed hands, nothing closes until a candidate is hired, and the terms are
+  agreed rather than papered.** Say all three. The number is strong enough that hedging it would be
+  the only way to damage it.
 - **Neither founder is full-time yet. Both go full-time at the end of 2026 — settled, not under
   discussion.** They are at WestBridge and building around the job. **Write it exactly that way —
   flatly, with the date.**
@@ -552,3 +608,73 @@ and the candidate's first point of contact.**
 - `GAP: host it. An unlisted Loom or YouTube link is the deliverable — a video nobody can open is
   the same as the blank field on the SPC form.`
 
+
+## 17. The daily log, 26 Aug – 2 Sep — what it adds beyond §4
+
+Four things in here are application material and were not in the pack before.
+
+### The intent thesis, in their own words, dated 26 Aug
+
+Written in the daily notes a week before it was ever framed as positioning:
+
+> **"the passive-candidate product isn't 'we apply for you,' it's 'we watch for you'"**
+>
+> *"text your dream criteria — comp floor, stage, no-go list — and you get pinged only when
+> something clears the bar, with comp intel attached"*
+
+**Use this.** The strongest version of a thesis is one a founder wrote down before they knew it was
+the pitch, and the second line is the standing brief, specified, a week early. If any form asks
+when the insight arrived, the honest answer has a date on it.
+
+Alongside it, the write-path idea, also 26 Aug: *"offer startups a free 'Foray-verified inbound'
+channel — every application through us is a real, verified human, structured data, one click to
+interview."* That is "Apply with Foray" in its original form.
+
+### The architectural bet, and why it reads as taste
+
+They spoke to Tsenta, learned they hand-build adapters for 29 ATSs and hand-roll HTTPS to avoid
+captcha and spam detection, and concluded it was *"a very workaround way and only a matter of time
+till people figure out."* So they went the other way: browser agents, slower but general. Then they
+proved it — Greenhouse and Ashby on 28 Aug, Workday on 29 Aug after solving captcha via Bright Data
+residential proxies and fixing the vault-to-application login handoff.
+
+**Choosing the slower, more general path and then shipping it is a stronger signal than the
+submission count.** Name the tradeoff explicitly; reviewers read for judgement under constraint.
+
+### Product craft — small, specific, and rare in an application
+
+The 28 Aug wish list is the kind of detail almost nobody puts in a form and every good reviewer
+notices: messages lowercase, **no em dashes**, upbeat, short, broken into a series rather than one
+wall of text, capped at four or five before waiting for a reply. Reactions as protocol — 👀 when an
+application starts, ✅ when it completes, ❤️ when the candidate says something kind. A proactive
+agent that surfaces the next opportunity rather than leaving the candidate waiting. First ten
+applications free, then priced.
+
+**One clause of this is worth a paragraph of architecture.** It shows the product was designed by
+someone who has watched a real conversation go wrong.
+
+### Pipeline built off the Baseten result
+
+The Baseten momentum was leveraged into outbound with **customised resume books for LangChain,
+Perplexity, Physical Intelligence and Clay**, plus three new opportunities — **LiteLLM, CrustData
+and Whop** — with ~100 matched candidates sequenced. Outbound raised to 15/day across multiple
+roles.
+
+`⚠️ None of these are clients. They are outbound targets and resume books. Never let them appear in
+a list that reads like a customer list — the two real clients are Echelon and FlowGen Labs, and the
+eight prior companies received free candidates. Three different things.`
+
+### The honest learnings — worth including, not hiding
+
+- **1 Sep:** cold recycling of resumes into interesting roles produced **zero** responses; warm
+  founder outreach converted **two of two**. See §4.
+- **2 Sep:** response rates on the **enterprise AE** role have been mediocre. The read is that the
+  audience is wrong — pivoting younger and moving to **LinkedIn as a channel**, automated with
+  Claude plus a browser, since the recruiter interviews said LinkedIn beats email 10–15×.
+- **Out of Juicebox credits; now running Exa for search.** They also know their own search needs
+  work and have deliberately deprioritised it to get candidates to the two clients first. **That
+  prioritisation call is a good answer to "what did you decide not to do."**
+- Moved from Kernel to **Bright Data Browser API with residential proxies** for reliability, and
+  are reducing reliance on a third-party agent framework in favour of their own DOM-based approach
+  to own more of the stack. `GAP: name the framework precisely — the note transcribes as
+  "E-Framework" / "BLM DOM-based," which won't survive a technical reader.`

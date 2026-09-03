@@ -33,9 +33,23 @@ profiles from a broker on a credit card. You cannot buy what someone told you in
 
 # Q2 — Traction
 
-**Six weeks, both of us still holding full-time jobs.**
+**Seven weeks, both of us still holding full-time jobs.**
 
-**The funnel, with a denominator at every stage:**
+**We signed our first two clients this week.** Echelon, a Bain Ventures-backed company, on an
+enterprise AE search. FlowGen Labs on three roles — forward-deployed engineer, engineering lead,
+research engineer. Both at **20% of base as a success fee: roughly $232K of contingent fees across
+the four roles** if they close. **The Echelon founder has also offered to angel invest in us.**
+
+Being precise, because it matters: no cash has been collected, nothing closes until someone is
+hired, and the terms are agreed rather than papered. We're two days in. We're delivering 10
+candidates to FlowGen and 5 to Echelon by Tuesday.
+
+**How we got them is the part worth reading.** We ran two plays the same day. Cold — recycling our
+best resumes into interesting-looking roles — got **zero responses.** Warm — founders we already
+knew — converted **two out of two.** That's our own thesis tested on ourselves in a day: fishing
+the same pond as everyone else caught nothing; proprietary distribution converted at 100%.
+
+**The funnel behind it, with a denominator at every stage:**
 
 | | |
 |---|---|
@@ -46,36 +60,41 @@ profiles from a broker on a credit card. You cannot buy what someone told you in
 | Companies served | **8** — Kyber, OneRobot, Baseten, LangChain, Vela, Aaru, NeoSigma, Vapi |
 
 10.1% is against a ~5% baseline for standard recruiter cold outbound, and it's a *qualified* rate,
-not a reply rate. Our best-targeted sequence — Baseten's founding BizOps role, 162 sends — ran at
-about 20% expressing interest, with interested candidates from Meta, Harvey, Apple, Databricks and
-DeepMind. The trajectory matters more than any single number: we started at 2–3% on a shared inbox
-that got flagged for spam, and we're at 10% aggregate six weeks later.
+not a reply rate. Our best-targeted sequence — Baseten's founding BizOps role, ~160 sends — saw
+about 70% open and 20% express interest, with interested candidates from Meta, Harvey, Apple,
+Databricks and DeepMind. The trajectory matters more than any single number: we started at 2–3% on
+a shared inbox that got flagged for spam, and we're at 10% aggregate seven weeks later.
 
-**Live right now:** a Chief of Staff candidate in interview process at LangChain. A $10K referral
+**Also live:** a Chief of Staff candidate in interview process at LangChain. A $10K referral
 fee on offer in writing from Vela. OneRobot's founder has asked for more after a two-day
 turnaround. Separately, through our own network: 10+ referrals made, every one of which converted
-to an interview.
+to an interview. And a **candidate-side waitlist live since late August**, with signups and no
+spend — the first inbound in the company's history, and the beginning of the supply side.
 
-**Last night we opened a candidate-side waitlist** and had signups within 24 hours with no spend.
-That's the first inbound in the company's history and the beginning of the supply side.
-
-**Shipped in the same six weeks:** our own sourcing engine (hybrid full-text + pgvector retrieval,
+**Shipped in the same seven weeks:** our own sourcing engine (hybrid full-text + pgvector retrieval,
 reciprocal rank fusion, LLM rerank) with an offline eval harness reporting nDCG@10, MRR, P@k and
-R@10; a live voice agent and messaging agent unified with email on one CRM; a browser agent that
-fills and submits applications end to end, working in testing; a recruiter SPA and a candidate
-portal; per-application inbound aliases with every employer reply classified and timestamped.
-~161K lines, 185 test files, CI. **259 commits in the five days to 28 August.**
+R@10; a live voice agent and messaging agent unified with email on one CRM; **a browser agent that
+fills and submits applications end to end, with submissions landing against Greenhouse, Ashby and
+Workday**; a recruiter SPA and a candidate portal; per-application inbound aliases with every
+employer reply classified and timestamped. ~161K lines, 185 test files, CI. **259 commits in the
+five days to 28 August.**
 
-**What we don't have:** revenue is $0. That's a choice — we're delivering candidates free to earn
-letters of intent, because charging now would gate every req behind a contract and cap the volume
-we can move while the graph is the thing we're actually building. The pricing exists in the
-product. We haven't invoiced.
+We chose browser agents over hand-built ATS adapters deliberately. A company doing it the other way
+told us they maintain 29 adapters and hand-roll HTTPS to dodge captcha and spam detection — that
+works until it doesn't. The general path cost us a week on Workday's captcha and a move to
+residential proxies to get through it. We'd make the same call again.
+
+**What we don't have: cash.** Every dollar of that $232K is contingent on a hire, and we're two
+days into those engagements. Everything before this week was delivered free on purpose — charging
+early would have gated every req behind a contract and capped the candidate volume we could move,
+and the graph is the asset. We also know our own search needs work, and we've deliberately
+deprioritised fixing it to get candidates in front of these two clients first.
 
 ---
 
 # Q3 — Twelve months of progress in twelve weeks
 
-What would take us twelve months isn't the software. We shipped an enormous amount in six weeks
+What would take us twelve months isn't the software. We shipped an enormous amount in seven weeks
 around two demanding jobs. **What's gated is everything that requires being awake in business
 hours and being able to fail in public** — the supply side, and the commercial loop. Both are
 attention problems, not capital or headcount problems, which is why the residency format is the
@@ -85,19 +104,22 @@ specific thing we want.
 company works, so it goes first. The highest-intent moment in a job seeker's life is the rejection
 email, and nobody is standing there. We've already shipped the Gmail connector: a candidate
 connects their inbox once, and minutes after a rejection lands they get four roles at the same
-stage and band. Near-perfect relevance, zero cold outreach. Get the browser agent live so
-applications are genuinely free and instant, and make that loop fire for real.
+stage and band. Near-perfect relevance, zero cold outreach. The browser agent already submits
+against Greenhouse, Ashby and Workday, so applications are genuinely free and instant — the work is
+widening ATS coverage and making that loop fire at volume for real candidates.
 **Target: 1,000 standing briefs and the rejection trigger running in production.**
 
-**Weeks 5–8 — prove a brief beats a resume, and get paid.** The falsifiable version of our whole
-thesis is one number: *a standing brief converts to a match at a rate a resume never does.* Twelve
-weeks is enough to prove or kill it, and we'd rather know. In parallel, convert the eight companies
-holding our free work onto a price sheet — 18% on a hire, or $1,000 per completed interview capped
-at $12K, buyer's choice — and run Dwayne Nonales' entire recruiting desk on our system to measure
-placements per recruiter-month against his own manual baseline. A good contingent recruiter runs
-one to one-and-a-half. If the system takes one recruiter to four, that multiple is the business and
-everything else is packaging.
-**Target: first revenue, five signed agreements, and a defensible throughput ratio.**
+**Weeks 5–8 — close the four roles we're already on, and prove a brief beats a resume.** We have
+two clients and four live roles at 20% of base. **Nothing about this company is real until one of
+them closes**, so that comes first, and it turns ~$232K of contingent fees into actual revenue. In
+parallel: convert the eight companies holding our free work onto the same terms, and run Dwayne
+Nonales' entire recruiting desk on our system to measure placements per recruiter-month against his
+own manual baseline. A good contingent recruiter runs one to one-and-a-half. If the system takes
+one recruiter to four, that multiple is the business and everything else is packaging. And the
+falsifiable version of our whole thesis is one number: *a standing brief converts to a match at a
+rate a resume never does.* Twelve weeks is enough to prove or kill it, and we'd rather know.
+**Target: first placement and first cash, five more signed agreements, and a defensible throughput
+ratio.**
 
 **Weeks 9–12 — turn the data position into a product nobody can copy.** By then we'll have enough
 classified employer replies to publish what nobody in hiring can currently measure: per-company

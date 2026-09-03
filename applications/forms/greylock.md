@@ -68,7 +68,11 @@ the eval harness, the voice and messaging agents, the browser agent and the CRM.
 hybrid retrieval over a 200K-profile index (Postgres full-text plus pgvector cosine, fused with
 reciprocal rank fusion, then an LLM rerank), an offline eval harness reporting nDCG@10, MRR, P@k and
 R@10 against ground truth expressed as rules over candidate attributes rather than a frozen label
-list, and the reply-classification layer that gives every application its own inbound alias.
+list, and the reply-classification layer that gives every application its own inbound alias. Also
+the browser agent, which now submits end to end against **Greenhouse, Ashby and Workday** — chosen
+over hand-built ATS adapters deliberately, after a company doing it the other way told us they
+maintain 29 adapters and hand-roll HTTPS to dodge captcha and spam detection. Generality beats
+coverage; it cost a week on Workday's captcha and a move to residential proxies.
 
 **WestBridge Capital internal sourcing infrastructure** — built and shipped, in production use by
 the investment team: a **Twitter monitoring system** that surfaces signal before it reaches the
@@ -170,7 +174,7 @@ warm on day one — the firm is how we have live roles to match the first briefs
 generates the outcome data that makes our matching better than anyone else's.
 
 **We also built our way in rather than theorising.** We ran on Juicebox first, decided we needed our
-own system, and stood one up in six weeks around two full-time jobs. Sathya already had the muscle
+own system, and stood one up in seven weeks around two full-time jobs. Sathya already had the muscle
 from the fund's Twitter monitoring system. Sourcing candidates turned out to be the same muscle
 pointed at a different graph.
 
@@ -199,19 +203,37 @@ quotes ~20% with a 90-day guarantee, not because it's correct but because none o
 risk. With conversion data we can offer a longer guarantee at a lower fee at the same expected
 margin, and win every head-to-head.
 
-**Three — where we are commercially, stated plainly.** Six weeks: 840 candidates contacted, 85
-engaged and qualified (10.1% against a ~5% industry baseline for cold outbound, and that's a
-qualified rate not a reply rate), ~20 delivered to eight companies — Kyber, OneRobot, Baseten,
-LangChain, Vela, Aaru, NeoSigma, Vapi. A Chief of Staff candidate in interview at LangChain. A $10K
-referral fee on offer in writing from Vela. Separately, 10+ referrals through our own network,
-every one converted to an interview. A candidate waitlist opened on 31 August with signups inside
-24 hours.
+**Three — where we are commercially, stated plainly, including the part that's only two days old.**
 
-**Revenue is $0, and that's a decision rather than a failure to close.** We're delivering
-high-quality candidates free to earn letters of intent, because charging now would gate every req
-behind a contract and cap the candidate volume we can move — and the graph, not this quarter's
-invoices, is the asset. The pricing exists in the product; we've chosen not to invoice. We know
-that's the thing you'll want tested, and we'd rather name it than have it discovered.
+**We signed our first two clients this week.** Echelon, a Bain Ventures-backed company, on an
+enterprise AE search. FlowGen Labs on three roles — forward-deployed engineer, engineering lead and
+research engineer. Both at 20% of base as a success fee, which is roughly **$232K of contingent
+fees across the four roles** if they close. **The Echelon founder has also offered to angel invest
+in us.**
+
+Since you're the programme most likely to test this, we'll pre-empt it: **no cash has been
+collected, every dollar is contingent on a hire, the terms are agreed rather than papered, and we
+are two days in.** We're delivering 10 candidates to FlowGen and 5 to Echelon by Tuesday, and
+getting both engagements in writing is this week's job. We'd rather hand you the caveats than have
+you extract them.
+
+**How we won them is the part we'd point at.** We ran two acquisition plays the same day. Cold —
+recycling our best resumes into interesting-looking roles — produced **zero responses.** Warm —
+founders we already had relationships with — converted **two out of two.** That is our own thesis
+tested on ourselves inside a day: the pond everyone fishes returned nothing, and proprietary
+distribution converted at 100%. It's also a caution we're holding onto, because a network is not
+yet a scalable channel and we know the difference.
+
+Before this week, seven weeks of free pilots: 840 candidates contacted, 85 engaged and qualified
+(10.1% against a ~5% industry baseline for cold outbound, and that's a qualified rate not a reply
+rate), ~20 delivered to eight companies — Kyber, OneRobot, Baseten, LangChain, Vela, Aaru,
+NeoSigma, Vapi. A Chief of Staff candidate in interview at LangChain. A $10K referral fee on offer
+in writing from Vela. Separately, 10+ referrals through our own network, every one converted to an
+interview. A candidate waitlist live since late August with signups and no spend.
+
+Everything before this week was free on purpose: charging early would have gated every req behind a
+contract and capped the candidate volume we could move, and the graph — not this quarter's invoices
+— is the asset.
 
 **Four — the honest bear case, and what we're not.** Neither of us is full-time yet: we're at
 WestBridge through the end of 2026 and both full-time on Foray from 1 January. Decided, not
@@ -222,3 +244,10 @@ connects their inbox once, and minutes after a rejection lands they get four rol
 stage and band. We've shipped the connector. If it doesn't work we'll know quickly. And nobody is
 paying for "intent" today, which is exactly why the firm is the revenue line while the graph
 accumulates.
+
+Two live problems, since a snapshot without them would be dishonest. Response rates on the
+enterprise AE search have been mediocre — our read is that the audience is wrong for email, so
+we're moving that role to LinkedIn as a channel, which is consistent with what the recruiters told
+us about email being beaten 10–15× there. And our own search quality needs work; we know it, and
+we've deliberately deprioritised fixing it until these two clients have candidates in hand. Both of
+those are choices we'd defend, but neither is a thing we'd want you to discover on your own.

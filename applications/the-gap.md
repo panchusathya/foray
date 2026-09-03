@@ -131,7 +131,24 @@ the sentence above in every form, unprompted. Roughly ten minutes of work and it
 largest objection in the pack. Don't let it go unwritten just because it's no longer in doubt
 internally — the reviewer doesn't have access to your certainty.
 
-**2. 🟡 Revenue → LOIs. Reframed, and the strategy is defensible — but only instrumented.**
+**2. ✅ RESOLVED 1 Sep — two clients signed. The weakest row in the pack is gone.**
+
+Echelon (Bain Ventures-backed) and FlowGen Labs, four roles, 20% of base, ~$232K contingent, **and
+the Echelon founder offered to angel invest.** That last part is the strongest single signal in the
+whole pack: a customer who wants equity after one engagement outranks any reference quote.
+
+What's left of this item is small and mechanical: **get both engagements in writing this week.**
+"Agreed to work with us" and "signed at 20% with a defined trigger" are different artifacts and
+only the second survives diligence. And keep the language exact everywhere — *contingent fees on
+agreed engagements*, never revenue, never booked, never ARR. The number is strong enough that
+overstating it is the only way to damage it.
+
+**And the acquisition story is now better than the number.** Cold outreach got zero; warm founder
+outreach converted two of two, the same day. That is the distribution thesis tested on themselves,
+with the failed half included — which is exactly the kind of evidence the rest of this file says is
+missing. It's in all five forms.
+
+*Original framing, kept because the reasoning still applies to the eight free pilots:*
 
 You're deliberately not converting to paid; you want LOIs and committed interest, earned by
 delivering high-quality candidates free. **That reasoning is sound and belongs on the page** —

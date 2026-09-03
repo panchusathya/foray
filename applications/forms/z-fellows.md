@@ -19,12 +19,12 @@ you something more concrete.**
 
 ## Z1 - What is the project you are currently working on or would like to pursue? Why? (limit: 500)
 
-Foray — the intent graph for hiring. Nobody knows who is actually in the market, so matching fails
-and everyone compensates with volume. LinkedIn is a profile graph: it records where you've been,
-and that's a commodity — we bought 200,000 profiles from a broker on a credit card. Intent is
-private, conditional and perishable, so a profile page can't hold it. We capture what would
-actually move someone, privately, and match on it. We evaluate markets for a living. We picked this
-one.
+Foray — the intent graph for hiring. Nobody knows who's actually in the market, so matching fails
+and everyone drowns it in volume. Intent is private, conditional and perishable — no profile page
+can hold it. We capture what would move someone, privately, and match on it. We run the searches
+ourselves, so demand exists day one: two clients signed this week at 20% of base, ~$232K contingent
+across four roles, one founder offered to angel in. We evaluate markets for a living; we picked
+this one.
 
 ## Z2 - What problem are you solving? (limit: 500)
 
@@ -158,6 +158,6 @@ where the standard setup drifted three to eight. When I can't see something dire
 thing that measures it.
 
 **Together (~19s).** LinkedIn knows where you've worked. Nobody knows where you'd go — because on
-LinkedIn you can't say it without your boss finding out. We're building the intent graph. Six
-weeks, around two full-time jobs: 840 candidates contacted, 85 engaged, twenty in front of eight AI
-companies.
+LinkedIn you can't say it without your boss finding out. We're building the intent graph. Seven
+weeks, around two full-time jobs: 840 candidates contacted, twenty put in front of eight AI
+companies, and this week our first two clients signed at 20% of base.

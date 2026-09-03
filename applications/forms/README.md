@@ -15,7 +15,28 @@ one referrer field, and three facts to pin.
 
 ---
 
+## Updated 3 Sep — what changed
+
+All five forms now carry: **the two signed clients** (Echelon, FlowGen Labs — four roles at 20% of
+base, ~$232K contingent, and the Echelon founder's angel offer), **the warm-vs-cold acquisition
+result** (cold zero, warm two of two — the distribution thesis tested on themselves), **the browser
+agent live against Greenhouse, Ashby and Workday** with the adapters-vs-browser-agents architectural
+bet stated as a bet, **~70% open rate** on the Baseten sequence, and **six weeks → seven weeks**
+throughout. The waitlist is now "live since late August" rather than a specific date — see the
+conflict flagged below.
+
 ## Blocking before submission
+
+0. 🔴 **Get both client engagements in writing.** Worth more than any edit in this directory.
+   "Agreed to work with us" is not an artifact; "signed at 20% with a defined trigger" is.
+1. 🟡 **Waitlist date conflict.** The 29 Aug note says the site and waitlist went live that day; on
+   1 Sep it was described as "opened last night." All five forms now say "live since late August" —
+   safe, but check and be exact, because it's trivial to verify and exactly what gets asked.
+2. 🟡 **Baseten send count:** the demo said 162 in one telling and ~150 in another. Forms say
+   "~160". Pin it.
+3. 🟡 **Name the agent framework precisely.** The daily note transcribes as "E-Framework" and "BLM
+   DOM-based," which won't survive a technical reader. Not currently in any form; keep it out until
+   the name is right.
 
 1. 🔴 **Soma Q4 — the referrer field is empty.** One Slack message to three WestBridge partners.
    This is the highest-leverage empty box in the pack and it gates the Soma form entirely.
@@ -45,7 +66,15 @@ one referrer field, and three facts to pin.
   claimed as a hire anywhere.
 - **Portfolio-company C-suite searches** appear only as client-side experience in Greylock Q2 and
   a16z Q6 — never as Foray mandates, revenue or pipeline.
-- **Browser agent:** "working in testing, not yet live" in all five.
+- **Browser agent:** now "submissions landing against Greenhouse, Ashby and Workday" — upgraded
+  3 Sep from "working in testing." `Confirm before submitting: were any of those on behalf of a
+  real candidate for a real role? Both versions are good; they are different sentences.`
+- **The two clients:** always *contingent fees on agreed engagements* — never revenue, never
+  booked, never ARR. Every form states that no cash has been collected, that nothing closes until
+  a hire, and that terms are agreed rather than papered.
+- **Echelon and FlowGen Labs are the only clients.** LangChain, Perplexity, Physical Intelligence,
+  Clay, LiteLLM, CrustData and Whop are outbound targets and resume books; the original eight
+  received free candidates. Three different categories — never merged into one list.
 - **Ansh Gupta** is named as someone impressive and someone we'd recruit. Nowhere does any form
   assert he is leaving OpenAI.
 - **Dwayne** "has expressed interest in joining." The word co-founder is attached to nobody

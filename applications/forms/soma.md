@@ -26,24 +26,34 @@ a messaging agent, and the applications we submit on a candidate's behalf, which
 revealed intent there is and which we originate. We also run the searches ourselves, because a
 two-sided market needs one side warm on day one.
 
-**Progress — six weeks, both of us still in full-time jobs**
+**Progress — seven weeks, both of us still in full-time jobs**
 
-*Commercial, with a denominator at every stage:*
+*Commercial:*
 
-- **200,000 profiles indexed → 840 candidates contacted → 85 engaged and a good fit (10.1%) → ~20
-  delivered → 8 companies.** The 10.1% is against a ~5% baseline for standard recruiter cold
-  outbound, and it's a qualified rate rather than a reply rate. Our best-targeted sequence — 162
-  sends for Baseten's founding BizOps role — ran near 20%, with interested candidates from Meta,
-  Harvey, Apple, Databricks and DeepMind.
+- **We signed our first two clients this week.** **Echelon** (Bain Ventures-backed) on an enterprise
+  AE search, and **FlowGen Labs** on three roles — forward-deployed engineer, engineering lead and
+  research engineer. Both at **20% of base as a success fee**, about **$232K of contingent fees
+  across the four roles** if they close. No cash yet, nothing closes until someone is hired, and the
+  terms are agreed rather than papered — we're two days in. **The Echelon founder has also offered
+  to angel invest.**
+- **How we got them matters more than that we did.** Same day, two plays: cold outreach recycling
+  our best resumes into interesting roles got **zero responses**; warm outreach to founders we
+  already knew converted **two out of two.** That is our own thesis run on ourselves — the pond
+  everyone fishes caught nothing, and proprietary distribution converted at 100%.
+- Before that: **200,000 profiles indexed → 840 candidates contacted → 85 engaged and a good fit
+  (10.1%) → ~20 delivered → 8 companies** on free pilots. The 10.1% is against a ~5% baseline for
+  standard recruiter cold outbound, and it's a qualified rate rather than a reply rate. Our
+  best-targeted sequence — ~160 sends for Baseten's founding BizOps role — saw **~70% open and ~20%
+  express interest**, with interested candidates from Meta, Harvey, Apple, Databricks and DeepMind.
 - Eight companies served: Kyber, OneRobot, Baseten, LangChain, Vela, Aaru, NeoSigma, Vapi.
 - A Chief of Staff candidate **in interview process at LangChain.** A **$10K referral fee on offer
   in writing** from Vela. OneRobot's founder asked for more after a two-day turnaround.
 - Separately, through our own network: **10+ referrals made, every one converted to an interview.**
-- **A candidate-side waitlist went live on 31 August** and had signups within 24 hours with no
-  spend — the first inbound in the company's history, and the start of the supply side.
-- Revenue is **$0, by choice.** We're delivering candidates free to earn letters of intent;
-  charging now would gate every req behind a contract and cap the volume we can move while the
-  graph is the actual asset. The pricing exists in the product. We haven't invoiced.
+- **A candidate-side waitlist has been live since late August**, with signups and no spend — the
+  first inbound in the company's history, and the start of the supply side.
+- **No cash collected.** Every dollar of the $232K is contingent on a hire. Everything before this
+  week was delivered free on purpose: charging early would have gated every req behind a contract
+  and capped the candidate volume we could move, and the graph is the asset.
 
 *Built and running:*
 
@@ -55,8 +65,11 @@ two-sided market needs one side warm on day one.
   corpus grows.
 - A **live voice agent** and **messaging agent**, unified with email on one CRM, so context given
   in any channel is known to the agent in the others.
-- A **browser agent** that fills and submits applications end to end. Working in testing; not yet
-  live.
+- A **browser agent** that fills and submits applications end to end, **with submissions landing
+  against Greenhouse, Ashby and Workday.** We chose browser agents over hand-built ATS adapters on
+  purpose: a company doing it the other way told us they maintain 29 adapters and hand-roll HTTPS
+  to dodge captcha and spam detection, which works until it doesn't. The general path cost us a
+  week on Workday's captcha and a move to residential proxies. We'd make the same call again.
 - Per-application inbound aliases, with every employer reply classified — acknowledged, rejected,
   interview, assessment — and timestamped, joined to candidate and req.
 - A recruiter SPA and a candidate portal.

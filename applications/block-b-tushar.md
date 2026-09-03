@@ -73,6 +73,81 @@ a16z asks for artifacts that *exist* — this is a request for URLs, and the SPC
 - Graduated USC in three years; perfect scores in advanced numerical and probability
   mathematics courses.
 
+## B4b — The hustler list (bulleted format, requested 3 Sep)
+
+> ### Read this before using the list
+>
+> **Four "youngest" bullets is one fact repeated four times.** Worse, *youngest* is a function of
+> birth date and timing rather than a thing you did — a reader discounts it automatically, and it
+> invites the one question in this pack with an unresolved answer (see the ⚠️ below). **Keep one
+> "youngest," put it where it's strongest, and let the acts carry the rest.**
+>
+> **The organising idea that makes this land: hustle is manufacturing access where none existed.**
+> Every real bullet below is an instance of that. "Youngest" is the by-product, not the claim. Order
+> the list so a reader assembles the pattern themselves and finishes thinking *this person gets into
+> rooms* — rather than *this person is young.*
+>
+> **The single best bullet is one you didn't list: the offer ladder.** Moelis → Evercore → J.P.
+> Morgan is hustle in its purest form, it's checkable, and it is **the same funnel this company
+> rebuilds, run from the candidate side years before you thought about rebuilding it.** On a
+> recruiting application that is worth more than every "youngest" combined.
+
+### The list, in order
+
+*Optional one-line opener, if the form allows prose:* **"I've never had a way in, so I've always
+had to build one."**
+
+- **Eight schools in sixteen years.** Being the new kid that many times teaches you to build your
+  own way into a room instead of waiting to be let in.
+- **Built my first software at 14** — Traqde In, a marketplace for second-hand phones. People
+  listed what they had, found what they wanted, and real exchanges went through it.
+- **Sat the SAT and ACT ten times**, moving my score more than 450 points. Most people treat a
+  standardised test as a one-shot event.
+- **Finished USC in three years** — BS Mathematics and Economics, with perfect scores in advanced
+  numerical and probability mathematics.
+- **Laddered into banking on nothing but leverage:** won a Moelis offer, used it to get Evercore,
+  used that to get J.P. Morgan — where I was **the youngest analyst to start full-time**, and
+  top-performing in the M&A group across SF and NY.
+- **Ran campus and lateral recruiting for J.P. Morgan's M&A group as a first-year analyst** — 30–35
+  candidate calls and multiple referred hires.
+- **Talked my way into a Chief of Staff seat at Nova Intelligence as employee one**, then built
+  every non-engineering function while the team scaled more than 5×, and managed 60+ CIO
+  relationships.
+- **Couldn't afford a booth at SAP Sapphire, so I built the conference's scheduling app instead** —
+  and got in front of exactly the Fortune 100 CIOs we had no other route to.
+- **Founded an autonomous drone delivery company as an undergraduate and recruited master's
+  students onto the team.** Taught myself aerodynamics out of a book, wrote the grants, won the ABC
+  Innovation Prize, made Blackstone Launchpad finals. We assembled the plane. It never flew.
+- **Found that Walmart still ran procurement by hand and built a working tool in under a week** —
+  vendor catalog, stakeholder profiles, approval workflow. Being showcased to their head of
+  procurement.
+- **Youngest and top-ranked associate at WestBridge**, an $8B fund. Sourced 21 companies in a year:
+  seven acquired, fourteen went on to raise from a16z, Sequoia, Khosla, Bessemer, Coatue and
+  Madrona.
+- **Angel investor in three YC companies** while working as an analyst.
+
+*Optional closing line:* **"The pattern is the same every time — the system everyone treats as
+fixed is usually just something you can run more iterations against."** That one sentence is what
+converts a list of anecdotes into a person, and it's the thing a reviewer repeats to a colleague.
+
+### If you need it shorter
+
+**Twelve bullets is too many for most boxes; a hustler list loses force past eight.** Cut in this
+order: Walmart, angel investing, the USC three-year line, and Traqde In *(it's better used as
+a16z's "when did you first build software" answer, where it's the whole answer)*. **Never cut the
+offer ladder, the eight schools, or Sapphire** — those three are the argument.
+
+> ⚠️ **Two things to pin before this is submitted.**
+>
+> 1. **"Youngest analyst at JPM to start full-time."** You've said 20. The YC form gives DOB
+>    31 Jan 2002 and a June 2023 start, which makes it 21. The bullet above avoids stating an age
+>    for that reason — but if anyone asks, you need the answer ready, and if the claim is
+>    firm-wide rather than group-wide, say which.
+> 2. **"Youngest full-time employee at Nova Intelligence."** Being the *first* hire and being the
+>    *youngest* are two different claims and only the first is documented. I've left it out of the
+>    list. Put it back only if you know it's true — and if you do, it still probably loses its slot
+>    to the offer ladder.
+
 ## B4 — The most impressive thing you've done
 
 Two candidates. **Recommendation: lead with the Sapphire hack**, because it is a story about

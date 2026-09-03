@@ -8,7 +8,41 @@ Per-company rather than per-founder.
 
 Two different questions get conflated here; keep the answers distinct.
 
-### B10a — "The 2–3 most impressive people you know" (Soma)
+### B10a — UPDATED 3 Sep: the three names you chose
+
+You've picked these three. **LinkedIn is blocked by this environment's egress proxy** (confirmed
+again 3 Sep), so I can't read any of them — the entries below are structure with the facts missing,
+and they can't be written until you paste the profiles.
+
+| # | Name | URL | What I hold |
+|---|---|---|---|
+| 1 | **Abhay Singhal** | `linkedin.com/in/abhaysinghal6813/` | MTS at **Factory AI**, agent performance and evaluation. One of the most technical people either of you knows; friend of Sathya's since high school. ✅ writable |
+| 2 | **Rahul Kayala** | `linkedin.com/in/rahulkayala/` | 🔴 **Nothing.** |
+| 3 | **Kevin Xie** | `linkedin.com/in/kevinxie06/` | 🔴 **Nothing.** |
+
+**Four lines each is all I need for Rahul and Kevin:**
+
+1. **Current role and company.**
+2. **The one thing that makes them exceptional** — and make it specific. "Brilliant engineer" is
+   worth nothing here; *"employee #4 at X, wrote the inference stack that serves Y requests"* is
+   worth the whole entry. A number or a named artifact beats an adjective every time.
+3. **How you know them**, and how well. Soma is asking about your peer group, so proximity is part
+   of the signal.
+4. **Anything checkable** — a repo, a paper, a company on your sourcing list, a competition result.
+
+> **One thing worth deciding rather than defaulting.** These three replace the list that led with
+> **Ansh Gupta** (Applied AI at OpenAI; founding AI engineer at Anything and at Harper (YC W25);
+> multi-agent systems handling 150K calls a day; hallucination detection in Amazon's AGI org). Ansh
+> is the most decorated name in the pack, and he carries a detail nobody else can: **Tushar sourced
+> Anything before Footwork led its Series A** — so the answer doubles as evidence of your own
+> judgement.
+>
+> **If Rahul and Kevin are genuinely more impressive, use them — you know them and I don't.** But
+> Soma allows two to three names, so this isn't either/or: **the strongest version is Ansh plus the
+> two strongest of your three.** Don't drop a documented OpenAI + two-time-founding-engineer entry
+> for symmetry.
+
+### B10a (original) — "The 2–3 most impressive people you know" (Soma)
 
 Soma wants people, with LinkedIn URLs, who are impressive on their own terms — not a hiring
 plan. Lead with the two who are genuinely unusual, not the two most convenient.

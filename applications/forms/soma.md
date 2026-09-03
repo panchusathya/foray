@@ -162,6 +162,33 @@ lesson was to pick problems where my edge is actually real.
 
 # Q3 — Two or three of the most impressive people you know
 
+> **Updated 3 Sep — you chose three names.** Abhay is written below and ready. **Rahul Kayala
+> (`linkedin.com/in/rahulkayala/`) and Kevin Xie (`linkedin.com/in/kevinxie06/`) cannot be written
+> at all** — LinkedIn is blocked by this environment's egress proxy (re-tested 3 Sep), so I hold
+> nothing on either of them. Four lines each unblocks them: current role and company; the one
+> specific thing that makes them exceptional (a number or a named artifact — "brilliant engineer"
+> is worth nothing in this box); how you know them and how well, since Soma is asking about your
+> peer group; and anything checkable.
+>
+> **Soma allows two to three names, so this isn't either/or.** Ansh is kept below because he is the
+> most decorated entry available and carries a detail nobody else can — Tushar sourced Anything
+> before Footwork led its Series A, so the answer doubles as evidence of your own judgement. Don't
+> drop him for symmetry. **Recommended final three: Ansh, Abhay, and whichever of Rahul or Kevin is
+> stronger once I can see them.** Dwayne is the swing — strong on the numbers, but he's a
+> prospective hire, and this question is about your peer group.
+
+**Rahul Kayala** — `linkedin.com/in/rahulkayala/` 🔴 *blocked, nothing held — see the note above.*
+
+**Kevin Xie** — `linkedin.com/in/kevinxie06/` 🔴 *blocked, nothing held — see the note above.*
+
+**Abhay Singhal** — Member of Technical Staff at **Factory AI**, working on agent performance and
+evaluation. One of the most technical people either of us knows, and a friend of Sathya's since
+high school. `linkedin.com/in/abhaysinghal6813/`
+
+---
+
+*Held below, and recommended to keep at least the first one:*
+
 **Ansh Gupta** — Applied AI, Startups at **OpenAI**. Founding AI engineer twice over before that:
 at Anything, building autonomous agents that debug, refactor and ship production software, and at
 Harper (YC W25), whose multi-agent systems cut insurance processing from days to minutes on the way
@@ -178,9 +205,7 @@ believe distribution, not tooling, is the constraint in recruiting. He's been cl
 the start and has expressed interest in joining.
 `linkedin.com/in/dwaynenonales`
 
-**Abhay Singhal** — Member of Technical Staff at **Factory AI**, working on agent performance and
-evaluation. One of the most technical people either of us knows, and a friend of Sathya's since high
-school. 🔗 *LinkedIn URL needed, or drop him and keep this to two.*
+*(Abhay's entry has moved above, with his LinkedIn URL now filled in.)*
 
 ---
 

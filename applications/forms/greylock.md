@@ -261,6 +261,45 @@ pointed at a different graph.
 
 # Q3 — Anything else you'd like us to know?
 
+> Rewritten 4 Sep to match Q1/Q2's register, and to carry the material cut from Q2: the
+> distribution numbers, Juicebox, the Candidate Labs objection, and the commodity proof. Long
+> version below the fold.
+
+A few things that didn't fit above.
+
+What we've built in the last few weeks, while working FT jobs: sourcing engine over 200K profiles,
+Retell voice agent, iMessage agent via Linq, browser agent submitting live against Greenhouse,
+Ashby and Workday. 840 candidates contacted, 85 engaged and qualified (10.1%, vs ~5% for standard
+recruiter cold outbound, and that's a qualified rate not a reply rate). ~20 delivered to 8 companies
+before the two clients signed.
+
+Why we think distribution is the whole game: one of the recruiters we interviewed gets ~40%
+response on cold DMs when he has mutuals. Our cold email ran 2-3%. Same market, same candidates,
+more than 10x difference, and it's entirely about who you already know.
+
+We ran on Juicebox first and decided we needed our own system.
+
+Best objection we've heard, from Candidate Labs: the moat is recruiters and brand, not AI. We took
+that as the spec rather than the counter-argument, because if the software makes one recruiter
+worth ten, the moat argument inverts.
+
+Also worth knowing: profile data is a commodity. We bought 200K profiles from a broker on a credit
+card. You can't buy what someone told you privately, which is the whole reason the intent graph is
+worth building.
+
+What we don't have: no cash collected. The $232K is contingent on hires across 4 open roles, and
+the terms are agreed rather than papered. Neither of us is FT yet, we're at WestBridge through end
+of 2026 and full-time on Foray from 1 Jan. Decided, not aspirational.
+
+Bear case, honestly: cold start on the supply side is the hard part. A standing brief is worth
+little at a thousand and a lot at a hundred thousand. Our best answer is the rejection moment, the
+highest-intent moment in a job seeker's life, where nobody is standing. We've shipped the Gmail
+connector for it. If it doesn't work we'll know fast.
+
+<details>
+<summary><strong>Long version</strong></summary>
+
+
 **Four things, and the last two are the ones you'd find anyway.**
 
 **One — what we know that the category doesn't.** Every product in AI recruiting is sold against
@@ -330,3 +369,5 @@ we're moving that role to LinkedIn as a channel, which is consistent with what t
 us about email being beaten 10–15× there. And our own search quality needs work; we know it, and
 we've deliberately deprioritised fixing it until these two clients have candidates in hand. Both of
 those are choices we'd defend, but neither is a thing we'd want you to discover on your own.
+
+</details>

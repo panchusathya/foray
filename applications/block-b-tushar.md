@@ -73,7 +73,96 @@ a16z asks for artifacts that *exist* — this is a request for URLs, and the SPC
 - Graduated USC in three years; perfect scores in advanced numerical and probability
   mathematics courses.
 
-## B4b — The hustler list (bulleted format, requested 3 Sep)
+## B4a — The narrative version (4 Sep) — **use this one**
+
+Built from Tushar's own 4 Sep rewrite, which was already better than the bulleted draft below: it
+had the causal chain in it. This just lets each step cause the next instead of sitting beside it.
+
+**Why narrative beats bullets here.** A bulleted list of accomplishments is read as a résumé and
+skimmed. The same facts in sequence are read as a *person*, and the reader assembles the pattern
+themselves — which is the whole point, because the pattern is the argument. It also lets DroneCo
+sit in the middle as a real failure without denting anything, which a bullet list can't do.
+
+### The draft (~430 words)
+
+> I've never had a way in, so I've always had to build one.
+>
+> I went to eight schools in sixteen years. Being the new kid that many times teaches you something
+> specific: you don't wait to be let into a room, you find your own way in. At some point it
+> stopped feeling like a disadvantage and started feeling like a method.
+>
+> The first system I turned it on was a standardised test. Most people treat the SAT as a one-shot
+> event. I sat it, and the ACT, ten times, and moved my score more than 450 points. Then I did the
+> same thing to college — finished my maths degree at USC in three years, interning every semester
+> I was there.
+>
+> In the middle of that I founded an autonomous drone delivery company. I was an undergraduate
+> recruiting master's students onto the team, which was the first time I had to convince people to
+> come work on something of mine. I taught myself aerodynamics out of a book, did the design, wrote
+> the grants. We won the ABC Innovation Prize and made the Blackstone Launchpad finals. We
+> assembled the plane. It never flew — I wasn't a hardware specialist, and loving a thing isn't an
+> edge. That's the lesson I kept: pick problems where your edge is real.
+>
+> Breaking into banking was the same method with better inputs. I had no route into a top group, so
+> I built one — won an offer at Moelis, used it to get Evercore, used that to get J.P. Morgan,
+> where I was the youngest analyst to start full-time. Within a year I was ranked top-performing in
+> the M&A group across SF and New York, and I was helping run campus and lateral recruiting. That
+> was the first time I sat on the other side of the funnel I'd just spent two years hacking.
+>
+> From there I talked my way into a Chief of Staff seat at Nova Intelligence as employee #1, backed
+> by Accel, Conviction and SAP. I built every non-engineering function while the team scaled more
+> than fivefold, including our sales motion from nothing.
+>
+> Now I'm the youngest and top-ranked associate at WestBridge, an $8B fund, formerly Sequoia India.
+> I sourced 21 companies in a year: seven have been acquired, and fourteen went on to raise from
+> a16z, Sequoia and others. Five of them I broke into personally — companies backed by Lightspeed,
+> Accel and YC that had no reason to take my call.
+>
+> The pattern is the same every time. The system everyone treats as fixed is usually just something
+> you can run more iterations against. Recruiting is the biggest one left.
+
+**The last line is doing the most work.** It converts a personal history into a reason to build
+this specific company, in nine words, without arguing for it. Keep it even if you cut elsewhere.
+
+### Short cut (~180 words), for tighter boxes
+
+> I've never had a way in, so I've always had to build one.
+>
+> Eight schools in sixteen years teaches you not to wait to be let into a room. The first system I
+> turned that on was a standardised test — I sat the SAT and ACT ten times and moved my score more
+> than 450 points. Then I finished my maths degree at USC in three years, interning every semester.
+>
+> I had no route into a top banking group, so I built one: won an offer at Moelis, used it to get
+> Evercore, used that to get J.P. Morgan, where I was the youngest analyst to start full-time.
+> Within a year I was top-ranked in M&A across SF and New York and helping run campus and lateral
+> recruiting — the first time I sat on the other side of the funnel I'd spent two years hacking.
+> Then employee #1 at Nova Intelligence, and now the youngest and top-ranked associate at
+> WestBridge, an $8B fund, where I sourced 21 companies in a year — seven acquired, fourteen that
+> went on to raise from a16z and Sequoia.
+>
+> The system everyone treats as fixed is usually just something you can run more iterations
+> against. Recruiting is the biggest one left.
+
+### Three things to confirm
+
+1. 🔴 **"I broke into five companies personally, backed by Lightspeed, Accel and YC."** I've written
+   it as *manufacturing access* — companies that had no reason to take your call — because that's
+   what fits the through-line. **If you meant something more specific** (got into a competitive
+   round, reached a founder cold who'd refused everyone else, won an allocation), say which; the
+   specific version is stronger than the general one and this is the newest claim in the answer.
+2. 🟡 **Your draft has an unfinished clause** — *"Then, when I was told Sat the SAT and ACT ten
+   times."* I wrote around it. If the original was *"when I was told my score wasn't good enough"*
+   or similar, **that's a better hook than what I've written** and it should go back in.
+3. 🟡 **You dropped SAP Sapphire.** Your call, but it's the single cleanest instance of the thesis
+   in the whole list — couldn't afford a booth, so built the conference's scheduling app and got in
+   front of the Fortune 100 CIOs anyway. If anything above gets cut for length, cut something else
+   and put Sapphire back.
+
+> ⚠️ Unchanged: **the narrative states no age at J.P. Morgan** (you've said 20; the YC form's DOB of
+> 31 Jan 2002 with a June 2023 start makes it 21). Have the answer ready, and know whether
+> "youngest" is group-wide or firm-wide.
+
+## B4b — The hustler list (bulleted format, 3 Sep) — superseded by B4a
 
 > ### Read this before using the list
 >

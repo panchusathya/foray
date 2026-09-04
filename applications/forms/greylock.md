@@ -13,69 +13,63 @@ strengthens this specific form.
 
 # Q1 — Products you have built and launched, and your role
 
-> **Submitted by Tushar.** Written to carry both founders, because the products worth naming were
-> built by two people and the split is the answer to "what role did you have." If the form has a
-> co-founder section, use Sathya's standalone version (kept below the fold) there instead of the
-> compressed one inside this answer.
+> **Submitted by Tushar.** Foray is answered jointly with no per-person attribution, then his own
+> history, then his co-founder's. Per-founder versions are kept below the fold in case the form has
+> a co-founder section.
 
-I'm answering for both of us, because the things worth showing you were built by two people and
-the division is the point.
+## What my co-founder and I have built at Foray
 
-I'm the non-technical founder. Sathya is the builder. I'd rather say that plainly than have you
-work it out.
+- **A sourcing engine**, built from scratch rather than bought. Hybrid retrieval over a
+  200,000-profile index: Postgres full-text and pgvector cosine fused with reciprocal rank fusion,
+  then an LLM rerank, with the evidence behind every score attached to the result.
+- **An offline evaluation harness** reporting nDCG@10, MRR, P@k and R@10, with ground truth
+  expressed as rules over candidate attributes rather than a frozen label list, so the labels stay
+  valid as the corpus grows.
+- **A voice agent and a messaging agent**, unified with email on one CRM, so context a candidate
+  gives in any channel is known to the agent in the others.
+- **A browser agent** that fills and submits job applications end to end, now landing submissions
+  against Greenhouse, Ashby and Workday. We chose browser agents over hand-built ATS adapters on
+  purpose. A company doing it the other way told us they maintain 29 adapters and hand-roll HTTPS
+  to dodge captcha and spam detection, which works until it doesn't. Generality beats coverage over
+  any horizon that matters. It cost us a week on Workday's captcha and a move to residential
+  proxies, and we'd make the same call again.
+- **A measurement layer nobody else in hiring has.** Every application we send carries its own
+  inbound alias, and every employer reply is classified, acknowledged, rejected, interview or
+  assessment, with a timestamp, joined back to the candidate and the role.
+- **Two front-ends and the site**: a recruiter app, a candidate portal, goforay.io, and a candidate
+  waitlist that is live now.
+- **The commercial engine**: 840 candidates contacted, 85 engaged and qualified, roughly 20
+  delivered to eight companies, and this week our first two clients signed, Echelon and FlowGen
+  Labs, at 20% of base across four roles.
 
-## Foray, now
+All of that in seven weeks, while both of us were still working full-time jobs.
 
-**Sathya owns the system.** He built the sourcing engine end to end: hybrid retrieval over a
-200,000-profile index, Postgres full-text plus pgvector cosine fused with reciprocal rank fusion
-and then an LLM rerank. It has an offline eval harness reporting nDCG@10, MRR, P@k and R@10, with
-ground truth expressed as rules over candidate attributes rather than a frozen label list, so the
-labels stay valid as the corpus grows. He also built the voice agent, the messaging agent, the CRM
-that unifies both with email, and the reply-classification layer that gives every application its
-own inbound alias so we can measure what happens to it after it's sent.
+## Previously, at Nova Intelligence
 
-The piece he'd point at is the **browser agent**, which fills and submits applications end to end
-and now lands submissions against Greenhouse, Ashby and Workday. We chose browser agents over
-hand-built ATS adapters on purpose. A company doing it the other way told us they maintain 29
-adapters and hand-roll HTTPS to dodge captcha and spam detection, which works until it doesn't.
-Generality beats coverage over any horizon that matters. It cost us a week on Workday's captcha and
-a move to residential proxies, and we'd make the same call again.
+I was **employee #1 and Chief of Staff** at an AI coding-agent platform for SAP migrations, backed
+by Accel, Conviction and SAP. I joined pre-revenue and built every non-engineering function, GTM,
+hiring, sales and partnerships, while the team scaled more than 5x in under a year, and I managed
+60+ CIO and IT-executive relationships.
 
-**I own the commercial side.** Client relationships, the recruiter research the product is built on
-(about 25 interviews, eight recorded in depth), pricing, and the outbound engine: 840 candidates
-contacted, 85 engaged and qualified, roughly 20 delivered to eight companies. This week we signed
-our first two clients, Echelon and FlowGen Labs, at 20% of base across four roles. Launched and
-live: goforay.io, the recruiter app, the candidate portal, and a candidate waitlist.
+The product I built there myself was the **SAP Sapphire scheduling app**. We needed Fortune 100
+CIOs at the one conference that mattered to us and couldn't afford a booth or outspend anyone on
+marketing. The scarce resource at a conference isn't booth space, it's attendee attention and their
+inability to navigate hundreds of sessions. So instead of buying our way in, I built a personalised
+scheduling app for attendees. It took off, and it put us in front of exactly the CIOs we had no
+other route to.
 
-## What I built before this
+Before that I founded **DroneCo**, an autonomous drone delivery company, as sole founder while an
+undergraduate. I did the industrial design and CAD, the Raspberry Pi work, taught myself
+aerodynamics out of a book, wrote the grants, and recruited master's engineering students onto the
+team. Two specced SKUs, ABC Innovation Prize, Blackstone Launchpad finalist, about $10K in grants.
+We assembled the plane. It never flew. I wasn't a hardware specialist, and that's the lesson I
+kept: pick problems where my edge is real.
 
-**SAP Sapphire scheduling app.** Built and shipped it myself at Nova Intelligence. We needed
-Fortune 100 CIOs at the one conference that mattered and couldn't afford a booth. The scarce
-resource at a conference isn't booth space, it's attendee attention and their inability to navigate
-hundreds of sessions. So I built a personalised scheduling app for attendees instead. It took off,
-and it put us in front of exactly the CIOs we had no other route to.
+I also built a **procurement tool for Walmart** with one colleague, in under a week, after finding
+they still ran procurement largely by hand. Vendor catalog, demo profiles for the key procurement
+stakeholders, an approval and denial workflow. It's being showcased to their head of procurement.
 
-**Nova Intelligence itself, as employee #1 and Chief of Staff.** An AI coding-agent platform for
-SAP migrations, backed by Accel, Conviction and SAP. I joined pre-revenue and built every
-non-engineering function, GTM, hiring, sales and partnerships, while the team scaled more than 5x
-in under a year. Managed 60+ CIO and IT-executive relationships.
-
-**DroneCo, sole founder.** Autonomous drone delivery. I did the industrial design and CAD, the
-Raspberry Pi work, taught myself aerodynamics out of a book, wrote the grants, and recruited
-master's engineering students onto the team as an undergraduate. Two specced SKUs, ABC Innovation
-Prize, Blackstone Launchpad finalist, about $10K in grants. We assembled the plane. It never flew.
-I wasn't a hardware specialist, and that's the lesson I kept: pick problems where my edge is real.
-
-**Walmart procurement tool**, built with one colleague in under a week after finding that Walmart
-still ran procurement largely by hand. Vendor catalog, demo profiles for the key procurement
-stakeholders, an approval and denial workflow. Being showcased to their head of procurement.
-
-**Traqde In**, sole builder, at 14. A two-sided marketplace for second-hand phones. People listed
-what they had, found what they wanted, and real exchanges went through it. Not sophisticated, but
-it was the first time I built the place where two sides could find each other, which is roughly
-what I'm doing again.
-
-## What Sathya built before this
+## What my co-founder has built
 
 **`github.com/panchusathya/ForayInstinct`**, sole author. Public, MIT, 247 commits. A self-hosted
 iMessage assistant with an encrypted credential vault, where secrets are encrypted before storage
@@ -84,27 +78,23 @@ monorepo, Vitest, Bright Data browser API with residential proxies.
 
 **WestBridge's internal sourcing infrastructure**, in production use by the investment team: a
 Twitter monitoring system that surfaces signal before it reaches the usual channels, and an
-AI-generated outreach deck pipeline. He built both in his first year out of college. It's the same
-shape as Foray, an instrument watching a market for signal before it's announced, pointed at
+AI-generated outreach deck pipeline. He built both in his first year out of college. It is the same
+shape as Foray, an instrument watching a market for signal before it's announced, just pointed at
 companies instead of people.
 
-**FIRST Robotics, Team 8719, as captain and primary programmer.** The team ran what we believed was
-the first four-wheel dead-wheel odometry localizer in FIRST: four encoders fused through a Kalman
-filter, holding under 0.2 inches of drift over thirty seconds of driving across ten of ten trials,
-against three to eight inches for the standard three-wheel setup. In the season he captained he
-owned the autonomous system. Inspire Award, FIRST's highest team honour, in Virginia 2020 and Ohio
-2022, and the Johns Hopkins APL Software Innovation Award.
+**FIRST Robotics, Team 8719, as captain and primary programmer.** The team ran what they believed
+was the first four-wheel dead-wheel odometry localizer in FIRST: four encoders fused through a
+Kalman filter, holding under 0.2 inches of drift over thirty seconds of driving across ten of ten
+trials, against three to eight inches for the standard three-wheel setup. In the season he
+captained he owned the autonomous system. Inspire Award, FIRST's highest team honour, in Virginia
+2020 and Ohio 2022, and the Johns Hopkins APL Software Innovation Award.
 
-## The role, stated once
+The first thing the two of us built together, before any of this, was an AI-native procurement app,
+out of firsthand family experience in manufacturing where teams spent whole days logging simple
+tasks into a paper book.
 
-The division has been the same since before the company existed. The first thing we built together
-was an AI-native procurement app, out of firsthand family experience in manufacturing where teams
-spent whole days logging simple tasks into a paper book: he built it, I worked out who would use
-it. At Foray it's explicit. Sathya builds the system, I put it in front of people who will pay for
-it, and neither of us has needed to negotiate that.
-
-🔗 *Links to paste before submitting: goforay.io, the demo recording, Sathya's FIRST repo and
-finance tooling portfolio, the DroneCo deck, a Loom of the Walmart tool.*
+🔗 *Links to paste before submitting: goforay.io, the demo recording, his FIRST repo and finance
+tooling portfolio, the DroneCo deck, a Loom of the Walmart tool.*
 
 ---
 

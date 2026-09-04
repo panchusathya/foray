@@ -235,20 +235,23 @@ measures it. Odometry measures position with no external reference. The Twitter 
 the fund measures what's moving in a market before it's announced. Foray is an instrument pointed
 at a market nobody can currently see.
 
-### Short cut (~180 words)
+### Concise version, in the compressed register
 
-I captained FTC 8719, an independent robotics team with no school affiliation and no district
-budget. The team ran what we believed was the first four-wheel dead-wheel odometry localizer in
-FIRST: four encoders fused through a Kalman filter, under 0.2 inches of drift over thirty seconds
-across 10 of 10 trials, against three to eight for the standard three-wheel setup. Four wheels
-wasn't the default because it makes everything less forgiving, and the intuition was that more
-sensors just give you more bad data. With a rigid base and careful calibration the extra
-measurements stop being noise and become redundancy. In the season I captained I was primary
-programmer and owned auton. Inspire Award, FIRST's top team honour, in Virginia 2020 and Ohio 2022,
-plus the Johns Hopkins APL Software Innovation Award.
+I captained FTC 8719, an independent robotics team w/ no school affiliation and no district budget.
 
-None of it happens without funding, and at sixteen I was the one cold-calling for it. Twenty
-companies on my list, four closed, plus a $25,000 national grant application I ran end to end.
+The team ran what we believe was the first four-wheel dead-wheel odometry localizer in FIRST: four
+encoders fused through a Kalman filter, <0.2" drift over 30s across 10/10 trials vs 3-8" for the
+standard 3-wheel setup. Four wheels wasn't the default because it makes everything less forgiving,
+geometry, calibration, mounting rigidity + code all have to be right at once, and the intuition was
+that more sensors just give you more bad data. With a rigid base and careful calibration, the extra
+measurements stop being noise and become redundancy.
 
-When I can't see something directly I build the thing that measures it. Foray is that pointed at a
+In the season I captained I was primary programmer and owned auton: hardened the localizer, built
+vision in, improved PID tuning. Inspire Award, FIRST's top team honour, VA 2020 + OH 2022, plus the
+Johns Hopkins APL Software Innovation Award, and 19th in the world.
+
+None of it happens without funding, and at 16 I was the one cold-calling for it: 20 companies on my
+list, 4 closed, plus a $25K national grant application I ran end to end.
+
+When I can't see something directly I build the thing that measures it. Foray is that, pointed at a
 market nobody can currently see.

@@ -19,9 +19,9 @@ strengthens this specific form.
 **Foray, now. Co-founder.** Built and launched in seven weeks, while both of us were still working
 full-time jobs:
 
-- A **sourcing engine** over a 200,000-profile index. Hybrid retrieval, Postgres full-text and
-  pgvector cosine fused with reciprocal rank fusion, then an LLM rerank, with an offline eval
-  harness reporting nDCG@10, MRR, P@k and R@10 against rule-based ground truth.
+- A **sourcing engine** over a 200,000-profile index. Keyword and vector search fused, then
+  LLM-reranked, with an offline eval harness (nDCG@10, MRR, P@k, R@10) so ranking changes are
+  measured, not guessed.
 - A **voice agent** and a **messaging agent**, unified with email on one CRM, so context given in
   any channel is known to the agent in the others.
 - A **browser agent** that fills and submits job applications end to end, landing submissions

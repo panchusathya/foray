@@ -184,3 +184,69 @@ Accel and YC.
 
 The pattern is the same every time. The system everyone treats as fixed is usually just something
 you can run more iterations against. Recruiting is the biggest one left.
+
+
+## Sathya's version of the same answer
+
+> Use his if the form asks each founder, or if only one answer is allowed and the programme is
+> screening for technical depth. Holds the attribution rule: **the team ran** the odometry
+> localizer, **he owned auton in the season he captained.** The MyBot Simulator is not claimed.
+
+I captained FTC 8719, an independent robotics team with no school affiliation and no district
+budget. Families covered about $10,000 a year out of pocket.
+
+The team ran what we believed was the first four-wheel dead-wheel odometry localizer in FIRST: four
+encoders fused through a Kalman filter, holding under 0.2 inches of drift over thirty seconds of
+driving across 10 of 10 trials, against three to eight inches for the standard three-wheel setup.
+
+Four wheels wasn't the default because it makes the whole system less forgiving. Wheel geometry,
+vector math, calibration, mounting rigidity and code all have to be right at once, and the
+prevailing intuition was that if one tracking wheel can introduce drift, more sensors just give you
+more bad data. The insight was that with a rigid enough base and careful calibration, the extra
+measurements stop being noise and start being redundancy. It wasn't universally better. It cost
+space, design time and iteration. It was better for the robot and the game we were building for.
+
+In the season I captained I was also the team's primary programmer, and I owned the autonomous
+system: hardening the localizer, building vision into the robot, improving PID tuning, and pushing
+for a more customised mechanical base, because the software was only ever as good as the hardware
+it was controlling. That year's field had a large central structure that was hard to navigate
+around, so precise autonomous movement was the binding constraint. I wasn't just writing code for
+the robot, I was working through the relationship between design, localisation, controls and match
+strategy until the system was dependable enough to actually use.
+
+We were #1-ranked at every qualifier we entered, won the Inspire Award, FIRST's top team honour, in
+Virginia 2020 and Ohio 2022, took the Johns Hopkins APL Software Innovation Award, and placed 19th
+in the world at Detroit.
+
+The part I'd point at, though, is the part that made any of it possible. At sixteen I started
+cold-calling companies for parts. I carried the largest prospecting list on the team, twenty
+companies, and closed four: Misumi gave us 30% off the linear slides for the shooter, Curbell and
+Interstate donated the Delrin it was machined from, and I ran our application to REV's national
+$25,000 sponsorship programme end to end, which meant consolidating a 400-page engineering notebook
+into a single submission.
+
+Most people who write about robotics write about the robot. We didn't get to build that robot
+unless someone convinced strangers to pay for it.
+
+The through-line, if it's useful: when I can't see something directly, I build the thing that
+measures it. Odometry measures position with no external reference. The Twitter monitor I built at
+the fund measures what's moving in a market before it's announced. Foray is an instrument pointed
+at a market nobody can currently see.
+
+### Short cut (~180 words)
+
+I captained FTC 8719, an independent robotics team with no school affiliation and no district
+budget. The team ran what we believed was the first four-wheel dead-wheel odometry localizer in
+FIRST: four encoders fused through a Kalman filter, under 0.2 inches of drift over thirty seconds
+across 10 of 10 trials, against three to eight for the standard three-wheel setup. Four wheels
+wasn't the default because it makes everything less forgiving, and the intuition was that more
+sensors just give you more bad data. With a rigid base and careful calibration the extra
+measurements stop being noise and become redundancy. In the season I captained I was primary
+programmer and owned auton. Inspire Award, FIRST's top team honour, in Virginia 2020 and Ohio 2022,
+plus the Johns Hopkins APL Software Innovation Award.
+
+None of it happens without funding, and at sixteen I was the one cold-calling for it. Twenty
+companies on my list, four closed, plus a $25,000 national grant application I ran end to end.
+
+When I can't see something directly I build the thing that measures it. Foray is that pointed at a
+market nobody can currently see.

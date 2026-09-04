@@ -11,23 +11,25 @@ starts earlier, the sentence in Q3 has to say that acceptance moves our resignat
 
 # Q1 — Briefly, what problem are you solving?
 
-Nobody knows who is actually in the market, so hiring can't match — and everyone compensates with
-volume.
+> Tightened 4 Sep to match the register in Greylock. HF0 says "briefly," so this is ~165 words.
+> The longer version is in `block-a.md` A1.
 
-LinkedIn is a profile graph: it records where you've been. It cannot hold intent, because intent is
-private (say it on LinkedIn and your boss finds out), conditional ("I'd move for a founding role
-above $X, not into enterprise sales"), and perishable (open in March, not in June). None of those
-are profile fields; "open to work" is a boolean.
+Nobody knows who's actually in the market, so matching fails and everyone compensates w/ volume.
 
-So the people worth $30,000 a placement stay silent, and the whole industry fights over the small,
-visible slice willing to be seen looking. We interviewed about 25 recruiters. What they told us
-wasn't "sourcing is hard" — it was that **they are all reaching the same candidates as everyone
-else and none of them has proprietary distribution.** That's a market-structure problem, not a
-workflow one.
+LinkedIn is a profile graph: it records where you've been. It can't hold intent, because intent is
+private (say it on LinkedIn and your boss finds out), conditional (only for a founding role, above
+$X, not into an enterprise sales org) and perishable (open in March, not in June). None of those
+are profile fields. "Open to work" is a boolean.
 
-We're building the intent graph: the private, standing record of what would actually move someone,
-captured by conversation instead of a profile page. Profile data is a commodity — we bought 200,000
-profiles from a broker on a credit card. You cannot buy what someone told you in confidence.
+So the people worth $30K a placement stay silent, and the industry fights over the small visible
+slice willing to be seen looking. We asked 25 recruiters. They didn't tell us sourcing was hard,
+they told us they're all reaching the same candidates as everyone else and none of them has any
+proprietary distribution.
+
+We're building the intent graph: a private standing record of what would actually move someone,
+captured by conversation rather than a profile page, reaching them wherever they already are
+through iMessage and voice agents. Profile data is a commodity, we bought 200K profiles from a
+broker on a credit card. You can't buy what someone told you in confidence.
 
 ---
 

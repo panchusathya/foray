@@ -169,30 +169,28 @@ healthcare partnership with Optum.
 
 > Tightened 4 Sep to match Q1's register. The long version is below the fold.
 
-We're both investors at WestBridge ($8B, fka Sequoia India), so we saw this from the buying side
-first. We supported completed exec searches across portcos, Turing C-suite, Innovaccer C-suite,
-Biz2Credit CFO and multiple others, on engagements where the search firms worked for us. Our own
-internal hire took 6-7 months.
+We're both investors at WestBridge (fka Sequoia India) & have supported completed exec searches
+across portcos (Turing C-suite, Innovaccer C-suite, Biz2Credit CFO and multiple others), where the
+search firms worked for us. Our own internal hire took ~7 months.
 
-I'd also run the process at J.P. Morgan, leading campus + lateral recruiting, and from inside a
+I'd also run the process at J.P. Morgan, leading campus + lateral recruiting, plus from inside a
 startup as first hire at an Accel and Conviction-backed company, watching its recruiters build a
 team from nothing.
 
-Then we went and asked 25 recruiters: True Search, Betts, Daversa, Quantum, Candidate Labs, Fleming
-Martin, Kyth. We expected to hear that sourcing was the bottleneck, because that's what every
-product in the category is sold against. Instead they told us they're all reaching the same
+Then we went and asked 25 recruiters (incl. True Search, Betts, Daversa, Quantum, Candidate Labs,
+Fleming Martin, Kyth). We expected to hear that sourcing was the bottleneck, because that's what
+every product in the category is sold against. Instead they told us they're all reaching the same
 candidates as everyone else, and none of them has any proprietary distribution.
 
-Then we proved it on ourselves. Going after our first clients we ran two plays the same day: cold,
-recycling our best resumes into interesting roles, and warm, founders we already knew. Cold got
-zero responses. Warm converted 2/2, and those are our two clients, $232K in contingency fees.
+Which is when it clicked: hiring isn't slow, it's blind. Nobody has an accurate view of who's
+actually in the market, so matching fails and everyone compensates w/ volume. LinkedIn is missing
+the intent graph: who would move, on what terms, and when. That's what we're building, reaching a
+candidate wherever they already are through iMessage and voice agents rather than waiting for them
+to come looking. The goal is to own the distribution.
 
-So hiring isn't slow, it's blind. Nobody has an accurate view of who's actually in the market, so
-matching fails and everyone compensates w/ volume. LinkedIn is missing the intent graph: who would
-move, on what terms, and when. Intent is private, conditional and perishable, so a profile page
-can't hold it. That's what we're building, reaching a candidate wherever they already are through
-iMessage and voice agents rather than waiting for them to come looking. The goal is to own the
-distribution.
+In the last few weeks since starting we have 4 open roles & $232K in contingency fees, plus MVP
+iMessage + voice agents. Worth noting how we won those clients: cold outreach got 0 replies, warm
+converted 2/2.
 
 <details>
 <summary><strong>Long version</strong> — the fuller chronology, if a form gives more room</summary>

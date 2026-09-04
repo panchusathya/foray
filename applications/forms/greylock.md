@@ -22,8 +22,10 @@ full-time jobs:
 - A **sourcing engine** over a 200,000-profile index. Keyword and vector search fused, then
   LLM-reranked, with an offline eval harness (nDCG@10, MRR, P@k, R@10) so ranking changes are
   measured, not guessed.
-- A **voice agent** and a **messaging agent**, unified with email on one CRM, so context given in
-  any channel is known to the agent in the others.
+- A **voice agent** on Retell and a **messaging agent** over iMessage via Linq, both on our own
+  FastAPI backend with signed webhooks and mid-call function calling, unified with email (Zoho,
+  plus Gmail and Outlook connectors) on one CRM, so context given in any channel is known to the
+  agent in the others.
 - A **browser agent** that fills and submits job applications end to end, landing submissions
   against Greenhouse, Ashby and Workday. We took browser agents over hand-built ATS adapters on
   purpose: generality beats coverage, and it cost us a week on Workday's captcha to prove it.

@@ -261,40 +261,36 @@ pointed at a different graph.
 
 # Q3 — Anything else you'd like us to know?
 
-> Rewritten 4 Sep to match Q1/Q2's register, and to carry the material cut from Q2: the
-> distribution numbers, Juicebox, the Candidate Labs objection, and the commodity proof. Long
-> version below the fold.
+> Rewritten 4 Sep as founder backgrounds, since Q1 and Q2 are both about the company. Deliberately
+> avoids repeating what's already in Q1 (DroneCo, the Foray builds, the FIRST odometry) and Q2
+> (portco searches, JPM recruiting, Nova as first hire). Long version below the fold.
 
-A few things that didn't fit above.
+Mostly on backgrounds, since the questions above are about the company.
 
-What we've built in the last few weeks, while working FT jobs: sourcing engine over 200K profiles,
-Retell voice agent, iMessage agent via Linq, browser agent submitting live against Greenhouse,
-Ashby and Workday. 840 candidates contacted, 85 engaged and qualified (10.1%, vs ~5% for standard
-recruiter cold outbound, and that's a qualified rate not a reply rate). ~20 delivered to 8 companies
-before the two clients signed.
+I'm the youngest & top-ranked associate at WestBridge. I've sourced 21 companies in a year: 7
+acquired (Prior Labs to SAP, Common Room to Zoom, Natoma to Snowflake, Metis to DoorDash) and 14
+that went on to raise from a16z, Sequoia, Khosla, Bessemer, Coatue and Madrona. Five of them I
+broke into personally, companies backed by Lightspeed, Accel and YC. Before WestBridge:
+top-performing analyst in J.P. Morgan's M&A group across SF + NY, employee #1 at Nova Intelligence
+($40M raised, SAP + Accel + Conviction backed), and USC math + econ in 3 years. I'm also an angel
+in 3 YC companies.
 
-Why we think distribution is the whole game: one of the recruiters we interviewed gets ~40%
-response on cold DMs when he has mutuals. Our cold email ran 2-3%. Same market, same candidates,
-more than 10x difference, and it's entirely about who you already know.
+My co-founder is the top-ranked analyst at WestBridge and the first hire out of college for the
+office. Berkeley BS Haas (Honors) + BA Computer Science. Covers Freshworks (NASDAQ: FRSH), Nexthop
+AI and Postman, formed the firm's cloud-infra thesis, represented the firm at NeurIPS + ICML.
+Before that: return offer from Formidable Asset Management ($900M hedge fund), where he drove a
+nine-holding ETF rebalance; CIO of Berkeley's $100K student-run fund; co-founded YDelta at 19; 1st
+place, Dodge & Cox investment case competition. In FIRST he won the Inspire Award, the top team
+honour, in VA 2020 + OH 2022, plus the Johns Hopkins APL Software Innovation Award, and placed 19th
+in the world. He also cold-called and closed 4 corporate sponsors at 16 to fund a team with no
+school budget, and ran a $25K national grant application end to end.
 
-We ran on Juicebox first and decided we needed our own system.
+Between us we speak to ~1,000 companies a year. Evaluating markets is the day job, and this is the
+one we picked for ourselves.
 
-Best objection we've heard, from Candidate Labs: the moat is recruiters and brand, not AI. We took
-that as the spec rather than the counter-argument, because if the software makes one recruiter
-worth ten, the moat argument inverts.
-
-Also worth knowing: profile data is a commodity. We bought 200K profiles from a broker on a credit
-card. You can't buy what someone told you privately, which is the whole reason the intent graph is
-worth building.
-
-What we don't have: no cash collected. The $232K is contingent on hires across 4 open roles, and
-the terms are agreed rather than papered. Neither of us is FT yet, we're at WestBridge through end
-of 2026 and full-time on Foray from 1 Jan. Decided, not aspirational.
-
-Bear case, honestly: cold start on the supply side is the hard part. A standing brief is worth
-little at a thousand and a lot at a hundred thousand. Our best answer is the rejection moment, the
-highest-intent moment in a job seeker's life, where nobody is standing. We've shipped the Gmail
-connector for it. If it doesn't work we'll know fast.
+Two things you'd find anyway: no cash collected yet, the $232K is contingent on hires across 4 open
+roles and the terms are agreed rather than papered. And neither of us is FT yet, we're at
+WestBridge through end of 2026 and full-time on Foray from 1 Jan. Decided, not aspirational.
 
 <details>
 <summary><strong>Long version</strong></summary>

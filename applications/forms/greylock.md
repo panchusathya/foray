@@ -170,34 +170,29 @@ healthcare partnership with Optum.
 > Tightened 4 Sep to match Q1's register. The long version is below the fold.
 
 We're both investors at WestBridge ($8B, fka Sequoia India), so we saw this from the buying side
-first. We supported completed exec searches across portcos (Duplo CMO + CFO, Biz2Credit CFO,
-Innovaccer and Turing C-suite) on engagements where the search firms worked for us: we wrote the
-briefs, judged the slates, watched cycles run for months. Our own last internal hire took ~7 months
-across multiple agencies.
+first. We supported completed exec searches across portcos, Turing C-suite, Innovaccer C-suite,
+Biz2Credit CFO and multiple others, on engagements where the search firms worked for us. Our own
+internal hire took 6-7 months.
 
-I'd also run the process from the employer's chair at J.P. Morgan, leading campus + lateral
-recruiting, and then from inside a startup as first hire at a Conviction-backed company, watching
-its recruiters build a team from nothing. Same market, same candidates: a mediocre agency takes
-seven months, a great recruiter w/ a warm network takes a few weeks. So the binding constraint is
-access, not talent.
+I'd also run the process at J.P. Morgan, leading campus + lateral recruiting, and from inside a
+startup as first hire at an Accel and Conviction-backed company, watching its recruiters build a
+team from nothing.
 
-Then we went and asked. ~25 recruiters, 8 recorded in depth (True Search, Betts, Daversa, Quantum,
-Candidate Labs, Fleming Martin, Kyth). We expected to hear that sourcing was the bottleneck,
-because that's what every product in the category is sold against. Instead they told us they're all
-reaching the same candidates as everyone else, and none of them has any proprietary distribution.
-Every recruiter fishes the same pond w/ the same tools, so the industry competes on who emails
-first. That's a market-structure answer, not a workflow complaint, and it reframed the company.
+Then we went and asked 25 recruiters: True Search, Betts, Daversa, Quantum, Candidate Labs, Fleming
+Martin, Kyth. We expected to hear that sourcing was the bottleneck, because that's what every
+product in the category is sold against. Instead they told us they're all reaching the same
+candidates as everyone else, and none of them has any proprietary distribution.
 
 Then we proved it on ourselves. Going after our first clients we ran two plays the same day: cold,
 recycling our best resumes into interesting roles, and warm, founders we already knew. Cold got
-zero responses. Warm converted 2/2, and those are our two clients.
+zero responses. Warm converted 2/2, and those are our two clients, $232K in contingency fees.
 
 So hiring isn't slow, it's blind. Nobody has an accurate view of who's actually in the market, so
-matching fails and everyone compensates w/ volume. LinkedIn is a profile graph and profile data is
-a commodity, we bought 200K profiles from a broker on a credit card. What nobody has is intent: who
-would move, on what terms, and when. Intent is private (say it on LinkedIn and your boss finds
-out), conditional, and perishable. None of those are profile fields. That's the gap we're building
-into, and we run the searches ourselves so there's demand on day one.
+matching fails and everyone compensates w/ volume. LinkedIn is missing the intent graph: who would
+move, on what terms, and when. Intent is private, conditional and perishable, so a profile page
+can't hold it. That's what we're building, reaching a candidate wherever they already are through
+iMessage and voice agents rather than waiting for them to come looking. The goal is to own the
+distribution.
 
 <details>
 <summary><strong>Long version</strong> — the fuller chronology, if a form gives more room</summary>

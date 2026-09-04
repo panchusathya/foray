@@ -22,27 +22,25 @@ strengthens this specific form.
 > build), but **pick one and use it everywhere** — a reviewer comparing two of your forms will
 > notice. The version below uses his 3.
 
-My co-founder and I built and launched all of this at Foray in the last 3 weeks, while working
-full-time jobs. (1) A sourcing engine over a 200,000-profile index: keyword and vector search
-fused, then LLM-reranked, with an offline eval harness so ranking changes are measured, not
-guessed. (2) A voice agent on Retell and a messaging agent over iMessage via Linq, on our own
-FastAPI backend with signed webhooks and mid-call function calling, unified with email on one CRM
-so context carries across channels. (3) A browser agent that fills and submits job applications end
-to end, live against Greenhouse, Ashby and Workday; we took browser agents over hand-built ATS
-adapters because generality beats coverage, and Workday's captcha cost us a week to prove it.
+My co-founder and I have been building Foray (AI-native recruitment firm) in the last 3 weeks,
+while working FT jobs. (1) we've built sourcing engine w/ >200,000-profiles: keyword + vector
+search, then LLM-reranked, with an offline eval harness so ranking changes are measured. (2)
+Retell-based voice agent and a messaging agent over iMessage via Linq, on our own FastAPI backend
+with signed webhooks and mid-call function calling. (3) Browser agent that fills and submits job
+applications end to end, live against Greenhouse, Ashby and Workday.
 
 Before this I founded DroneCo, an autonomous drone delivery company, as sole founder in undergrad.
 I did the design, CAD and Raspberry Pi work, taught myself aerodynamics from a book, wrote the
-grants, and recruited master's students onto the team. ABC Innovation Prize, Blackstone Launchpad
-finalist. We assembled the plane; it never flew. I wasn't a hardware specialist, and that's the
-lesson I kept: pick problems where my edge is real. I also built a procurement tool for Walmart
-with a colleague in under a week, now being showcased to their head of procurement.
+grants, and recruited master's students onto the team.
 
-My co-founder built ForayInstinct, a self-hosted iMessage assistant with an encrypted credential
-vault where secrets are encrypted before storage so the model never sees them; WestBridge's
-internal sourcing tooling, a Twitter monitor and outreach deck pipeline in production with the
-investment team; and the autonomous system for FIRST Team 8719, where he was captain and primary
-programmer.
+My co-founder also built WestBridge's (fka Sequoia India) internal sourcing tooling in his first
+year out of college: a Twitter monitor + outreach deck pipeline, in production w/ the investment
+team, surfacing signal on companies before it reaches the usual channels. Same shape as Foray,
+pointed at a different graph. Before that, the autonomous system for FIRST Team 8719, where he was
+captain + primary programmer. The team ran what we believe was the first four-wheel dead-wheel
+odometry localizer in FIRST: four encoders fused through a Kalman filter, <0.2" drift over 30s
+across 10/10 trials vs 3-8" for the standard 3-wheel setup. He owned auton in the season he
+captained. Berkeley CS + Haas.
 
 🔗 *Links before submitting: goforay.io, the demo recording, his FIRST repo, the DroneCo deck, a
 Loom of the Walmart tool.*

@@ -26,25 +26,23 @@ My co-founder and I built and launched all of this at Foray in the last 3 weeks,
 full-time jobs. (1) A sourcing engine over a 200,000-profile index: keyword and vector search
 fused, then LLM-reranked, with an offline eval harness so ranking changes are measured, not
 guessed. (2) A voice agent on Retell and a messaging agent over iMessage via Linq, on our own
-FastAPI backend with signed webhooks and mid-call function calling, unified with email on one CRM,
-so context a candidate gives in one channel is known to the agent in the others. (3) A browser
-agent that fills and submits job applications end to end, live against Greenhouse, Ashby and
-Workday; we took browser agents over hand-built ATS adapters because generality beats coverage, and
-Workday's captcha cost us a week to prove it.
+FastAPI backend with signed webhooks and mid-call function calling, unified with email on one CRM
+so context carries across channels. (3) A browser agent that fills and submits job applications end
+to end, live against Greenhouse, Ashby and Workday; we took browser agents over hand-built ATS
+adapters because generality beats coverage, and Workday's captcha cost us a week to prove it.
 
-Before this I founded DroneCo, an autonomous drone delivery company, as sole founder while an
-undergraduate. I did the design, the CAD and the Raspberry Pi work, taught myself aerodynamics from
-a book, wrote the grants, and recruited master's engineering students onto the team. ABC Innovation
-Prize, Blackstone Launchpad finalist. We assembled the plane; it never flew. I wasn't a hardware
-specialist, and that's the lesson I kept: pick problems where my edge is real. I also built a
-procurement tool for Walmart with one colleague in under a week, now being showcased to their head
-of procurement.
+Before this I founded DroneCo, an autonomous drone delivery company, as sole founder in undergrad.
+I did the design, CAD and Raspberry Pi work, taught myself aerodynamics from a book, wrote the
+grants, and recruited master's students onto the team. ABC Innovation Prize, Blackstone Launchpad
+finalist. We assembled the plane; it never flew. I wasn't a hardware specialist, and that's the
+lesson I kept: pick problems where my edge is real. I also built a procurement tool for Walmart
+with a colleague in under a week, now being showcased to their head of procurement.
 
 My co-founder built ForayInstinct, a self-hosted iMessage assistant with an encrypted credential
 vault where secrets are encrypted before storage so the model never sees them; WestBridge's
-internal sourcing tooling, a Twitter monitoring system and an AI-generated outreach deck pipeline,
-both in production with the investment team; and the autonomous system for FIRST Team 8719, where
-he was captain and primary programmer.
+internal sourcing tooling, a Twitter monitor and outreach deck pipeline in production with the
+investment team; and the autonomous system for FIRST Team 8719, where he was captain and primary
+programmer.
 
 🔗 *Links before submitting: goforay.io, the demo recording, his FIRST repo, the DroneCo deck, a
 Loom of the Walmart tool.*

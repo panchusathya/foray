@@ -135,3 +135,52 @@ on money, and the residency is the only thing on our list that directly buys it.
 WestBridge through the end of 2026 and full-time on Foray from 1 January — decided, not
 aspirational. If the cohort starts before then, acceptance moves the date forward. We're not asking
 to do this part-time.
+
+
+---
+
+# Q4 — Most impressive thing you've done (if the form asks)
+
+> **Not in the three questions HF0 gave us** (problem, traction, twelve weeks), so this is here in
+> case the live form has the field. It is the same answer submitted to Soma, unchanged.
+>
+> **It happens to suit HF0 better than the other programmes.** Every beat in it is about
+> compressing a timeline: the SAT ten times, college in three years, building the conference app
+> instead of buying a booth, and the current build in three weeks. HF0's pitch is twelve months in
+> twelve weeks. Do not adapt it, the fit is already there.
+
+I've usually never had a way in, so I've always had to build one.
+
+I went to eight schools in sixteen years. Being the new kid that many times teaches you
+something: you don't wait to be let into a room or a group, you find your own way in. At some
+point this stopped feeling like a disadvantage and started feeling like a method.
+
+The first system I turned it on was standardized testing. Most people treat the SAT as a one-shot
+event. I sat it + the ACT ten times and moved my score more than 450 points. College was the same
+idea. Four years is a default, not a rule, so I did my maths degree at USC in three and interned
+every semester I was there.
+
+In the middle of that I founded an autonomous drone delivery company. I was an undergrad
+recruiting master's students onto the team, which was the first time I had to convince people to
+come work on something of mine. I taught myself aerodynamics out of a book, did the design, wrote
+the grants. We won the ABC Innovation Prize and made the Blackstone Launchpad finals. We
+assembled the plane. It never flew. I wasn't a hardware specialist, and that's the lesson I kept:
+pick problems where your edge is real.
+
+Breaking into banking was the same method with better inputs. I had no route into a top group, so
+I built one. First I won an offer at Moelis, used it to get Evercore, then used that to get
+J.P. Morgan, where I was the youngest analyst to start full-time. Within a year I was ranked
+top-performing in the M&A group across SF and New York, and I was helping run campus and lateral
+recruiting.
+
+From there I talked my way into a Chief of Staff seat at Nova Intelligence as employee #1, backed
+by Accel, Conviction and SAP. I built every non-engineering function while the team scaled >5x,
+including our sales motion from nothing.
+
+At WestBridge, an $8B fund, formerly Sequoia India, I'm the youngest & top-ranked associate. I've
+sourced 21 companies in a year: seven have been acquired, and fourteen went on to raise from
+a16z, Sequoia and others. Five of them I broke into personally, companies backed by Lightspeed,
+Accel and YC.
+
+The pattern is the same every time. The system everyone treats as fixed is usually just something
+you can run more iterations against. Recruiting is the biggest one left.

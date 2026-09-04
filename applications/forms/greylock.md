@@ -13,50 +13,38 @@ strengthens this specific form.
 
 # Q1 — Products you have built and launched, and your role
 
-> **Submitted by Tushar.** Tight version: products and role only. The commercial numbers were cut
-> deliberately, they belong in Q3. Per-founder long versions below the fold.
+> **Submitted by Tushar.** The field is a single-line input, so this is continuous prose with
+> inline numbering rather than bullets. Nova Intelligence, the measurement layer, the recruiter app
+> and the candidate portal are cut. Per-founder long versions below the fold.
+>
+> ⚠️ **"3 weeks" vs "seven weeks".** Tushar's draft says the last 3 weeks; every other form in this
+> pack says six or seven. Both may be true of different things (the three agents vs. the whole
+> build), but **pick one and use it everywhere** — a reviewer comparing two of your forms will
+> notice. The version below uses his 3.
 
-**Foray, now. Co-founder.** Built and launched in seven weeks, while both of us were still working
-full-time jobs:
+My co-founder and I built and launched all of this at Foray in the last 3 weeks, while working
+full-time jobs. (1) A sourcing engine over a 200,000-profile index: keyword and vector search
+fused, then LLM-reranked, with an offline eval harness so ranking changes are measured, not
+guessed. (2) A voice agent on Retell and a messaging agent over iMessage via Linq, both on our own
+FastAPI backend with signed webhooks and mid-call function calling, unified with email on one CRM,
+so context a candidate gives in one channel is known to the agent in the others. (3) A browser
+agent that fills and submits job applications end to end, live against Greenhouse, Ashby and
+Workday; we chose browser agents over hand-built ATS adapters because generality beats coverage,
+and Workday's captcha cost us a week to prove it.
 
-- A **sourcing engine** over a 200,000-profile index. Keyword and vector search fused, then
-  LLM-reranked, with an offline eval harness (nDCG@10, MRR, P@k, R@10) so ranking changes are
-  measured, not guessed.
-- A **voice agent** on Retell and a **messaging agent** over iMessage via Linq, both on our own
-  FastAPI backend with signed webhooks and mid-call function calling, unified with email (Zoho,
-  plus Gmail and Outlook connectors) on one CRM, so context given in any channel is known to the
-  agent in the others.
-- A **browser agent** that fills and submits job applications end to end, landing submissions
-  against Greenhouse, Ashby and Workday. We took browser agents over hand-built ATS adapters on
-  purpose: generality beats coverage, and it cost us a week on Workday's captcha to prove it.
-- A **measurement layer**. Every application carries its own inbound alias, and every employer
-  reply is classified and timestamped back to the candidate and the role.
-- A **recruiter app**, a **candidate portal**, goforay.io, and a live candidate waitlist.
+Before this I founded DroneCo, an autonomous drone delivery company, as sole founder while an
+undergraduate: the design and CAD, the Raspberry Pi work, taught myself aerodynamics from a book,
+wrote the grants, and recruited master's engineering students onto the team. ABC Innovation Prize,
+Blackstone Launchpad finalist. We assembled the plane; it never flew. I wasn't a hardware
+specialist, and that's the lesson I kept: pick problems where my edge is real. I also built a
+procurement tool for Walmart with one colleague in under a week, after finding they still ran
+procurement largely by hand; it's being showcased to their head of procurement.
 
-**Nova Intelligence. Employee #1 and Chief of Staff.** An AI coding-agent platform for SAP
-migrations, backed by Accel, Conviction and SAP. The product I built there myself was the **SAP
-Sapphire scheduling app**. We needed Fortune 100 CIOs at the one conference that mattered and
-couldn't afford a booth. The scarce resource at a conference isn't booth space, it's attendee
-attention and the inability to navigate hundreds of sessions. So I built a personalised scheduling
-app for attendees instead, and it put us in front of exactly the CIOs we had no other route to.
-
-**DroneCo. Sole founder.** Autonomous drone delivery, founded as an undergraduate. I did the
-industrial design and CAD, the Raspberry Pi work, taught myself aerodynamics out of a book, wrote
-the grants, and recruited master's engineering students onto the team. ABC Innovation Prize,
-Blackstone Launchpad finalist. We assembled the plane. It never flew. I wasn't a hardware
-specialist, and that's the lesson I kept: pick problems where my edge is real.
-
-**Walmart procurement tool. Built it with one colleague, in under a week**, after finding they
-still ran procurement largely by hand. Vendor catalog, stakeholder profiles, approval workflow.
-Being showcased to their head of procurement.
-
-**My co-founder's builds.** `github.com/panchusathya/ForayInstinct`, sole author, public, MIT, 247
-commits: a self-hosted iMessage assistant with an encrypted credential vault, where secrets are
-encrypted before storage so the model never sees them. WestBridge's internal sourcing tooling, a
-Twitter monitoring system and an AI-generated outreach deck pipeline, both in production with the
-investment team. And the autonomous system for FIRST Team 8719, where he was captain and primary
-programmer, on a team running what they believed was the first four-wheel dead-wheel odometry
-localizer in FIRST.
+My co-founder built ForayInstinct (public, MIT, 247 commits), a self-hosted iMessage assistant with
+an encrypted credential vault where secrets are encrypted before storage so the model never sees
+them; WestBridge's internal sourcing tooling, a Twitter monitoring system and an AI-generated
+outreach deck pipeline, both in production with the investment team; and the autonomous system for
+FIRST Team 8719, where he was captain and primary programmer.
 
 🔗 *Links before submitting: goforay.io, the demo recording, his FIRST repo, the DroneCo deck, a
 Loom of the Walmart tool.*

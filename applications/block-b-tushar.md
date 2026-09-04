@@ -83,43 +83,70 @@ skimmed. The same facts in sequence are read as a *person*, and the reader assem
 themselves — which is the whole point, because the pattern is the argument. It also lets DroneCo
 sit in the middle as a real failure without denting anything, which a bullet list can't do.
 
-### The draft (~430 words)
+### The draft — v3, 4 Sep. His edit, no em dashes, college line fixed.
 
-> I've never had a way in, so I've always had to build one.
+> I've usually never had a way in, so I've always had to build one.
 >
-> I went to eight schools in sixteen years. Being the new kid that many times teaches you something
-> specific: you don't wait to be let into a room, you find your own way in. At some point it
-> stopped feeling like a disadvantage and started feeling like a method.
+> I went to eight schools in sixteen years. Being the new kid that many times teaches you
+> something: you don't wait to be let into a room or a group, you find your own way in. At some
+> point this stopped feeling like a disadvantage and started feeling like a method.
 >
-> The first system I turned it on was a standardised test. Most people treat the SAT as a one-shot
-> event. I sat it, and the ACT, ten times, and moved my score more than 450 points. Then I did the
-> same thing to college — finished my maths degree at USC in three years, interning every semester
-> I was there.
+> The first system I turned it on was standardized testing. Most people treat the SAT as a one-shot
+> event. I sat it + the ACT ten times and moved my score more than 450 points. College was the same
+> idea. Four years is a default, not a rule, so I did my maths degree at USC in three and interned
+> every semester I was there.
 >
-> In the middle of that I founded an autonomous drone delivery company. I was an undergraduate
+> In the middle of that I founded an autonomous drone delivery company. I was an undergrad
 > recruiting master's students onto the team, which was the first time I had to convince people to
 > come work on something of mine. I taught myself aerodynamics out of a book, did the design, wrote
 > the grants. We won the ABC Innovation Prize and made the Blackstone Launchpad finals. We
-> assembled the plane. It never flew — I wasn't a hardware specialist, and loving a thing isn't an
-> edge. That's the lesson I kept: pick problems where your edge is real.
+> assembled the plane. It never flew. I wasn't a hardware specialist, and that's the lesson I kept:
+> pick problems where your edge is real.
 >
 > Breaking into banking was the same method with better inputs. I had no route into a top group, so
-> I built one — won an offer at Moelis, used it to get Evercore, used that to get J.P. Morgan,
-> where I was the youngest analyst to start full-time. Within a year I was ranked top-performing in
-> the M&A group across SF and New York, and I was helping run campus and lateral recruiting. That
-> was the first time I sat on the other side of the funnel I'd just spent two years hacking.
+> I built one. First I won an offer at Moelis, used it to get Evercore, then used that to get
+> J.P. Morgan, where I was the youngest analyst to start full-time. Within a year I was ranked
+> top-performing in the M&A group across SF and New York, and I was helping run campus and lateral
+> recruiting.
 >
 > From there I talked my way into a Chief of Staff seat at Nova Intelligence as employee #1, backed
-> by Accel, Conviction and SAP. I built every non-engineering function while the team scaled more
-> than fivefold, including our sales motion from nothing.
+> by Accel, Conviction and SAP. I built every non-engineering function while the team scaled >5x,
+> including our sales motion from nothing.
 >
-> Now I'm the youngest and top-ranked associate at WestBridge, an $8B fund, formerly Sequoia India.
-> I sourced 21 companies in a year: seven have been acquired, and fourteen went on to raise from
-> a16z, Sequoia and others. Five of them I broke into personally — companies backed by Lightspeed,
-> Accel and YC that had no reason to take my call.
+> At WestBridge, an $8B fund, formerly Sequoia India, I'm the youngest & top-ranked associate. I've
+> sourced 21 companies in a year: seven have been acquired, and fourteen went on to raise from
+> a16z, Sequoia and others. Five of them I broke into personally, companies backed by Lightspeed,
+> Accel and YC.
 >
 > The pattern is the same every time. The system everyone treats as fixed is usually just something
 > you can run more iterations against. Recruiting is the biggest one left.
+
+### What changed from his paste, and why
+
+- **The college line, which was the actual complaint.** *"I did the same thing to college"* pointed
+  the wrong way: the SAT point is *more* iterations, and finishing early is *fewer*. The two moves
+  aren't the same, so the sentence stalled. **What actually connects them is refusing the default**,
+  not repeating the attempt, so the bridge is now *"Four years is a default, not a rule."* Same
+  facts, and it echoes the closing line instead of fighting it.
+- **All em dashes gone.** Periods and commas throughout. Kept his `+`, `&` and `>5x` as-is; that
+  texture is what makes it read casual rather than composed.
+- **The drone lesson had lost its antecedent.** His version ran *"I wasn't a hardware specialist &
+  that's the lesson I kept"*, where the lesson hadn't been stated yet. Now: *"It never flew. I
+  wasn't a hardware specialist, and that's the lesson I kept: pick problems where your edge is
+  real."*
+- **Small grammar only:** *"First, won an offer"* → *"First I won an offer"*; *"I built every
+  non-engineering function... including building our sales motion"* → drops the second *building*;
+  the semicolon before *"companies backed by Lightspeed"* is now a comma.
+- **The closing paragraph was re-added.** It wasn't in his paste, and it may have been cut on
+  purpose, but without it the answer stops on a résumé statistic instead of on the reason he is
+  building this company. **It is the only line that connects the whole history to Foray**, and it
+  does it in nine words. Cut it only deliberately.
+
+> **One line he removed that is worth a second look:** *"That was the first time I sat on the other
+> side of the funnel I'd just spent two years hacking."* It turned the offer ladder and the J.P.
+> Morgan recruiting remit into a single insight rather than two facts, which is the
+> founder–market-fit argument made without claiming it. Not re-added, since he cut it. Say the word
+> and it goes back after the recruiting sentence.
 
 **The last line is doing the most work.** It converts a personal history into a reason to build
 this specific company, in nine words, without arguing for it. Keep it even if you cut elsewhere.

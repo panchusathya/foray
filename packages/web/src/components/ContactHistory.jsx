@@ -14,6 +14,13 @@ import { messageReceipt } from '../lib/intake.js';
 import { useAsync } from '../lib/useAsync.js';
 import { Badge, Empty, ErrorBox, Loading } from './common.jsx';
 
+// The classifier's intents, in words a recruiter would use.
+const INTENT_LABELS = {
+  out_of_office: 'auto-reply',
+  not_now: 'not now',
+  not_interested: 'not interested',
+};
+
 function when(value) {
   return value ? new Date(value).toLocaleString() : '—';
 }
@@ -45,7 +52,7 @@ function MessageRow({ message }) {
       </div>
       <div className="small muted wrap-anywhere">
         {inbound ? `from ${message.from_address}` : `to ${message.to_address}`}
-        {message.reply_intent ? ` · ${message.reply_intent}` : ''}
+        {message.reply_intent ? ` · ${INTENT_LABELS[message.reply_intent] ?? message.reply_intent}` : ''}
       </div>
       <pre className="message-body">{textOf(message)}</pre>
       {message.web_link ? (

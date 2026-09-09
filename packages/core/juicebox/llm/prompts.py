@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -248,20 +249,29 @@ to do next.
 Intents:
 - interested: wants to talk, asks for details, proposes a time.
 - not_interested: declines with no opening.
-- not_now: open later, currently unavailable, "ask me in six months".
+- not_now: open later, currently unavailable, or asks us to wait. This includes a \
+PERSON writing that they are away or travelling ("In Japan until 9/10, please \
+follow up after", "on leave until March", "ask me in six months").
 - referral: not for them, but points at someone else.
-- question: needs information before deciding.
-- out_of_office: automated absence reply.
+- question: needs information before deciding ("give me more details about the \
+role, location and comp" is a question, never out_of_office).
+- out_of_office: ONLY a machine-generated auto-responder -- a subject like \
+"Automatic reply:" or templated wording that does not engage with what we wrote. \
+If a human typed it, it is not_now, even when they name a return date.
 - unsubscribe: asks to stop being contacted. Anything resembling an opt-out belongs here.
 - bounce: automated delivery failure.
 
-`should_stop_sequence` is true for every intent except out_of_office.
+follow_up_after: the ISO date (YYYY-MM-DD) the reply names for hearing from us \
+again -- the date itself, not the day after. Resolve relative phrases against \
+<received_on>: "until 9/10" is that September 10th, "in six months" is six months \
+after the received date, "back Sept 9" is that September 9th. Only for not_now and \
+out_of_office; an empty string when no date or period is named.
 """
 
 REPLY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["intent", "confidence", "should_stop_sequence", "suggested_next_step", "summary"],
+    "required": ["intent", "confidence", "follow_up_after", "suggested_next_step", "summary"],
     "properties": {
         "intent": {
             "type": "string",
@@ -271,16 +281,22 @@ REPLY_SCHEMA: dict[str, Any] = {
             ],
         },
         "confidence": {"type": "number"},
-        "should_stop_sequence": {"type": "boolean"},
+        "follow_up_after": {"type": "string"},
         "suggested_next_step": {"type": "string"},
         "summary": {"type": "string"},
     },
 }
 
 
-def reply_prompt(*, subject: str, body: str) -> str:
-    return f"<subject>{subject.strip()}</subject>\n<reply>\n{body.strip()}\n</reply>"
-
+def reply_prompt(*, subject: str, body: str, received_at: datetime | None = None) -> str:
+    # The received date is what makes "until 9/10" or "in two weeks" mean
+    # anything; without it the model guesses a year.
+    received = received_at or datetime.now(UTC)
+    stamp = f"{received:%Y-%m-%d} ({received:%A})"
+    return (
+        f"<received_on>{stamp}</received_on>\n"
+        f"<subject>{subject.strip()}</subject>\n<reply>\n{body.strip()}\n</reply>"
+    )
 
 # --------------------------------------------------------------------------
 # 5. sequence drafting

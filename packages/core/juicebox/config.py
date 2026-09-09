@@ -275,6 +275,18 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
+    # Nobody who answered us by hand in the last N days gets automated mail
+    # from ANY sequence: the send path stops the enrollment and the enrol
+    # endpoint skips them (with a force override). 0 disables both guards.
+    outreach_reply_quiet_days: int = field(
+        default_factory=lambda: _env_int("OUTREACH_REPLY_QUIET_DAYS", 30)
+    )
+    # An automated out-of-office with no return date still means the person
+    # is away; push the next step this many days rather than landing it on
+    # top of the auto-responder. 0 keeps the original schedule.
+    outreach_ooo_default_snooze_days: int = field(
+        default_factory=lambda: _env_int("OUTREACH_OOO_DEFAULT_SNOOZE_DAYS", 3)
+    )
     # Auto-drafting a reply into the user's Drafts folder when a candidate
     # answers. Off: the drafts were not good enough to be worth the noise, and
     # the feature is loud in two places at once -- it writes into a mailbox we

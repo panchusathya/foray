@@ -425,7 +425,7 @@ class TestOutreachApi:
             f"/v1/sequences/{sequence['id']}/enroll",
             json={"candidate_ids": [candidate["id"]]},
             headers=headers,
-        ).json()
+        ).json()["enrollments"]
         assert enrolled[0]["status"] == "active"
 
         run = client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers).json()

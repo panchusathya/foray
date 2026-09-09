@@ -68,6 +68,8 @@ class SyncSummary:
     # Employer mail that went to an application alias rather than the
     # recruiter-reply path.
     alias_routed: int = 0
+    # Copies auto-forwarded from a sibling mailbox that syncs itself.
+    forwarded_skipped: int = 0
 
 
 def alias_inbox_enabled() -> bool:
@@ -100,7 +102,9 @@ def _already_recorded(db: Session, *, org_id: str, native_id: str) -> bool:
     )
 
 
-def _match_outbound(db: Session, *, org_id: str, event: MailboxEvent) -> Message | None:
+def _match_outbound(
+    db: Session, *, org_id: str, event: MailboxEvent, mailbox_id: str | None = None
+) -> Message | None:
     if event.thread_id:
         # Two shapes of thread id, one query. Graph mints a conversationId that
         # looks nothing like a message id, and we store it in conversation_id.
@@ -135,7 +139,11 @@ def _match_outbound(db: Session, *, org_id: str, event: MailboxEvent) -> Message
         if message is not None:
             return message
     return find_message_for_reply(
-        db, org_id=org_id, candidate_email=event.from_address, provider_message_id=None
+        db,
+        org_id=org_id,
+        candidate_email=event.from_address,
+        provider_message_id=None,
+        mailbox_id=mailbox_id,
     )
 
 
@@ -185,9 +193,22 @@ def sync_mailbox(
     summary = SyncSummary()
 
     address_index = (
-        build_address_index(db, org_id=connection.org_id)
-        if connection.thread_sync_enabled
-        else {}
+        build_address_index(db, org_id=connection.org_id) if connection.thread_sync_enabled else {}
+    )
+    # The other mailboxes that sync themselves. Mail addressed to one of them
+    # but found here is a forwarded copy, and the original is handled where it
+    # landed. Only active ones: a copy forwarded from a revoked mailbox is the
+    # only look we get at that reply.
+    sibling_addresses = frozenset(
+        address.lower()
+        for address in db.scalars(
+            select(MailboxConnection.address).where(
+                MailboxConnection.org_id == connection.org_id,
+                MailboxConnection.status == "active",
+                MailboxConnection.id != connection.id,
+            )
+        )
+        if address
     )
 
     def handle_inbound(event: MailboxEvent) -> None:
@@ -198,6 +219,7 @@ def sync_mailbox(
             summary=summary,
             now=now,
             address_index=address_index,
+            sibling_addresses=sibling_addresses,
         )
 
     baselined = _read_folder(
@@ -252,7 +274,7 @@ def sync_mailbox(
         logger.info(
             "mailbox sync %s (%s): seen=%d matched=%d skipped=%d intents=%s "
             "sent_ingested=%d inbound_ingested=%d unmatched_discarded=%d "
-            "alias_routed=%d",
+            "alias_routed=%d forwarded_skipped=%d",
             connection.address,
             connection.provider,
             summary.seen,
@@ -263,6 +285,7 @@ def sync_mailbox(
             summary.inbound_ingested,
             summary.unmatched_discarded,
             summary.alias_routed,
+            summary.forwarded_skipped,
         )
     return summary
 
@@ -275,6 +298,7 @@ def _handle_inbound_event(
     summary: SyncSummary,
     now: datetime,
     address_index: dict[str, str],
+    sibling_addresses: frozenset[str] = frozenset(),
 ) -> None:
     summary.seen += 1
     # Once, here, before anything reads the body. Everything downstream --
@@ -292,6 +316,17 @@ def _handle_inbound_event(
         summary.skipped += 1
         return
     if _already_recorded(db, org_id=connection.org_id, native_id=event.native_id):
+        summary.skipped += 1
+        return
+    # Persona mailboxes auto-forward to a central inbox, so the same reply
+    # showed up here under a second native id, a different thread id and no
+    # RFC id, matched by the org-wide address guess, and was recorded twice
+    # -- sometimes against the wrong sequence. If it was addressed to another
+    # mailbox that syncs itself, that mailbox owns it.
+    recipients = {address.lower() for address in event.to_addresses if address}
+    own = connection.address.lower()
+    if recipients and own not in recipients and recipients & sibling_addresses:
+        summary.forwarded_skipped += 1
         summary.skipped += 1
         return
 
@@ -324,7 +359,7 @@ def _handle_inbound_event(
             )
             return
 
-    outbound = _match_outbound(db, org_id=connection.org_id, event=event)
+    outbound = _match_outbound(db, org_id=connection.org_id, event=event, mailbox_id=connection.id)
     if outbound is None:
         # Not a reply to anything we sent. With thread sync on, mail from a
         # known candidate still belongs in their timeline; strangers are
@@ -355,6 +390,7 @@ def _handle_inbound_event(
         subject=event.subject,
         body=event.body,
         now=now,
+        received_at=event.received_at or event.sent_at,
         mailbox_id=connection.id,
         provider_native_id=event.native_id,
         internet_message_id=event.rfc_message_id,

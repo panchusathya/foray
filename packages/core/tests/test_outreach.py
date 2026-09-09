@@ -130,7 +130,9 @@ class TestReplyClassification:
         [
             ("Thanks but I'm not interested right now.", "not_interested"),
             ("This sounds interesting — happy to chat this week.", "interested"),
-            ("I am out of office until Monday.", "out_of_office"),
+            # A person typing that they are away is asking us to wait, not an
+            # auto-responder; the latter announces itself in the subject.
+            ("I am out of office until Monday.", "not_now"),
             ("Please unsubscribe me from this list.", "unsubscribe"),
             ("Delivery Status Notification (Failure)", "bounce"),
             ("Not for me, but you should talk to my colleague Sam.", "referral"),
@@ -141,7 +143,9 @@ class TestReplyClassification:
         assert heuristic_classify("Re: role", body).intent == expected
 
     def test_only_out_of_office_keeps_the_sequence_running(self):
-        assert heuristic_classify("", "out of office").should_stop_sequence is False
+        automated = heuristic_classify("Automatic reply: your role", "I am away.")
+        assert automated.intent == "out_of_office"
+        assert automated.should_stop_sequence is False
         assert heuristic_classify("", "not interested").should_stop_sequence is True
 
     def test_opt_out_beats_a_positive_phrase(self):
@@ -266,7 +270,7 @@ class TestSendNowEndpoint:
             f"/v1/sequences/{sequence['id']}/enroll",
             json={"candidate_ids": [candidate_id], "send_now": True},
             headers=headers,
-        ).json()
+        ).json()["enrollments"]
 
         # The email went out during THIS request, and the returned row shows
         # it: step advanced, next_send_at now belongs to the follow-up.
@@ -296,7 +300,7 @@ class TestSendNowEndpoint:
             f"/v1/sequences/{sequence['id']}/enroll",
             json={"candidate_ids": [candidate_id]},
             headers=headers,
-        ).json()
+        ).json()["enrollments"]
         assert mailbox.outbox == []
         assert rows[0]["current_step"] == 0
 
@@ -317,7 +321,7 @@ class TestSendNowEndpoint:
             f"/v1/sequences/{sequence['id']}/enroll",
             json={"candidate_ids": [candidate_id], "send_now": True},
             headers=headers,
-        ).json()
+        ).json()["enrollments"]
         assert mailbox.outbox == []
         assert rows[0]["current_step"] == 0
 
@@ -995,7 +999,12 @@ class TestReplies:
         self, session, outreach_fixture, mailbox
     ):
         message = self._send_first(session, outreach_fixture)
-        record_reply(session, message=message, subject="Auto", body="I am out of office")
+        record_reply(
+            session,
+            message=message,
+            subject="Automatic reply: role",
+            body="I am currently out of the office and will respond when I return.",
+        )
         session.commit()
         assert session.query(Enrollment).one().status == "active"
 

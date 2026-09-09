@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 KIND_OUTREACH_TICK = "outreach.tick"
 KIND_OUTREACH_SEND = "outreach.send"
+# "Follow up after 9/10": the sequence stops and this reminds the sending
+# mailbox the day after. Enqueued by record_reply on a dated not_now reply,
+# never on ensure_ticks; idempotent per (enrollment, date).
+KIND_OUTREACH_FOLLOW_UP = "outreach.follow_up"
 KIND_AGENT_TICK = "agent.tick"
 # mailbox.sync is the per-org dispatcher; mailbox.sync.one does the work for
 # a single mailbox. Splitting them keeps one slow or backlogged mailbox from

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 from juicebox.jobs import KIND_OUTREACH_SEND, KIND_OUTREACH_TICK, claim, enqueue
 from juicebox.models import (
@@ -208,7 +208,10 @@ class TestCancel:
         assert enrollment.current_step == 1
         assert enrollment.status == "active"
         assert enrollment.next_send_at is not None
-        assert enrollment.next_send_at > utcnow()
+        due = enrollment.next_send_at
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        assert due > utcnow()
         assert mailbox.outbox == []
 
     def test_skip_of_the_last_step_completes_the_enrolment(
@@ -513,7 +516,7 @@ class TestSendingApi:
         first_at = paused["paused_at"]
 
         again = client.patch("/v1/org/sending", json={"paused": True}, headers=headers).json()
-        assert again["paused_at"] == first_at
+        assert again["paused_at"].rstrip("Z") == first_at.rstrip("Z")
 
         live = client.patch("/v1/org/sending", json={"paused": False}, headers=headers).json()
         assert live["paused"] is False

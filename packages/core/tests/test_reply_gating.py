@@ -46,7 +46,7 @@ from juicebox.outreach.sequencer import (
     schedule_step_at,
 )
 from juicebox.worker import HANDLERS, process_job
-from tests.test_mailbox_sync import (
+from test_mailbox_sync import (
     FakeDeltaClient,
     _inbound,
     graph_provider,

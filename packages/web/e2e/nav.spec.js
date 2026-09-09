@@ -27,7 +27,7 @@ test.describe('sidebar', () => {
     for (const [heading, labels] of [
       ['PROJECT', ['Pipeline', 'Contacts', 'Sequences']],
       ['FIND PEOPLE', ['Search', 'Sourcing', 'Import']],
-      ['PLACE PEOPLE', ['Intake', 'Jobs', 'Applications']],
+      ['PLACE PEOPLE', ['Intake', 'Jobs', 'Applications', 'Outbox']],
     ]) {
       const group = groupFor(page, heading);
       await expect(group).toBeVisible();

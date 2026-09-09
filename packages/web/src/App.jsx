@@ -13,6 +13,7 @@ import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
 import { ImportPage } from './pages/Import.jsx';
 import { LoginPage } from './pages/Login.jsx';
+import { OutboxPage } from './pages/Outbox.jsx';
 import { ProjectDetailPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
@@ -49,6 +50,7 @@ const NAV_SECTIONS = [
       { to: '/intake', label: 'Intake' },
       { to: '/jobs', label: 'Jobs' },
       { to: '/applications', label: 'Applications' },
+      { to: '/outbox', label: 'Outbox' },
     ],
   },
 ];
@@ -132,6 +134,7 @@ function NotFoundPage() {
 
 function Shell({ children }) {
   const { user, logout } = useAuth();
+  const { sending } = useCurrentProject();
   return (
     <div className="shell">
       {/* One <nav>, and the sections are plain divs. ViewTabs is already a
@@ -169,7 +172,16 @@ function Shell({ children }) {
           </div>
         </div>
       </nav>
-      <main className="main">{children}</main>
+      <main className="main">
+        {sending?.paused ? (
+          <div className="card small" data-testid="sending-paused-banner" style={{ marginBottom: 16 }}>
+            <span className="badge miss">Sending paused</span>{' '}
+            Sequence email is held. Follow-up reminders and draft-ready pings still go out.
+            Anything already handed to the provider will finish.
+          </div>
+        ) : null}
+        {children}
+      </main>
     </div>
   );
 }
@@ -201,6 +213,7 @@ export function App() {
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/contacts/:candidateId" element={<CandidateDetailPage />} />
           <Route path="/intake" element={<IntakePage />} />
+          <Route path="/outbox" element={<OutboxPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           {/* Off the sidebar -- nobody was reading it as a destination. Still
               routed: Home's "Interested" stat links here, and that breakdown

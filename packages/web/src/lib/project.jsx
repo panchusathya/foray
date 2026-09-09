@@ -16,12 +16,15 @@ const ProjectContext = createContext({
   loading: true,
   setProject: () => {},
   reload: () => {},
+  sending: null,
+  reloadSending: () => {},
 });
 
 export function CurrentProjectProvider({ children }) {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState(() => localStorage.getItem(STORAGE_KEY) ?? '');
   const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -35,9 +38,21 @@ export function CurrentProjectProvider({ children }) {
     }
   }, []);
 
+  const reloadSending = useCallback(async () => {
+    try {
+      setSending(await api.orgSending());
+    } catch {
+      setSending(null);
+    }
+  }, []);
+
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    reloadSending();
+  }, [reloadSending]);
 
   const setProject = useCallback((id) => {
     setProjectId(id ?? '');
@@ -61,8 +76,8 @@ export function CurrentProjectProvider({ children }) {
   }, [loading, project, projectId, setProject]);
 
   const value = useMemo(
-    () => ({ projects, project, loading, setProject, reload }),
-    [projects, project, loading, setProject, reload],
+    () => ({ projects, project, loading, setProject, reload, sending, reloadSending }),
+    [projects, project, loading, setProject, reload, sending, reloadSending],
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

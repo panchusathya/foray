@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..outreach import templates
 from ..outreach.drafts import draft_sequence
+from ..outreach.outbox import cancel_in_flight, list_in_flight
 from ..outreach.personalize import personalize, sender_context
 from ..outreach.sender import preview_connection
 from ..outreach.sequencer import (
@@ -44,6 +45,10 @@ from ..schemas import (
     GenerateSequenceRequest,
     GenerateSequenceResponse,
     InboundEmail,
+    InFlightCancelIn,
+    InFlightCancelOut,
+    InFlightList,
+    InFlightRow,
     MessageOut,
     PreviewRequest,
     PreviewResponse,
@@ -593,6 +598,55 @@ def run_sequence(
         completed=summary.completed,
         skipped=summary.skipped,
         messages=[MessageOut.model_validate(m) for m in summary.messages],
+    )
+
+
+# --------------------------------------------------------------------------
+# in-flight / outbox
+# --------------------------------------------------------------------------
+
+in_flight_router = APIRouter(
+    route_class=CommittingRoute, prefix="/v1/outreach", tags=["outreach"]
+)
+
+
+@in_flight_router.get("/in-flight", response_model=InFlightList)
+def list_in_flight_rows(
+    state: str | None = Query(default=None, pattern="^(sending|due|held|scheduled)$"),
+    sequence_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> InFlightList:
+    total, rows = list_in_flight(
+        db,
+        org_id=principal.org_id,
+        state=state,
+        sequence_id=sequence_id,
+        limit=limit,
+        offset=offset,
+    )
+    return InFlightList(total=total, rows=[InFlightRow.model_validate(row) for row in rows])
+
+
+@in_flight_router.post("/in-flight/cancel", response_model=InFlightCancelOut)
+def cancel_in_flight_rows(
+    payload: InFlightCancelIn,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> InFlightCancelOut:
+    result = cancel_in_flight(
+        db,
+        org_id=principal.org_id,
+        enrollment_ids=payload.enrollment_ids,
+        action=payload.action,
+    )
+    return InFlightCancelOut(
+        skipped=result.skipped,
+        stopped=result.stopped,
+        already_sending=result.already_sending,
+        not_found=result.not_found,
     )
 
 

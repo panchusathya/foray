@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(job_discovery.router)
     app.include_router(outreach.router)
+    app.include_router(outreach.in_flight_router)
     app.include_router(outreach.messages_router)
     app.include_router(outreach.reply_drafts_router)
     app.include_router(outreach.webhooks_router)

@@ -20,6 +20,7 @@ from ..models import (
     Candidate,
     Enrollment,
     Message,
+    Org,
     Project,
     ProjectCandidate,
     Sequence,
@@ -37,6 +38,11 @@ from .sender import OutboundEmail, preview_connection, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
 
 logger = logging.getLogger(__name__)
+
+# How long a held outreach.send job sleeps before the worker asks again.
+# The cap-defer is ~60s (a midnight reset is worth polling); a sequence
+# paused for a month is not.
+HOLD_DEFER = timedelta(minutes=5)
 
 
 @dataclass
@@ -1013,6 +1019,25 @@ def send_step(
     return message
 
 
+def sending_hold(
+    db: Session, sequence: Sequence, *, now: datetime, org: Org | None = None
+) -> str | None:
+    """Why outbound is held for this sequence right now, or None.
+
+    Org kill switch first, then sequence pause. The daily cap is a different
+    deferral — it is checked later in ``process_enrollment`` so the outbox can
+    name the reason separately.
+    """
+    del now  # holds are not time-windowed; the signature matches every other gate
+    if org is None:
+        org = db.get(Org, sequence.org_id)
+    if org is not None and org.outreach_paused_at is not None:
+        return "org_paused"
+    if sequence.status != "active":
+        return "sequence_paused"
+    return None
+
+
 def due_enrollments(
     db: Session,
     *,
@@ -1024,9 +1049,11 @@ def due_enrollments(
     query = (
         select(Enrollment)
         .join(Sequence, Sequence.id == Enrollment.sequence_id)
+        .join(Org, Org.id == Sequence.org_id)
         .where(
             Sequence.org_id == org_id,
             Sequence.status == "active",
+            Org.outreach_paused_at.is_(None),
             Enrollment.status == "active",
             Enrollment.next_send_at.is_not(None),
             Enrollment.next_send_at <= now,
@@ -1055,6 +1082,12 @@ def process_enrollment(
         return "skipped", None
 
     sequence = enrollment.sequence
+    if sending_hold(db, sequence, now=now):
+        # Deferred, not skipped: skipped would mark the permanent send key
+        # succeeded and the step would be lost. The worker requeues this
+        # same key, so unpausing releases the backlog at cap rate.
+        return "deferred", None
+
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     if enrollment.current_step >= len(steps):
         _finish_enrollment(enrollment, "completed")

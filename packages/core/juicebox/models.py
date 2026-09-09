@@ -67,6 +67,15 @@ class Org(Base, TimestampMixin):
     # with several domains would otherwise re-stage its own staff forever.
     crm_internal_domains: Mapped[list] = mapped_column(JSON, default=list)
 
+    # Org-wide kill switch for candidate-facing sequence email. Null means
+    # sending is live. A timestamp rather than a boolean so the banner can
+    # say how long it has been off; paused_by is the user id that flipped it
+    # (null when an API key did).
+    outreach_paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outreach_paused_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
 

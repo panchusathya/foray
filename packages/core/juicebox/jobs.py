@@ -347,6 +347,21 @@ def claim(
     return jobs
 
 
+def cancel_job(job: Job, *, now: datetime | None = None) -> None:
+    """Stop a queued job. Claim ignores anything that is not queued.
+
+    The row stays so the permanent idempotency key cannot be re-armed: enqueue
+    hands cancelled back as-is, the same way it does succeeded. Callers that
+    cancel an outreach.send must also move the enrollment, or the tick will
+    keep "re-enqueueing" this dead row against a still-due step.
+    """
+    now = now or utcnow()
+    job.status = "cancelled"
+    job.finished_at = now
+    job.locked_at = None
+    job.locked_by = ""
+
+
 def mark_succeeded(job: Job, *, now: datetime | None = None) -> None:
     now = now or utcnow()
     job.status = "succeeded"

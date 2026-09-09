@@ -61,6 +61,50 @@ class OrgPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class OrgSendingOut(BaseModel):
+    paused: bool
+    paused_at: datetime | None
+    paused_by_email: str | None
+    held_count: int
+
+
+class OrgSendingPatch(BaseModel):
+    paused: bool
+
+
+class InFlightRow(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    enrollment_id: str
+    candidate_id: str
+    candidate_name: str
+    candidate_email: str
+    sequence_id: str
+    sequence_name: str
+    step: int
+    mailbox: str
+    due_at: datetime | None
+    state: str
+    reason: str | None = None
+
+
+class InFlightList(BaseModel):
+    total: int
+    rows: list[InFlightRow]
+
+
+class InFlightCancelIn(BaseModel):
+    enrollment_ids: list[str] = Field(min_length=1, max_length=1000)
+    action: Literal["skip", "stop"]
+
+
+class InFlightCancelOut(BaseModel):
+    skipped: int
+    stopped: int
+    already_sending: int
+    not_found: int
+
+
 class MailboxConnectionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

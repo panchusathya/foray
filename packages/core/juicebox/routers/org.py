@@ -7,9 +7,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
-from ..models import Org, Suppression
+from ..models import Org, Suppression, User, utcnow
+from ..outreach.outbox import held_count
 from ..outreach.suppressions import suppress, unsuppress
-from ..schemas import OrgOut, OrgPatch, SuppressionIn, SuppressionOut
+from ..schemas import (
+    OrgOut,
+    OrgPatch,
+    OrgSendingOut,
+    OrgSendingPatch,
+    SuppressionIn,
+    SuppressionOut,
+)
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/org", tags=["org"])
 
@@ -39,6 +47,44 @@ def patch_org(
         org.name = payload.name
     db.flush()
     return OrgOut.model_validate(org)
+
+
+def _sending_out(db, org: Org) -> OrgSendingOut:
+    paused_by_email = None
+    if org.outreach_paused_by:
+        user = db.get(User, org.outreach_paused_by)
+        paused_by_email = user.email if user is not None else None
+    return OrgSendingOut(
+        paused=org.outreach_paused_at is not None,
+        paused_at=org.outreach_paused_at,
+        paused_by_email=paused_by_email,
+        held_count=held_count(db, org_id=org.id),
+    )
+
+
+@router.get("/sending", response_model=OrgSendingOut)
+def get_sending(
+    principal: Principal = Depends(get_principal), db: Session = Depends(get_db)
+) -> OrgSendingOut:
+    return _sending_out(db, _org(db, principal.org_id))
+
+
+@router.patch("/sending", response_model=OrgSendingOut)
+def patch_sending(
+    payload: OrgSendingPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> OrgSendingOut:
+    org = _org(db, principal.org_id)
+    if payload.paused:
+        if org.outreach_paused_at is None:
+            org.outreach_paused_at = utcnow()
+            org.outreach_paused_by = principal.user_id
+    else:
+        org.outreach_paused_at = None
+        org.outreach_paused_by = None
+    db.flush()
+    return _sending_out(db, org)
 
 
 suppressions_router = APIRouter(

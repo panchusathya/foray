@@ -245,6 +245,20 @@ export const api = {
   runSequence: (sequenceId) => request(`/v1/sequences/${sequenceId}/run`, { method: 'POST' }),
   listEnrollments: (sequenceId) => request(`/v1/sequences/${sequenceId}/enrollments`),
 
+  orgSending: () => request('/v1/org/sending'),
+  patchOrgSending: (payload) => request('/v1/org/sending', { method: 'PATCH', body: payload }),
+  listInFlight: (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.state) query.set('state', params.state);
+    if (params.sequence_id) query.set('sequence_id', params.sequence_id);
+    if (params.limit != null) query.set('limit', String(params.limit));
+    if (params.offset != null) query.set('offset', String(params.offset));
+    const suffix = query.toString();
+    return request(`/v1/outreach/in-flight${suffix ? `?${suffix}` : ''}`);
+  },
+  cancelInFlight: (payload) =>
+    request('/v1/outreach/in-flight/cancel', { method: 'POST', body: payload }),
+
   listAgents: () => request('/v1/agents'),
   createAgent: (payload) => request('/v1/agents', { method: 'POST', body: payload }),
   runAgent: (agentId) => request(`/v1/agents/${agentId}/run`, { method: 'POST' }),
@@ -337,6 +351,13 @@ export const APPLICATION_STATUS_LABELS = {
   offer: 'Offer',
   rejected: 'Rejected',
   withdrawn: 'Withdrawn',
+};
+
+export const IN_FLIGHT_STATE_LABELS = {
+  sending: 'Sending',
+  due: 'Due',
+  held: 'Held',
+  scheduled: 'Scheduled',
 };
 
 // Which moves a recruiter may make from each status, mirroring

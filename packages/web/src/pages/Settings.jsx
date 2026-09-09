@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { MAIL_PROVIDERS, api, providerLabel } from '../lib/api.js';
+import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
 
 /**
@@ -34,6 +35,7 @@ function backfillSummary(backfill) {
 
 export function SettingsPage() {
   const status = useAsync(() => api.mailboxes(), []);
+  const { sending, reloadSending } = useCurrentProject();
   const [error, setError] = useState(null);
   const [syncNote, setSyncNote] = useState('');
   // What the import and the sweep are doing. Polled rather than pushed --
@@ -117,6 +119,27 @@ export function SettingsPage() {
     try {
       await api.mailboxSending(connection.id, { send_enabled: !connection.send_enabled });
       status.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
+  async function toggleOrgSending() {
+    const paused = Boolean(sending?.paused);
+    if (!paused) {
+      const n = sending?.held_count ?? 0;
+      if (
+        !window.confirm(
+          `Pause all sequence email? ${n} in flight will be held. Stops new sends; anything already handed to the provider will finish. Follow-up reminders and draft-ready pings keep working.`,
+        )
+      ) {
+        return;
+      }
+    }
+    setError(null);
+    try {
+      await api.patchOrgSending({ paused: !paused });
+      await reloadSending();
     } catch (caught) {
       setError(caught);
     }
@@ -239,6 +262,24 @@ export function SettingsPage() {
       />
       <ErrorBox error={error} />
       {syncNote ? <div className="card small">{syncNote}</div> : null}
+
+      <div className="card spread" data-testid="org-sending">
+        <div>
+          <strong>Sequence email</strong>
+          <div className="small muted">
+            Candidate-facing outreach only. Follow-up reminders and draft-ready pings keep
+            working. Stops new sends; anything already handed to the provider will finish.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="tiny ghost"
+          data-testid="org-sending-toggle"
+          onClick={toggleOrgSending}
+        >
+          {sending?.paused ? 'Sending: off' : 'Sending: on'}
+        </button>
+      </div>
 
       {activity
         .filter(

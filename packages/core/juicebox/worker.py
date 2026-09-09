@@ -184,7 +184,7 @@ def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
 def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     from sqlalchemy.orm import selectinload
 
-    from .outreach.sequencer import process_enrollment
+    from .outreach.sequencer import HOLD_DEFER, process_enrollment, sending_hold
 
     enrollment_id = job.payload.get("enrollment_id")
     enrollment = db.scalar(
@@ -202,7 +202,10 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
         step_id=job.payload.get("step_id"),
     )
     if status == "deferred":
-        return {"defer": True, "status": status}
+        result: dict[str, Any] = {"defer": True, "status": status}
+        if sending_hold(db, enrollment.sequence, now=now):
+            result["defer_until"] = now + HOLD_DEFER
+        return result
     if status == "failed" and enrollment.status == "active":
         # The step is still due. Marking the job succeeded spends the
         # permanent idempotency key, and the tick cannot re-queue it — the

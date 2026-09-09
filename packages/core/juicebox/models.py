@@ -7,11 +7,12 @@ self-describing in logs and URLs.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -663,6 +664,21 @@ class Enrollment(Base, TimestampMixin):
     # in normal use.
     mailbox_id: Mapped[str | None] = mapped_column(
         ForeignKey("mailbox_connections.id", ondelete="RESTRICT"), nullable=True
+    )
+    # Reply-side state. replied_at is when the human reply that finished this
+    # enrollment arrived -- on this thread or, with stopped_reason
+    # "replied_elsewhere", on another sequence's. follow_up_after is the date
+    # a not_now reply named ("in Japan until 9/10"); the reminder job mails the
+    # sending mailbox the day after and stamps follow_up_reminder_sent_at.
+    # snoozed_until is set while an automated out-of-office has pushed
+    # next_send_at past a return date, and cleared when the step sends.
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    follow_up_after: Mapped[date | None] = mapped_column(Date, nullable=True)
+    follow_up_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    snoozed_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     sequence: Mapped[Sequence] = relationship()

@@ -129,6 +129,42 @@ function normalizeSteps(steps) {
  * already shortlisted for this role — and falls back to a search over every
  * candidate for anyone outside it.
  */
+const STOP_REASON_LABELS = {
+  not_interested: 'not interested',
+  unsubscribe: 'opted out',
+  bounced: 'bounced',
+  suppressed: 'suppressed',
+  missing_email: 'no email',
+  reach_score_below_floor: 'reach score too low',
+  candidate_deleted: 'candidate deleted',
+  replied_elsewhere: 'replied in another sequence',
+};
+
+// The right-hand text on an enrolment row: what happens next, or why nothing
+// will. A reply is the interesting case -- "not now · follow up after 10 Sep"
+// tells the recruiter the date the candidate asked for, and whether the
+// reminder for it has gone out yet.
+function enrollmentTrailer(enrollment) {
+  const day = (value) => new Date(value).toLocaleDateString();
+  if (enrollment.snoozed_until && new Date(enrollment.snoozed_until) > new Date()) {
+    return `out of office · resumes step ${enrollment.current_step + 1} · ${new Date(enrollment.snoozed_until).toLocaleString()}`;
+  }
+  if (enrollment.next_send_at) {
+    return `next: step ${enrollment.current_step + 1} · ${new Date(enrollment.next_send_at).toLocaleString()}`;
+  }
+  if (enrollment.stopped_reason === 'not_now') {
+    if (!enrollment.follow_up_after) return 'not now';
+    // A plain date, not a timestamp: parse it as local so it doesn't shift a day.
+    const after = day(`${enrollment.follow_up_after}T00:00:00`);
+    const reminder = enrollment.follow_up_reminder_sent_at ? 'reminded' : 'reminder scheduled';
+    return `not now · follow up after ${after} · ${reminder}`;
+  }
+  if (enrollment.stopped_reason) {
+    return STOP_REASON_LABELS[enrollment.stopped_reason] ?? enrollment.stopped_reason;
+  }
+  return enrollment.status === 'completed' ? 'all steps sent' : '';
+}
+
 function CandidatePicker({ projectId, enrolledIds, busy, firstSendLabel, onCancel, onEnroll }) {
   const [source, setSource] = useState(projectId ? 'project' : 'all');
   const [query, setQuery] = useState('');
@@ -439,6 +475,9 @@ export function SequenceEditorPage() {
   const [picking, setPicking] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
   const [enrollError, setEnrollError] = useState(null);
+  // People the last enrol request left out because they replied to us
+  // recently; "Enrol anyway" re-sends exactly these ids with force.
+  const [skippedRepliers, setSkippedRepliers] = useState([]);
   const bodyRef = useRef(null);
   const subjectRef = useRef(null);
   const lastFocused = useRef('body');
@@ -542,10 +581,11 @@ export function SequenceEditorPage() {
     }
   }
 
-  async function enrollCandidates(candidateIds, sendNow = false) {
+  async function enrollCandidates(candidateIds, sendNow = false, force = false) {
     setEnrolling(true);
     setEnrollError(null);
     setNotice('');
+    setSkippedRepliers([]);
     try {
       // One request: with send_now the backend sends to exactly the people
       // being enrolled before responding, so the returned rows already show
@@ -553,27 +593,37 @@ export function SequenceEditorPage() {
       // The old flow fired a second unbounded /run over the whole sequence,
       // which could outlive the proxy timeout and leave this button stuck on
       // "Enrolling…" while mail actually went out.
-      const rows = await api.enroll(sequenceId, {
+      const { enrollments: rows = [], skipped = [] } = await api.enroll(sequenceId, {
         candidate_ids: candidateIds,
         project_id: sequence.data.project_id ?? null,
         send_now: sendNow,
+        force,
       });
-      const sentNow = (rows ?? []).filter((row) => row.current_step > 0).length;
+      const enrolled = rows.length;
+      const sentNow = rows.filter((row) => row.current_step > 0).length;
       await enrollments.reload();
       setPicking(false);
-      if (status !== 'active') {
-        setNotice(`Enrolled ${candidateIds.length}. Activate the sequence to start sending.`);
+      let text = '';
+      if (!enrolled) {
+        text = '';
+      } else if (status !== 'active') {
+        text = `Enrolled ${enrolled}. Activate the sequence to start sending.`;
       } else if (sendNow) {
-        setNotice(
-          sentNow
-            ? `Enrolled ${candidateIds.length} — ${sentNow} email${sentNow === 1 ? '' : 's'} sent.`
-            : `Enrolled ${candidateIds.length} — sending within a minute.`,
-        );
+        text = sentNow
+          ? `Enrolled ${enrolled} — ${sentNow} email${sentNow === 1 ? '' : 's'} sent.`
+          : `Enrolled ${enrolled} — sending within a minute.`;
       } else {
-        setNotice(
-          `Enrolled ${candidateIds.length} — first email goes out at the step's scheduled time.`,
-        );
+        text = `Enrolled ${enrolled} — first email goes out at the step's scheduled time.`;
       }
+      if (skipped.length) {
+        // A person who wrote back is in a conversation, not on a list. Say
+        // who was left out and why, and let the recruiter overrule it.
+        const names = skipped.map((row) => row.full_name || row.candidate_id).join(', ');
+        const days = skipped[0].quiet_days;
+        text = `${text ? `${text} ` : ''}Skipped ${skipped.length} who replied in the last ${days} days: ${names}.`;
+        setSkippedRepliers(skipped.map((row) => ({ id: row.candidate_id, sendNow })));
+      }
+      setNotice(text);
     } catch (caught) {
       setEnrollError(caught);
     } finally {
@@ -687,7 +737,27 @@ export function SequenceEditorPage() {
           </button>
         </div>
       ) : null}
-      {notice ? <div className="card small">{notice}</div> : null}
+      {notice ? (
+        <div className="card small row spread" data-testid="enrol-notice">
+          <span>{notice}</span>
+          {skippedRepliers.length ? (
+            <button
+              type="button"
+              className="tiny"
+              disabled={enrolling}
+              onClick={() =>
+                enrollCandidates(
+                  skippedRepliers.map((row) => row.id),
+                  skippedRepliers[0].sendNow,
+                  true,
+                )
+              }
+            >
+              Enrol anyway
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {broken.length ? (
         <div className="card small stack" data-testid="malformed-placeholders">
           <strong>
@@ -1008,11 +1078,7 @@ export function SequenceEditorPage() {
                       {enrollment.current_step > 0 ? (
                         <span className="mono">✓{enrollment.current_step} sent</span>
                       ) : null}
-                      <span>
-                        {enrollment.next_send_at
-                          ? `next: step ${enrollment.current_step + 1} · ${new Date(enrollment.next_send_at).toLocaleString()}`
-                          : enrollment.stopped_reason || (enrollment.status === 'completed' ? 'all steps sent' : '')}
-                      </span>
+                      <span>{enrollmentTrailer(enrollment)}</span>
                     </span>
                   </div>
                 ))}

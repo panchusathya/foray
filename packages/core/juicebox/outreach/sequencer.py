@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
@@ -30,7 +32,7 @@ from ..security import signed_intake_token, signed_tracking_token
 from . import templates
 from .ai_directives import resolve_directives
 from .personalize import personalize, sender_context
-from .replies import ReplyVerdict, classify_reply
+from .replies import HUMAN_INTENTS, ReplyVerdict, _stop_for, classify_reply
 from .sender import OutboundEmail, preview_connection, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
 
@@ -132,7 +134,7 @@ def suggested_date_context(
     }
 
 
-def schedule_step_at(step: SequenceStep, *, base: datetime) -> datetime:
+def schedule_step_at(step: SequenceStep, *, base: datetime, ignore_delay: bool = False) -> datetime:
     """When a step should send: delay (calendar or business days) from ``base``,
     snapped to the step's send_at_time in its timezone when one is set.
 
@@ -140,8 +142,12 @@ def schedule_step_at(step: SequenceStep, *, base: datetime) -> datetime:
     earlier than the delay boundary — "1 day later at 09:00" means tomorrow
     morning, not the day after. Only a time already in the past (a 0-delay
     step enrolled in the afternoon) rolls forward a day.
+
+    ``ignore_delay`` keeps the time-of-day snap and the weekend roll but
+    counts no delay: the caller has already decided the day (an out-of-office
+    return date) and only wants it landed at the step's usual hour.
     """
-    due = _add_delay(base, step.delay_days, step.delay_unit)
+    due = base if ignore_delay else _add_delay(base, step.delay_days, step.delay_unit)
     if not step.send_at_time:
         return due
     try:
@@ -172,6 +178,7 @@ def enroll_candidates(
     start_immediately: bool = True,
     send_now: bool = False,
     now: datetime | None = None,
+    skip_recent_repliers: bool = True,
 ) -> list[Enrollment]:
     """Idempotent: re-enrolling an existing candidate returns the existing row.
 
@@ -179,6 +186,12 @@ def enroll_candidates(
     a step pinned to 09:00 normally rolls a late-morning enrolment to tomorrow,
     which is correct for a batch but surprising when a recruiter adds one
     person and expects mail. Later steps keep their configured timing.
+
+    ``skip_recent_repliers`` drops anyone who answered us by hand within the
+    quiet period (``recent_human_replies``): a person mid-conversation on one
+    sequence was enrolled in a re-created copy three hours after replying and
+    got two more automated steps. Callers that have already applied (or
+    deliberately overridden) the guard pass False.
     """
     now = now or utcnow()
     # One row per person even when the payload names them twice. Rows created
@@ -187,6 +200,15 @@ def enroll_candidates(
     # unique constraint -- which rolls back everybody else in the request, not
     # just the duplicate.
     candidate_ids = list(dict.fromkeys(cid for cid in candidate_ids if cid))
+    if skip_recent_repliers and candidate_ids:
+        blocked = recent_human_replies(
+            db,
+            org_id=sequence.org_id,
+            candidate_ids=candidate_ids,
+            now=now,
+            days=get_settings().outreach_reply_quiet_days,
+        )
+        candidate_ids = [cid for cid in candidate_ids if cid not in blocked]
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     first_due = now if (send_now or not steps) else schedule_step_at(steps[0], base=now)
 
@@ -334,7 +356,9 @@ def build_message_content(
     subject = templates.render(subject_template, context).strip()
     body = templates.render(body_template, context).strip()
     if not subject:
-        subject = context.get("subject_hint") or f"Quick note for {context.get('first_name', '')}".strip()
+        subject = (
+            context.get("subject_hint") or f"Quick note for {context.get('first_name', '')}".strip()
+        )
     return subject, body, context, fragments
 
 
@@ -1044,6 +1068,42 @@ def process_enrollment(
     if due_at is None or due_at > now:
         return "skipped", None
 
+    # Somebody who answered us by hand -- on this thread, another sequence's,
+    # or a manual email -- is in a conversation, and automated mail on top of
+    # it reads as exactly what it is. This is the hard gate; record_reply
+    # stops what it can see, but a forwarded copy, a second enrolment made
+    # after the reply, or a stop_on_reply=False sibling all slipped past it.
+    hit = recent_human_replies(
+        db,
+        org_id=sequence.org_id,
+        candidate_ids=[enrollment.candidate_id],
+        now=now,
+        days=get_settings().outreach_reply_quiet_days,
+    ).get(enrollment.candidate_id)
+    if hit is not None and not (
+        # The operator switched this sequence's own reply-stop off; honour
+        # that for replies on this very enrolment, and only those.
+        hit.enrollment_id == enrollment.id and not sequence.stop_on_reply
+    ):
+        if dry_run:
+            return "skipped", None
+        _finish_enrollment(enrollment, "replied", "replied_elsewhere")
+        enrollment.replied_at = _aware(hit.sent_at) or now
+        record_event(
+            db,
+            org_id=sequence.org_id,
+            type="outreach.stopped",
+            subject_type="enrollment",
+            subject_id=enrollment.id,
+            payload={
+                "reason": "replied_elsewhere",
+                "candidate_id": enrollment.candidate_id,
+                "source_message_id": hit.id,
+                "reply_intent": hit.reply_intent,
+            },
+        )
+        return "stopped", None
+
     resolved = None
     if not dry_run:
         remaining_cap = max(
@@ -1090,6 +1150,7 @@ def process_enrollment(
         return "sent", message
 
     enrollment.current_step += 1
+    enrollment.snoozed_until = None
     if enrollment.current_step >= len(steps):
         _finish_enrollment(enrollment, "completed")
         _advance_pipeline_stage(db, enrollment)
@@ -1168,6 +1229,210 @@ def _advance_pipeline_stage(db: Session, enrollment: Enrollment) -> None:
 # --------------------------------------------------------------------------
 
 
+def recent_human_replies(
+    db: Session,
+    *,
+    org_id: str,
+    candidate_ids: list[str],
+    now: datetime,
+    days: int,
+) -> dict[str, Message]:
+    """The newest hand-written reply per candidate within the quiet period.
+
+    One query for any number of people. Only classified human intents count:
+    an auto-responder is not a conversation, and thread-synced mail with no
+    intent (an unmatched note to a recruiter's own inbox) would otherwise
+    block a person for a month on the strength of nothing.
+    """
+    if days <= 0 or not candidate_ids:
+        return {}
+    rows = db.scalars(
+        select(Message)
+        .where(
+            Message.org_id == org_id,
+            Message.candidate_id.in_(candidate_ids),
+            Message.direction == "inbound",
+            Message.reply_intent.in_(sorted(HUMAN_INTENTS)),
+            Message.sent_at >= now - timedelta(days=days),
+        )
+        .order_by(Message.sent_at.desc())
+    ).all()
+    newest: dict[str, Message] = {}
+    for row in rows:
+        newest.setdefault(row.candidate_id, row)
+    return newest
+
+
+_FINGERPRINT_WS = re.compile(r"\s+")
+
+
+def _reply_fingerprint(text: str) -> str:
+    collapsed = _FINGERPRINT_WS.sub(" ", (text or "").lower()).strip()
+    if not collapsed:
+        return ""
+    return hashlib.sha1(collapsed[:2000].encode("utf-8", errors="replace")).hexdigest()
+
+
+def _duplicate_inbound(
+    db: Session, *, org_id: str, candidate_id: str, body: str, since: datetime
+) -> Message | None:
+    """An inbound row from this person with the same words, recorded recently.
+
+    Persona mailboxes auto-forward to a central inbox, so one reply arrives
+    twice with two native ids, two thread ids and (on Zoho) no RFC id at all --
+    nothing the idempotency index can see. The words are the same, though.
+    """
+    fingerprint = _reply_fingerprint(body)
+    if not fingerprint:
+        return None
+    rows = db.scalars(
+        select(Message).where(
+            Message.org_id == org_id,
+            Message.candidate_id == candidate_id,
+            Message.direction == "inbound",
+            Message.sent_at >= since,
+        )
+    ).all()
+    for row in rows:
+        if _reply_fingerprint(row.reply_text or row.body) == fingerprint:
+            return row
+    return None
+
+
+def _active_enrollments_for(
+    db: Session, *, org_id: str, candidate_id: str, except_id: str | None
+) -> list[Enrollment]:
+    return list(
+        db.scalars(
+            select(Enrollment)
+            .join(Sequence, Sequence.id == Enrollment.sequence_id)
+            .where(
+                Sequence.org_id == org_id,
+                Enrollment.candidate_id == candidate_id,
+                Enrollment.status == "active",
+                Enrollment.id != (except_id or ""),
+            )
+            .options(selectinload(Enrollment.sequence).selectinload(Sequence.steps))
+        ).all()
+    )
+
+
+def _stop_sibling_enrollments(
+    db: Session,
+    *,
+    org_id: str,
+    candidate_id: str,
+    except_id: str | None,
+    reason: str,
+    now: datetime,
+    source_message_id: str | None,
+    respect_stop_on_reply: bool = True,
+) -> int:
+    """A person who answered one sequence is done with all of them.
+
+    Brett replied "interested" to one campaign and was mailed twice more by
+    its re-created copy: the copy's enrollment never heard about the reply.
+    Each sibling's own stop_on_reply is honoured unless the reply is an
+    opt-out, which no sequence setting gets to override.
+    """
+    stopped = 0
+    for enrollment in _active_enrollments_for(
+        db, org_id=org_id, candidate_id=candidate_id, except_id=except_id
+    ):
+        if respect_stop_on_reply and not enrollment.sequence.stop_on_reply:
+            continue
+        _finish_enrollment(enrollment, "replied", reason)
+        enrollment.replied_at = now
+        record_event(
+            db,
+            org_id=org_id,
+            type="outreach.stopped",
+            subject_type="enrollment",
+            subject_id=enrollment.id,
+            payload={
+                "reason": reason,
+                "candidate_id": candidate_id,
+                "source_message_id": source_message_id,
+            },
+        )
+        stopped += 1
+    return stopped
+
+
+def _snooze_enrollment(
+    enrollment: Enrollment, *, follow_up_after: date | None, now: datetime
+) -> None:
+    """Push the next step past an auto-responder's return date.
+
+    The date named is when they are back; the step lands the day after, at
+    the step's usual hour. With no date, a small default push keeps the
+    follow-up from landing on top of the auto-reply. Never moves a send
+    earlier, and never touches an enrollment that is not waiting to send.
+    """
+    if enrollment.status != "active" or enrollment.next_send_at is None:
+        return
+    if follow_up_after is not None:
+        target = datetime.combine(follow_up_after + timedelta(days=1), time.min, tzinfo=UTC)
+    else:
+        days = get_settings().outreach_ooo_default_snooze_days
+        if days <= 0:
+            return
+        target = now + timedelta(days=days)
+    current = _aware(enrollment.next_send_at)
+    if current is not None and target <= current:
+        return
+    steps = sorted(enrollment.sequence.steps, key=lambda s: s.step_order)
+    step = steps[enrollment.current_step] if enrollment.current_step < len(steps) else None
+    due = schedule_step_at(step, base=target, ignore_delay=True) if step else target
+    enrollment.next_send_at = due
+    enrollment.snoozed_until = due
+
+
+def follow_up_reminder_at(
+    enrollment: Enrollment, follow_up_after: date, *, now: datetime
+) -> datetime:
+    """08:00 the day after the date they named, in the step's timezone."""
+    steps = sorted(enrollment.sequence.steps, key=lambda s: s.step_order)
+    zone = UTC
+    if steps:
+        step = steps[min(enrollment.current_step, len(steps) - 1)]
+        if step.send_timezone:
+            try:
+                zone = ZoneInfo(step.send_timezone)
+            except (ZoneInfoNotFoundError, ValueError):
+                zone = UTC
+    local = datetime.combine(follow_up_after + timedelta(days=1), time(8, 0), tzinfo=zone)
+    run_at = local.astimezone(UTC)
+    return run_at if run_at > now else now
+
+
+def _schedule_follow_up_reminder(
+    db: Session, *, enrollment: Enrollment, inbound: Message, now: datetime
+) -> None:
+    from ..jobs import KIND_OUTREACH_FOLLOW_UP, enqueue
+
+    if enrollment.follow_up_after is None:
+        return
+    enqueue(
+        db,
+        org_id=enrollment.sequence.org_id,
+        kind=KIND_OUTREACH_FOLLOW_UP,
+        # A later reply naming a different date makes a different job; the
+        # handler checks the enrollment's current date and lets the stale
+        # one no-op.
+        idempotency_key=(
+            f"{KIND_OUTREACH_FOLLOW_UP}:{enrollment.id}:{enrollment.follow_up_after.isoformat()}"
+        ),
+        payload={
+            "org_id": enrollment.sequence.org_id,
+            "enrollment_id": enrollment.id,
+            "inbound_message_id": inbound.id,
+            "follow_up_after": enrollment.follow_up_after.isoformat(),
+        },
+        run_at=follow_up_reminder_at(enrollment, enrollment.follow_up_after, now=now),
+    )
+
+
 def record_reply(
     db: Session,
     *,
@@ -1175,6 +1440,7 @@ def record_reply(
     subject: str,
     body: str,
     now: datetime | None = None,
+    received_at: datetime | None = None,
     mailbox_id: str = "",
     provider_native_id: str = "",
     internet_message_id: str = "",
@@ -1183,12 +1449,33 @@ def record_reply(
     """Attach an inbound reply to the outbound message and act on its intent.
 
     The provider ids are set when the reply arrived via mailbox sync, so the
-    same inbound email is never recorded twice.
+    same inbound email is never recorded twice. ``received_at`` is when the
+    mail actually arrived; the quiet-period guards and the follow-up date
+    both count from it, not from when the sync happened to run.
     """
     now = now or utcnow()
-    verdict = classify_reply(subject, body)
+    received_at = _aware(received_at) or now
 
-    message.replied_at = message.replied_at or now
+    duplicate = _duplicate_inbound(
+        db,
+        org_id=message.org_id,
+        candidate_id=message.candidate_id,
+        body=body,
+        since=received_at - timedelta(days=3),
+    )
+    if duplicate is not None:
+        intent = duplicate.reply_intent or "interested"
+        return ReplyVerdict(
+            intent=intent,
+            confidence=1.0,
+            should_stop_sequence=_stop_for(intent),
+            summary="Duplicate of an already-recorded reply",
+            classified_by="duplicate",
+        )
+
+    verdict = classify_reply(subject, body, received_at=received_at)
+
+    message.replied_at = message.replied_at or received_at
     message.reply_intent = verdict.intent
     message.reply_text = body
 
@@ -1207,7 +1494,7 @@ def record_reply(
         subject=subject,
         body=body,
         status="received",
-        sent_at=now,
+        sent_at=received_at,
         reply_intent=verdict.intent,
         reply_text=body,
         mailbox_id=mailbox_id,
@@ -1216,6 +1503,7 @@ def record_reply(
         conversation_id=conversation_id,
     )
     db.add(inbound)
+    db.flush()
 
     # A bounce and an opt-out are facts about a person and a message, not about
     # a sequence, so they are recorded whether or not one is behind the mail.
@@ -1244,22 +1532,67 @@ def record_reply(
         )
 
     enrollment = db.get(Enrollment, message.enrollment_id) if message.enrollment_id else None
-    if enrollment is not None:
-        if verdict.intent == "bounce":
+    except_id = enrollment.id if enrollment is not None else None
+    stopped_elsewhere = 0
+    if verdict.intent == "bounce":
+        if enrollment is not None:
             _finish_enrollment(enrollment, "bounced", "bounced")
-        elif verdict.intent == "unsubscribe":
+    elif verdict.intent == "unsubscribe":
+        if enrollment is not None:
             _finish_enrollment(enrollment, "replied", "unsubscribe")
-        elif verdict.should_stop_sequence and enrollment.sequence.stop_on_reply:
-            _finish_enrollment(enrollment, "replied", verdict.intent)
-        if enrollment.project_id and verdict.intent not in {"bounce", "out_of_office"}:
-            entry = db.scalar(
-                select(ProjectCandidate).where(
-                    ProjectCandidate.project_id == enrollment.project_id,
-                    ProjectCandidate.candidate_id == enrollment.candidate_id,
-                )
+            enrollment.replied_at = enrollment.replied_at or received_at
+        stopped_elsewhere = _stop_sibling_enrollments(
+            db,
+            org_id=message.org_id,
+            candidate_id=message.candidate_id,
+            except_id=except_id,
+            reason="unsubscribe",
+            now=received_at,
+            source_message_id=inbound.id,
+            respect_stop_on_reply=False,
+        )
+    elif verdict.intent == "out_of_office":
+        # A machine answered. The person is away until the date it names, so
+        # every sequence waiting on them waits until they are back.
+        targets = list(
+            _active_enrollments_for(
+                db, org_id=message.org_id, candidate_id=message.candidate_id, except_id=except_id
             )
-            if entry is not None and entry.stage in {"sourced", "contacted"}:
-                entry.stage = "replied"
+        )
+        if enrollment is not None:
+            targets.insert(0, enrollment)
+        for target in targets:
+            _snooze_enrollment(target, follow_up_after=verdict.follow_up_after, now=now)
+    else:
+        # A person wrote back. Whatever they said, automated mail is over for
+        # them -- on this sequence if it stops on reply, and on every other
+        # active one regardless of which thread they happened to answer.
+        if enrollment is not None:
+            if enrollment.sequence.stop_on_reply:
+                _finish_enrollment(enrollment, "replied", verdict.intent)
+                enrollment.replied_at = enrollment.replied_at or received_at
+            if verdict.intent == "not_now" and verdict.follow_up_after is not None:
+                enrollment.follow_up_after = verdict.follow_up_after
+                _schedule_follow_up_reminder(db, enrollment=enrollment, inbound=inbound, now=now)
+        stopped_elsewhere = _stop_sibling_enrollments(
+            db,
+            org_id=message.org_id,
+            candidate_id=message.candidate_id,
+            except_id=except_id,
+            reason="replied_elsewhere",
+            now=received_at,
+            source_message_id=inbound.id,
+        )
+
+    if enrollment is not None and enrollment.project_id and verdict.intent in HUMAN_INTENTS:
+        entry = db.scalar(
+            select(ProjectCandidate).where(
+                ProjectCandidate.project_id == enrollment.project_id,
+                ProjectCandidate.candidate_id == enrollment.candidate_id,
+            )
+        )
+        if entry is not None and entry.stage in {"sourced", "contacted"}:
+            entry.stage = "replied"
 
     record_event(
         db,
@@ -1270,6 +1603,11 @@ def record_reply(
         payload={
             "intent": verdict.intent,
             "confidence": verdict.confidence,
+            "classified_by": verdict.classified_by,
+            "follow_up_after": (
+                verdict.follow_up_after.isoformat() if verdict.follow_up_after else ""
+            ),
+            "stopped_elsewhere": stopped_elsewhere,
             # The subject is a message, which has no page. Every other
             # outreach event names the person here; this one did not, so a
             # reply was the one activity row nobody could click through.
@@ -1281,7 +1619,12 @@ def record_reply(
 
 
 def find_message_for_reply(
-    db: Session, *, org_id: str, candidate_email: str | None, provider_message_id: str | None
+    db: Session,
+    *,
+    org_id: str,
+    candidate_email: str | None,
+    provider_message_id: str | None,
+    mailbox_id: str | None = None,
 ) -> Message | None:
     """Match an inbound email back to the outbound message that provoked it.
 
@@ -1290,6 +1633,13 @@ def find_message_for_reply(
     ``In-Reply-To``. Both are stored on the outbound row (native id vs
     ``internet_message_id``), so looking at only one silently dropped the
     other.
+
+    ``mailbox_id`` is the mailbox the reply landed in. The address fallback
+    prefers an outbound sent FROM that mailbox: a person enrolled in two
+    sequences, sent from two mailboxes, replies to one -- and the org-wide
+    "newest mail to this address" guess stamped the other sequence's row.
+    (Not ``from_address``: every outbound carries the sequence's from_email,
+    whichever mailbox actually sent it.)
     """
     if provider_message_id:
         message = db.scalar(
@@ -1308,7 +1658,7 @@ def find_message_for_reply(
         if message is not None:
             return message
     if candidate_email:
-        return db.scalar(
+        by_address = (
             select(Message)
             .where(
                 Message.org_id == org_id,
@@ -1317,4 +1667,9 @@ def find_message_for_reply(
             )
             .order_by(Message.created_at.desc())
         )
+        if mailbox_id:
+            message = db.scalar(by_address.where(Message.mailbox_id == mailbox_id))
+            if message is not None:
+                return message
+        return db.scalar(by_address)
     return None

@@ -29,6 +29,7 @@ from ..outreach.sequencer import (
     find_message_for_reply,
     preview_step,
     process_enrollment,
+    recent_human_replies,
     record_reply,
     reply_subject,
     run_due,
@@ -38,6 +39,8 @@ from ..schemas import (
     CloneSequenceRequest,
     EnrollmentOut,
     EnrollRequest,
+    EnrollResponse,
+    EnrollSkipOut,
     GenerateSequenceRequest,
     GenerateSequenceResponse,
     InboundEmail,
@@ -476,22 +479,63 @@ def preview(
     )
 
 
-@router.post("/{sequence_id}/enroll", response_model=list[EnrollmentOut])
+@router.post("/{sequence_id}/enroll", response_model=EnrollResponse)
 def enroll(
     sequence_id: str,
     payload: EnrollRequest,
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
-) -> list[EnrollmentOut]:
+) -> EnrollResponse:
     sequence = _load_sequence(db, sequence_id, principal.org_id)
     _load_project(db, payload.project_id, principal.org_id)
-    enrollments = enroll_candidates(
-        db,
-        sequence=sequence,
-        candidate_ids=payload.candidate_ids,
-        project_id=payload.project_id,
-        start_immediately=payload.start_immediately,
-        send_now=payload.send_now,
+
+    # People who answered us by hand recently are in a conversation, not a
+    # list. They are reported back rather than silently dropped, and `force`
+    # is the recruiter saying "I know, enrol them anyway".
+    quiet_days = get_settings().outreach_reply_quiet_days
+    now = utcnow()
+    blocked = (
+        {}
+        if payload.force
+        else recent_human_replies(
+            db,
+            org_id=principal.org_id,
+            candidate_ids=payload.candidate_ids,
+            now=now,
+            days=quiet_days,
+        )
+    )
+    skipped: list[EnrollSkipOut] = []
+    if blocked:
+        names = {
+            row.id: row.full_name
+            for row in db.scalars(select(Candidate).where(Candidate.id.in_(list(blocked))))
+        }
+        skipped = [
+            EnrollSkipOut(
+                candidate_id=candidate_id,
+                full_name=names.get(candidate_id, ""),
+                reason="replied_recently",
+                replied_at=hit.sent_at,
+                reply_intent=hit.reply_intent,
+                quiet_days=quiet_days,
+            )
+            for candidate_id, hit in blocked.items()
+        ]
+    eligible = [cid for cid in payload.candidate_ids if cid not in blocked]
+    enrollments = (
+        enroll_candidates(
+            db,
+            sequence=sequence,
+            candidate_ids=eligible,
+            project_id=payload.project_id,
+            start_immediately=payload.start_immediately,
+            send_now=payload.send_now,
+            now=now,
+            skip_recent_repliers=False,
+        )
+        if eligible
+        else []
     )
     if payload.send_now and sequence.status == "active":
         # Send here, in this request, to exactly the people just enrolled —
@@ -500,12 +544,14 @@ def enroll(
         # The UI used to fire a second unbounded /run covering the WHOLE
         # sequence, which could outlive the proxy timeout and leave the button
         # stuck on "Enrolling…" while mail actually went out.
-        now = utcnow()
         for enrollment in enrollments[:MAX_SEND_NOW]:
             if enrollment.status == "active" and enrollment.current_step == 0:
                 process_enrollment(db, enrollment, now=now)
         db.flush()
-    return [EnrollmentOut.model_validate(e) for e in enrollments]
+    return EnrollResponse(
+        enrollments=[EnrollmentOut.model_validate(e) for e in enrollments],
+        skipped=skipped,
+    )
 
 
 @router.get("/{sequence_id}/enrollments", response_model=list[EnrollmentOut])

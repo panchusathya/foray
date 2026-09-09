@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -721,6 +721,9 @@ class EnrollRequest(BaseModel):
     # it due immediately. Distinct from start_immediately, which controls
     # whether a next_send_at is set at all.
     send_now: bool = False
+    # Enrol people who replied to us within the quiet period anyway. The
+    # default skips them and reports who in EnrollResponse.skipped.
+    force: bool = False
 
 
 class EnrollmentOut(BaseModel):
@@ -733,7 +736,25 @@ class EnrollmentOut(BaseModel):
     current_step: int
     next_send_at: datetime | None
     stopped_reason: str
+    replied_at: datetime | None = None
+    follow_up_after: date | None = None
+    follow_up_reminder_sent_at: datetime | None = None
+    snoozed_until: datetime | None = None
     candidate: CandidateSummary
+
+
+class EnrollSkipOut(BaseModel):
+    candidate_id: str
+    full_name: str
+    reason: Literal["replied_recently"]
+    replied_at: datetime | None
+    reply_intent: str
+    quiet_days: int
+
+
+class EnrollResponse(BaseModel):
+    enrollments: list[EnrollmentOut]
+    skipped: list[EnrollSkipOut]
 
 
 class MessageOut(BaseModel):

@@ -45,6 +45,7 @@ from .jobs import (
     KIND_MAILBOX_BACKFILL,
     KIND_MAILBOX_SYNC,
     KIND_MAILBOX_SYNC_ONE,
+    KIND_OUTREACH_FOLLOW_UP,
     KIND_OUTREACH_SEND,
     KIND_OUTREACH_TICK,
     KIND_PROFILE_INGEST,
@@ -211,6 +212,36 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
         error = (_message.error if _message is not None else "") or "send failed"
         raise RuntimeError(f"outreach send failed: {error}")
     return {"status": status}
+
+
+def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
+    """Remind the sending mailbox that a candidate asked to hear back today."""
+    from datetime import date
+
+    from sqlalchemy.orm import selectinload
+
+    from .models import Message
+    from .outreach.follow_ups import send_follow_up_reminder
+
+    enrollment = db.scalar(
+        select(Enrollment)
+        .where(Enrollment.id == job.payload.get("enrollment_id", ""))
+        .options(selectinload(Enrollment.sequence).selectinload(Sequence.steps))
+    )
+    inbound = db.get(Message, job.payload.get("inbound_message_id", ""))
+    if enrollment is None or inbound is None:
+        return {"skipped": "enrollment or reply gone"}
+    queued_for = None
+    raw = job.payload.get("follow_up_after") or ""
+    if raw:
+        try:
+            queued_for = date.fromisoformat(raw)
+        except ValueError:
+            queued_for = None
+    result = send_follow_up_reminder(
+        db, enrollment=enrollment, inbound=inbound, follow_up_after=queued_for, now=now
+    )
+    return {"result": result, "enrollment_id": enrollment.id}
 
 
 def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1548,6 +1579,7 @@ HANDLERS = {
     KIND_CRM_DISCOVERY_IMPORT: _handle_crm_discovery_import,
     KIND_OUTREACH_TICK: _handle_outreach_tick,
     KIND_OUTREACH_SEND: _handle_outreach_send,
+    KIND_OUTREACH_FOLLOW_UP: _handle_outreach_follow_up,
     KIND_AGENT_TICK: _handle_agent_tick,
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
     KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,

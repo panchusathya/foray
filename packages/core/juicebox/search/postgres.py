@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session, selectinload
 from ..config import get_settings
 from ..enrich import taxonomy as tx
 from ..llm.embeddings import get_embedder, tokenize
-from ..models import Candidate
+from ..models import Candidate, CandidatePreference
 from . import fusion
+from .availability import from_preference
 from .filters import YEARS_MAX_TOLERANCE, YEARS_MIN_TOLERANCE
 from .index import CandidateDoc, SearchPool, candidate_to_doc
 
@@ -26,6 +27,10 @@ from .index import CandidateDoc, SearchPool, candidate_to_doc
 # multi-word term went to Postgres verbatim and 500'd the whole search --
 # invisible in development, where SQLite uses the in-process backend.
 _TSQUERY_OPERATORS = re.compile(r"[&|!()<>:*'\"]+")
+
+# CRM states that answer "are they on the market" regardless of what was said
+# on a call. Mirrors ``availability._CRM_NOT_LOOKING``.
+_CRM_OVERRIDE = ("placed", "do_not_contact")
 
 
 def _as_tsquery(tokens: list[str]) -> str | None:
@@ -89,8 +94,13 @@ class PostgresIndex:
         """Load every profile. Eval and tests use this; search does not."""
         return _hydrate(self.db, self.org_id)
 
-    def search_pool(self, parsed, pool_size: int) -> SearchPool:
+    def search_pool(self, parsed, pool_size: int, *, only_available: bool = False) -> SearchPool:
         eligible_ids, excluded, total_matched = self._eligible(parsed)
+        if only_available and eligible_ids:
+            eligible_ids, dropped = self._on_market(eligible_ids)
+            if dropped:
+                excluded["not_on_market"] = dropped
+            total_matched = len(eligible_ids)
         if total_matched == 0:
             return SearchPool(
                 docs=[],
@@ -145,6 +155,50 @@ class PostgresIndex:
             excluded=excluded,
             backend=self.backend,
         )
+
+    def _on_market(self, eligible_ids: list[str]) -> tuple[list[str], int]:
+        """Keep only the people who said they would move.
+
+        Deliberately Python rather than another arm of the ``_eligible`` SQL.
+        Availability is a small decision tree over employment status, stated
+        timeline, CRM state and how long ago the person was asked; writing it
+        twice is how the two backends start disagreeing about who is on the
+        market. ``candidate_preferences`` holds one row per person who has
+        actually been interviewed, so this reads a fraction of the corpus.
+        """
+        from .filters import AVAILABLE_STATES
+
+        preferences = {
+            row.candidate_id: row
+            for row in self.db.scalars(
+                select(CandidatePreference).where(
+                    CandidatePreference.org_id == self.org_id,
+                    CandidatePreference.candidate_id.in_(eligible_ids),
+                )
+            )
+        }
+        # Only the two statuses that override a stated preference are worth
+        # fetching; everything else leaves the reading unchanged.
+        overridden = {
+            row[0]
+            for row in self.db.execute(
+                select(Candidate.id).where(
+                    Candidate.org_id == self.org_id,
+                    Candidate.id.in_(eligible_ids),
+                    Candidate.crm_status.in_(tuple(_CRM_OVERRIDE)),
+                )
+            ).all()
+        }
+        kept = [
+            candidate_id
+            for candidate_id in eligible_ids
+            if from_preference(
+                preferences.get(candidate_id),
+                crm_status="placed" if candidate_id in overridden else "",
+            ).state
+            in AVAILABLE_STATES
+        ]
+        return kept, len(eligible_ids) - len(kept)
 
     def _eligible(self, parsed) -> tuple[list[str], dict[str, int], int]:
         """Apply hard filters in SQL. Order matches ``filters.apply_filters``."""
@@ -341,4 +395,14 @@ def _hydrate(db: Session, org_id: str, ids: list[str] | None = None) -> list[Can
         if not ids:
             return []
         query = query.where(Candidate.id.in_(ids))
-    return [candidate_to_doc(row) for row in db.scalars(query).all()]
+    rows = db.scalars(query).all()
+
+    # Scoped to the rows being hydrated: this backend only ever materialises
+    # the shortlist, and loading every preference in the org to decorate
+    # twenty people would give back what that design buys.
+    pref_query = select(CandidatePreference).where(CandidatePreference.org_id == org_id)
+    if ids is not None:
+        pref_query = pref_query.where(CandidatePreference.candidate_id.in_(ids))
+    preferences = {row.candidate_id: row for row in db.scalars(pref_query)}
+
+    return [candidate_to_doc(row, preferences.get(row.id)) for row in rows]

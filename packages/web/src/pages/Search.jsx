@@ -12,12 +12,22 @@ const EXAMPLES = [
   'data engineers in Berlin with dbt and snowflake, not at agencies',
 ];
 
+// A paste is compiled differently from a sentence, and the recruiter has to be
+// able to see which happened -- it explains why only a few skills are required.
+const PARSER_LABEL = {
+  llm_jd: 'read as a job description',
+  heuristic_jd: 'read as a job description (offline)',
+  llm: 'read as a search',
+  heuristic: 'read as a search (offline)',
+};
+
 function ParsedQuery({ parsed }) {
   const entries = [
     ['Titles', parsed.job_titles],
     ['Seniority', parsed.seniority],
     ['Must have', parsed.must_have_skills],
     ['Nice to have', parsed.nice_to_have_skills],
+    ['Excluded titles', parsed.title_exclusions],
     ['Locations', parsed.locations],
     ['Industries', parsed.industries],
     ['Companies', parsed.target_companies],
@@ -35,7 +45,9 @@ function ParsedQuery({ parsed }) {
     <div className="card">
       <div className="spread" style={{ marginBottom: 8 }}>
         <strong className="small">Interpreted as</strong>
-        <span className="small muted">parser: {parsed.__parser}</span>
+        <span className="small muted">
+          {PARSER_LABEL[parsed.__parser] ?? parsed.__parser}
+        </span>
       </div>
       <div className="facets">
         {years ? <Badge tone="accent">{years}</Badge> : null}
@@ -58,18 +70,24 @@ export function SearchPage() {
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [addState, setAddState] = useState('');
+  const [onlyAvailable, setOnlyAvailable] = useState(false);
 
   const projects = useAsync(() => api.listProjects(), []);
   const [projectId, setProjectId] = useState('');
 
-  async function runSearch(text) {
+  async function runSearch(text, available) {
     const value = (text ?? query).trim();
+    const wantAvailable = available ?? onlyAvailable;
     if (!value) return;
     setBusy(true);
     setError(null);
     setAddState('');
     try {
-      const response = await api.search({ query: value, limit: 25 });
+      const response = await api.search({
+        query: value,
+        limit: 25,
+        only_available: wantAvailable,
+      });
       setResult(response);
       setSelected(new Set());
     } catch (caught) {
@@ -112,13 +130,14 @@ export function SearchPage() {
           Who are you <em className="marker">looking for</em>?
         </h1>
         <p className="muted">
-          Describe the hire in plain language. Every result shows the evidence behind its score.
+          Describe the hire in plain language, or paste the whole job description. Every
+          result shows the evidence behind its score.
         </p>
         <div className="card hero-input">
           <textarea
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="e.g. staff backend engineers at fintech companies who know Go and Kafka"
+            placeholder="Paste a job description, or describe the hire — e.g. staff backend engineers at fintech companies who know Go and Kafka"
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) runSearch();
             }}
@@ -127,6 +146,19 @@ export function SearchPage() {
             {busy ? 'Searching…' : 'Search'}
           </button>
         </div>
+        <label className="small avail-toggle">
+          <input
+            type="checkbox"
+            checked={onlyAvailable}
+            onChange={(event) => {
+              setOnlyAvailable(event.target.checked);
+              if (result) runSearch(undefined, event.target.checked);
+            }}
+          />{' '}
+          Only people on the market
+          <span className="muted"> — hides anyone we have not spoken to</span>
+        </label>
+
         <div className="facets hero-examples">
           <span className="small muted">Try:</span>
           {EXAMPLES.map((example) => (
@@ -155,6 +187,7 @@ export function SearchPage() {
             <span className="small muted">
               {result.total_matched} matched · showing {result.results.length} · {result.latency_ms}ms
               {result.reranked ? ' · AI reranked' : ''}
+              {onlyAvailable ? ' · on the market only' : ''}
             </span>
             <div className="row">
               <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
@@ -181,7 +214,9 @@ export function SearchPage() {
 
           {result.results.length === 0 ? (
             <Empty>
-              Nothing matched. Loosen a filter, or bring more people in from Import.
+              {onlyAvailable
+                ? 'Nothing matched. Most people have never had an intake call — untick "Only people on the market" to see them.'
+                : 'Nothing matched. Loosen a filter, or bring more people in from Import.'}
             </Empty>
           ) : (
             <div className="stack">

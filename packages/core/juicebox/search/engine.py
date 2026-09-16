@@ -97,6 +97,7 @@ class SearchEngine:
         project_id: str | None = None,
         persist: bool = True,
         created_by: str | None = None,
+        only_available: bool = False,
     ) -> SearchOutcome:
         started = time.perf_counter()
         settings = self.settings
@@ -115,7 +116,11 @@ class SearchEngine:
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
 
-        pool = index.search_pool(parsed, pool_size=max(settings.retrieval_candidate_pool, limit))
+        pool = index.search_pool(
+            parsed,
+            pool_size=max(settings.retrieval_candidate_pool, limit),
+            only_available=only_available,
+        )
         if pool.total_matched == 0:
             return SearchOutcome(
                 query=query,

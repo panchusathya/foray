@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { AvailabilityBadge, AvailabilityDetail } from './Availability.jsx';
 import { Badge, ScoreBar } from './common.jsx';
 
 const STATUS_ORDER = { miss: 0, partial: 1, unknown: 2, strong: 3 };
@@ -11,7 +12,7 @@ const STATUS_ORDER = { miss: 0, partial: 1, unknown: 2, strong: 3 };
  */
 export function CandidateHit({ hit, selected, onToggle }) {
   const [expanded, setExpanded] = useState(false);
-  const { candidate, criteria = [] } = hit;
+  const { candidate, criteria = [], availability } = hit;
 
   // Show what's wrong first — that's what a recruiter scans for.
   const ordered = [...criteria].sort(
@@ -48,6 +49,14 @@ export function CandidateHit({ hit, selected, onToggle }) {
               {candidate.current_company ? ` · ${candidate.current_company}` : ''}
               {location ? ` · ${location}` : ''}
             </div>
+            <div className="row wrap" style={{ marginTop: 6 }}>
+              <AvailabilityBadge availability={availability} />
+              {candidate.crm_status && candidate.crm_status !== 'none' ? (
+                <Badge tone={candidate.crm_status === 'do_not_contact' ? 'miss' : ''}>
+                  {candidate.crm_status.replace(/_/g, ' ')}
+                </Badge>
+              ) : null}
+            </div>
           </div>
           <div className="score">
             <div className="score-value">{(hit.final_score * 100).toFixed(0)}</div>
@@ -56,6 +65,8 @@ export function CandidateHit({ hit, selected, onToggle }) {
         </div>
 
         <ScoreBar value={hit.final_score} />
+
+        <AvailabilityDetail availability={availability} />
 
         <div className="row wrap" style={{ marginTop: 10 }}>
           <Badge>{candidate.seniority}</Badge>

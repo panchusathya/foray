@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..deps import CommittingRoute, Principal, get_db, get_principal
 from ..models import Candidate, Search
 from ..schemas import (
+    AvailabilityOut,
     CandidateSummary,
     CriterionOut,
     ParsedQueryOut,
@@ -24,6 +25,7 @@ router = APIRouter(route_class=CommittingRoute, prefix="/v1", tags=["search"])
 
 def _summary_from_doc(doc: CandidateDoc) -> CandidateSummary:
     return CandidateSummary(
+        crm_status=doc.availability.crm_status or "none",
         id=doc.id,
         full_name=doc.full_name,
         headline=doc.headline,
@@ -43,6 +45,7 @@ def _hit(candidate: ScoredCandidate) -> SearchHit:
     return SearchHit(
         rank=candidate.rank,
         candidate=_summary_from_doc(candidate.doc),
+        availability=AvailabilityOut(**candidate.doc.availability.to_dict()),
         final_score=round(candidate.final_score, 4),
         heuristic_score=round(candidate.heuristic_score, 4),
         fusion_score=round(candidate.fusion_score, 4),
@@ -77,6 +80,7 @@ def search(
         project_id=payload.project_id,
         persist=payload.persist,
         created_by=principal.user_id,
+        only_available=payload.only_available,
     )
     return SearchResponse(
         search_id=outcome.search_id,
@@ -140,7 +144,18 @@ def get_search(
         )
     }
 
+    from ..models import CandidatePreference
     from ..search.index import candidate_to_doc
+
+    preferences = {
+        row.candidate_id: row
+        for row in db.scalars(
+            select(CandidatePreference).where(
+                CandidatePreference.org_id == principal.org_id,
+                CandidatePreference.candidate_id.in_(list(candidates)),
+            )
+        )
+    }
 
     hits: list[SearchHit] = []
     for row in sorted(search_row.results, key=lambda r: r.rank):
@@ -148,10 +163,15 @@ def get_search(
         if candidate is None:
             continue
         evidence = row.evidence or {}
+        doc = candidate_to_doc(candidate, preferences.get(candidate.id))
         hits.append(
             SearchHit(
                 rank=row.rank,
-                candidate=_summary_from_doc(candidate_to_doc(candidate)),
+                candidate=_summary_from_doc(doc),
+                # Read live rather than from the stored evidence: a saved
+                # search reopened next month should say where the person
+                # stands now, not what they said the day it ran.
+                availability=AvailabilityOut(**doc.availability.to_dict()),
                 final_score=row.final_score,
                 heuristic_score=row.heuristic_score,
                 fusion_score=row.fusion_score,

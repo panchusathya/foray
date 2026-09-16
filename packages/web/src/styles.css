@@ -990,3 +990,42 @@ a.todo-row:hover { background: var(--tint); }
 .review-marker.partial { background: var(--partial); }
 .review-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .review-fields .badge { font-size: 11.5px; }
+
+/* ---------- availability ---------- */
+/* "Not asked" has to read as absence, not as a soft no: it is the state most
+   of the database is in, and a recruiter treats it completely differently. */
+.avail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.avail-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.avail-strong { color: var(--strong); }
+.avail-partial { color: var(--partial); }
+.avail-miss { color: var(--miss); }
+.avail-unknown { color: var(--muted); }
+.avail-unknown .avail-dot {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+.avail-stale { color: var(--muted); font-weight: 400; }
+.avail-detail { margin: 6px 0 0; }
+
+.avail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.avail-toggle input { cursor: pointer; }

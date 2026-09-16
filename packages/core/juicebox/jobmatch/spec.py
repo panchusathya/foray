@@ -1,120 +1,70 @@
 """Compile a JobPosting into a ParsedQuery.
 
-The LLM path is conservative: invented constraints are the expensive failure.
-The offline path never feeds a full JD to ``heuristic_parse`` — that would dump
-every taxonomy skill into must_have_skills and floor scores via the hard-miss
-penalty in ``assess``.
+The compiler itself lives in ``search.jd``, because a pasted job description
+and a scraped posting are the same problem: a document full of boilerplate
+that has to become a small, honest set of requirements. This module is the
+JobPosting-shaped door into it, so the two callers cannot drift apart.
 """
 
 from __future__ import annotations
 
-import logging
-
 from ..enrich import taxonomy as tx
-from ..llm.client import LLMUnavailable, get_llm
-from ..llm.prompts import JD_PARSER_SCHEMA, JD_PARSER_SYSTEM, jd_parser_prompt
 from ..models import JobPosting
-from ..search.parser import ParsedQuery, heuristic_parse, parse_compensation
+from ..search.jd import (
+    MAX_MUST_HAVES,
+    apply_stated_comp,
+    cap_must_haves,
+    heuristic_jd_parse,
+    llm_jd_parse,
+    parse_job_description,
+)
+from ..search.parser import ParsedQuery
 
-logger = logging.getLogger(__name__)
-
-MAX_MUST_HAVES = 5
+__all__ = [
+    "MAX_MUST_HAVES",
+    "heuristic_job_spec",
+    "job_spec",
+]
 
 
 def job_spec(posting: JobPosting) -> tuple[ParsedQuery, str]:
     """Return a normalised ParsedQuery and the parser that produced it."""
-    llm = get_llm()
-    if llm.available:
-        try:
-            parsed = _llm_jd_parse(posting)
-            if not parsed.is_empty():
-                return _cap_must_haves(parsed).normalized(), "llm"
-        except Exception as exc:  # noqa: BLE001 - degrade, never fail a parse
-            logger.warning("llm JD parse failed, using heuristics: %s", exc)
-    return heuristic_job_spec(posting), "heuristic"
+    parsed, parser = parse_job_description(
+        posting.jd_text or "",
+        title=posting.title or "",
+        location=posting.location or "",
+        company=posting.company or "",
+        seniority=posting.seniority or "",
+    )
+    # The posting path has always reported "llm"/"heuristic", and both
+    # spec_version_for and the stored parser column read those values.
+    return parsed, "llm" if parser == "llm_jd" else "heuristic"
 
 
 def heuristic_job_spec(posting: JobPosting) -> ParsedQuery:
     """Title + location + seniority only; JD skills are nice-to-have / capped musts."""
-    title = posting.title or ""
-    location = posting.location or ""
-    parsed = heuristic_parse(f"{title} {location}".strip() or title)
-    title_normalized = posting.title_normalized or tx.normalize_title(title)
-    must, nice = _title_adjacent_skills(title_normalized, posting.jd_text or "")
-    parsed.must_have_skills = must
-    parsed.nice_to_have_skills = nice
-    if posting.seniority and posting.seniority not in parsed.seniority:
-        parsed.seniority = [posting.seniority, *parsed.seniority]
-    remainder = tx.slugify_text(f"{title} {location} {posting.jd_text or ''}")
-    parsed.search_text = remainder
-    _apply_stated_comp(parsed, posting)
-    return parsed.normalized()
-
-
-def _apply_stated_comp(parsed: ParsedQuery, posting: JobPosting) -> None:
-    """Fill the pay range from the JD when the caller has not already.
-
-    Read off the raw JD rather than ``heuristic_parse``, which only ever sees
-    title and location. Without this the field is never populated on the
-    offline path, and ``jobmatch.preference`` has no ceiling to test.
-    """
-    if parsed.min_compensation is not None or parsed.max_compensation is not None:
-        return
-    low, high, currency = parse_compensation(posting.jd_text or "")
-    parsed.min_compensation = low
-    parsed.max_compensation = high
-    if currency:
-        parsed.compensation_currency = currency
-
-
-def _title_adjacent_skills(title_normalized: str, jd_text: str) -> tuple[list[str], list[str]]:
-    title_tokens = {tok for tok in tx.slugify_text(title_normalized).split() if tok}
-    jd_skills = tx.extract_skills_from_text(f"{title_normalized} {jd_text}")
-    must: list[str] = []
-    for skill in jd_skills:
-        skill_tokens = {tok for tok in tx.normalize_skill(skill).split() if tok}
-        if skill_tokens & title_tokens:
-            must.append(skill)
-    seeded = list(must)
-    for skill in seeded:
-        for neighbour in tx.SKILL_NEIGHBOURS.get(tx.normalize_skill(skill), set()):
-            if neighbour in jd_skills and neighbour not in must:
-                must.append(neighbour)
-    must = must[:MAX_MUST_HAVES]
-    nice = [skill for skill in jd_skills if skill not in must]
-    return must, nice
-
-
-def _cap_must_haves(parsed: ParsedQuery) -> ParsedQuery:
-    extra = parsed.must_have_skills[MAX_MUST_HAVES:]
-    parsed.must_have_skills = parsed.must_have_skills[:MAX_MUST_HAVES]
-    if extra:
-        parsed.nice_to_have_skills = list(
-            dict.fromkeys([*parsed.nice_to_have_skills, *extra])
-        )
-    return parsed
+    return heuristic_jd_parse(
+        posting.jd_text or "",
+        title=posting.title or tx.normalize_title(posting.title_normalized or ""),
+        location=posting.location or "",
+        seniority=posting.seniority or "",
+    )
 
 
 def _llm_jd_parse(posting: JobPosting) -> ParsedQuery:
-    llm = get_llm()
-    result = llm.json(
-        system=JD_PARSER_SYSTEM,
-        prompt=jd_parser_prompt(
-            title=posting.title or "",
-            location=posting.location or "",
-            company=posting.company or "",
-            seniority=posting.seniority or "",
-            jd_text=posting.jd_text or "",
-        ),
-        schema=JD_PARSER_SCHEMA,
-        effort="low",
-        max_tokens=8000,
+    """Retained for callers and tests that reach for the model path directly."""
+    return llm_jd_parse(
+        posting.jd_text or "",
+        title=posting.title or "",
+        location=posting.location or "",
+        company=posting.company or "",
+        seniority=posting.seniority or "",
     )
-    if not result.data:
-        raise LLMUnavailable("JD parser returned no data")
-    parsed = ParsedQuery.from_dict(result.data)
-    # The model skips a stated range often enough that leaving it to the model
-    # alone reproduces the bug this field exists to fix: a comp ceiling that is
-    # never populated, so the preference veto can never fire.
-    _apply_stated_comp(parsed, posting)
-    return parsed.normalized()
+
+
+def _cap_must_haves(parsed: ParsedQuery) -> ParsedQuery:
+    return cap_must_haves(parsed)
+
+
+def _apply_stated_comp(parsed: ParsedQuery, posting: JobPosting) -> None:
+    apply_stated_comp(parsed, posting.jd_text or "")

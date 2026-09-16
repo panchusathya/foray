@@ -546,7 +546,22 @@ def llm_parse(query: str) -> ParsedQuery:
 def parse_query(
     query: str, *, overrides: dict[str, Any] | None = None, use_llm: bool | None = None
 ) -> tuple[ParsedQuery, str]:
-    """Returns the parsed query and which parser produced it."""
+    """Returns the parsed query and which parser produced it.
+
+    A pasted job description is routed to ``search.jd`` rather than read as a
+    sentence. Compiling one here instead would put every tool the document
+    mentions into ``must_have_skills``, and the hard-miss penalty in
+    ``scoring.assess`` would then floor the entire corpus to the same score.
+    """
+    # Imported here: search.jd builds on this module's parser.
+    from .jd import looks_like_job_description, parse_job_description
+
+    if looks_like_job_description(query):
+        parsed, parser_name = parse_job_description(query, use_llm=use_llm)
+        if not parsed.search_text:
+            parsed.search_text = tx.slugify_text(query)
+        return parsed.merge_overrides(overrides), parser_name
+
     llm = get_llm()
     want_llm = llm.available if use_llm is None else use_llm
 

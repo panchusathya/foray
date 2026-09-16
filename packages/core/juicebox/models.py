@@ -886,6 +886,85 @@ class ReplyDraft(Base, TimestampMixin):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# An inbox draft is pending until a human has looked at it. Only "placed" has
+# written anything to the mailbox, which is what makes this queue safe to fill
+# automatically.
+INBOX_DRAFT_STATUSES = ("pending", "placed", "dismissed")
+
+
+class InboxDraft(Base, TimestampMixin):
+    """A drafted reply to ordinary inbox mail, waiting for a human to approve it.
+
+    Deliberately not a ``ReplyDraft``. That row answers "a candidate replied to
+    a sequence we sent", so it hangs off ``Message`` and is written straight
+    into the mailbox the moment it exists. This queue answers a different
+    question -- "somebody emailed you, here is a reply you could send" -- for
+    mail that may have no sequence, no enrollment and no candidate behind it,
+    and it writes nothing to the mailbox until the user says so.
+
+    It carries its own copy of the inbound fields rather than pointing at a
+    ``Message``. ``Message.candidate_id`` is NOT NULL and indexed as the spine
+    of the CRM timeline, so storing a stranger's email there would mean either
+    widening that column for every row in the system or inventing a candidate
+    for everyone who ever emails -- the second of which silently fills the CRM
+    with people nobody chose to track. ``candidate_id`` and ``message_id`` are
+    filled in when we do happen to know them, and are the join for the rest.
+    """
+
+    __tablename__ = "inbox_drafts"
+    __table_args__ = (
+        # One draft per inbound message. The sync loop re-reads a folder on
+        # every poll, so without this a slow reply gets a fresh draft each run.
+        UniqueConstraint("org_id", "inbound_native_id", name="uq_inbox_draft_inbound"),
+        # The queue view: pending first, newest first, per org.
+        Index("ix_inbox_drafts_org_status", "org_id", "status", "received_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("idr"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    mailbox_id: Mapped[str] = mapped_column(
+        ForeignKey("mailbox_connections.id", ondelete="CASCADE"), index=True
+    )
+
+    # -- the message being answered ----------------------------------------
+    inbound_native_id: Mapped[str] = mapped_column(String(300), default="")
+    inbound_thread_id: Mapped[str] = mapped_column(String(300), default="")
+    inbound_rfc_message_id: Mapped[str] = mapped_column(String(300), default="")
+    from_address: Mapped[str] = mapped_column(String(255), default="")
+    from_name: Mapped[str] = mapped_column(String(200), default="")
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    inbound_body: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    web_link: Mapped[str] = mapped_column(Text, default="")
+
+    # Known sender, when there is one. SET NULL rather than CASCADE: deleting
+    # a contact should not silently drop a reply the user was about to send.
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # -- what we wrote ------------------------------------------------------
+    body: Mapped[str] = mapped_column(Text, default="")
+    # The draft as generated, kept when the user edits ``body``. The pair is
+    # the same learning signal ReplyDraft.final_sent_text exists for.
+    generated_body: Mapped[str] = mapped_column(Text, default="")
+    generated_by: Mapped[str] = mapped_column(String(20), default="template")
+    # llm | template
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    # pending | placed | dismissed
+    provider_draft_id: Mapped[str] = mapped_column(String(300), default="")
+    draft_web_link: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(String(400), default="")
+
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
 class Suppression(Base, TimestampMixin):
     """Org-level do-not-contact list.
 

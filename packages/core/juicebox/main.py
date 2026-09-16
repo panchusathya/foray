@@ -24,6 +24,7 @@ from .routers import (
     crm,
     documents,
     imports,
+    inbox_drafts,
     intake,
     integrations,
     job_discovery,
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(outreach.in_flight_router)
     app.include_router(outreach.messages_router)
     app.include_router(outreach.reply_drafts_router)
+    app.include_router(inbox_drafts.router)
     app.include_router(outreach.webhooks_router)
     app.include_router(agents.router)
     app.include_router(analytics.router)

@@ -13,6 +13,7 @@ import { JobDetailPage } from './pages/JobDetail.jsx';
 import { JobsPage } from './pages/Jobs.jsx';
 import { ImportPage } from './pages/Import.jsx';
 import { LoginPage } from './pages/Login.jsx';
+import { InboxDraftsPage } from './pages/InboxDrafts.jsx';
 import { OutboxPage } from './pages/Outbox.jsx';
 import { ProjectDetailPage } from './pages/Projects.jsx';
 import { SearchPage } from './pages/Search.jsx';
@@ -50,6 +51,7 @@ const NAV_SECTIONS = [
       { to: '/intake', label: 'Intake' },
       { to: '/jobs', label: 'Jobs' },
       { to: '/applications', label: 'Applications' },
+      { to: '/inbox-drafts', label: 'Inbox drafts' },
       { to: '/outbox', label: 'Outbox' },
     ],
   },
@@ -213,6 +215,7 @@ export function App() {
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/contacts/:candidateId" element={<CandidateDetailPage />} />
           <Route path="/intake" element={<IntakePage />} />
+          <Route path="/inbox-drafts" element={<InboxDraftsPage />} />
           <Route path="/outbox" element={<OutboxPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           {/* Off the sidebar -- nobody was reading it as a destination. Still

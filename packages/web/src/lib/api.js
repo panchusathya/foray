@@ -215,6 +215,13 @@ export const api = {
   recentSearches: () => request('/v1/searches?limit=10'),
   indexStats: () => request('/v1/search/index-stats'),
 
+  listInboxDrafts: () => request('/v1/inbox-drafts'),
+  updateInboxDraft: (id, payload) =>
+    request(`/v1/inbox-drafts/${id}`, { method: 'PATCH', body: payload }),
+  approveInboxDraft: (id, payload) =>
+    request(`/v1/inbox-drafts/${id}/approve`, { method: 'POST', body: payload }),
+  dismissInboxDraft: (id) => request(`/v1/inbox-drafts/${id}/dismiss`, { method: 'POST' }),
+
   listProjects: () => request('/v1/projects'),
   createProject: (payload) => request('/v1/projects', { method: 'POST', body: payload }),
   deleteProject: (id) => request(`/v1/projects/${id}`, { method: 'DELETE' }),

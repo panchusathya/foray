@@ -453,6 +453,87 @@ def reply_draft_prompt(
 
 
 # --------------------------------------------------------------------------
+# 6b. inbox drafts: a reply to ordinary mail, not to an outreach answer
+# --------------------------------------------------------------------------
+
+INBOX_DRAFT_SYSTEM = """\
+You draft the user's reply to an email that arrived in their inbox. They are a \
+recruiter. The draft is held for them to read, edit and approve, so write in \
+first person as them, and write only the body.
+
+This is ordinary correspondence, not an answer to an outreach campaign. You may \
+have no history with this person at all. Read what they actually sent and \
+respond to it.
+
+Style — plain, normal prose:
+- Short sentences. No filler, no poetic phrasing, no exclamation marks.
+- Under 110 words. No subject line, no signature block — just the body.
+- Answer what they actually asked. Quote nothing back at them.
+- Match the register they wrote in. A one-line question gets a one-line answer; \
+do not turn it into a paragraph.
+
+What you must not do:
+- Never invent a fact — about a role, a company, a fee, a timeline, a person, or \
+anything the user has supposedly already done. If answering properly needs \
+something you were not given, write the reply so it asks for it or promises to \
+follow up, and leave it at that.
+- Never commit the user to a meeting, a price, an introduction or a deadline. \
+Offering to find a time is fine; naming the time is not.
+- Never apologise on the user's behalf for something you cannot verify happened.
+
+If the message is one the user should answer personally and you have nothing to \
+work with — a condolence, a dispute, a legal or financial matter, bad news — \
+return an empty body rather than a generic one. A blank draft is a signal they \
+should write it themselves, and that is a better outcome than a plausible \
+paragraph they might send without reading.
+
+If <context> names who the sender is, use it. If <style_examples> are provided, \
+they show what this user actually sends — match their greeting, sign-off, \
+sentence length and formality. Copy voice, never content.
+"""
+
+INBOX_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["body", "needs_a_human"],
+    "properties": {
+        "body": {
+            "type": "string",
+            "description": "Plain-text reply body, ready to send. Empty when a human should write it.",
+        },
+        "needs_a_human": {
+            "type": "boolean",
+            "description": "True when this message should be answered personally rather than from a draft.",
+        },
+    },
+}
+
+
+def inbox_draft_prompt(
+    *,
+    context: str,
+    from_line: str,
+    subject: str,
+    inbound_body: str,
+    style_examples: str = "",
+) -> str:
+    style_block = (
+        f"<style_examples>\n{style_examples.strip()}\n</style_examples>\n\n"
+        if style_examples.strip()
+        else ""
+    )
+    context_block = f"<context>\n{context.strip()}\n</context>\n\n" if context.strip() else ""
+    return (
+        f"{style_block}"
+        f"{context_block}"
+        f"<email from=\"{from_line}\" subject=\"{subject}\">\n"
+        f"{inbound_body.strip()}\n"
+        "</email>\n\n"
+        "Draft my reply."
+    )
+
+
+# --------------------------------------------------------------------------
 # 7. inline AI directives ({{ai: ...}} in sequence templates)
 # --------------------------------------------------------------------------
 

@@ -990,3 +990,21 @@ a.todo-row:hover { background: var(--tint); }
 .review-marker.partial { background: var(--partial); }
 .review-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .review-fields .badge { font-size: 11.5px; }
+
+/* ---------- inbox drafts ---------- */
+/* One card per message, wide enough to actually read the mail in. */
+.draft-card { max-width: 780px; }
+/* The message as it arrived. Visually quoted so it never reads as our text. */
+.quoted {
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border-strong);
+  padding: 2px 0 2px 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.draft-body {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font: inherit;
+}

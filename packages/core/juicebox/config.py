@@ -295,6 +295,13 @@ class Settings:
     reply_drafting_enabled: bool = field(
         default_factory=lambda: _env_bool("REPLY_DRAFTING_ENABLED", False)
     )
+    # Drafting for ordinary inbox mail, not just answers to our own outreach.
+    # Its own switch rather than a wider reply_drafting_enabled: this one reads
+    # and stores mail from people who are not in the CRM at all, which is a
+    # decision a deployment should make on purpose.
+    inbox_drafting_enabled: bool = field(
+        default_factory=lambda: _env_bool("INBOX_DRAFTING_ENABLED", False)
+    )
     # Send-floor copied from Foray. 0 disables it (the default until the
     # measured reach_score distribution is known). Unscored addresses are
     # never blocked; only a stored score below the floor is.

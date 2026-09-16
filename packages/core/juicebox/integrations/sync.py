@@ -362,12 +362,13 @@ def _handle_inbound_event(
     outbound = _match_outbound(db, org_id=connection.org_id, event=event, mailbox_id=connection.id)
     if outbound is None:
         # Not a reply to anything we sent. With thread sync on, mail from a
-        # known candidate still belongs in their timeline; strangers are
-        # discarded without storing anything. Deliberately no classify_reply /
+        # known candidate still belongs in their timeline; a stranger is not
+        # stored as a Message at all. Deliberately no classify_reply /
         # enrollment stop / pipeline move — there is no sequence behind this.
         candidate_id = resolve_candidate(address_index, [event.from_address])
+        message = None
         if candidate_id is not None:
-            record_synced_message(
+            message = record_synced_message(
                 db,
                 org_id=connection.org_id,
                 candidate_id=candidate_id,
@@ -382,6 +383,17 @@ def _handle_inbound_event(
             summary.inbound_ingested += 1
         else:
             summary.unmatched_discarded += 1
+        # Both paths can still earn a drafted reply. That is the point of the
+        # queue: the mail a recruiter most needs to answer quickly is usually
+        # the mail no sequence of ours started.
+        _enqueue_inbox_draft(
+            db,
+            connection=connection,
+            event=event,
+            candidate_id=candidate_id,
+            message_id=(message.id if message is not None else None),
+            now=now,
+        )
         summary.skipped += 1
         return
     verdict = record_reply(
@@ -510,6 +522,70 @@ def _ingest_sent_message(
         source=connection.provider,
     )
     summary.sent_ingested += 1
+
+
+def _enqueue_inbox_draft(
+    db: Session,
+    *,
+    connection: MailboxConnection,
+    event: MailboxEvent,
+    candidate_id: str | None,
+    message_id: str | None,
+    now: datetime,
+) -> None:
+    """Record ordinary inbox mail as a draft to review, when it is worth one.
+
+    Three gates, in cost order. The feature switch first, so a deployment that
+    has not opted in never stores this mail at all. Then the sender test, which
+    is what keeps receipts and build notifications out of the queue. Only then
+    the row, which is the first thing that writes.
+
+    The wording is not generated here. This runs inside the sync loop, and a
+    model call per message would stretch a poll over a busy inbox into a long
+    transaction holding its rows throughout.
+    """
+    from ..config import get_settings
+    from ..jobs import KIND_INBOX_DRAFT, enqueue
+    from .inbound_filters import sender_looks_automated
+    from .inbox_drafting import create_inbox_draft
+
+    if not get_settings().inbox_drafting_enabled:
+        return
+    # Our own mail, seen again in a folder we read.
+    if (event.from_address or "").strip().lower() == (connection.address or "").strip().lower():
+        return
+    automated, why = sender_looks_automated(
+        from_address=event.from_address, subject=event.subject, body=event.body
+    )
+    if automated:
+        logger.debug("no inbox draft for %s: %s", event.from_address, why)
+        return
+
+    draft = create_inbox_draft(
+        db,
+        connection=connection,
+        org_id=connection.org_id,
+        inbound_native_id=event.native_id,
+        from_address=event.from_address,
+        subject=event.subject or "",
+        inbound_body=strip_quoted_history(event.body or ""),
+        thread_id=event.thread_id or "",
+        rfc_message_id=event.rfc_message_id or "",
+        received_at=event.occurred_at,
+        web_link=event.web_link or "",
+        candidate_id=candidate_id,
+        message_id=message_id,
+        now=now,
+    )
+    if draft is None:
+        return
+    enqueue(
+        db,
+        org_id=connection.org_id,
+        kind=KIND_INBOX_DRAFT,
+        idempotency_key=f"{KIND_INBOX_DRAFT}:{draft.id}",
+        payload={"org_id": connection.org_id, "draft_id": draft.id},
+    )
 
 
 def _enqueue_reply_draft(

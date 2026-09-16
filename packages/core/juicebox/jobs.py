@@ -41,6 +41,8 @@ KIND_MAILBOX_SYNC = "mailbox.sync"
 KIND_MAILBOX_SYNC_ONE = "mailbox.sync.one"
 KIND_MAILBOX_BACKFILL = "mailbox.backfill"
 KIND_REPLY_DRAFT = "reply.draft"
+# Wording for one queued inbox draft. The row already exists; this fills it in.
+KIND_INBOX_DRAFT = "inbox.draft"
 KIND_JOBS_PARSE = "jobs.parse"
 KIND_JOBS_MATCH = "jobs.match"
 KIND_JOBS_MATCH_ONE = "jobs.match.one"

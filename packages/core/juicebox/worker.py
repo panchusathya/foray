@@ -29,6 +29,7 @@ from .jobs import (
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
     KIND_DOC_PARSE,
+    KIND_INBOX_DRAFT,
     KIND_INTAKE_ATTACHMENT,
     KIND_INTAKE_EXTRACT,
     KIND_INTAKE_MATCH_TEXT,
@@ -344,6 +345,30 @@ def _handle_reply_draft(db: Session, job: Job, now) -> dict[str, Any]:
     if draft is None:
         return {"skipped": "no_draft_for_intent"}
     return {"draft_id": draft.id, "generated_by": draft.generated_by}
+
+
+def _handle_inbox_draft(db: Session, job: Job, now) -> dict[str, Any]:
+    from .config import get_settings
+    from .integrations.inbox_drafting import generate_for_draft
+    from .models import InboxDraft
+
+    # The second half of the kill switch: a job queued before the feature was
+    # switched off must not still spend a model call on somebody's mail.
+    if not get_settings().inbox_drafting_enabled:
+        return {"skipped": "inbox_drafting_disabled"}
+
+    draft = db.get(InboxDraft, job.payload.get("draft_id"))
+    if draft is None:
+        return {"skipped": "missing_draft"}
+    # A draft the user already acted on is not ours to rewrite.
+    if draft.status != "pending":
+        return {"skipped": f"draft_{draft.status}"}
+    generate_for_draft(db, draft=draft, now=now)
+    return {
+        "draft_id": draft.id,
+        "generated_by": draft.generated_by,
+        "needs_a_human": not draft.body,
+    }
 
 
 def _handle_jobs_discover_one(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1588,6 +1613,7 @@ HANDLERS = {
     KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,
     KIND_MAILBOX_BACKFILL: _handle_mailbox_backfill,
     KIND_REPLY_DRAFT: _handle_reply_draft,
+    KIND_INBOX_DRAFT: _handle_inbox_draft,
     KIND_JOBS_PARSE: _handle_jobs_parse,
     KIND_JOBS_MATCH: _handle_jobs_match,
     KIND_JOBS_MATCH_ONE: _handle_jobs_match_one,

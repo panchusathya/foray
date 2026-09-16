@@ -567,6 +567,46 @@ class AvailabilityOut(BaseModel):
     confirmed: bool = False
 
 
+class InboxDraftOut(BaseModel):
+    """One queued reply, as the review screen sees it."""
+
+    id: str
+    mailbox_id: str
+    status: str
+    from_address: str
+    from_name: str = ""
+    subject: str = ""
+    inbound_body: str = ""
+    received_at: datetime | None = None
+    web_link: str = ""
+    body: str = ""
+    generated_by: str = ""
+    # The model declined to write this one -- it wants a person. Distinct from
+    # `drafting`, which only means the worker has not got to it yet.
+    needs_a_human: bool = False
+    drafting: bool = False
+    edited: bool = False
+    candidate_id: str | None = None
+    candidate_name: str = ""
+    draft_web_link: str = ""
+    error: str = ""
+    created_at: datetime | None = None
+
+
+class InboxDraftListOut(BaseModel):
+    drafts: list[InboxDraftOut] = Field(default_factory=list)
+    pending_count: int = 0
+
+
+class InboxDraftUpdate(BaseModel):
+    # Optional, and None is not "": approving without a body means "send what
+    # you drafted", and a plain `str` default made that indistinguishable from
+    # "replace it with nothing" -- which silently cleared the draft.
+    # Long enough for a real reply, bounded so the queue cannot be used to
+    # stuff arbitrary text into somebody's mailbox.
+    body: str | None = Field(default=None, max_length=20000)
+
+
 class CriterionOut(BaseModel):
     name: str
     label: str

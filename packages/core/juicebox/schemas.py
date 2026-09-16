@@ -525,12 +525,46 @@ class SearchOverrides(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=4000)
+    # A pasted job description routinely runs past 4k characters; the JD
+    # compiler truncates what it sends the model, so the cap here only needs
+    # to stop an accidental file paste.
+    query: str = Field(min_length=1, max_length=20000)
     project_id: str | None = None
     limit: int = Field(default=25, ge=1, le=200)
     overrides: SearchOverrides | None = None
     rerank: bool | None = None
     persist: bool = True
+    # Off by default. Most of a database has never had an intake call, and
+    # "never asked" is not "not interested" -- turning this on by default
+    # would hide almost everybody.
+    only_available: bool = False
+
+
+class AvailabilityOut(BaseModel):
+    """What the person last said about moving, as search reads it.
+
+    ``state`` is one of ``availability.MARKET_STATES``. ``unknown`` means
+    nobody has asked -- it is not a soft no, and the UI has to say so.
+    """
+
+    state: str = "unknown"
+    label: str = "Not asked"
+    detail: str = ""
+    score: float = 0.0
+    employment_status: str = ""
+    timeline: str = ""
+    days_since: int | None = None
+    stale: bool = False
+    target_base: float | None = None
+    target_total: float | None = None
+    comp_currency: str = ""
+    active_processes: int = 0
+    offers_in_hand: int = 0
+    willing_to_relocate: bool | None = None
+    work_authorization: str = ""
+    reason_for_looking: str = ""
+    crm_status: str = ""
+    confirmed: bool = False
 
 
 class CriterionOut(BaseModel):
@@ -547,6 +581,7 @@ class CriterionOut(BaseModel):
 class SearchHit(BaseModel):
     rank: int
     candidate: CandidateSummary
+    availability: AvailabilityOut = Field(default_factory=AvailabilityOut)
     final_score: float
     heuristic_score: float
     fusion_score: float

@@ -51,7 +51,15 @@ def _matches_title_exclusion(doc: CandidateDoc, excluded: list[str]) -> bool:
     return False
 
 
-def apply_filters(docs: list[CandidateDoc], parsed: ParsedQuery) -> FilterOutcome:
+# States that count as "on the market" when the caller asks to see only those.
+# "passive" is in: a stale yes is still a better bet than silence, and the
+# caller who ticked this box wants a shortlist, not a certainty.
+AVAILABLE_STATES = {"active", "open", "passive"}
+
+
+def apply_filters(
+    docs: list[CandidateDoc], parsed: ParsedQuery, *, only_available: bool = False
+) -> FilterOutcome:
     mask = np.ones(len(docs), dtype=bool)
     excluded: dict[str, int] = {}
 
@@ -66,6 +74,11 @@ def apply_filters(docs: list[CandidateDoc], parsed: ParsedQuery) -> FilterOutcom
         excluded[reason] = excluded.get(reason, 0) + 1
 
     for index, doc in enumerate(docs):
+        # Off by default, and deliberately so: most people in a database have
+        # never been asked, and "unknown" is not "no".
+        if only_available and doc.availability.state not in AVAILABLE_STATES:
+            reject(index, "not_on_market")
+            continue
         if excluded_companies and _matches_company(doc, excluded_companies):
             reject(index, "excluded_company")
             continue

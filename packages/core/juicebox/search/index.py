@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..enrich import taxonomy as tx
 from ..llm.embeddings import get_embedder, tokenize
-from ..models import Candidate
+from ..models import Candidate, CandidatePreference
+from .availability import Availability, from_preference
 from .bm25 import BM25Index
 
 
@@ -71,6 +72,10 @@ class CandidateDoc:
     degrees: list[str] = field(default_factory=list)
     fields_of_study: list[str] = field(default_factory=list)
     updated_at: datetime | None = None
+    # What this person last said about moving jobs. Always present -- an
+    # untouched ``Availability`` reads "unknown", which is the honest answer
+    # for the large part of any corpus that has never had an intake call.
+    availability: Availability = field(default_factory=Availability)
 
     def profile_text(self, *, max_experiences: int = 6) -> str:
         """Compact rendering handed to the model during reranking."""
@@ -81,6 +86,11 @@ class CandidateDoc:
         if location:
             lines.append(f"Location: {location}{' (open to remote)' if self.open_to_remote else ''}")
         lines.append(f"Seniority: {self.seniority} | Total experience: {self.years_experience} yrs")
+        # Stated, not inferred: the model is grading fit, and "not looking" is
+        # a fact about this person that changes what the recruiter should do.
+        if self.availability.known:
+            detail = self.availability.detail
+            lines.append(f"Availability: {self.availability.label}{f' ({detail})' if detail else ''}")
         if self.skills:
             lines.append(f"Skills: {', '.join(sorted(self.skills))}")
         if self.summary:
@@ -114,7 +124,9 @@ class CandidateDoc:
         return "\n".join(lines)
 
 
-def candidate_to_doc(candidate: Candidate) -> CandidateDoc:
+def candidate_to_doc(
+    candidate: Candidate, preference: CandidatePreference | None = None
+) -> CandidateDoc:
     location_parts = [
         candidate.location_city,
         candidate.location_region,
@@ -172,6 +184,7 @@ def candidate_to_doc(candidate: Candidate) -> CandidateDoc:
         location_country=candidate.location_country or "",
         open_to_remote=bool(candidate.open_to_remote),
         emails=list(candidate.emails or []),
+        availability=from_preference(preference, crm_status=candidate.crm_status or ""),
         linkedin_url=candidate.linkedin_url or "",
         doc_text=doc_text,
         haystack=haystack,
@@ -207,14 +220,14 @@ class CorpusIndex:
             "backend": "memory",
         }
 
-    def search_pool(self, parsed, pool_size: int) -> SearchPool:
+    def search_pool(self, parsed, pool_size: int, *, only_available: bool = False) -> SearchPool:
         """Filter, retrieve, RRF — the original in-process algorithm."""
         from ..config import get_settings
         from ..llm.embeddings import cosine_similarity, get_embedder, tokenize
         from . import fusion
         from .filters import apply_filters
 
-        outcome = apply_filters(self.docs, parsed)
+        outcome = apply_filters(self.docs, parsed, only_available=only_available)
         mask = outcome.mask
         if not mask.any():
             return SearchPool(
@@ -271,7 +284,33 @@ def _fingerprint(db: Session, org_id: str) -> str:
         )
     ).one()
     count, latest = row[0] or 0, row[1]
-    return f"{count}:{latest.isoformat() if latest else '-'}"
+    # Preferences are part of the snapshot, so they belong in the key that
+    # invalidates it. Without this an intake call finishing never changes the
+    # candidate rows, and the cached index keeps answering "not asked" for
+    # somebody who just said they are leaving.
+    pref = db.execute(
+        select(
+            func.count(CandidatePreference.id), func.max(CandidatePreference.updated_at)
+        ).where(CandidatePreference.org_id == org_id)
+    ).one()
+    pref_count, pref_latest = pref[0] or 0, pref[1]
+    return (
+        f"{count}:{latest.isoformat() if latest else '-'}"
+        f":{pref_count}:{pref_latest.isoformat() if pref_latest else '-'}"
+    )
+
+
+def _preferences(db: Session, org_id: str) -> dict[str, CandidatePreference]:
+    """Every stated preference in the org, keyed by candidate.
+
+    One query for the whole corpus rather than a relationship load per row:
+    the table is unique on ``candidate_id`` and only holds people who have
+    actually been interviewed, so it is a fraction of the candidate count.
+    """
+    rows = db.execute(
+        select(CandidatePreference).where(CandidatePreference.org_id == org_id)
+    ).scalars()
+    return {row.candidate_id: row for row in rows}
 
 
 def _load_docs(db: Session, org_id: str) -> list[CandidateDoc]:
@@ -288,7 +327,8 @@ def _load_docs(db: Session, org_id: str) -> list[CandidateDoc]:
         .scalars()
         .all()
     )
-    return [candidate_to_doc(c) for c in candidates]
+    preferences = _preferences(db, org_id)
+    return [candidate_to_doc(c, preferences.get(c.id)) for c in candidates]
 
 
 def _load_embeddings(db: Session, org_id: str, docs: list[CandidateDoc]) -> np.ndarray:

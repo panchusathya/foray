@@ -32,6 +32,9 @@ WEIGHTS = {
     "education": 0.6,
     "keyword": 0.5,
     "freeform": 1.0,
+    # Deliberately below title and must-skill. Being on the market makes a
+    # good match better; it does not make a bad match worth a call.
+    "availability": 1.3,
 }
 
 
@@ -403,6 +406,62 @@ def _freeform_placeholders(parsed: ParsedQuery) -> list[Criterion]:
 # --------------------------------------------------------------------------
 
 
+def _score_availability(doc: CandidateDoc) -> Criterion | None:
+    """Rank on what the person said about moving -- only if they said anything.
+
+    Nobody having asked produces *no criterion at all*, rather than a neutral
+    one. The weighted mean has no concept of an abstention: a 0.5 carrying
+    real weight drags a strong match down and pulls a weak one up, so scoring
+    an empty fact would compress the whole result set toward the middle. Most
+    of any real corpus has never had an intake call, so that compression would
+    be the normal case rather than the exception.
+
+    The card still shows "Not asked" -- the hit carries ``availability``
+    separately from the criteria list, which is where an absence belongs.
+    """
+    availability = doc.availability
+    if not availability.known:
+        return None
+    score = availability.score()
+    if availability.state == "not_looking":
+        status = "miss"
+    elif availability.stale:
+        # A six-month-old "actively looking" is a lead, not a fact.
+        status = "partial"
+    else:
+        status = _status_for(score)
+    detail = availability.detail
+    return Criterion(
+        name="availability",
+        label="On the market",
+        kind="availability",
+        weight=WEIGHTS["availability"],
+        status=status,
+        score=score,
+        evidence=f"{availability.label}{f' — {detail}' if detail else ''}",
+        sources=["intake"],
+    )
+
+
+# How much of the score every "nice to have" can collectively move, expressed
+# as a number of criteria. A job description lists as many tools as it likes,
+# and each one arrived weighing the same as the last: twelve of them out-voted
+# the title and both hard requirements put together, so the person the role was
+# written for scored under 50%. The group is worth a fixed amount however long
+# the list is; the individual verdicts are still shown.
+NICE_SKILL_BUDGET = 4.0
+
+
+def _budget(criteria: list[Criterion]) -> list[Criterion]:
+    """Rescale a group so it cannot outvote the requirements by sheer count."""
+    if len(criteria) <= NICE_SKILL_BUDGET:
+        return criteria
+    scale = NICE_SKILL_BUDGET / len(criteria)
+    for criterion in criteria:
+        criterion.weight *= scale
+    return criteria
+
+
 def assess(doc: CandidateDoc, parsed: ParsedQuery) -> FitAssessment:
     criteria: list[Criterion] = []
 
@@ -422,12 +481,15 @@ def assess(doc: CandidateDoc, parsed: ParsedQuery) -> FitAssessment:
             label="Company size",
         ),
         _score_education(doc, parsed),
+        _score_availability(doc),
     ):
         if maybe is not None:
             criteria.append(maybe)
 
     criteria.extend(_score_skills(doc, parsed.must_have_skills, required=True))
-    criteria.extend(_score_skills(doc, parsed.nice_to_have_skills, required=False))
+    criteria.extend(
+        _budget(_score_skills(doc, parsed.nice_to_have_skills, required=False))
+    )
     criteria.extend(_score_keywords(doc, parsed.keywords))
     criteria.extend(_freeform_placeholders(parsed))
 

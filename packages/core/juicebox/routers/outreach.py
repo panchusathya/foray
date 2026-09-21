@@ -22,7 +22,12 @@ from ..models import (
 )
 from ..outreach import templates
 from ..outreach.drafts import draft_sequence
-from ..outreach.outbox import cancel_in_flight, list_in_flight
+from ..outreach.outbox import (
+    cancel_in_flight,
+    cancelled_count,
+    list_in_flight,
+    reenroll_in_flight,
+)
 from ..outreach.personalize import personalize, sender_context
 from ..outreach.sender import preview_connection
 from ..outreach.sequencer import (
@@ -48,6 +53,8 @@ from ..schemas import (
     InFlightCancelIn,
     InFlightCancelOut,
     InFlightList,
+    InFlightReenrollIn,
+    InFlightReenrollOut,
     InFlightRow,
     MessageOut,
     PreviewRequest,
@@ -612,7 +619,7 @@ in_flight_router = APIRouter(
 
 @in_flight_router.get("/in-flight", response_model=InFlightList)
 def list_in_flight_rows(
-    state: str | None = Query(default=None, pattern="^(sending|due|held|scheduled)$"),
+    state: str | None = Query(default=None, pattern="^(sending|due|held|scheduled|cancelled)$"),
     sequence_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -627,7 +634,11 @@ def list_in_flight_rows(
         limit=limit,
         offset=offset,
     )
-    return InFlightList(total=total, rows=[InFlightRow.model_validate(row) for row in rows])
+    return InFlightList(
+        total=total,
+        rows=[InFlightRow.model_validate(row) for row in rows],
+        cancelled_total=cancelled_count(db, org_id=principal.org_id, sequence_id=sequence_id),
+    )
 
 
 @in_flight_router.post("/in-flight/cancel", response_model=InFlightCancelOut)
@@ -647,6 +658,69 @@ def cancel_in_flight_rows(
         stopped=result.stopped,
         already_sending=result.already_sending,
         not_found=result.not_found,
+    )
+
+
+@in_flight_router.post("/in-flight/reenroll", response_model=InFlightReenrollOut)
+def reenroll_in_flight_rows(
+    payload: InFlightReenrollIn,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> InFlightReenrollOut:
+    """Undo a stop: put cancelled rows back at their stopped step, at a new time."""
+    if payload.when == "at" and payload.send_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="send_at is required when when is 'at'",
+        )
+    now = utcnow()
+    result = reenroll_in_flight(
+        db,
+        org_id=principal.org_id,
+        enrollment_ids=payload.enrollment_ids,
+        when=payload.when,
+        send_at=payload.send_at,
+        force=payload.force,
+        now=now,
+    )
+    sent = 0
+    if payload.when == "now":
+        # Same bargain as /enroll with send_now: deliver here, bounded, so the
+        # response reflects the post-send state and the row leaves the outbox
+        # before the page reloads. A held or capped send simply stays due and
+        # the worker picks it up.
+        for enrollment in result.enrollments[:MAX_SEND_NOW]:
+            outcome, message = process_enrollment(db, enrollment, now=now)
+            if (
+                message is not None
+                and message.status != "failed"
+                and outcome in ("sent", "completed")
+            ):
+                sent += 1
+        db.flush()
+    quiet_days = get_settings().outreach_reply_quiet_days
+    due_times = [
+        enrollment.next_send_at
+        for enrollment in result.enrollments
+        if enrollment.next_send_at is not None
+    ]
+    return InFlightReenrollOut(
+        resumed=result.resumed,
+        completed=result.completed,
+        sent=sent,
+        not_found=result.not_found,
+        skipped=[
+            EnrollSkipOut(
+                candidate_id=blocked.candidate_id,
+                full_name=blocked.full_name,
+                reason="replied_recently",
+                replied_at=blocked.replied_at,
+                reply_intent=blocked.reply_intent,
+                quiet_days=quiet_days,
+            )
+            for blocked in result.replied
+        ],
+        next_send_at=min(due_times) if due_times else None,
     )
 
 

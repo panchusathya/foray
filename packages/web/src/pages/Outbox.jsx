@@ -1,9 +1,15 @@
 /**
- * Sequence email currently in flight: due, held, scheduled, or sending.
+ * Sequence email currently in flight: due, held, scheduled, or sending -- and
+ * the Cancelled view, where a stop can be undone.
  *
  * Pattern follows DiscoveredTray: filter bar, useAsync list, Map selection,
  * a bulk bar that hides until something is selected, per-row buttons, and a
  * self-terminating poll while anything is actually moving.
+ *
+ * Cancelled rows share the grid but not the default view. "Stop" turned out
+ * to mean "not at that time" as often as "not at all", so a stopped row is
+ * kept one click away with a re-enrol that asks the only question that
+ * matters: when should it go instead?
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -11,6 +17,7 @@ import { Link } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { IN_FLIGHT_STATE_LABELS, api } from '../lib/api.js';
+import { REENROL_WHEN, defaultPickTime, describeReenrol, reenrolPayload } from '../lib/outbox.js';
 import { countOnPage, toggleOne, togglePage } from '../lib/selection.js';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -45,11 +52,130 @@ function formatDue(value) {
 function confirmCancel(action, count) {
   if (action === 'stop') {
     return window.confirm(
-      `Stop enrolment for ${count} ${count === 1 ? 'person' : 'people'}? They will not get later steps either. This cannot be undone.`,
+      `Stop enrolment for ${count} ${count === 1 ? 'person' : 'people'}? They will not get later steps either. You can re-enrol them later from the Cancelled view.`,
     );
   }
   return window.confirm(
     `Skip this email for ${count} ${count === 1 ? 'person' : 'people'}? The sequence continues at the next step. That skipped step cannot be sent later.`,
+  );
+}
+
+/**
+ * "And when should it go instead?" -- asked once, for one row or a selection.
+ *
+ * Inline rather than a modal: the rows it is about stay in view, and the
+ * default answer (the step's usual hour) needs no input at all, so the common
+ * case is one click. Someone who replied to us meanwhile comes back in
+ * `skipped` rather than being re-enrolled; they are named here with an
+ * "Enrol anyway" that re-submits just them with `force`, the same bargain the
+ * sequence editor's enrol picker offers.
+ */
+function ReenrolPanel({ rows, onClose, onDone }) {
+  const [when, setWhen] = useState(REENROL_WHEN[0].id);
+  const [at, setAt] = useState(() => defaultPickTime());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [blocked, setBlocked] = useState([]);
+
+  async function submit({ force = false, onlyRows = null } = {}) {
+    const targets = onlyRows ?? rows;
+    let payload;
+    try {
+      payload = reenrolPayload({ ids: targets.map(byId), when, at, force });
+    } catch (caught) {
+      setError(caught);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.reenrollInFlight(payload);
+      const note = describeReenrol(result, when);
+      const skippedCandidates = new Set((result.skipped ?? []).map((row) => row.candidate_id));
+      const stillStopped = targets.filter((row) => skippedCandidates.has(row.candidate_id));
+      // Reported upward so the note outlives this panel, which closes once
+      // nobody is left to ask about.
+      await onDone(note);
+      if (stillStopped.length) {
+        setBlocked(stillStopped);
+      } else {
+        onClose();
+      }
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card stack" data-testid="reenrol-panel" style={{ gap: 10 }}>
+      <div className="spread">
+        <strong className="small">
+          Re-enrol {rows.length} — when should the email go?
+        </strong>
+        <button type="button" className="tiny ghost" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="stack small" style={{ gap: 6 }}>
+        {REENROL_WHEN.map((option) => (
+          <label key={option.id} className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+            <input
+              type="radio"
+              name="reenrol-when"
+              value={option.id}
+              checked={when === option.id}
+              onChange={() => setWhen(option.id)}
+              data-testid={`reenrol-when-${option.id}`}
+            />
+            <span>
+              {option.label}
+              {option.hint ? <span className="muted"> — {option.hint}</span> : null}
+              {option.id === 'at' && when === 'at' ? (
+                <input
+                  type="datetime-local"
+                  value={at}
+                  onChange={(event) => setAt(event.target.value)}
+                  data-testid="reenrol-at"
+                  style={{ display: 'block', marginTop: 4, maxWidth: '100%' }}
+                />
+              ) : null}
+            </span>
+          </label>
+        ))}
+      </div>
+      <ErrorBox error={error} />
+      {blocked.length ? (
+        <div className="card small spread" style={{ margin: 0 }} data-testid="reenrol-blocked">
+          <span>
+            {blocked.map((row) => row.candidate_name).join(', ')} replied to you recently and{' '}
+            {blocked.length === 1 ? 'was' : 'were'} left stopped.
+          </span>
+          <button
+            type="button"
+            className="tiny"
+            disabled={busy}
+            onClick={() => submit({ force: true, onlyRows: blocked })}
+            data-testid="reenrol-force"
+          >
+            {busy ? 'Re-enrolling…' : 'Enrol anyway'}
+          </button>
+        </div>
+      ) : (
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className="tiny primary"
+            disabled={busy}
+            onClick={() => submit()}
+            data-testid="reenrol-submit"
+          >
+            {busy ? 'Re-enrolling…' : `Re-enrol ${rows.length}`}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -61,6 +187,8 @@ export function OutboxPage() {
   const [note, setNote] = useState('');
   const [error, setError] = useState(null);
   const [gaveUp, setGaveUp] = useState(false);
+  // The rows a ReenrolPanel is open for; null when it is closed.
+  const [reenrolling, setReenrolling] = useState(null);
 
   const sequences = useAsync(() => api.listSequences(), []);
   const params = {
@@ -72,10 +200,13 @@ export function OutboxPage() {
   const list = useAsync(() => api.listInFlight(params), [key]);
   const data = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
+  const cancelledTotal = list.data?.cancelled_total ?? 0;
+  const viewingCancelled = state === 'cancelled';
   const pageSelected = countOnPage(selected, data, byId);
 
   useEffect(() => {
     setSelected(new Map());
+    setReenrolling(null);
   }, [key]);
 
   const startedAt = useRef(Date.now());
@@ -144,13 +275,16 @@ export function OutboxPage() {
     }
   }
 
-  const cancellable = [...selected.values()].filter((row) => row.state !== 'sending');
+  const cancellable = [...selected.values()].filter(
+    (row) => row.state !== 'sending' && row.state !== 'cancelled',
+  );
+  const resumable = [...selected.values()].filter((row) => row.state === 'cancelled');
 
   return (
     <div className="stack" data-testid="outbox-page">
       <PageHeader
         title="Outbox"
-        subtitle="Every sequence email in flight. Pause sending in Settings; skip or stop a row here."
+        subtitle="Every sequence email in flight. Pause sending in Settings; skip or stop a row here, and re-enrol a stopped one from the Cancelled view."
       />
 
       <div className="row wrap" style={{ gap: 12 }}>
@@ -185,8 +319,20 @@ export function OutboxPage() {
           </select>
         </label>
         <span className="muted small">
-          {total ? `${total.toLocaleString()} in flight` : ''}
+          {total ? `${total.toLocaleString()} ${viewingCancelled ? 'cancelled' : 'in flight'}` : ''}
         </span>
+        {/* The live view says out loud that stopped rows exist and can come
+            back; otherwise "Stop" reads as final and nobody looks for undo. */}
+        {!viewingCancelled && cancelledTotal ? (
+          <button
+            type="button"
+            className="tiny ghost"
+            onClick={() => setState('cancelled')}
+            data-testid="outbox-cancelled-hint"
+          >
+            {cancelledTotal.toLocaleString()} cancelled — re-enrol
+          </button>
+        ) : null}
         {gaveUp ? <span className="muted small">Stopped refreshing — reload to check.</span> : null}
       </div>
 
@@ -196,29 +342,56 @@ export function OutboxPage() {
             {selected.size} selected
           </span>
           <span className="row" style={{ gap: 8 }}>
-            <button
-              type="button"
-              className="tiny ghost"
-              disabled={!!busy || !cancellable.length}
-              onClick={() => act('skip', cancellable.map(byId), 'skip')}
-              data-testid="outbox-bulk-skip"
-            >
-              {busy === 'skip' ? 'Skipping…' : 'Skip this email'}
-            </button>
-            <button
-              type="button"
-              className="tiny ghost"
-              disabled={!!busy || !cancellable.length}
-              onClick={() => act('stop', cancellable.map(byId), 'stop')}
-              data-testid="outbox-bulk-stop"
-            >
-              {busy === 'stop' ? 'Stopping…' : 'Stop enrolment'}
-            </button>
+            {resumable.length ? (
+              <button
+                type="button"
+                className="tiny primary"
+                disabled={!!busy}
+                onClick={() => setReenrolling(resumable)}
+                data-testid="outbox-bulk-reenrol"
+              >
+                Re-enrol {resumable.length}
+              </button>
+            ) : null}
+            {cancellable.length ? (
+              <>
+                <button
+                  type="button"
+                  className="tiny ghost"
+                  disabled={!!busy}
+                  onClick={() => act('skip', cancellable.map(byId), 'skip')}
+                  data-testid="outbox-bulk-skip"
+                >
+                  {busy === 'skip' ? 'Skipping…' : 'Skip this email'}
+                </button>
+                <button
+                  type="button"
+                  className="tiny ghost"
+                  disabled={!!busy}
+                  onClick={() => act('stop', cancellable.map(byId), 'stop')}
+                  data-testid="outbox-bulk-stop"
+                >
+                  {busy === 'stop' ? 'Stopping…' : 'Stop enrolment'}
+                </button>
+              </>
+            ) : null}
             <button type="button" className="tiny ghost" onClick={() => setSelected(new Map())}>
               Clear
             </button>
           </span>
         </div>
+      ) : null}
+
+      {reenrolling ? (
+        <ReenrolPanel
+          rows={reenrolling}
+          onClose={() => setReenrolling(null)}
+          onDone={async (text) => {
+            setNote(text);
+            setSelected(new Map());
+            await reload();
+          }}
+        />
       ) : null}
 
       {note ? (
@@ -251,7 +424,7 @@ export function OutboxPage() {
                 <th>Sequence</th>
                 <th>Step</th>
                 <th>Mailbox</th>
-                <th>Due</th>
+                <th>{viewingCancelled ? 'Stopped' : 'Due'}</th>
                 <th>State</th>
                 <th></th>
               </tr>
@@ -279,7 +452,11 @@ export function OutboxPage() {
                   </td>
                   <td>{row.step + 1}</td>
                   <td>{row.mailbox || '—'}</td>
-                  <td>{formatDue(row.due_at)}</td>
+                  <td>
+                    {row.state === 'cancelled'
+                      ? formatDue(row.cancelled_at)
+                      : formatDue(row.due_at)}
+                  </td>
                   <td>
                     <Badge tone={STATE_TONE[row.state] || ''}>
                       {IN_FLIGHT_STATE_LABELS[row.state] || row.state}
@@ -289,6 +466,16 @@ export function OutboxPage() {
                   <td>
                     {row.state === 'sending' ? (
                       <span className="muted small">sending</span>
+                    ) : row.state === 'cancelled' ? (
+                      <button
+                        type="button"
+                        className="tiny"
+                        disabled={!!busy}
+                        onClick={() => setReenrolling([row])}
+                        data-testid="outbox-row-reenrol"
+                      >
+                        Re-enrol
+                      </button>
                     ) : (
                       <span className="row" style={{ gap: 6 }}>
                         <button
@@ -315,6 +502,8 @@ export function OutboxPage() {
             </tbody>
           </table>
         </div>
+      ) : viewingCancelled ? (
+        <Empty>Nothing cancelled — rows you stop from the outbox land here, ready to re-enrol.</Empty>
       ) : (
         <Empty>Nothing in flight.</Empty>
       )}

@@ -86,11 +86,16 @@ class InFlightRow(BaseModel):
     due_at: datetime | None
     state: str
     reason: str | None = None
+    # Only on state == "cancelled": when the operator stopped it.
+    cancelled_at: datetime | None = None
 
 
 class InFlightList(BaseModel):
     total: int
     rows: list[InFlightRow]
+    # Stopped-from-the-outbox rows a re-enrol could bring back, whatever view
+    # this page is showing -- so the live view can point at the cancelled one.
+    cancelled_total: int = 0
 
 
 class InFlightCancelIn(BaseModel):
@@ -874,6 +879,28 @@ class EnrollSkipOut(BaseModel):
 class EnrollResponse(BaseModel):
     enrollments: list[EnrollmentOut]
     skipped: list[EnrollSkipOut]
+
+
+class InFlightReenrollIn(BaseModel):
+    enrollment_ids: list[str] = Field(min_length=1, max_length=1000)
+    # now: due immediately, and sent in this request when the sequence is
+    # live. next_slot: the step's own send hour, next time it comes round,
+    # with no delay counted. at: ``send_at``, as given.
+    when: Literal["now", "next_slot", "at"] = "next_slot"
+    send_at: datetime | None = None
+    # Re-enrol people who replied to us by hand within the quiet period anyway.
+    # The default reports them in ``skipped`` and leaves them stopped.
+    force: bool = False
+
+
+class InFlightReenrollOut(BaseModel):
+    resumed: int
+    completed: int
+    sent: int
+    not_found: int
+    skipped: list[EnrollSkipOut]
+    # The earliest new send time among the resumed rows, for the page's note.
+    next_send_at: datetime | None = None
 
 
 class MessageOut(BaseModel):

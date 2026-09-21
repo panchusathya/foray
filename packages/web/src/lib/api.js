@@ -265,6 +265,8 @@ export const api = {
   },
   cancelInFlight: (payload) =>
     request('/v1/outreach/in-flight/cancel', { method: 'POST', body: payload }),
+  reenrollInFlight: (payload) =>
+    request('/v1/outreach/in-flight/reenroll', { method: 'POST', body: payload }),
 
   listAgents: () => request('/v1/agents'),
   createAgent: (payload) => request('/v1/agents', { method: 'POST', body: payload }),
@@ -365,6 +367,9 @@ export const IN_FLIGHT_STATE_LABELS = {
   due: 'Due',
   held: 'Held',
   scheduled: 'Scheduled',
+  // Not in flight at all: stopped from the outbox, and the one state a row
+  // can come back from. Listed last so the live states read first.
+  cancelled: 'Cancelled',
 };
 
 // Which moves a recruiter may make from each status, mirroring

@@ -18,11 +18,23 @@ then
 npm run test:e2e
 ```
 
-Against a local dev pair (`.claude/launch.json` entries `api-8001` + `web-5174`):
+Against a local dev pair on a throwaway SQLite file, so the suite never touches
+`data/juicebox.db` (`.env.e2e` holds just `DATABASE_URL` and `EMAIL_PROVIDER=console`):
 
 ```bash
-E2E_BASE_URL=http://localhost:5174 npm run test:e2e
+python -m uvicorn juicebox.main:app --app-dir packages/core --port 8001 --env-file .env.e2e
 ```
+
+```bash
+JUICEBOX_API_URL=http://localhost:8001 npm run dev --prefix packages/web -- --port 5175 --strictPort
+```
+
+```bash
+E2E_BASE_URL=http://localhost:5175 npm run test:e2e
+```
+
+(`.claude/launch.json` is untracked; entries named `api-8001` and `web-5175` running
+those two commands let the desktop app's preview start the pair.)
 
 First run only:
 

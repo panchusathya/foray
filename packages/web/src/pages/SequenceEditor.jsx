@@ -12,6 +12,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
+import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
 import { api, providerLabel } from '../lib/api.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import { malformedInStep } from '../lib/templates.js';
@@ -138,7 +139,16 @@ const STOP_REASON_LABELS = {
   reach_score_below_floor: 'reach score too low',
   candidate_deleted: 'candidate deleted',
   replied_elsewhere: 'replied in another sequence',
+  // The one stop a recruiter can undo: see canReenrol and the row's button.
+  cancelled_by_user: 'cancelled by you',
 };
+
+// Only a stop the recruiter made themselves comes back. Every other stopped
+// reason is the system's verdict on the person (replied, bounced, suppressed,
+// no address) and re-enrolling would not change what stopped them.
+function canReenrol(enrollment) {
+  return enrollment.status === 'stopped' && enrollment.stopped_reason === 'cancelled_by_user';
+}
 
 // The right-hand text on an enrolment row: what happens next, or why nothing
 // will. A reply is the interesting case -- "not now · follow up after 10 Sep"
@@ -478,6 +488,10 @@ export function SequenceEditorPage() {
   // People the last enrol request left out because they replied to us
   // recently; "Enrol anyway" re-sends exactly these ids with force.
   const [skippedRepliers, setSkippedRepliers] = useState([]);
+  // The one enrolment a ReenrolPanel is open for, or null. One at a time on
+  // purpose: this list is where you undo a stop for a person you can see,
+  // not where you re-run a batch -- the Outbox's Cancelled view does that.
+  const [reenrolling, setReenrolling] = useState(null);
   const bodyRef = useRef(null);
   const subjectRef = useRef(null);
   const lastFocused = useRef('body');
@@ -1054,6 +1068,23 @@ export function SequenceEditorPage() {
               />
             ) : null}
 
+            {reenrolling ? (
+              <ReenrolPanel
+                rows={[
+                  {
+                    enrollment_id: reenrolling.id,
+                    candidate_id: reenrolling.candidate_id,
+                    candidate_name: reenrolling.candidate?.full_name ?? reenrolling.candidate_id,
+                  },
+                ]}
+                onClose={() => setReenrolling(null)}
+                onDone={async (text) => {
+                  setNotice(text);
+                  await enrollments.reload();
+                }}
+              />
+            ) : null}
+
             {enrollments.loading ? (
               <Loading label="Loading enrollments…" />
             ) : (enrollments.data ?? []).length ? (
@@ -1079,6 +1110,17 @@ export function SequenceEditorPage() {
                         <span className="mono">✓{enrollment.current_step} sent</span>
                       ) : null}
                       <span>{enrollmentTrailer(enrollment)}</span>
+                      {canReenrol(enrollment) ? (
+                        <button
+                          type="button"
+                          className="tiny"
+                          disabled={reenrolling?.id === enrollment.id}
+                          onClick={() => setReenrolling(enrollment)}
+                          data-testid="enrollment-reenrol"
+                        >
+                          Re-enrol
+                        </button>
+                      ) : null}
                     </span>
                   </div>
                 ))}

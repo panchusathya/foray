@@ -62,6 +62,57 @@ test.describe('enrolment lives in the sequence editor', () => {
     ).toBeVisible();
   });
 
+  test('a stop made from the outbox can be undone on the row itself', async ({
+    page,
+    request,
+  }) => {
+    const { org, ids, sequence } = await scenario(request, 'undo');
+    // A day's delay keeps the enrolment scheduled rather than due, so the
+    // worker cannot send it out from under the test.
+    await request.put(`/v1/sequences/${sequence.id}/steps`, {
+      headers: org.headers,
+      data: [
+        {
+          delay_days: 1,
+          subject_template: 'Quick note for {{ first_name }}',
+          body_template: 'Hi {{ first_name }}.',
+        },
+      ],
+    });
+    const enrolled = await (
+      await request.post(`/v1/sequences/${sequence.id}/enroll`, {
+        headers: org.headers,
+        data: { candidate_ids: [ids[0], ids[1]] },
+      })
+    ).json();
+    const stopped = enrolled.enrollments.find((row) => row.candidate_id === ids[0]);
+    await request.post('/v1/outreach/in-flight/cancel', {
+      headers: org.headers,
+      data: { enrollment_ids: [stopped.id], action: 'stop' },
+    });
+
+    await login(page, org.email);
+    await page.goto(`/sequences/${sequence.id}`);
+
+    // The stopped row says who stopped it and offers the way back; the other
+    // row, still active, offers nothing of the kind.
+    const rows = page.getByTestId('enrollment-row');
+    const undoable = rows.filter({ hasText: 'Ada undo' });
+    await expect(undoable).toContainText('cancelled by you');
+    await expect(undoable.getByTestId('enrollment-reenrol')).toBeVisible();
+    await expect(rows.filter({ hasText: 'Grace undo' }).getByTestId('enrollment-reenrol')).toHaveCount(0);
+
+    await undoable.getByTestId('enrollment-reenrol').click();
+    const panel = page.getByTestId('reenrol-panel');
+    await expect(panel).toContainText('Re-enrol Ada undo');
+    await panel.getByTestId('reenrol-submit').click();
+
+    await expect(page.getByText(/Re-enrolled 1/)).toBeVisible();
+    await expect(undoable).toContainText('active');
+    await expect(undoable).not.toContainText('cancelled by you');
+    await expect(page.getByTestId('reenrol-panel')).toHaveCount(0);
+  });
+
   test('re-enrolling the same person through the API stays a single enrolment', async ({
     page,
     request,

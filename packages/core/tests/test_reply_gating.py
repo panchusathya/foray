@@ -251,7 +251,18 @@ class TestRecordReply:
         self, session, outreach_fixture, mailbox
     ):
         message = _send_first(session, outreach_fixture)
-        record_reply(session, message=message, subject="Re: role", body=LUKE, received_at=RECEIVED)
+        # The clock is pinned as well as the arrival time. The reminder is
+        # scheduled relative to `now` and never lands in the past, so leaving
+        # `now` on the wall clock made this assertion expire of its own accord
+        # the day 2026-09-11 went by.
+        record_reply(
+            session,
+            message=message,
+            subject="Re: role",
+            body=LUKE,
+            now=RECEIVED,
+            received_at=RECEIVED,
+        )
         session.commit()
 
         enrollment = session.query(Enrollment).one()

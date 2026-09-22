@@ -105,6 +105,11 @@ x-app-env: &app_env
   # not good enough to justify writing into a mailbox we do not own and
   # emailing the owner about it. Set true only when that changes.
   REPLY_DRAFTING_ENABLED: ${REPLY_DRAFTING_ENABLED:-false}
+  # Drafting a reply to ordinary inbox mail, held in the app for review and
+  # never sent. Off by default because it stores mail from people who are not
+  # in the CRM at all, which is a deployment's decision to make on purpose.
+  # Only mailboxes with thread sync on produce drafts.
+  INBOX_DRAFTING_ENABLED: ${INBOX_DRAFTING_ENABLED:-false}
   OUTREACH_DAILY_CAP: ${OUTREACH_DAILY_CAP:-200}
   MS_CLIENT_ID: ${MS_CLIENT_ID:-}
   MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}

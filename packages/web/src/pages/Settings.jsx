@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { MAIL_PROVIDERS, api, providerLabel } from '../lib/api.js';
+import { activityVisible, rowVisible } from '../lib/mailboxActivity.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import { useAsync } from '../lib/useAsync.js';
 
@@ -281,22 +282,22 @@ export function SettingsPage() {
         </button>
       </div>
 
+      {/* A finished run keeps its "done" status forever, so filtering on
+          "not idle" left August's sweep on screen in late September. See
+          lib/mailboxActivity.js for which runs are still worth a card. */}
       {activity
-        .filter(
-          (row) =>
-            row.backfill.status !== 'idle' || row.discovery.status !== 'idle',
-        )
+        .filter((row) => rowVisible(row))
         .map((row) => (
           <div className="card small stack" key={row.mailbox_id} data-testid="mailbox-activity">
             <strong>{row.address}</strong>
-            {row.backfill.status !== 'idle' ? (
+            {activityVisible(row.backfill) ? (
               <span data-testid="backfill-progress">
                 History import: {row.backfill.status} —{' '}
                 {backfillSummary(row.backfill)}
                 {row.backfill.error ? ` · ${row.backfill.error}` : ''}
               </span>
             ) : null}
-            {row.discovery.status !== 'idle' ? (
+            {activityVisible(row.discovery) ? (
               <span data-testid="discovery-progress">
                 Contact sweep: {row.discovery.status} —{' '}
                 {row.discovery.scanned.toLocaleString()} messages scanned,{' '}

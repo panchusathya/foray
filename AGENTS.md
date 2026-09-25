@@ -1,5 +1,16 @@
 # AGENTS.md
 
+## Testing rules (read before writing any test)
+
+- **Never write unit tests after you write code.**
+- **Highly prefer E2E tests as the sole testing mechanism.** Use them to
+  verify complex features work. At the end of an E2E test, produce a
+  verifiable and repeatable artifact (e.g. a screenshot, trace or exported
+  file written by the spec) that someone else can open or re-run.
+- **If you must test a system in isolation, first write down all the ways it
+  could fail, then write the code.** The failure list comes before the
+  implementation, and the isolated tests follow from that list.
+
 ## Cursor Cloud specific instructions
 
 Juicebox is an offline-first AI recruiting stack. It runs end-to-end with **no**

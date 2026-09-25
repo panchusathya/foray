@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from .db import get_session_factory
-from .models import ApiKey, Candidate, User, utcnow
+from .models import ApiKey, Candidate, ClientUser, User, utcnow
 from .security import TokenError, decode_access_token, hash_api_key
 
 # Payload `typ` values that separate candidate tokens from recruiter tokens.
@@ -22,6 +22,12 @@ from .security import TokenError, decode_access_token, hash_api_key
 # both directions -- the two dependency functions below are the only wall
 # between the two surfaces, because everything signs with one SECRET_KEY.
 CANDIDATE_TOKEN_TYPES = frozenset({"candidate", "portal-link"})
+
+# A client-dashboard login (routers/client_portal.py). Refused by
+# get_principal for the same reason a candidate token is: one SECRET_KEY
+# signs everything, so the claim is the wall between a company looking at
+# the people we sent it and the CRM those people came out of.
+CLIENT_TOKEN_TYPE = "client"
 
 #: The role claim on the OAuth connect state (routers/integrations.py mints it).
 OAUTH_STATE_ROLE = "mailconnect"
@@ -125,6 +131,8 @@ def get_principal(
     # colliding. A candidate session on a recruiter route is always a 401.
     if payload.get("typ") in CANDIDATE_TOKEN_TYPES:
         raise _UNAUTHORIZED
+    if payload.get("typ") == CLIENT_TOKEN_TYPE:
+        raise _UNAUTHORIZED
     if payload.get("role") in SINGLE_PURPOSE_TOKEN_ROLES:
         raise _UNAUTHORIZED
 
@@ -181,3 +189,52 @@ def get_candidate_principal(
     if candidate is None or candidate.org_id != payload.get("org"):
         raise _UNAUTHORIZED
     return CandidatePrincipal(org_id=candidate.org_id, candidate_id=candidate.id)
+
+
+@dataclass
+class ClientPrincipal:
+    """Who a client-dashboard session speaks for: one person at one company.
+
+    Not a ``Principal``, for the reason ``CandidatePrincipal`` is not one --
+    nothing that takes a ``Principal`` can be handed this by accident. Client
+    routes scope every query by ``client_account_id`` *and* ``org_id``.
+    """
+
+    org_id: str
+    client_account_id: str
+    client_user_id: str
+    name: str
+    kind: str = "client"
+
+
+def get_client_principal(
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+) -> ClientPrincipal:
+    """Bearer-only, ``typ: client`` exactly, and re-read off the row.
+
+    Re-reading means deactivating the login or moving it to another company
+    takes effect on the next request rather than when the token expires.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise _UNAUTHORIZED
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = decode_access_token(token)
+    except TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if payload.get("typ") != CLIENT_TOKEN_TYPE:
+        raise _UNAUTHORIZED
+    user = db.get(ClientUser, payload["sub"])
+    if user is None or not user.is_active or user.org_id != payload.get("org"):
+        raise _UNAUTHORIZED
+    return ClientPrincipal(
+        org_id=user.org_id,
+        client_account_id=user.client_account_id,
+        client_user_id=user.id,
+        name=user.name or user.username,
+    )

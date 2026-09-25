@@ -2792,6 +2792,154 @@ class Referral(Base, TimestampMixin):
 
 
 # --------------------------------------------------------------------------
+# client dashboards
+# --------------------------------------------------------------------------
+#
+# A hiring company we submit candidates to, with its own login onto one page:
+# the people we have shared with it, the stage each one is at, and a note
+# thread both sides can read. Everything here is deliberately its own table
+# rather than a Project/ProjectCandidate: a project's stage is our internal
+# pipeline (sourced, contacted, ...) and is partly driven by outreach, while
+# these stages are the client's decision and are moved by the client. Sharing
+# one column would let either side silently overwrite the other.
+
+# Order is the funnel order the dashboard renders its piles in.
+CLIENT_STAGES = (
+    "awaiting",
+    "first_round",
+    "second_round",
+    "third_round",
+    "final_round",
+    "offer",
+    "hired",
+    "rejected",
+    "withdrawn",
+)
+
+
+class ClientAccount(Base, TimestampMixin):
+    """A hiring company with a dashboard login (e.g. Flowgen)."""
+
+    __tablename__ = "client_accounts"
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_client_account_org_name"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cli"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+
+
+class ClientUser(Base, TimestampMixin):
+    """A login for somebody at a client company.
+
+    Its own table, not a ``User`` with a new role. ``get_principal`` resolves a
+    token by loading ``User``; a client token names a row that table does not
+    hold, so even a missed ``typ`` check upstream cannot turn a client login
+    into a recruiter session with the CRM behind it.
+
+    ``username`` is globally unique because login happens before anyone knows
+    which org the person belongs to.
+    """
+
+    __tablename__ = "client_users"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cusr"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    client_account_id: Mapped[str] = mapped_column(
+        ForeignKey("client_accounts.id", ondelete="CASCADE"), index=True
+    )
+    username: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ClientSubmission(Base, TimestampMixin):
+    """One person shared with one client, and where the client has them.
+
+    The profile fields are a snapshot taken when the person was shared, and
+    the client API reads only these. It never loads the ``Candidate`` row, so
+    nothing on it -- addresses, phones, comp, our notes -- can reach a client
+    through a serialiser that grew a field. ``candidate_id`` is kept for the
+    recruiter side, and is nullable because a person can be shared by LinkedIn
+    URL before they are a contact at all.
+
+    ``dedupe_key`` is ``li:<slug>`` when there is a LinkedIn profile, else
+    ``cand:<id>``, else ``name:<folded name>``. The same person pasted twice
+    lands on one row, and re-pasting a list with stages updates it.
+    """
+
+    __tablename__ = "client_submissions"
+    __table_args__ = (
+        UniqueConstraint("client_account_id", "dedupe_key", name="uq_client_submission_dedupe"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("csub"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    client_account_id: Mapped[str] = mapped_column(
+        ForeignKey("client_accounts.id", ondelete="CASCADE"), index=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(300))
+
+    full_name: Mapped[str] = mapped_column(String(200), default="")
+    current_title: Mapped[str] = mapped_column(String(240), default="")
+    current_company: Mapped[str] = mapped_column(String(240), default="")
+    location: Mapped[str] = mapped_column(String(240), default="")
+    linkedin_url: Mapped[str] = mapped_column(String(400), default="")
+    role_title: Mapped[str] = mapped_column(String(200), default="")
+
+    stage: Mapped[str] = mapped_column(String(32), default="awaiting")
+    stage_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # "client" | "recruiter", and the display name at the time. A snapshot,
+    # like CandidateNote.author_name, so the byline survives the user.
+    stage_changed_by_kind: Mapped[str] = mapped_column(String(16), default="recruiter")
+    stage_changed_by_name: Mapped[str] = mapped_column(String(200), default="")
+    shared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ClientSubmissionNote(Base, TimestampMixin):
+    """A note on a shared person that the client and the recruiters both read.
+
+    Not a ``CandidateNote``: those are ours and never leave the CRM. Anything
+    written here is by construction visible to the client.
+    """
+
+    __tablename__ = "client_submission_notes"
+    __table_args__ = (Index("ix_client_note_submission", "submission_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cnote"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("client_submissions.id", ondelete="CASCADE")
+    )
+    author_kind: Mapped[str] = mapped_column(String(16))  # client | recruiter
+    author_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    author_name: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text)
+
+
+class ClientSubmissionEvent(Base):
+    """A stage move. The history both sides see, and the audit of who moved it."""
+
+    __tablename__ = "client_submission_events"
+    __table_args__ = (Index("ix_client_event_submission", "submission_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("cevt"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("client_submissions.id", ondelete="CASCADE")
+    )
+    from_stage: Mapped[str] = mapped_column(String(32), default="")
+    to_stage: Mapped[str] = mapped_column(String(32))
+    actor_kind: Mapped[str] = mapped_column(String(16))
+    actor_name: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --------------------------------------------------------------------------
 # derived columns, guaranteed at the ORM layer
 # --------------------------------------------------------------------------
 #

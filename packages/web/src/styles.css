@@ -1123,7 +1123,15 @@ a.todo-row:hover { background: var(--tint); }
   z-index: 5;
 }
 .client-header .brand { margin: 0; padding: 0; }
-.client-for { font-family: var(--display); font-size: 17px; margin-left: 6px; color: var(--cp-ink); }
+.client-for {
+  font-family: var(--display);
+  font-size: 17px;
+  margin-left: 6px;
+  color: var(--cp-ink);
+  /* Sits on the wordmark's baseline rather than centred beside it. */
+  position: relative;
+  top: 3px;
+}
 .client-main { max-width: 1400px; margin: 0 auto; padding: 28px 32px 64px; }
 .client-main .page-header h1 { font-size: 26px; }
 

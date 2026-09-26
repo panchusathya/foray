@@ -56,11 +56,6 @@ export function ClientDashboardPage() {
         <div className="page-header spread">
           <div>
             <h1>Candidates</h1>
-            <p>
-              Everyone Foray has shared with {user?.client_name}. Change a stage right in the
-              table, and click a row for notes and history. Notes are seen by you and your Foray
-              recruiter only.
-            </p>
           </div>
           <div className="row">
             <span className="muted small" data-testid="synced-at">

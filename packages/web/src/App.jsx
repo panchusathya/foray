@@ -7,6 +7,8 @@ import { AgentsPage } from './pages/Agents.jsx';
 import { AnalyticsPage } from './pages/Analytics.jsx';
 import { ApplicationDetailPage, ApplicationsPage } from './pages/Applications.jsx';
 import { CandidateDetailPage } from './pages/CandidateDetail.jsx';
+import { ClientDashboardPage } from './pages/ClientDashboard.jsx';
+import { ClientDetailPage, ClientsPage } from './pages/Clients.jsx';
 import { ContactsPage } from './pages/Contacts.jsx';
 import { HomePage } from './pages/Home.jsx';
 import { JobDetailPage } from './pages/JobDetail.jsx';
@@ -54,6 +56,11 @@ const NAV_SECTIONS = [
       { to: '/inbox-drafts', label: 'Inbox drafts' },
       { to: '/outbox', label: 'Outbox' },
     ],
+  },
+  {
+    // Companies with their own login onto the people we have sent them.
+    heading: 'Clients',
+    items: [{ to: '/clients', label: 'Client dashboards' }],
   },
 ];
 
@@ -193,6 +200,9 @@ export function App() {
 
   if (loading) return <Loading label="Checking your session…" />;
   if (!user) return <LoginPage />;
+  // A client login gets one page and nothing else: no Shell, no project
+  // provider, no recruiter routes mounted to fire requests that would 401.
+  if (user.kind === 'client') return <ClientDashboardPage />;
 
   return (
     <CurrentProjectProvider>
@@ -222,6 +232,8 @@ export function App() {
               routed: Home's "Interested" stat links here, and that breakdown
               has nowhere else to live. */}
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/clients" element={<ClientsPage />} />
+          <Route path="/clients/:clientId" element={<ClientDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

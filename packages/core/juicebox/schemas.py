@@ -1486,3 +1486,180 @@ class ApplicationDetailOut(ApplicationOut):
     posting_url: str = ""
     documents: list[CandidateDocumentOut] = Field(default_factory=list)
     history: list[ApplicationHistoryEntry] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# client dashboards
+# --------------------------------------------------------------------------
+#
+# Two response shapes for one row on purpose. ClientSubmissionOut is what a
+# client session is served and carries no CRM identifier; the recruiter shape
+# extends it. A field added to the recruiter view cannot leak to a client
+# because the client serialiser does not inherit from it.
+
+
+class ClientLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class ClientUserOut(BaseModel):
+    id: str
+    username: str
+    name: str
+    client_account_id: str
+    client_name: str
+    kind: Literal["client"] = "client"
+
+
+class ClientTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: ClientUserOut
+
+
+class ClientNoteOut(BaseModel):
+    id: str
+    author_kind: str
+    author_name: str
+    body: str
+    created_at: datetime
+    # Whether the caller wrote it, so the UI offers delete on the right notes
+    # without being handed anybody's user id.
+    mine: bool = False
+
+
+class ClientEventOut(BaseModel):
+    from_stage: str
+    to_stage: str
+    actor_kind: str
+    actor_name: str
+    created_at: datetime
+
+
+class ClientSubmissionOut(BaseModel):
+    id: str
+    full_name: str
+    current_title: str
+    current_company: str
+    location: str
+    linkedin_url: str
+    role_title: str
+    stage: str
+    stage_changed_at: datetime
+    stage_changed_by_kind: str
+    stage_changed_by_name: str
+    shared_at: datetime
+    note_count: int = 0
+    latest_note: ClientNoteOut | None = None
+
+
+class ClientSubmissionDetail(ClientSubmissionOut):
+    notes: list[ClientNoteOut] = []
+    events: list[ClientEventOut] = []
+
+
+class RecruiterSubmissionOut(ClientSubmissionOut):
+    candidate_id: str | None = None
+
+
+class RecruiterSubmissionDetail(RecruiterSubmissionOut):
+    notes: list[ClientNoteOut] = []
+    events: list[ClientEventOut] = []
+
+
+class ClientStageIn(BaseModel):
+    stage: str
+
+
+class ClientNoteIn(BaseModel):
+    body: str = Field(min_length=1, max_length=10000)
+
+
+class ClientAccountIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class ClientLoginIn(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=8, max_length=200)
+    name: str = ""
+
+
+class ClientLoginPatch(BaseModel):
+    password: str | None = Field(default=None, min_length=8, max_length=200)
+    name: str | None = None
+    is_active: bool | None = None
+
+
+class ClientLoginOut(BaseModel):
+    id: str
+    username: str
+    name: str
+    is_active: bool
+    last_login_at: datetime | None = None
+
+
+class ClientAccountOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    logins: list[ClientLoginOut] = []
+    stage_counts: dict[str, int] = {}
+    total: int = 0
+    # Stage moves and notes made by the client in the last seven days: the
+    # number that says "go and look" on the recruiter's list of clients.
+    client_activity_7d: int = 0
+
+
+class ClientEntryIn(BaseModel):
+    candidate_id: str | None = None
+    full_name: str = Field(default="", max_length=200)
+    linkedin_url: str = Field(default="", max_length=400)
+    current_title: str = Field(default="", max_length=240)
+    current_company: str = Field(default="", max_length=240)
+    role_title: str = Field(default="", max_length=200)
+    stage: str = ""
+
+
+class ClientEntriesIn(BaseModel):
+    entries: list[ClientEntryIn] = Field(default_factory=list, max_length=2000)
+    # Shares every member of one of our projects, e.g. the pipeline we have
+    # been sending this client over LinkedIn.
+    project_id: str | None = None
+    # Applied to entries that do not carry their own.
+    role_title: str = Field(default="", max_length=200)
+    stage: str = ""
+
+
+class ClientEntryResult(BaseModel):
+    line: int
+    outcome: Literal["added", "updated", "unchanged", "skipped"]
+    submission_id: str | None = None
+    full_name: str = ""
+    matched_contact: bool = False
+    reason: str = ""
+
+
+class ClientEntriesOut(BaseModel):
+    added: int
+    updated: int
+    unchanged: int
+    skipped: int
+    results: list[ClientEntryResult]
+
+
+class RecruiterSubmissionPatch(BaseModel):
+    stage: str | None = None
+    role_title: str | None = Field(default=None, max_length=200)
+    full_name: str | None = Field(default=None, max_length=200)
+    current_title: str | None = Field(default=None, max_length=240)
+    current_company: str | None = Field(default=None, max_length=240)
+    location: str | None = Field(default=None, max_length=240)
+    linkedin_url: str | None = Field(default=None, max_length=400)
+
+
+class ClientBulkStageIn(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=2000)
+    stage: str

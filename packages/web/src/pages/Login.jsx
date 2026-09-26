@@ -86,9 +86,11 @@ export function LoginPage() {
           </>
         ) : null}
 
+        {/* Text, not email: a client company logs in with a username. */}
         <input
-          type="email"
-          placeholder="Email"
+          type={mode === 'signup' ? 'email' : 'text'}
+          placeholder={mode === 'signup' ? 'Email' : 'Email or username'}
+          autoComplete="username"
           value={form.email}
           onChange={(event) => setForm({ ...form, email: event.target.value })}
           required

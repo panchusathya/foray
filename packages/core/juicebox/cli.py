@@ -12,6 +12,7 @@
     juicebox reembed --org <org_id>
     juicebox export-seed <file.jsonl> [--count 120]
     juicebox purge-placeholder-emails [--apply]
+    juicebox client-login <username> --client <name> [--password ...] [--org <org_id>]
     juicebox serve [--port 8000]
 """
 
@@ -405,6 +406,68 @@ def cmd_intake_number(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_client_login(args: argparse.Namespace) -> int:
+    """Create a client company's dashboard login, or reset its password.
+
+    The client account (the company) is created on first use. The password
+    comes from ``--password`` or the ``CLIENT_LOGIN_PASSWORD`` env var, so it
+    need not sit in shell history on the VM.
+    """
+    from . import client_dashboard as dash
+    from .models import ClientAccount, ClientUser
+    from .security import hash_password
+
+    with session_scope() as db:
+        if args.list:
+            rows = db.execute(
+                select(ClientUser, ClientAccount).join(
+                    ClientAccount, ClientAccount.id == ClientUser.client_account_id
+                )
+            ).all()
+            if not rows:
+                print("no client logins")
+            for user, account in rows:
+                state = "active" if user.is_active else "disabled"
+                print(f"{user.username}  client={account.name}  org={user.org_id}  {state}")
+            return 0
+
+        password = args.password or os.environ.get("CLIENT_LOGIN_PASSWORD", "")
+        if len(password) < 8:
+            print("a password of at least 8 characters is required (--password)")
+            return 2
+        username = dash.normalize_username(args.username)
+        existing = db.scalar(select(ClientUser).where(ClientUser.username == username))
+        if existing is not None:
+            existing.password_hash = hash_password(password)
+            existing.is_active = True
+            print(f"reset password for {username}")
+            return 0
+
+        if not args.client:
+            print("--client <company name> is required for a new login")
+            return 2
+        org_id = _resolve_org(db, args.org)
+        account = db.scalar(
+            select(ClientAccount).where(
+                ClientAccount.org_id == org_id, ClientAccount.name == args.client
+            )
+        )
+        if account is None:
+            account = ClientAccount(org_id=org_id, name=args.client)
+            db.add(account)
+            db.flush()
+            print(f"created client {account.name} ({account.id})")
+        try:
+            user = dash.create_login(
+                db, account=account, username=username, password=password, name=args.name
+            )
+        except dash.ClientDashboardError as exc:
+            print(str(exc))
+            return 2
+        print(f"created login {user.username} for {account.name}")
+    return 0
+
+
 def cmd_reset_thread(args: argparse.Namespace) -> int:
     """Wipe one person's conversation so onboarding can be tested from zero.
 
@@ -608,6 +671,17 @@ def build_parser() -> argparse.ArgumentParser:
     intake_number.add_argument("--disable", action="store_true", help="keep the row, stop taking calls")
     intake_number.add_argument("--list", action="store_true", help="show registered numbers")
     intake_number.set_defaults(func=cmd_intake_number)
+
+    client_login = sub.add_parser(
+        "client-login", help="create or reset a client company's dashboard login"
+    )
+    client_login.add_argument("username", nargs="?", default="")
+    client_login.add_argument("--client", default="", help="company name, e.g. Flowgen")
+    client_login.add_argument("--password", default="")
+    client_login.add_argument("--name", default="", help="display name (defaults to the company)")
+    client_login.add_argument("--org", default="")
+    client_login.add_argument("--list", action="store_true", help="show client logins")
+    client_login.set_defaults(func=cmd_client_login)
 
     work = sub.add_parser("work", help="claim and run jobs from the durable queue")
     work.add_argument(

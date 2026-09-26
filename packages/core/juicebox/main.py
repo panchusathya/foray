@@ -20,6 +20,8 @@ from .routers import (
     applications,
     auth,
     candidates,
+    client_portal,
+    clients,
     connect,
     crm,
     documents,
@@ -153,6 +155,10 @@ def create_app() -> FastAPI:
     # prefix, so from apply.goforay.io nothing else here exists.
     app.include_router(portal_auth.router)
     app.include_router(portal.router)
+    # Client dashboards: our side (recruiter principal) and the client's
+    # own login (client principal only; get_principal refuses its token).
+    app.include_router(clients.router)
+    app.include_router(client_portal.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

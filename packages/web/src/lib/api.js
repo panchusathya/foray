@@ -19,6 +19,20 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// Which kind of session the stored token is: '' for a recruiter, 'client' for
+// a client-dashboard login. Only decides which /me to ask on boot -- the
+// server is what refuses a client token on a recruiter route, not this.
+const KIND_KEY = 'juicebox.session_kind';
+
+export function getSessionKind() {
+  return localStorage.getItem(KIND_KEY) ?? '';
+}
+
+export function setSessionKind(kind) {
+  if (kind) localStorage.setItem(KIND_KEY, kind);
+  else localStorage.removeItem(KIND_KEY);
+}
+
 export class ApiError extends Error {
   constructor(status, detail) {
     super(typeof detail === 'string' ? detail : (detail?.detail ?? `Request failed (${status})`));
@@ -127,6 +141,40 @@ export const api = {
   signup: (payload) => request('/v1/auth/signup', { method: 'POST', body: payload, auth: false }),
   login: (payload) => request('/v1/auth/login', { method: 'POST', body: payload, auth: false }),
   me: () => request('/v1/auth/me'),
+
+  // Client dashboard, the client's side. A client token opens nothing else.
+  clientLogin: (payload) =>
+    request('/v1/client/auth/login', { method: 'POST', body: payload, auth: false }),
+  clientMe: () => request('/v1/client/me'),
+  clientSubmissions: () => request('/v1/client/submissions'),
+  clientSubmission: (id) => request(`/v1/client/submissions/${id}`),
+  clientSetStage: (id, stage) =>
+    request(`/v1/client/submissions/${id}`, { method: 'PATCH', body: { stage } }),
+  clientAddNote: (id, body) =>
+    request(`/v1/client/submissions/${id}/notes`, { method: 'POST', body: { body } }),
+  clientDeleteNote: (noteId) => request(`/v1/client/notes/${noteId}`, { method: 'DELETE' }),
+
+  // Client dashboards, our side.
+  listClients: () => request('/v1/clients'),
+  getClient: (id) => request(`/v1/clients/${id}`),
+  createClient: (payload) => request('/v1/clients', { method: 'POST', body: payload }),
+  createClientLogin: (id, payload) =>
+    request(`/v1/clients/${id}/logins`, { method: 'POST', body: payload }),
+  updateClientLogin: (loginId, payload) =>
+    request(`/v1/clients/logins/${loginId}`, { method: 'PATCH', body: payload }),
+  clientSubmissionsFor: (id) => request(`/v1/clients/${id}/submissions`),
+  shareWithClient: (id, payload) =>
+    request(`/v1/clients/${id}/submissions`, { method: 'POST', body: payload }),
+  bulkClientStage: (id, payload) =>
+    request(`/v1/clients/${id}/submissions/stage`, { method: 'POST', body: payload }),
+  recruiterSubmission: (submissionId) => request(`/v1/clients/submissions/${submissionId}`),
+  updateRecruiterSubmission: (submissionId, payload) =>
+    request(`/v1/clients/submissions/${submissionId}`, { method: 'PATCH', body: payload }),
+  unshareSubmission: (submissionId) =>
+    request(`/v1/clients/submissions/${submissionId}`, { method: 'DELETE' }),
+  recruiterAddNote: (submissionId, body) =>
+    request(`/v1/clients/submissions/${submissionId}/notes`, { method: 'POST', body: { body } }),
+  recruiterDeleteNote: (noteId) => request(`/v1/clients/notes/${noteId}`, { method: 'DELETE' }),
 
   candidateCount: () => request('/v1/candidates/count'),
 

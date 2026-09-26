@@ -3,7 +3,12 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { PASSWORD, createOrg, login } from './support.js';
+import {
+  PASSWORD,
+  createOrg,
+  createSequence,
+  login,
+} from './support.js';
 
 /**
  * Client dashboards, end to end: we share people with a client, the client
@@ -59,7 +64,8 @@ test.describe('client dashboard', () => {
     // --- recruiter shares a pasted spreadsheet --------------------------------
     await login(page, org.email);
     await page.goto(`/clients/${account.id}`);
-    await page.getByRole('button', { name: 'Share candidates' }).click();
+    // An empty dashboard opens the share box by itself.
+    await expect(page.getByTestId('share-form')).toBeVisible();
     await page
       .getByTestId('share-input')
       .fill(
@@ -149,6 +155,110 @@ test.describe('client dashboard', () => {
       path.join(ARTIFACT_DIR, 'summary.json'),
       JSON.stringify({ ran_at: new Date().toISOString(), username, ...summary }, null, 2),
     );
+    await clientContext.close();
+  });
+  test('share from Contacts takes the role off their sequence; we can rename and edit', async ({
+    page,
+    browser,
+    request,
+  }) => {
+    fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const org = await createOrg(request, 'clientedit');
+    const tag = Date.now().toString(36);
+
+    const seeded = await request.post('/v1/candidates/bulk', {
+      headers: org.headers,
+      data: {
+        candidates: [
+          {
+            source: 'e2e',
+            source_id: `${tag}-seq`,
+            full_name: `Sequenced ${tag}`,
+            emails: [`seq-${tag}@e2e.example.com`],
+            current_title: 'Staff Engineer',
+            current_company: 'Initech',
+          },
+        ],
+      },
+    });
+    const [candidateId] = (await seeded.json()).ids;
+    // The sequence belongs to a project for this client, with its own role.
+    const project = await request.post('/v1/projects', {
+      headers: org.headers,
+      data: { name: `Flowgen ${tag} backend`, role_title: 'Founding Backend Engineer', company: `Flowgen ${tag}` },
+    });
+    const projectId = (await project.json()).id;
+    const sequence = await createSequence(request, org, projectId);
+    await request.post(`/v1/sequences/${sequence.id}/enroll`, {
+      headers: org.headers,
+      data: { candidate_ids: [candidateId], project_id: projectId },
+    });
+    const account = await (
+      await request.post('/v1/clients', { headers: org.headers, data: { name: `Flowgen ${tag}` } })
+    ).json();
+    const username = `fge-${tag}`;
+    await request.post(`/v1/clients/${account.id}/logins`, {
+      headers: org.headers,
+      data: { username, password: PASSWORD },
+    });
+
+    // --- share from the Contacts bulk bar ---------------------------------------
+    await login(page, org.email);
+    await page.goto('/contacts?view=all');
+    await expect(page.getByTestId('contacts-grid')).toBeVisible();
+    await page
+      .getByTestId('contact-row')
+      .filter({ hasText: `Sequenced ${tag}` })
+      .locator('input[type=checkbox]')
+      .click();
+    await page.getByTestId('bulk-client').selectOption(account.id);
+    await page.getByTestId('bulk-share-client').click();
+    await expect(page.getByTestId('bulk-result')).toContainText(`1 shared with Flowgen ${tag}`);
+
+    // --- the role came off the sequence, and is editable inline -----------------
+    await page.goto(`/clients/${account.id}`);
+    const row = page.getByTestId('cp-row').filter({ hasText: `Sequenced ${tag}` });
+    const role = row.getByTestId('cp-row-role');
+    await expect(role).toHaveValue('Founding Backend Engineer');
+    await role.fill('Staff Backend Engineer');
+    await role.press('Enter');
+    await expect(role).toHaveValue('Staff Backend Engineer');
+
+    // --- edit the details the client sees -----------------------------------------
+    await row.locator('.cp-name').click();
+    await page.getByTestId('edit-details').click();
+    await page.getByTestId('details-current_company').fill('Initech Labs');
+    await page.getByRole('button', { name: 'Save details' }).click();
+    await expect(page.getByTestId('cp-drawer')).toContainText('Staff Engineer · Initech Labs');
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    // --- rename the client ----------------------------------------------------------
+    await page.getByTestId('rename-client').click();
+    await page.getByTestId('rename-client-input').fill(`Flowgen AI ${tag}`);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.locator('.page-header h1')).toContainText(`Flowgen AI ${tag}`);
+    await page.screenshot({
+      path: path.join(ARTIFACT_DIR, 'recruiter-edits.png'),
+      fullPage: true,
+    });
+
+    // --- the client sees all three --------------------------------------------------
+    const clientContext = await browser.newContext();
+    const clientPage = await clientContext.newPage();
+    await clientPage.goto('/');
+    await clientPage.getByPlaceholder('Email or username').fill(username);
+    await clientPage.getByPlaceholder('Password').fill(PASSWORD);
+    await clientPage.locator('button[type="submit"]').click();
+    await expect(clientPage.locator('.client-header')).toContainText(`Flowgen AI ${tag}`);
+    const theirs = clientPage.getByTestId('cp-row').filter({ hasText: `Sequenced ${tag}` });
+    await expect(theirs).toContainText('Staff Backend Engineer');
+    await expect(theirs).toContainText('Initech Labs');
+    // The role is ours to set; on their side it is text, not a box.
+    await expect(theirs.getByTestId('cp-row-role')).toHaveCount(0);
+    await clientPage.screenshot({
+      path: path.join(ARTIFACT_DIR, 'client-after-edits.png'),
+      fullPage: true,
+    });
     await clientContext.close();
   });
 });

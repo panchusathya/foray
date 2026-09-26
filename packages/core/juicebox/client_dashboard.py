@@ -17,6 +17,12 @@ Non-obvious rules:
   audit of who moved whom, and the "changed by Flowgen" signal on our side.
   Setting a stage to the one it already holds writes nothing -- otherwise a
   re-pasted list would bury real moves under no-ops.
+- **The role defaults to the sequence we enrolled them in.** Each outreach
+  sequence is for one role, so it is the best record of what somebody was put
+  forward *for*: the sequence's project ``role_title``, else the sequence name.
+  One whose project is for this client wins over another client's, then the
+  most recent. A role typed when sharing beats it, and it only ever fills a
+  blank -- never overwrites a role somebody edited.
 - **Re-sharing somebody updates, it does not duplicate.** ``dedupe_key``
   folds on LinkedIn, then contact id, then name, and an existing row only has
   its *blank* snapshot fields filled: the client may already be reading the
@@ -42,8 +48,10 @@ from .models import (
     ClientSubmissionEvent,
     ClientSubmissionNote,
     ClientUser,
+    Enrollment,
     Project,
     ProjectCandidate,
+    Sequence,
     utcnow,
 )
 from .repository import owner_of_linkedin
@@ -194,6 +202,32 @@ def _resolve_candidate(db: Session, *, org_id: str, entry: ClientEntryIn) -> Can
     return None
 
 
+def role_from_sequences(db: Session, *, candidate_id: str, client_name: str) -> str:
+    """The role a person was pitched for, read off their outreach enrollments."""
+    rows = db.execute(
+        select(Enrollment, Sequence)
+        .join(Sequence, Sequence.id == Enrollment.sequence_id)
+        .where(Enrollment.candidate_id == candidate_id)
+        .order_by(Enrollment.created_at.desc())
+    ).all()
+    if not rows:
+        return ""
+    client = _fold_name(client_name)
+    best: tuple[int, str] | None = None
+    for enrollment, sequence in rows:  # newest first; the first of a rank wins
+        project = db.get(Project, enrollment.project_id or sequence.project_id or "")
+        role = ((project.role_title or project.name) if project else "") or sequence.name
+        if not role.strip():
+            continue
+        for_client = bool(
+            client and project and client in _fold_name(f"{project.company} {project.name}")
+        )
+        rank = 0 if for_client else 1
+        if best is None or rank < best[0]:
+            best = (rank, role.strip())
+    return best[1] if best else ""
+
+
 def share_entries(
     db: Session, *, account: ClientAccount, payload: ClientEntriesIn, actor: Actor
 ) -> list[ClientEntryResult]:
@@ -236,7 +270,12 @@ def share_entries(
             .where(ClientSubmission.client_account_id == account.id, or_(*match))
             .limit(1)
         )
-        role_title = entry.role_title.strip() or payload.role_title.strip()
+        typed_role = entry.role_title.strip() or payload.role_title.strip()
+        role_title = typed_role or (
+            role_from_sequences(db, candidate_id=candidate.id, client_name=account.name)
+            if candidate is not None
+            else ""
+        )
 
         if existing is None:
             row = ClientSubmission(
@@ -281,7 +320,12 @@ def share_entries(
         if candidate is not None and existing.candidate_id is None:
             existing.candidate_id = candidate.id
             changed = True
-        if role_title and role_title != existing.role_title:
+        # A typed role replaces; a sequence-derived one only fills a blank,
+        # so it never undoes an edit.
+        if typed_role and typed_role != existing.role_title:
+            existing.role_title = typed_role
+            changed = True
+        elif role_title and not existing.role_title:
             existing.role_title = role_title
             changed = True
         if stage and move_stage(db, submission=existing, stage=stage, actor=actor):

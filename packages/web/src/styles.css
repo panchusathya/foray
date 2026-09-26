@@ -1123,15 +1123,8 @@ a.todo-row:hover { background: var(--tint); }
   z-index: 5;
 }
 .client-header .brand { margin: 0; padding: 0; }
-.client-for {
-  font-family: var(--display);
-  font-size: 17px;
-  margin-left: 6px;
-  color: var(--cp-ink);
-  /* Sits on the wordmark's baseline rather than centred beside it. */
-  position: relative;
-  top: 3px;
-}
+/* Same face and size as the wordmark it continues; only the colour steps down. */
+.client-for { color: var(--muted); font-weight: 400; }
 .client-main { max-width: 1400px; margin: 0 auto; padding: 28px 32px 64px; }
 .client-main .page-header h1 { font-size: 26px; }
 
@@ -1295,3 +1288,19 @@ a.todo-row:hover { background: var(--tint); }
 .cp-ui .dgrid button.sort,
 .cp-ui .dgrid button.sort:hover:not(:disabled) { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
 .cp-ui .dgrid th[aria-sort] button.sort { color: var(--cp-ink); }
+.cp-title { display: inline-flex; align-items: baseline; gap: 10px; }
+.cp-ui .cp-title button { font-family: var(--sans); }
+.cp-field-row { display: flex; flex-direction: column; gap: 3px; }
+.cp-ui input.cp-cell-input {
+  width: 100%;
+  padding: 3px 6px;
+  font-size: 13px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--cp-ink);
+}
+.cp-ui input.cp-cell-input:hover { border-color: var(--cp-line); background: #fff; }
+.cp-ui input.cp-cell-input:focus { border-color: var(--cp-line-strong); background: #fff; }
+.cp-ui input.cp-cell-input::placeholder { color: var(--muted); opacity: 0; }
+.cp-row:hover input.cp-cell-input::placeholder { opacity: 0.8; }

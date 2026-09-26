@@ -69,6 +69,45 @@ function LinkedInLink({ url }) {
   );
 }
 
+/**
+ * The role somebody was put forward for, editable in place on our side.
+ *
+ * It defaults to the sequence we enrolled them in (server-side, at share
+ * time), which is right most of the time and wrong often enough -- a person
+ * pitched for one role and moved to another -- that fixing it must not need
+ * the drawer. Saves on Enter or blur; Escape puts the old value back.
+ */
+function RoleCell({ row, onSave }) {
+  const [value, setValue] = useState(row.role_title ?? '');
+  useEffect(() => setValue(row.role_title ?? ''), [row.role_title]);
+  if (!onSave) {
+    return <span className="muted">{row.role_title || '—'}</span>;
+  }
+  const commit = () => {
+    if (value.trim() !== (row.role_title ?? '')) onSave(row, value.trim());
+  };
+  return (
+    <input
+      type="text"
+      className="cp-cell-input"
+      value={value}
+      placeholder="Add role"
+      onChange={(event) => setValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur();
+        if (event.key === 'Escape') {
+          setValue(row.role_title ?? '');
+          event.currentTarget.blur();
+        }
+      }}
+      aria-label={`Role for ${row.full_name}`}
+      data-testid="cp-row-role"
+    />
+  );
+}
+
 /** Title at company, whichever halves exist. */
 function roleLine(row) {
   if (row.current_title && row.current_company)
@@ -259,7 +298,12 @@ function Drawer({ rowId, side, api, clientName, onClose, onChanged, extras }) {
               </div>
             </section>
 
-            {extras ? extras(detail) : null}
+            {extras
+              ? extras(detail, (updated) => {
+                  setDetail(updated);
+                  onChanged(updated);
+                })
+              : null}
           </>
         ) : null}
       </aside>
@@ -271,10 +315,11 @@ function Drawer({ rowId, side, api, clientName, onClose, onChanged, extras }) {
  * @param {object} props
  * @param {'client'|'recruiter'} props.side
  * @param {Array} props.rows
- * @param {object} props.api  {setStage, loadDetail, addNote, deleteNote, bulkStage?}
+ * @param {object} props.api  {setStage, loadDetail, addNote, deleteNote, bulkStage?, updateRole?}
  * @param {string} props.clientName
  * @param {(rows) => void} props.onRowsChange  replace rows after a local edit
- * @param {(detail) => ReactNode} [props.drawerExtras]  recruiter-only controls
+ * @param {(detail, applyUpdate) => ReactNode} [props.drawerExtras]  recruiter-only
+ *   controls; `applyUpdate(updatedDetail)` refreshes the drawer and the grid row
  */
 export function ClientPipeline({
   side,
@@ -371,6 +416,15 @@ export function ClientPipeline({
       replaceRow(await api.setStage(row.id, stage));
     } catch (caught) {
       onRowsChange(before);
+      setError(caught);
+    }
+  }
+
+  async function saveRole(row, role_title) {
+    setError(null);
+    try {
+      replaceRow(await api.updateRole(row.id, role_title));
+    } catch (caught) {
       setError(caught);
     }
   }
@@ -481,11 +535,11 @@ export function ClientPipeline({
         <table className="dgrid cp-grid" data-testid="cp-grid">
           <colgroup>
             {selectable ? <col style={{ width: 36 }} /> : null}
-            <col style={{ width: '22%' }} />
-            <col style={{ width: '24%' }} />
-            {roles.length ? <col style={{ width: '12%' }} /> : null}
-            <col style={{ width: 170 }} />
-            <col style={{ width: 130 }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '20%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: 160 }} />
+            <col style={{ width: 110 }} />
             <col />
           </colgroup>
           <thead>
@@ -501,8 +555,8 @@ export function ClientPipeline({
                 </th>
               ) : null}
               <SortHeader id="name">Candidate</SortHeader>
-              <th>Current role</th>
-              {roles.length ? <th>Applied for</th> : null}
+              <th>Role</th>
+              <th>Currently at</th>
               <SortHeader id="stage">Stage</SortHeader>
               {/* Newest first on the first click: "what moved" is the question. */}
               <SortHeader id="updated" firstDir={-1}>
@@ -540,14 +594,12 @@ export function ClientPipeline({
                     <span className="cp-name">{row.full_name || '—'}</span>{' '}
                     <LinkedInLink url={row.linkedin_url} />
                   </td>
+                  <td title={row.role_title} onClick={api.updateRole ? (e) => e.stopPropagation() : undefined}>
+                    <RoleCell row={row} onSave={api.updateRole ? saveRole : null} />
+                  </td>
                   <td className="muted" title={roleLine(row)}>
                     {roleLine(row)}
                   </td>
-                  {roles.length ? (
-                    <td className="muted" title={row.role_title}>
-                      {row.role_title}
-                    </td>
-                  ) : null}
                   <td onClick={(event) => event.stopPropagation()}>
                     <StageSelect
                       value={row.stage}

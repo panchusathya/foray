@@ -42,8 +42,10 @@ export function ClientDashboardPage() {
       <header className="client-header">
         <div className="brand brand-lockup">
           <BrandMark />
-          <span>Foray</span>
-          <span className="muted client-for">× {user?.client_name}</span>
+          {/* One text run, so both names sit on the wordmark's own baseline. */}
+          <span>
+            Foray<span className="client-for"> × {user?.client_name}</span>
+          </span>
         </div>
         <div className="row">
           <span className="muted small">{user?.name}</span>

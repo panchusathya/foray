@@ -1581,6 +1581,10 @@ class ClientAccountIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class ClientAccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class ClientLoginIn(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=8, max_length=200)

@@ -158,6 +158,7 @@ export const api = {
   listClients: () => request('/v1/clients'),
   getClient: (id) => request(`/v1/clients/${id}`),
   createClient: (payload) => request('/v1/clients', { method: 'POST', body: payload }),
+  updateClient: (id, payload) => request(`/v1/clients/${id}`, { method: 'PATCH', body: payload }),
   createClientLogin: (id, payload) =>
     request(`/v1/clients/${id}/logins`, { method: 'POST', body: payload }),
   updateClientLogin: (loginId, payload) =>

@@ -20,6 +20,7 @@ from ..models import ClientAccount, ClientSubmissionNote, ClientUser, User
 from ..schemas import (
     ClientAccountIn,
     ClientAccountOut,
+    ClientAccountPatch,
     ClientBulkStageIn,
     ClientEntriesIn,
     ClientEntriesOut,
@@ -135,6 +136,45 @@ def get_account(
     db: Session = Depends(get_db),
 ) -> ClientAccountOut:
     return _account_out(db, _account(db, principal, account_id))
+
+
+@router.patch("/{account_id}", response_model=ClientAccountOut)
+def update_account(
+    account_id: str,
+    payload: ClientAccountPatch,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> ClientAccountOut:
+    """Rename a client. Logins still showing the old company name follow it.
+
+    A login's display name defaults to the company's, and it is what the
+    client's notes and stage moves are signed with. Leaving it behind would
+    have "Flowgen" renamed to "Flowgen AI" on every screen except the byline
+    of everything they write. A login somebody gave a person's name keeps it.
+    Bylines already written are snapshots and stay as they were.
+    """
+    account = _account(db, principal, account_id)
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="a client needs a name")
+        clash = db.scalar(
+            select(ClientAccount.id).where(
+                ClientAccount.org_id == principal.org_id,
+                ClientAccount.name == name,
+                ClientAccount.id != account.id,
+            )
+        )
+        if clash:
+            raise HTTPException(status_code=409, detail=f"{name} already has a dashboard")
+        for login in db.scalars(
+            select(ClientUser).where(ClientUser.client_account_id == account.id)
+        ).all():
+            if login.name == account.name:
+                login.name = name
+        account.name = name
+    db.flush()
+    return _account_out(db, account)
 
 
 @router.post(

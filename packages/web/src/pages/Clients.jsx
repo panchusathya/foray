@@ -225,7 +225,7 @@ function ShareForm({ accountId, onShared }) {
       <div className="row wrap cp-inline-controls">
         <input
           type="text"
-          placeholder="Role (optional), e.g. Backend Engineer"
+          placeholder="Role (blank = from their sequence)"
           value={role}
           onChange={(event) => setRole(event.target.value)}
         />
@@ -290,6 +290,9 @@ function LoginsPanel({ account, onChange }) {
         <div key={login.id} className="spread small">
           <span>
             <strong>{login.username}</strong>{' '}
+            {login.name && login.name !== login.username ? (
+              <span className="muted">shown as {login.name} </span>
+            ) : null}
             {login.is_active ? null : <span className="badge miss">disabled</span>}{' '}
             <span className="muted">
               {login.last_login_at
@@ -307,6 +310,17 @@ function LoginsPanel({ account, onChange }) {
               }}
             >
               Reset password
+            </button>
+            <button
+              type="button"
+              className="tiny ghost"
+              title="The name their notes and stage moves are signed with"
+              onClick={() => {
+                const name = window.prompt(`Display name for ${login.username}`, login.name);
+                if (name && name.trim()) run(() => api.updateClientLogin(login.id, { name: name.trim() }));
+              }}
+            >
+              Rename
             </button>
             <button
               type="button"
@@ -356,6 +370,160 @@ function LoginsPanel({ account, onChange }) {
   );
 }
 
+const DETAIL_FIELDS = [
+  ['full_name', 'Name'],
+  ['current_title', 'Title'],
+  ['current_company', 'Company'],
+  ['location', 'Location'],
+  ['linkedin_url', 'LinkedIn URL'],
+  ['role_title', 'Shared for (role)'],
+];
+
+/** What the client sees about a person. Ours to correct; they read it as-is. */
+function DetailsEditor({ detail, onSaved, onCancel }) {
+  const [form, setForm] = useState(() =>
+    Object.fromEntries(DETAIL_FIELDS.map(([key]) => [key, detail[key] ?? ''])),
+  );
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      onSaved(await api.updateRecruiterSubmission(detail.id, form));
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="stack cp-details-form" onSubmit={save} data-testid="details-form">
+      <ErrorBox error={error} />
+      {DETAIL_FIELDS.map(([key, label]) => (
+        <label key={key} className="cp-field-row">
+          <span className="small muted">{label}</span>
+          <input
+            type="text"
+            value={form[key]}
+            onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+            required={key === 'full_name'}
+            data-testid={`details-${key}`}
+          />
+        </label>
+      ))}
+      <div className="row">
+        <button type="submit" className="primary" disabled={busy}>
+          {busy ? 'Saving…' : 'Save details'}
+        </button>
+        <button type="button" className="ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function RecruiterExtras({ detail, applyUpdate, account, onRemoved }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <section className="stack cp-recruiter-extras">
+      <div className="sidebar-heading">Recruiter only</div>
+      {editing ? (
+        <DetailsEditor
+          detail={detail}
+          onSaved={(updated) => {
+            applyUpdate(updated);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <div className="row">
+          <button type="button" onClick={() => setEditing(true)} data-testid="edit-details">
+            Edit details
+          </button>
+          <button
+            type="button"
+            className="ghost danger"
+            onClick={async () => {
+              if (
+                !window.confirm(
+                  `Remove ${detail.full_name} from ${account.name}'s dashboard? Their notes and history go too.`,
+                )
+              )
+                return;
+              await api.unshareSubmission(detail.id);
+              onRemoved(detail.id);
+            }}
+          >
+            Remove from dashboard
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ClientTitle({ account, onRenamed }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(account.name);
+  const [error, setError] = useState(null);
+
+  if (!editing) {
+    return (
+      <span className="cp-title">
+        {account.name}
+        <button
+          type="button"
+          className="tiny ghost"
+          onClick={() => {
+            setName(account.name);
+            setEditing(true);
+          }}
+          data-testid="rename-client"
+        >
+          Rename
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form
+      className="row cp-inline-controls"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setError(null);
+        try {
+          onRenamed(await api.updateClient(account.id, { name: name.trim() }));
+          setEditing(false);
+        } catch (caught) {
+          setError(caught);
+        }
+      }}
+    >
+      <input
+        type="text"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        autoFocus
+        required
+        data-testid="rename-client-input"
+      />
+      <button type="submit" className="primary">
+        Save
+      </button>
+      <button type="button" className="ghost" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
+      <ErrorBox error={error} />
+    </form>
+  );
+}
+
 export function ClientDetailPage() {
   const { clientId } = useParams();
   const [account, setAccount] = useState(null);
@@ -374,6 +542,13 @@ export function ClientDetailPage() {
   const load = useCallback(() => api.clientSubmissionsFor(clientId), [clientId]);
   const { rows, setRows, error: rowsError, loading, syncedAt, refresh } = usePolledRows(load);
 
+  // A dashboard with nobody on it has one thing to do next, so the share box
+  // opens by itself rather than hiding behind a button.
+  const empty = !loading && rows.length === 0;
+  useEffect(() => {
+    if (empty) setShowShare(true);
+  }, [empty]);
+
   const pipelineApi = useMemo(
     () => ({
       loadDetail: (id) => api.recruiterSubmission(id),
@@ -381,6 +556,7 @@ export function ClientDetailPage() {
       addNote: (id, body) => api.recruiterAddNote(id, body),
       deleteNote: (noteId) => api.recruiterDeleteNote(noteId),
       bulkStage: (ids, stage) => api.bulkClientStage(clientId, { ids, stage }),
+      updateRole: (id, role_title) => api.updateRecruiterSubmission(id, { role_title }),
     }),
     [clientId],
   );
@@ -388,47 +564,22 @@ export function ClientDetailPage() {
   if (error) return <ErrorBox error={error} />;
   if (!account) return <Loading />;
 
-  const drawerExtras = (detail) => (
-    <section className="stack cp-recruiter-extras">
-      <div className="sidebar-heading">Recruiter only</div>
-      <div className="row">
-        <button
-          type="button"
-          className="tiny ghost"
-          onClick={async () => {
-            const role = window.prompt('Role this person was shared for', detail.role_title);
-            if (role === null) return;
-            const updated = await api.updateRecruiterSubmission(detail.id, { role_title: role });
-            setRows(rows.map((r) => (r.id === updated.id ? { ...r, ...updated } : r)));
-          }}
-        >
-          Edit role
-        </button>
-        <button
-          type="button"
-          className="tiny ghost danger"
-          onClick={async () => {
-            if (
-              !window.confirm(
-                `Remove ${detail.full_name} from ${account.name}'s dashboard? Their notes and history go too.`,
-              )
-            )
-              return;
-            await api.unshareSubmission(detail.id);
-            setRows(rows.filter((r) => r.id !== detail.id));
-            loadAccount();
-          }}
-        >
-          Remove from dashboard
-        </button>
-      </div>
-    </section>
+  const drawerExtras = (detail, applyUpdate) => (
+    <RecruiterExtras
+      detail={detail}
+      applyUpdate={applyUpdate}
+      account={account}
+      onRemoved={(id) => {
+        setRows(rows.filter((r) => r.id !== id));
+        loadAccount();
+      }}
+    />
   );
 
   return (
     <div className="stack cp-ui">
       <PageHeader
-        title={account.name}
+        title={<ClientTitle account={account} onRenamed={setAccount} />}
         subtitle={
           <>
             <Link to="/clients">Clients</Link> · {account.total} shared
@@ -447,7 +598,7 @@ export function ClientDetailPage() {
               Logins ({account.logins.length})
             </button>
             <button type="button" className="primary" onClick={() => setShowShare((v) => !v)}>
-              {showShare ? 'Done' : 'Share candidates'}
+              {showShare ? 'Hide sharing' : 'Share candidates'}
             </button>
           </>
         }

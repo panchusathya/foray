@@ -12,7 +12,7 @@
  * on that path would silently produce a different file than the grid shows.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { api } from '../lib/api.js';
 import { MAX_SELECT_ALL } from '../lib/contactViews.js';
@@ -59,8 +59,21 @@ export function BulkBar({
   const [sequenceId, setSequenceId] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState(null);
+  const [clients, setClients] = useState([]);
+  const [clientId, setClientId] = useState('');
 
   const count = selected.size;
+  // Fetched when the bar first appears, not with the page: most visits to
+  // Contacts never select anybody, and this list only matters once they do.
+  const open = count > 0;
+  useEffect(() => {
+    if (!open) return;
+    api
+      .listClients()
+      .then(setClients)
+      .catch(() => setClients([]));
+  }, [open]);
+
   if (!count) return null;
 
   const ids = [...selected.keys()];
@@ -113,6 +126,23 @@ export function BulkBar({
     run('enrol', async () => {
       await api.enroll(sequenceId, { candidate_ids: ids, project_id: projectId || null });
       return `Enrolled ${count}.`;
+    });
+  }
+
+  function shareWithClient() {
+    if (!clientId) return;
+    run('client', async () => {
+      // Role and snapshot come from each contact server-side, the role off the
+      // sequence they were enrolled in -- the same path as a paste.
+      const result = await api.shareWithClient(clientId, {
+        entries: ids.map((id) => ({ candidate_id: id })),
+      });
+      const name = clients.find((c) => c.id === clientId)?.name ?? 'the client';
+      const parts = [`${result.added} shared with ${name}`];
+      if (result.updated + result.unchanged) {
+        parts.push(`${result.updated + result.unchanged} already there`);
+      }
+      return `${parts.join(', ')}.`;
     });
   }
 
@@ -178,6 +208,31 @@ export function BulkBar({
           >
             {busy === 'enrol' ? 'Enrolling…' : 'Enrol'}
           </button>
+
+          {clients.length ? (
+            <>
+              <select
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                data-testid="bulk-client"
+              >
+                <option value="">Share with client…</option>
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!clientId || !!busy}
+                onClick={shareWithClient}
+                data-testid="bulk-share-client"
+              >
+                {busy === 'client' ? 'Sharing…' : 'Share'}
+              </button>
+            </>
+          ) : null}
 
           <button
             type="button"

@@ -8,11 +8,16 @@ note is attributed to.
 
 Non-obvious rules:
 
-- **The client is served the snapshot, never the contact.** Profile fields
-  are copied onto ``ClientSubmission`` when a person is shared, and
-  ``client_row`` builds its output from that row alone. Nothing here loads a
-  ``Candidate`` on the client's behalf, so an address, a phone, comp or a CRM
-  note has no path to a client even if the recruiter shape grows.
+- **Profile fields follow the CRM; nothing else comes with them.** The five
+  ``SYNCED_FIELDS`` are read live off the linked contact, so a title or
+  company fixed in the CRM shows on the dashboard without anybody re-sharing.
+  ``_live_profiles`` selects those columns by name and never loads the
+  ``Candidate`` entity, so an address, a phone, comp or a CRM note still has
+  no path to a client even if a serialiser grows a field.
+- **An edit made on the dashboard beats the CRM, until it is cleared.**
+  ``overridden_fields`` names what a recruiter changed there. Saving a field
+  back to the CRM's value, or blank, hands it back to the CRM. A row with no
+  contact (shared by LinkedIn URL alone) shows its snapshot.
 - **A stage move always writes an event, from either side.** The event is the
   audit of who moved whom, and the "changed by Flowgen" signal on our side.
   Setting a stage to the one it already holds writes nothing -- otherwise a
@@ -67,6 +72,10 @@ from .security import hash_password
 
 ACTOR_CLIENT = "client"
 ACTOR_RECRUITER = "recruiter"
+
+# Read live off the linked contact unless overridden on the dashboard. The
+# only contact columns a client response is ever built from.
+SYNCED_FIELDS = ("full_name", "current_title", "current_company", "location", "linkedin_url")
 
 _USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{2,79}$")
 
@@ -407,6 +416,71 @@ def note_out(note: ClientSubmissionNote, actor: Actor) -> ClientNoteOut:
 # --------------------------------------------------------------------------
 
 
+def _live_profiles(db: Session, rows: list[ClientSubmission]) -> dict[str, dict[str, str]]:
+    """The CRM's current values for ``SYNCED_FIELDS``, by candidate id.
+
+    Explicit columns, never the entity: this is the one place client-bound
+    output reads the contact, and it can only ever see these.
+    """
+    by_org: dict[str, set[str]] = {}
+    for row in rows:
+        if row.candidate_id:
+            by_org.setdefault(row.org_id, set()).add(row.candidate_id)
+    live: dict[str, dict[str, str]] = {}
+    for org_id, ids in by_org.items():
+        for cid, name, title, company, city, region, country, linkedin in db.execute(
+            select(
+                Candidate.id,
+                Candidate.full_name,
+                Candidate.current_title,
+                Candidate.current_company,
+                Candidate.location_city,
+                Candidate.location_region,
+                Candidate.location_country,
+                Candidate.linkedin_url,
+            ).where(Candidate.org_id == org_id, Candidate.id.in_(ids))
+        ).all():
+            live[cid] = {
+                "full_name": name or "",
+                "current_title": title or "",
+                "current_company": company or "",
+                "location": ", ".join(p for p in (city, region, country) if p),
+                "linkedin_url": linkedin or "",
+            }
+    return live
+
+
+def profile_values(row: ClientSubmission, live: dict[str, dict[str, str]]) -> dict[str, str]:
+    """What the dashboard shows: the CRM's value unless overridden or blank there."""
+    crm = live.get(row.candidate_id or "", {})
+    overridden = set(row.overridden_fields or [])
+    return {
+        field: getattr(row, field)
+        if field in overridden or not crm.get(field)
+        else crm[field]
+        for field in SYNCED_FIELDS
+    }
+
+
+def apply_profile_edit(db: Session, row: ClientSubmission, field: str, value: str) -> None:
+    """Record a dashboard edit of a synced field, or hand it back to the CRM.
+
+    Blank, or the CRM's own value, clears the override: the recruiter is
+    agreeing with the contact, and from then on a CRM change should flow.
+    """
+    value = value.strip()
+    crm = _live_profiles(db, [row]).get(row.candidate_id or "", {}).get(field, "")
+    overridden = [f for f in (row.overridden_fields or []) if f != field]
+    if value and value != crm:
+        overridden.append(field)
+        setattr(row, field, value)
+    elif crm:
+        setattr(row, field, crm)  # keep the snapshot current for an unlink later
+    elif value:
+        setattr(row, field, value)  # no contact to defer to
+    row.overridden_fields = overridden
+
+
 def _latest_notes(db: Session, submission_ids: list[str]) -> dict[str, ClientSubmissionNote]:
     if not submission_ids:
         return {}
@@ -458,13 +532,14 @@ def client_rows(
     ids = [r.id for r in rows]
     counts = _note_counts(db, ids)
     latest = _latest_notes(db, ids)
+    live = _live_profiles(db, rows)
     fields = set(model.model_fields) - {"note_count", "latest_note", "notes", "events"}
     out = []
     for row in rows:
         note = latest.get(row.id)
         out.append(
             model(
-                **{f: getattr(row, f) for f in fields},
+                **{f: getattr(row, f) for f in fields} | profile_values(row, live),
                 note_count=counts.get(row.id, 0),
                 latest_note=note_out(note, actor) if note else None,
             )
@@ -485,7 +560,7 @@ def detail(db: Session, row: ClientSubmission, actor: Actor, *, model) -> object
     ).all()
     fields = set(model.model_fields) - {"note_count", "latest_note", "notes", "events"}
     return model(
-        **{f: getattr(row, f) for f in fields},
+        **{f: getattr(row, f) for f in fields} | profile_values(row, _live_profiles(db, [row])),
         note_count=len(notes),
         latest_note=note_out(notes[-1], actor) if notes else None,
         notes=[note_out(n, actor) for n in notes],

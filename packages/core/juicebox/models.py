@@ -2855,12 +2855,13 @@ class ClientUser(Base, TimestampMixin):
 class ClientSubmission(Base, TimestampMixin):
     """One person shared with one client, and where the client has them.
 
-    The profile fields are a snapshot taken when the person was shared, and
-    the client API reads only these. It never loads the ``Candidate`` row, so
-    nothing on it -- addresses, phones, comp, our notes -- can reach a client
-    through a serialiser that grew a field. ``candidate_id`` is kept for the
-    recruiter side, and is nullable because a person can be shared by LinkedIn
-    URL before they are a contact at all.
+    The profile fields are a snapshot taken when the person was shared. While
+    the person is a contact, the five in ``SYNCED_FIELDS`` are read live off
+    the contact instead -- by explicit column, never by loading the
+    ``Candidate`` entity -- so addresses, phones, comp and our notes still have
+    no path to a client, and a CRM correction does. ``candidate_id`` is
+    nullable because a person can be shared by LinkedIn URL before they are a
+    contact at all; the snapshot is what shows then.
 
     ``dedupe_key`` is ``li:<slug>`` when there is a LinkedIn profile, else
     ``cand:<id>``, else ``name:<folded name>``. The same person pasted twice
@@ -2888,6 +2889,10 @@ class ClientSubmission(Base, TimestampMixin):
     location: Mapped[str] = mapped_column(String(240), default="")
     linkedin_url: Mapped[str] = mapped_column(String(400), default="")
     role_title: Mapped[str] = mapped_column(String(200), default="")
+    # Profile fields a recruiter edited on the dashboard itself. Everything
+    # else in client_dashboard.SYNCED_FIELDS is read live off the contact, so a
+    # CRM correction shows up for the client; these keep the edit instead.
+    overridden_fields: Mapped[list] = mapped_column(JSON, default=list)
 
     stage: Mapped[str] = mapped_column(String(32), default="in_process")
     stage_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

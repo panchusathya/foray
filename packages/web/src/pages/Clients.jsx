@@ -403,14 +403,27 @@ function DetailsEditor({ detail, onSaved, onCancel }) {
   return (
     <form className="stack cp-details-form" onSubmit={save} data-testid="details-form">
       <ErrorBox error={error} />
+      {detail.candidate_id ? (
+        <div className="small muted">
+          Name, title, company, location and LinkedIn follow the contact in the CRM. Anything
+          you change here sticks instead; clear it to follow the CRM again.
+        </div>
+      ) : null}
       {DETAIL_FIELDS.map(([key, label]) => (
         <label key={key} className="cp-field-row">
-          <span className="small muted">{label}</span>
+          <span className="small muted">
+            {label}
+            {detail.candidate_id && key !== 'role_title'
+              ? (detail.overridden_fields ?? []).includes(key)
+                ? ' · edited here'
+                : ' · from CRM'
+              : ''}
+          </span>
           <input
             type="text"
             value={form[key]}
             onChange={(event) => setForm({ ...form, [key]: event.target.value })}
-            required={key === 'full_name'}
+            required={key === 'full_name' && !detail.candidate_id}
             data-testid={`details-${key}`}
           />
         </label>

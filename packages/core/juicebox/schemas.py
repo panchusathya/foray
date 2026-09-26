@@ -1562,6 +1562,8 @@ class ClientSubmissionDetail(ClientSubmissionOut):
 
 class RecruiterSubmissionOut(ClientSubmissionOut):
     candidate_id: str | None = None
+    # Fields edited on the dashboard rather than read from the CRM contact.
+    overridden_fields: list[str] = []
 
 
 class RecruiterSubmissionDetail(RecruiterSubmissionOut):

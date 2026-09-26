@@ -232,6 +232,16 @@ test.describe('client dashboard', () => {
     await expect(page.getByTestId('cp-drawer')).toContainText('Staff Engineer · Initech Labs');
     await page.getByRole('button', { name: 'Close' }).click();
 
+    // --- a CRM edit flows through; the dashboard edit holds ---------------------------
+    const patched = await request.patch(`/v1/candidates/${candidateId}`, {
+      headers: org.headers,
+      data: { current_title: 'Principal Engineer', current_company: 'Initech Global' },
+    });
+    expect(patched.ok()).toBeTruthy();
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    // Title came from the CRM; company was edited here, so it stays.
+    await expect(row).toContainText('Principal Engineer · Initech Labs');
+
     // --- rename the client ----------------------------------------------------------
     await page.getByTestId('rename-client').click();
     await page.getByTestId('rename-client-input').fill(`Flowgen AI ${tag}`);
@@ -252,7 +262,7 @@ test.describe('client dashboard', () => {
     await expect(clientPage.locator('.client-header')).toContainText(`Flowgen AI ${tag}`);
     const theirs = clientPage.getByTestId('cp-row').filter({ hasText: `Sequenced ${tag}` });
     await expect(theirs).toContainText('Staff Backend Engineer');
-    await expect(theirs).toContainText('Initech Labs');
+    await expect(theirs).toContainText('Principal Engineer · Initech Labs');
     // The role is ours to set; on their side it is text, not a box.
     await expect(theirs.getByTestId('cp-row-role')).toHaveCount(0);
     await clientPage.screenshot({

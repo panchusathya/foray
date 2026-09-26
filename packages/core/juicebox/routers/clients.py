@@ -311,7 +311,11 @@ def update_submission(
     fields = payload.model_dump(exclude_unset=True)
     stage = fields.pop("stage", None)
     for field, value in fields.items():
-        if value is not None:
+        if value is None:
+            continue
+        if field in dash.SYNCED_FIELDS:
+            dash.apply_profile_edit(db, row, field, value)
+        else:
             setattr(row, field, value.strip())
     try:
         if stage:

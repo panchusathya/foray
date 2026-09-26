@@ -271,4 +271,81 @@ test.describe('client dashboard', () => {
     });
     await clientContext.close();
   });
+  test('on a phone the client gets cards, a working stage picker and a full-screen drawer', async ({
+    browser,
+    request,
+  }) => {
+    fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const org = await createOrg(request, 'clientmobile');
+    const tag = Date.now().toString(36);
+    const account = await (
+      await request.post('/v1/clients', { headers: org.headers, data: { name: `Flowgen ${tag}` } })
+    ).json();
+    const username = `fgm-${tag}`;
+    await request.post(`/v1/clients/${account.id}/logins`, {
+      headers: org.headers,
+      data: { username, password: PASSWORD },
+    });
+    const shared = await request.post(`/v1/clients/${account.id}/submissions`, {
+      headers: org.headers,
+      data: {
+        role_title: 'Founding Engineer',
+        entries: [
+          { full_name: 'Ada Phone', current_title: 'Staff Engineer', current_company: 'Initech' },
+          { full_name: 'Grace Phone', stage: 'first_round' },
+          { full_name: 'Linus Phone', stage: 'rejected' },
+        ],
+      },
+    });
+    const firstId = (await shared.json()).results[0].submission_id;
+    await request.post(`/v1/clients/submissions/${firstId}/notes`, {
+      headers: org.headers,
+      data: { body: 'Free for a first call any afternoon next week.' },
+    });
+
+    const phone = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const page = await phone.newPage();
+    await page.goto('/');
+
+    // The eye button shows the password and hides it again.
+    await page.getByPlaceholder('Email or username').fill(username);
+    const password = page.getByPlaceholder('Password');
+    await password.fill(PASSWORD);
+    await expect(password).toHaveAttribute('type', 'password');
+    await page.getByTestId('password-toggle').click();
+    await expect(password).toHaveAttribute('type', 'text');
+    await page.getByTestId('password-toggle').click();
+    await expect(password).toHaveAttribute('type', 'password');
+    await page.locator('button[type="submit"]').click();
+
+    await expect(page.getByTestId('cp-row')).toHaveCount(3);
+    // Nothing wider than the screen: no sideways scrolling of the page.
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    // Rows are cards, not a squeezed table.
+    await expect(page.getByTestId('cp-grid').locator('thead')).toBeHidden();
+    const ada = page.getByTestId('cp-row').filter({ hasText: 'Ada Phone' });
+    const box = await ada.boundingBox();
+    expect(box.width).toBeGreaterThan(330);
+    await expect(ada).toContainText('Free for a first call');
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'phone-grid.png'), fullPage: true });
+
+    await ada.getByTestId('cp-row-stage').selectOption('second_round');
+    await expect(page.getByTestId('cp-pile-second_round')).toContainText('1');
+
+    await ada.locator('.cp-name').click();
+    const drawer = page.getByTestId('cp-drawer');
+    await expect(drawer).toBeVisible();
+    expect((await drawer.boundingBox()).width).toBeGreaterThanOrEqual(389);
+    await expect(drawer).toContainText('moved In process → Second round');
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'phone-drawer.png') });
+    await phone.close();
+  });
 });

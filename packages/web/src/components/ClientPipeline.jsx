@@ -581,7 +581,7 @@ export function ClientPipeline({
                   data-testid="cp-row"
                 >
                   {selectable ? (
-                    <td onClick={(event) => event.stopPropagation()}>
+                    <td className="cp-td-select" onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selected.has(row.id)}
@@ -590,17 +590,21 @@ export function ClientPipeline({
                       />
                     </td>
                   ) : null}
-                  <td title={row.full_name}>
+                  <td className="cp-td-name" title={row.full_name}>
                     <span className="cp-name">{row.full_name || '—'}</span>{' '}
                     <LinkedInLink url={row.linkedin_url} />
                   </td>
-                  <td title={row.role_title} onClick={api.updateRole ? (e) => e.stopPropagation() : undefined}>
+                  <td
+                    className="cp-td-role"
+                    title={row.role_title}
+                    onClick={api.updateRole ? (e) => e.stopPropagation() : undefined}
+                  >
                     <RoleCell row={row} onSave={api.updateRole ? saveRole : null} />
                   </td>
-                  <td className="muted" title={roleLine(row)}>
+                  <td className="muted cp-td-current" title={roleLine(row)}>
                     {roleLine(row)}
                   </td>
-                  <td onClick={(event) => event.stopPropagation()}>
+                  <td className="cp-td-stage" onClick={(event) => event.stopPropagation()}>
                     <StageSelect
                       value={row.stage}
                       onChange={(stage) => quickStage(row, stage)}
@@ -608,7 +612,7 @@ export function ClientPipeline({
                     />
                   </td>
                   <td
-                    className="muted small"
+                    className="muted small cp-td-updated"
                     title={`${stageLabel(row.stage)} · ${new Date(row.stage_changed_at).toLocaleString()} by ${row.stage_changed_by_name}`}
                   >
                     {relativeTime(row.stage_changed_at)}
@@ -619,7 +623,7 @@ export function ClientPipeline({
                       </span>
                     ) : null}
                   </td>
-                  <td className="cp-note-cell" title={row.latest_note?.body ?? ''}>
+                  <td className="cp-note-cell cp-td-note" title={row.latest_note?.body ?? ''}>
                     {row.latest_note ? (
                       <>
                         {row.note_count > 1 ? (

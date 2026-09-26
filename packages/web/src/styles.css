@@ -1304,3 +1304,128 @@ a.todo-row:hover { background: var(--tint); }
 .cp-ui input.cp-cell-input:focus { border-color: var(--cp-line-strong); background: #fff; }
 .cp-ui input.cp-cell-input::placeholder { color: var(--muted); opacity: 0; }
 .cp-row:hover input.cp-cell-input::placeholder { opacity: 0.8; }
+
+/* ---------- login: show/hide password ---------- */
+.password-field { position: relative; }
+.password-field input { padding-right: 44px; }
+button.password-toggle,
+button.password-toggle:hover:not(:disabled) {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+button.password-toggle:hover:not(:disabled) { color: var(--text); background: var(--tint2); }
+
+/* ---------- client dashboard on a phone ----------
+ * Below 720px a six-column table is unreadable, so each row becomes a card:
+ * name and when it last moved on top, then the role, where they are now,
+ * the stage as a full-width picker, and the latest note. Same DOM, so the
+ * click targets and test ids are unchanged; only the layout moves.
+ */
+@media (max-width: 720px) {
+  .client-header { padding: 10px 16px; }
+  .client-header .row > .muted { display: none; }
+  .client-main { padding: 18px 16px 48px; }
+  .client-main .page-header { margin-bottom: 14px; flex-wrap: wrap; }
+  .client-main .page-header h1 { font-size: 22px; margin: 0; }
+
+  /* The pile bar scrolls sideways rather than wrapping into a wall. */
+  .cp-piles {
+    display: flex;
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .cp-piles::-webkit-scrollbar { display: none; }
+  .cp-ui .cp-pile { flex: 0 0 auto; padding: 9px 13px; }
+
+  .cp-toolbar { gap: 8px; }
+  .cp-toolbar > .row { width: 100%; flex-wrap: wrap; gap: 8px; }
+  .cp-inline-controls .cp-search,
+  .cp-inline-controls select { min-width: 0; width: 100%; }
+  .cp-toolbar > .row:last-child { justify-content: flex-end; }
+
+  .cp-grid-wrap { max-height: none; overflow: visible; background: transparent; border: none; }
+  .cp-ui .cp-grid, .cp-ui .cp-grid tbody { display: block; width: 100%; }
+  .cp-ui .cp-grid colgroup, .cp-ui .cp-grid thead { display: none; }
+  .cp-ui .cp-grid tr.cp-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      'select name updated'
+      'role role role'
+      'current current current'
+      'stage stage stage'
+      'note note note';
+    column-gap: 10px;
+    row-gap: 6px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background: #fff;
+    border: 1px solid var(--cp-line);
+    border-radius: 8px;
+  }
+  .cp-ui .cp-grid tr.cp-row > td {
+    display: block;
+    padding: 0;
+    border: none;
+    white-space: normal;
+    overflow: visible;
+  }
+  .cp-ui .cp-grid td.cp-td-select { grid-area: select; align-self: center; }
+  .cp-ui .cp-grid td.cp-td-name { grid-area: name; font-size: 15px; }
+  .cp-ui .cp-grid td.cp-td-updated { grid-area: updated; text-align: right; }
+  .cp-ui .cp-grid td.cp-td-role { grid-area: role; }
+  .cp-ui .cp-grid td.cp-td-current { grid-area: current; font-size: 13px; }
+  .cp-ui .cp-grid td.cp-td-stage { grid-area: stage; }
+  .cp-ui .cp-grid td.cp-td-note { grid-area: note; font-size: 13px; }
+  .cp-ui .cp-grid tr.cp-row > td.cp-td-note:has(.cp-add-note) { display: none; }
+  .cp-ui .cp-grid tr.cp-row > td.cp-td-note:not(:has(.cp-add-note)) {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .cp-ui .cp-stage select { border-color: var(--cp-line-strong); padding-top: 8px; padding-bottom: 8px; font-size: 14px; }
+  .cp-ui .cp-grid tbody tr:not(.cp-row) td.empty { display: block; padding: 32px 16px; background: #fff; border-radius: 8px; }
+
+  /* The client has no checkbox column, so no empty track in front of the name. */
+  .cp-ui .cp-grid tr.cp-row:not(:has(.cp-td-select)) {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'name updated'
+      'role role'
+      'current current'
+      'stage stage'
+      'note note';
+  }
+  /* The cards are the containers now; the table's card wrapper steps aside. */
+  .cp-ui .card.cp-grid-wrap { border: none; box-shadow: none; padding: 0; background: transparent; }
+  /* Touch has no hover; a tapped card must not stay tinted. */
+  .cp-ui .cp-grid tbody tr.cp-row,
+  .cp-ui .cp-grid tbody tr.cp-row:hover { background: #fff; }
+  /* The shared grid freezes its first two columns (sticky, tinted, ruled);
+     inside a card there is nothing to freeze them against. */
+  .cp-ui .cp-grid tbody tr.cp-row > td,
+  .cp-ui .cp-grid tbody tr.cp-row:hover > td {
+    position: static;
+    background: transparent;
+    border-right: none;
+  }
+
+  .cp-drawer { width: 100vw; padding: 18px 16px 40px; }
+  .cp-field { max-width: none; }
+}

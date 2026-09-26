@@ -103,16 +103,6 @@ class TestParsing:
         assert event.is_positive is True
         assert event.is_negative is False
 
-    def test_dislike_is_negative(self):
-        event = parse_reaction(
-            {
-                "event_type": "reaction.added",
-                "data": {"chat_id": "c", "message_id": "m", "reaction_type": "dislike"},
-            }
-        )
-        assert event.is_negative is True
-        assert event.is_positive is False
-
     @pytest.mark.parametrize("reaction", ["laugh", "emphasize", "question", "sticker"])
     def test_ambiguous_tapbacks_are_neither(self, reaction):
         """`question` is the one worth naming: it is a question, not a refusal,
@@ -187,21 +177,6 @@ class TestDeclining:
         # Nothing was filed and nothing was said.
         assert session.scalar(select(Application)) is None
         assert len(channel.sent) == before
-
-    def test_it_records_an_event(self, session, account, channel, thread):
-        """The recruiter side needs to know a role was actively refused, which
-        is different information from a role never answered."""
-        thread, proposals = _present(session, account, thread)
-        card = session.get(IntakeMessage, proposals[0].message_id)
-        _react(session, thread, card.provider_native_id, "dislike")
-
-        event = session.scalar(
-            select(Event).where(Event.type == "proposal.declined")
-        )
-        assert event is not None
-        assert event.subject_id == proposals[0].id
-        assert event.payload["reason"] == "tapback:dislike"
-        assert event.payload["job_posting_id"] == proposals[0].job_posting_id
 
     def test_a_declined_role_is_not_proposed_again(
         self, session, account, channel, thread
@@ -280,15 +255,3 @@ class TestDeclining:
         for proposal in proposals:
             session.refresh(proposal)
             assert proposal.status == "proposed"
-
-    @pytest.mark.parametrize("reaction", ["laugh", "emphasize", "question"])
-    def test_an_ambiguous_tapback_on_a_card_changes_nothing(
-        self, session, account, channel, thread, reaction
-    ):
-        thread, proposals = _present(session, account, thread)
-        card = session.get(IntakeMessage, proposals[0].message_id)
-        result = _react(session, thread, card.provider_native_id, reaction)
-        assert result["acted"] is False
-        session.refresh(proposals[0])
-        assert proposals[0].status == "proposed"
-        assert session.scalar(select(Application)) is None

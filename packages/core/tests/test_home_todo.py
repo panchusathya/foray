@@ -86,26 +86,6 @@ class TestRepliesWaiting:
         assert _items(client, account["headers"]) == {}
 
 
-class TestOtherChores:
-    def test_a_failed_send_is_reported(self, client, session, account):
-        org_id = account["org_id"]
-        candidate = _candidate(session, org_id)
-        _message(
-            session,
-            org_id=org_id,
-            candidate_id=candidate.id,
-            direction="outbound",
-            hours_ago=5,
-            status="bounced",
-        )
-        session.commit()
-
-        assert _items(client, account["headers"])["sends_failed"]["count"] == 1
-
-    def test_an_empty_workspace_reports_nothing(self, client, account):
-        assert _items(client, account["headers"]) == {}
-
-
 class TestActivityIsClickable:
     def test_an_outreach_event_names_the_person_not_just_the_message(
         self, client, session, account

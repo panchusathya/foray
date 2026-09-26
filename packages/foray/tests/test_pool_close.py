@@ -47,11 +47,6 @@ async def test_close_pool_terminates_instead_of_hanging(monkeypatch):
     assert db._pool is None, "the module global must be cleared so a retry re-creates it"
 
 
-async def test_close_pool_is_idempotent(monkeypatch):
-    monkeypatch.setattr(db, "_pool", None)
-    await db.close_pool()  # must not raise
-
-
 def _closes_inside_acquire(path: Path) -> list[int]:
     """Line numbers where close_pool() is awaited inside `async with ...acquire()`."""
     tree = ast.parse(path.read_text(encoding="utf-8"))

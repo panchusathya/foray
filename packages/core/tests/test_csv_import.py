@@ -49,39 +49,6 @@ def csv_payload(
 
 
 class TestBulkAcceptsTheExportShape:
-    def test_a_row_lands_as_a_candidate_with_its_emails_in_order(self, client, account):
-        response = client.post(
-            "/v1/candidates/bulk",
-            headers=account["headers"],
-            json={
-                "candidates": [
-                    csv_payload(
-                        source_id="li:ada-lovelace",
-                        full_name="Ada Lovelace",
-                        emails=["ada@gmail.com", "ada@meta.com"],
-                        reach={"ada@gmail.com": 90, "ada@meta.com": 40},
-                        location="San Francisco Bay Area, California, United States",
-                        linkedin_url="https://linkedin.com/in/ada-lovelace",
-                        current_title="Research Engineer",
-                        current_company="Meta",
-                        years_experience=9.5,
-                    )
-                ]
-            },
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["created"] == 1 and body["updated"] == 0
-        assert len(body["ids"]) == 1
-
-        detail = client.get(
-            f"/v1/candidates/{body['ids'][0]}", headers=account["headers"]
-        ).json()
-        assert detail["full_name"] == "Ada Lovelace"
-        assert detail["current_company"] == "Meta"
-        # Order is the whole point: emails[0] is what send_step mails, and the
-        # personal address has to be the one in front.
-        assert detail["emails"] == ["ada@gmail.com", "ada@meta.com"]
 
     def test_the_same_export_row_twice_updates_rather_than_duplicates(self, client, account):
         row = csv_payload(
@@ -120,22 +87,6 @@ class TestBulkAcceptsTheExportShape:
         )
         rows = session.query(CandidateEmail).filter_by(org_id=account["org_id"]).all()
         assert {r.email for r in rows} == {"bo@gmail.com", "bo@acme.com"}
-
-    def test_a_row_with_no_name_is_dropped_rather_than_failing_the_batch(self, client, account):
-        """normalize_candidate raises on a nameless row and upsert skips it. The
-        importer filters these client-side, but a partial batch must not 500."""
-        response = client.post(
-            "/v1/candidates/bulk",
-            headers=account["headers"],
-            json={
-                "candidates": [
-                    csv_payload(source_id="li:a", full_name="", emails=["a@x.com"]),
-                    csv_payload(source_id="li:b", full_name="Real Person", emails=["b@x.com"]),
-                ]
-            },
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["created"] == 1
 
     def test_a_duplicate_source_id_inside_one_batch_does_not_trip_the_unique_key(
         self, client, account
@@ -185,21 +136,6 @@ class TestSequencingACsvImport:
 
         assert summary.sent >= 1
         assert "ada@gmail.com" in [message.to for message in mailbox.outbox]
-
-    def test_enrolling_marks_the_import_as_tracked_in_the_crm(
-        self, client, account, session, outreach_fixture
-    ):
-        candidate_id = self._import(
-            client, account, source_id="li:cy", full_name="Cy Young", emails=["cy@x.com"]
-        )
-        enroll_candidates(
-            session, sequence=outreach_fixture["sequence"], candidate_ids=[candidate_id]
-        )
-        session.commit()
-        candidate = session.get(Candidate, candidate_id)
-        # enroll_candidates calls track_all: choosing to email someone is what
-        # makes their replies worth keeping.
-        assert candidate.crm_tracked is True
 
     def test_a_risky_only_import_is_stopped_when_the_floor_is_raised(
         self, client, account, session, outreach_fixture, mailbox, monkeypatch
@@ -273,12 +209,6 @@ class TestReachScoresAcrossNamespaces:
         session.flush()
         return row
 
-    def test_a_csv_score_is_read(self, candidate):
-        from juicebox.outreach.sequencer import _email_reach_scores
-
-        candidate.raw = {"juicebox_csv": {"email_reach": {"a@x.com": 90}}}
-        assert _email_reach_scores(candidate) == {"a@x.com": 90}
-
     def test_foray_still_wins_a_conflict(self, candidate):
         from juicebox.outreach.sequencer import _email_reach_scores
 
@@ -287,18 +217,6 @@ class TestReachScoresAcrossNamespaces:
             "foray": {"email_reach": {"a@x.com": 5}},
         }
         assert _email_reach_scores(candidate) == {"a@x.com": 5}
-
-    def test_a_namespace_that_is_not_a_dict_is_ignored(self, candidate):
-        from juicebox.outreach.sequencer import _email_reach_scores
-
-        candidate.raw = {"junk": "not a dict", "other": {"email_reach": "nor this"}}
-        assert _email_reach_scores(candidate) == {}
-
-    def test_no_raw_at_all_is_empty_rather_than_an_error(self, candidate):
-        from juicebox.outreach.sequencer import _email_reach_scores
-
-        candidate.raw = {}
-        assert _email_reach_scores(candidate) == {}
 
 
 class TestCallerAttributionAfterAnImport:

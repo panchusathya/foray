@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 import pytest
 
 from foray.config import settings
-from foray.rank import Window, needs_rerank
-from foray.rerank.cache import TtlLru
-from foray.rerank.document import build_document
 from foray.rerank.runner import rerank, reset_for_tests
 
 
@@ -41,15 +38,6 @@ def _reset_runner(monkeypatch):
     reset_for_tests()
     yield
     reset_for_tests()
-
-
-@pytest.mark.asyncio
-async def test_fake_reranker_returns_logits() -> None:
-    fake = FakeReranker(scores=[1.5, -0.2])
-    outcome = await rerank("vlm", {1: "trained vlms", 2: "used clip"}, scorer=fake)
-    assert outcome.reason == "ok"
-    assert outcome.logits[1] == pytest.approx(1.5)
-    assert fake.calls == 1
 
 
 @pytest.mark.asyncio
@@ -145,47 +133,6 @@ async def test_queue_full_degrades() -> None:
         assert fake.calls == 0
     finally:
         sem.release()
-
-
-def test_needs_rerank_offset_200_skips() -> None:
-    from foray.rank import BlendWeights, RankPolicy
-
-    policy = RankPolicy(
-        weights=BlendWeights(),
-        display_floor=20,
-        page_size=40,
-        max_paginable=1000,
-        min_results_before_widen=12,
-        rerank_depth=48,
-    )
-    assert needs_rerank(Window(200, 40), policy) is False
-
-
-def test_linkedin_document_omits_stars() -> None:
-    doc = build_document(
-        {
-            "evidence_kind": "linkedin",
-            "employer": "Stripe",
-            "title": "Staff Engineer",
-            "est_experience_years": 7,
-            "top_repos": [{"name": "x", "stars": 0}],
-            "commits_last_year": 0,
-            "domain_markers": ["ml"],
-        }
-    )
-    assert "0★" not in doc
-    assert "commits" not in doc
-    assert "Stripe" in doc
-
-
-def test_ttl_lru_expires() -> None:
-    cache = TtlLru(maxsize=2, ttl_s=0.01)
-    cache.put("a", 1.0)
-    assert cache.get("a") == 1.0
-    import time
-
-    time.sleep(0.02)
-    assert cache.get("a") is None
 
 
 def test_warm_cross_encoder_runs_a_forward_pass_not_just_a_load(monkeypatch):

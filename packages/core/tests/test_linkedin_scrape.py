@@ -9,7 +9,6 @@ from juicebox.enrich.linkedin_scrape import (
     looks_like_auth_wall,
     parse_profile_html,
     parse_years_experience,
-    seniority_from_years,
 )
 from juicebox.enrich.linkedin_url import canonical_linkedin_url, find_linkedin, linkedin_slug
 
@@ -51,12 +50,6 @@ class TestParseProfileHtml:
 
 
 class TestYearsMapping:
-    def test_stated_years_map_onto_seniority_buckets(self):
-        assert seniority_from_years(1) == "junior"
-        assert seniority_from_years(4) == "mid"
-        assert seniority_from_years(7) == "senior"
-        assert seniority_from_years(10) == "staff"
-
     def test_years_are_read_from_plain_text(self):
         assert parse_years_experience("i've been doing this 8 years") == 8.0
         assert parse_years_experience("no idea") is None

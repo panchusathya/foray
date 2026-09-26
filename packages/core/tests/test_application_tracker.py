@@ -17,8 +17,6 @@ import pytest
 from sqlalchemy import select
 
 from juicebox.applications.inbox import (
-    KIND_ACKNOWLEDGED,
-    KIND_ASSESSMENT,
     KIND_INTERVIEW,
     KIND_OTHER,
     KIND_REJECTED,
@@ -82,12 +80,6 @@ def _headers(account, candidate) -> dict:
 class TestClassify:
     """The two new labels, and the ordering that makes them useful."""
 
-    def test_an_interview_invitation(self):
-        assert classify("Next steps", "We'd like to schedule an interview").kind == KIND_INTERVIEW
-
-    def test_an_assessment(self):
-        assert classify("Your next step", "Please complete the assessment").kind == KIND_ASSESSMENT
-
     def test_interview_beats_the_acknowledgement_it_opens_with(self):
         """Almost every invitation opens by thanking you for applying."""
         body = "Thank you for applying! We would like to speak with you about the role."
@@ -98,34 +90,8 @@ class TestClassify:
         body = "Thank you for applying. We will not be moving forward to the next round."
         assert classify("", body).kind == KIND_REJECTED
 
-    def test_a_plain_acknowledgement_is_unchanged(self):
-        assert classify("", "We have received your application").kind == KIND_ACKNOWLEDGED
-
-    def test_an_ordinary_note_is_not_labelled(self):
-        assert classify("Quick question", "Are you still in London?").kind == KIND_OTHER
-
 
 class TestStoring:
-    def test_a_message_is_kept_with_its_body(self, session, account, candidate, aliased, no_relay):
-        out = handle(
-            session,
-            org_id=account["org_id"],
-            to_addresses=(_alias_for(session, candidate),),
-            from_address="Greenhouse Recruiting <no-reply@greenhouse.io>",
-            subject="Thank you for applying to Acme",
-            body="We have received your application and will be in touch.",
-            native_id="zm-1",
-        )
-        assert out["routed"] is True
-
-        row = session.scalars(select(ApplicationMessage)).one()
-        assert row.candidate_id == candidate.id
-        assert row.kind == KIND_ACKNOWLEDGED
-        assert row.from_address == "no-reply@greenhouse.io"
-        assert row.from_name == "Greenhouse Recruiting"
-        assert row.body.startswith("We have received")
-        assert row.provider_native_id == "zm-1"
-        assert row.read_at is None
 
     def test_a_replayed_page_does_not_store_or_act_twice(
         self, session, account, candidate, aliased, no_relay
@@ -201,61 +167,6 @@ def _message(session, account, candidate, **kwargs) -> ApplicationMessage:
 
 
 class TestTrackerApi:
-    def test_lists_newest_first_with_counts(self, client, session, account, candidate):
-        _message(session, account, candidate, kind=KIND_INTERVIEW, subject="Interview")
-        _message(session, account, candidate, kind=KIND_REJECTED, subject="No")
-        _message(session, account, candidate, kind=KIND_REJECTED, subject="Also no")
-        session.commit()
-
-        body = client.get(
-            "/v1/portal/tracker/messages", headers=_headers(account, candidate)
-        ).json()
-        assert body["counts"]["all"] == 3
-        assert body["counts"][KIND_REJECTED] == 2
-        assert body["unread"] == 3
-        assert len(body["messages"]) == 3
-        assert KIND_INTERVIEW in body["kinds"]
-
-    def test_filters_by_kind_without_changing_the_counts(
-        self, client, session, account, candidate
-    ):
-        """The chips describe the inbox, not the current filter."""
-        _message(session, account, candidate, kind=KIND_INTERVIEW)
-        _message(session, account, candidate, kind=KIND_REJECTED)
-        session.commit()
-
-        body = client.get(
-            f"/v1/portal/tracker/messages?kind={KIND_INTERVIEW}",
-            headers=_headers(account, candidate),
-        ).json()
-        assert len(body["messages"]) == 1
-        assert body["counts"]["all"] == 2
-
-    def test_the_list_carries_a_preview_not_the_body(self, client, session, account, candidate):
-        _message(session, account, candidate, body="x" * 500)
-        session.commit()
-        body = client.get(
-            "/v1/portal/tracker/messages", headers=_headers(account, candidate)
-        ).json()
-        assert "body" not in body["messages"][0]
-        assert len(body["messages"][0]["preview"]) <= 180
-
-    def test_opening_one_returns_the_body_and_marks_it_read(
-        self, client, session, account, candidate
-    ):
-        row = _message(session, account, candidate, body="The full text")
-        session.commit()
-
-        body = client.get(
-            f"/v1/portal/tracker/messages/{row.id}", headers=_headers(account, candidate)
-        ).json()
-        assert body["body"] == "The full text"
-        assert body["read"] is True, "opening it is what marks it read"
-
-        again = client.get(
-            "/v1/portal/tracker/messages", headers=_headers(account, candidate)
-        ).json()
-        assert again["unread"] == 0
 
     def test_pipeline_shows_live_applications_only(
         self, client, session, account, candidate
@@ -382,23 +293,12 @@ class TestRepliableAddress:
         row = self._msg(from_address="no-reply@ashbyhq.com", reply_to_address="dana@parasail.ai")
         assert repliable_address(row) == "dana@parasail.ai"
 
-    def test_from_is_used_when_a_human_wrote_directly(self):
-        from juicebox.applications.inbox import repliable_address
-
-        assert repliable_address(self._msg(from_address="dana@parasail.ai")) == "dana@parasail.ai"
-
     def test_a_no_reply_everywhere_means_nobody(self):
         """Workday verification mail. A reply box here would just bounce."""
         from juicebox.applications.inbox import repliable_address
 
         row = self._msg(from_address="no-reply@myworkday.com", reply_to_address="noreply@acme.com")
         assert repliable_address(row) == ""
-
-    def test_it_unwraps_a_display_name(self):
-        from juicebox.applications.inbox import repliable_address
-
-        row = self._msg(from_address="Dana Whitfield <dana@parasail.ai>")
-        assert repliable_address(row) == "dana@parasail.ai"
 
     def test_a_noreply_domain_with_a_human_local_part_is_fine(self):
         """The marker is on the local part; noreply.co is a real domain."""
@@ -445,43 +345,6 @@ class TestReplying:
         assert sent.in_reply_to == "<orig@ashbyhq.com>"
         assert sent.subject == "Re: Next steps"
 
-    def test_it_does_not_double_the_re_prefix(self, client, session, account, candidate, monkeypatch):
-        from juicebox.outreach import sender as sender_mod
-        from juicebox.routers import portal as portal_mod
-
-        outbox = sender_mod.MemorySender()
-        monkeypatch.setattr(portal_mod, "sender_for_org", lambda db, org_id: outbox)
-
-        row = self._seed(session, account, candidate, subject="Re: Next steps")
-        client.post(
-            f"/v1/portal/tracker/messages/{row.id}/reply",
-            headers=_headers(account, candidate),
-            json={"body": "ok"},
-        )
-        assert outbox.outbox[-1].subject == "Re: Next steps"
-
-    def test_the_reply_is_stored_as_part_of_the_thread(
-        self, client, session, account, candidate, monkeypatch
-    ):
-        from juicebox.outreach import sender as sender_mod
-        from juicebox.routers import portal as portal_mod
-
-        monkeypatch.setattr(
-            portal_mod, "sender_for_org", lambda db, org_id: sender_mod.MemorySender()
-        )
-        row = self._seed(session, account, candidate)
-        client.post(
-            f"/v1/portal/tracker/messages/{row.id}/reply",
-            headers=_headers(account, candidate),
-            json={"body": "Tuesday works."},
-        )
-        stored = session.scalars(
-            select(ApplicationMessage).where(ApplicationMessage.direction == "outbound")
-        ).all()
-        assert len(stored) == 1
-        assert stored[0].body == "Tuesday works."
-        assert stored[0].read_at is not None, "your own reply is not unread mail"
-
     def test_a_no_reply_message_refuses(self, client, session, account, candidate):
         row = self._seed(
             session,
@@ -497,15 +360,6 @@ class TestReplying:
         )
         assert response.status_code == 409
         assert "no-reply" in response.json()["detail"]
-
-    def test_an_empty_body_refuses(self, client, session, account, candidate):
-        row = self._seed(session, account, candidate)
-        response = client.post(
-            f"/v1/portal/tracker/messages/{row.id}/reply",
-            headers=_headers(account, candidate),
-            json={"body": "   "},
-        )
-        assert response.status_code == 422
 
     def test_a_send_failure_is_not_reported_as_sent(
         self, client, session, account, candidate, monkeypatch

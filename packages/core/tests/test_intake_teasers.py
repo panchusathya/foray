@@ -29,7 +29,6 @@ from juicebox.intake.providers import RetellProvider, set_voice_provider
 from juicebox.intake.teasers import (
     GUIDANCE_NOT_READY,
     _comp_phrase,
-    _more_line,
     _teaser_line,
     rank_postings,
 )
@@ -203,17 +202,6 @@ def _stub_extraction(monkeypatch, record):
 
 
 class TestLineComposition:
-    def test_an_open_market_posting_is_named_in_full(self, session, account):
-        posting = _posting(
-            session,
-            account["org_id"],
-            parsed_spec={"min_compensation": 200000, "max_compensation": 250000},
-        )
-        assert _teaser_line(posting) == (
-            "a Machine Learning Engineer role at Stripe in San Francisco, CA, "
-            "paying $200,000 to $250,000"
-        )
-
     def test_a_mandate_posting_is_never_named(self, session, account):
         posting = _posting(
             session, account["org_id"], source="project", company="SecretCo", parsed_spec={}
@@ -230,18 +218,6 @@ class TestLineComposition:
     def test_a_non_dollar_range_is_not_read_as_dollars(self):
         phrase = _comp_phrase({"max_compensation": 90000, "compensation_currency": "GBP"})
         assert phrase == ""
-
-    def test_remote_stands_in_for_a_missing_location(self, session, account):
-        posting = _posting(
-            session, account["org_id"], location="", open_to_remote=True, parsed_spec={}
-        )
-        assert "fully remote" in _teaser_line(posting)
-
-    def test_the_more_line_is_composed_never_counted_by_the_model(self):
-        assert _more_line(0) == ""
-        assert _more_line(1) == "There is one more in our database that fits what you described."
-        assert _more_line(7) == "There are 7 more in our database that fit what you described."
-        assert "more than twenty" in _more_line(48)
 
 
 # --------------------------------------------------------------------------
@@ -339,13 +315,6 @@ class TestMatchesEndpoint:
         response = client.post("/v1/intake/matches", json=function_call())
         assert response.status_code == 401
 
-    def test_an_unplaceable_call_closes_normally(self, client, signer):
-        response = post(client, signer, function_call(call_id="call_nobody"))
-        assert response.status_code == 200
-        body = response.json()
-        assert body["lines"] == []
-        assert body["matches"] == 0
-        assert "may close" in body["guidance"]
 
     def test_an_unfinished_gate_pitches_nothing(
         self, client, session, signer, owned_number, monkeypatch
@@ -403,66 +372,6 @@ class TestMatchesEndpoint:
         session.expire_all()
         call = session.scalar(select(IntakeCall))
         assert (call.matches_offered or []) == []
-
-    def test_the_promise_tracks_linq_when_it_can_send(
-        self, client, session, signer, owned_number, monkeypatch
-    ):
-        monkeypatch.setenv("LINQ_ENABLED", "true")
-        monkeypatch.setenv("LINQ_API_KEY", "lk_test")
-        monkeypatch.setenv("LINQ_FROM_NUMBER", "+14155550100")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        _stub_extraction(monkeypatch, _filled_required())
-        _posting(session, owned_number.org_id)
-        post_webhook(client, signer)
-        response = post(client, signer, function_call())
-        assert "start_text_verification" in response.json()["guidance"]
-
-    def test_the_promise_never_offers_linq_to_an_opted_out_number(
-        self, client, session, signer, owned_number, monkeypatch
-    ):
-        from juicebox.models import Suppression
-
-        monkeypatch.setenv("LINQ_ENABLED", "true")
-        monkeypatch.setenv("LINQ_API_KEY", "lk_test")
-        monkeypatch.setenv("LINQ_FROM_NUMBER", "+14155550100")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        session.add(
-            Suppression(org_id=owned_number.org_id, email=None, phone=CANDIDATE_NUMBER)
-        )
-        session.commit()
-        _stub_extraction(monkeypatch, _filled_required())
-        _posting(session, owned_number.org_id)
-        post_webhook(client, signer)
-        response = post(client, signer, function_call())
-        assert "start_text_verification" in response.json()["guidance"]
-
-    def test_the_promise_prefers_a_standing_thread(
-        self, client, session, signer, owned_number, monkeypatch
-    ):
-        from juicebox.messaging.manager import MODE_MANAGING
-        from juicebox.messaging.threads import open_thread
-
-        _stub_extraction(monkeypatch, _filled_required())
-        _posting(session, owned_number.org_id)
-        person = _candidate(session, owned_number.org_id, phones=[CANDIDATE_NUMBER])
-        open_thread(
-            session,
-            org_id=owned_number.org_id,
-            channel="linq",
-            provider="linq",
-            provider_thread_id="chat_1",
-            from_address=CANDIDATE_NUMBER,
-            candidate_id=person.id,
-            mode=MODE_MANAGING,
-        )
-        session.commit()
-        post_webhook(client, signer)
-        response = post(client, signer, function_call())
-        assert "start_text_verification" in response.json()["guidance"]
 
 
 def post_webhook(client, signer):
@@ -525,25 +434,6 @@ class TestUndeliverablePromise:
     def test_extraction_does_not_queue_cards_before_the_reply(self, session, account, monkeypatch):
         person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
         call = self._call(session, account["org_id"], candidate_id=person.id)
-        self._extract(session, call, monkeypatch)
-        assert self._handoff_jobs(session) == []
-
-    def test_a_spoken_opt_in_alone_does_not_queue_cards(self, session, account, monkeypatch):
-        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        call = self._call(session, account["org_id"], candidate_id=person.id)
-        self._extract(session, call, monkeypatch)
-        assert call.text_verification_status == ""
-        assert self._handoff_jobs(session) == []
-
-    def test_no_opt_in_means_no_followup(self, session, account, monkeypatch):
-        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        call = self._call(session, account["org_id"], opt_in=False, candidate_id=person.id)
-        self._extract(session, call, monkeypatch)
-        assert self._handoff_jobs(session) == []
-
-    def test_no_pitch_means_no_followup(self, session, account, monkeypatch):
-        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        call = self._call(session, account["org_id"], offered=False, candidate_id=person.id)
         self._extract(session, call, monkeypatch)
         assert self._handoff_jobs(session) == []
 

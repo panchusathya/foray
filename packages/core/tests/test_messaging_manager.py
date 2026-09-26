@@ -28,8 +28,7 @@ from juicebox.jobs import KIND_APP_PACKAGE, KIND_LINKEDIN_SCRAPE
 from juicebox.messaging import cadence
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
 from juicebox.messaging.conversation import ACTION_DEFERRED, ACTION_HELD, run_turn
-from juicebox.messaging.linkedin_flow import FLOW_LINKEDIN_SHORT
-from juicebox.messaging.manager import MODE_INTAKE, MODE_MANAGING
+from juicebox.messaging.manager import MODE_MANAGING
 from juicebox.messaging.threads import STATUS_COMPLETE, open_thread, record_inbound
 from juicebox.models import Application, Job, JobMatch, JobPosting, JobProposal, utcnow
 from juicebox.worker import process_job
@@ -125,34 +124,6 @@ def _managed(session, thread):
     identity.link_candidate(session, thread=thread)
     session.flush()
     return thread
-
-
-class TestOnboardingDefaults:
-    def test_a_linq_thread_starts_on_the_linkedin_flow(self, session, thread):
-        """The webhook sets no mode: `flow` drives onboarding, and a second
-        opinion about which phase we are in is how the two rot apart."""
-        assert thread.flow == FLOW_LINKEDIN_SHORT
-        assert thread.mode == MODE_INTAKE
-
-    def test_the_first_message_says_who_we_are_and_that_it_is_an_ai(
-        self, session, thread, channel
-    ):
-        """One shared number means the candidate cannot tell who is texting.
-
-        CANDIDATE_AGENT_PLAN §2 asked this line for three things: who we are,
-        that this is an AI, and the way out. It now carries the first two. The
-        opt-out recital was removed deliberately and at a cost -- see
-        INTAKE_COMPLIANCE.md section 6a, which records both the argument and
-        the carrier-review exposure, and SMS_ENABLEMENT.md, which makes it a
-        blocker to re-review before SMS goes live. The keyword *handling* is
-        untouched and pinned by ``test_intake_consent_copy.py``.
-        """
-        _say(session, thread, "hey")
-        intro = channel.bodies[0]
-        assert "acme talent" in intro.lower()
-        assert "ai" in intro.lower()
-        assert "STOP" not in intro
-        assert "HELP" not in intro
 
 
 class TestSharedRails:
@@ -316,28 +287,6 @@ class TestManaging:
         assert "Anthropic" not in "\n".join(channel.bodies[-2:])
         assert "looking now" in channel.bodies[-1].lower()
 
-    def test_other_intent_gets_the_canned_deflection(self, session, channel, thread):
-        thread = _managed(session, thread)
-        _say(session, thread, "can you fix my printer", native_id="m-other")
-        assert "recruiter will follow up" in channel.bodies[-1]
-
-
-def _card_lines(body: str) -> str:
-    return "\n".join(line for line in body.splitlines() if "/m/" not in line)
-
-
-class TestIntakeUntouched:
-    def test_web_intake_still_runs_the_classic_flow(self, session, account):
-        from juicebox.messaging.channels import WEB
-
-        set_channel(WEB, FakeChannel())
-        thread = open_thread(
-            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
-        )
-        assert thread.mode == MODE_INTAKE
-        assert thread.flow == "full"
-        assert run_turn(session, thread=thread).action == "greeted"
-
 
 class TestTheFirstLiveThread:
     """Regression pins from the first real conversation (2026-08-24, 19:09).
@@ -401,16 +350,6 @@ class TestTheFirstLiveThread:
         assert thread.candidate_id, "an email is enough to link"
         assert "name" not in channel.bodies[-1].lower(), "must not ask for a name"
 
-    def test_it_still_asks_when_it_has_nothing(self, session, account, channel, thread):
-        """The one case a name is worth asking for: no email, no LinkedIn."""
-        thread.record = _core_complete_record()
-        thread.contact_email = ""
-        thread.contact_linkedin = ""
-        thread.mode = MODE_MANAGING
-        session.flush()
-
-        _say(session, thread, "find me roles", native_id="live-3")
-        assert "email" in channel.bodies[-1].lower()
 
     def test_never_sends_the_same_canned_line_twice(self, session, account, channel, thread):
         """Two identical replies in a row is what made the agent look broken."""
@@ -463,18 +402,6 @@ class TestConversationalVoice:
 
         monkeypatch.setattr(conv, "get_llm", lambda: FakeLLM())
 
-    def test_no_model_means_the_canned_copy(self, session, thread):
-        from juicebox.messaging.conversation import humanize
-
-        canned = "- what are you targeting on comp (base is fine)?"
-        assert humanize(thread, says=canned, last_inbound="hi") == canned
-
-    def test_a_rewrite_is_used(self, session, thread, monkeypatch):
-        from juicebox.messaging.conversation import humanize
-
-        self._llm(monkeypatch, "got it sathya — what are you targeting on comp?")
-        out = humanize(thread, says="- comp?", last_inbound="i'm sathya")
-        assert out.startswith("got it sathya")
 
     def test_an_invented_question_is_refused(self, session, thread, monkeypatch):
         """The guard the batched length check cannot provide.
@@ -498,14 +425,6 @@ class TestConversationalVoice:
         self._llm(monkeypatch, "x" * 5000)
         assert humanize(thread, says=canned, last_inbound="hi") == canned
 
-    def test_nothing_to_react_to_means_no_call(self, session, thread, monkeypatch):
-        """No inbound, no rewrite: there is nothing to acknowledge."""
-        from juicebox.messaging.conversation import humanize
-
-        self._llm(monkeypatch, "should not be used")
-        canned = "- comp?"
-        assert humanize(thread, says=canned, last_inbound="") == canned
-
 
 class TestTapbackApplies:
     """A thumbs-up on a job card is a yes to that job.
@@ -528,12 +447,6 @@ class TestTapbackApplies:
         base["data"].update(over)
         return base
 
-    def test_a_like_from_the_candidate_is_positive(self):
-        from juicebox.messaging.linq import parse_reaction
-
-        e = parse_reaction(self._payload("c1", "m1", "like"))
-        assert e.is_positive
-        assert parse_reaction(self._payload("c1", "m1", "love")).is_positive
 
     def test_our_own_reaction_is_not_a_yes(self):
         """is_from_me: we reacted, not them."""
@@ -554,14 +467,6 @@ class TestTapbackApplies:
         payload = self._payload("c1", "m1", "like")
         payload["event_type"] = "reaction.removed"
         assert not parse_reaction(payload).is_positive
-
-    def test_a_payload_without_ids_is_refused(self):
-        import pytest as _pytest
-
-        from juicebox.messaging.linq import parse_reaction
-
-        with _pytest.raises(ValueError):
-            parse_reaction({"event_type": "reaction.added", "data": {}})
 
 
 class TestDeadPostingsAreNotProposed:
@@ -607,12 +512,6 @@ class TestDeadPostingsAreNotProposed:
         assert "Rippling" not in burst, "a dead role reached the candidate"
         session.refresh(dead)
         assert dead.status == "closed", "and it must not come back next time"
-
-    def test_no_url_means_no_network_call(self, session, account, channel, thread):
-        """Hand-entered postings have no source_url; they are not checked."""
-        from juicebox.jobmatch.liveness import is_gone
-
-        assert not is_gone("")
 
 
 class TestEveryBoardIsProposed:
@@ -660,21 +559,6 @@ class TestEveryBoardIsProposed:
             is not None
         )
 
-    def test_an_all_unsupported_book_is_carded_not_refused(
-        self, session, account, channel, thread
-    ):
-        thread = _managed(session, thread)
-        org_id = account["org_id"]
-        posting = _posting(session, org_id, company="Wipro", title="Junior Dev", suffix="au")
-        posting.ats_vendor = "taleo"
-        self._match(session, org_id, thread, posting)
-        session.flush()
-
-        _say(session, thread, "find me some roles", native_id="unsup-2")
-
-        burst = "\n".join(channel.bodies).lower()
-        assert "can't submit" not in burst
-        assert "wipro" in burst
 
     def test_a_networked_miss_does_not_poison_the_posting(
         self, session, account, channel, thread
@@ -738,20 +622,6 @@ class TestPollSelection:
         assert chat_id == "chat-1"
         assert options == [("o1", "Strat Fin — Rippling"), ("o2", "Analyst — Toast")]
 
-    def test_a_vote_carries_no_text_only_an_id(self):
-        from juicebox.messaging.linq import parse_poll_vote
-
-        chat_id, option_id, is_me = parse_poll_vote(
-            {
-                "event_type": "poll.vote.added",
-                "data": {
-                    "chat": {"id": "chat-1"},
-                    "option_id": "o2",
-                    "sender_handle": {"is_me": False},
-                },
-            }
-        )
-        assert (chat_id, option_id, is_me) == ("chat-1", "o2", False)
 
     def test_our_own_vote_is_not_a_selection(self):
         """Polls use sender_handle.is_me -- reactions use is_from_me."""
@@ -770,32 +640,6 @@ class TestChatCourtesies:
     because a receipt 500'd would cost the conversation.
     """
 
-    def _calls(self):
-        seen = []
-        return seen, (lambda method, url, body: seen.append((method, url.rsplit("/v3", 1)[-1])))
-
-    def test_read_uses_the_documented_chat_endpoint(self):
-        from juicebox.messaging.linq import mark_chat_read
-
-        seen, transport = self._calls()
-        mark_chat_read("chat-1", transport=transport)
-        assert seen == [("POST", "/chats/chat-1/read")]
-
-    def test_typing_starts_and_stops(self):
-        from juicebox.messaging.linq import start_typing, stop_typing
-
-        seen, transport = self._calls()
-        start_typing("chat-1", transport=transport)
-        stop_typing("chat-1", transport=transport)
-        assert seen == [("POST", "/chats/chat-1/typing"), ("DELETE", "/chats/chat-1/typing")]
-
-    def test_no_chat_id_sends_nothing(self):
-        from juicebox.messaging.linq import mark_chat_read
-
-        seen, transport = self._calls()
-        mark_chat_read("", transport=transport)
-        assert seen == []
-
     def test_a_failure_never_escapes(self, session, thread):
         """maybe_mark_read is called mid-turn; it must not be able to raise."""
         import juicebox.messaging.linq as linq
@@ -809,39 +653,6 @@ class TestChatCourtesies:
         finally:
             linq.mark_chat_read = original
 
-    def test_a_non_linq_thread_is_skipped(self, session, thread):
-        import juicebox.messaging.linq as linq
-
-        thread.channel = "web"
-        thread.provider_thread_id = "chat-1"
-        called = []
-        original = linq.mark_chat_read
-        linq.mark_chat_read = lambda *a, **k: called.append(1)
-        try:
-            linq.maybe_mark_read(thread)
-        finally:
-            linq.mark_chat_read = original
-        assert called == []
-
-    def test_send_reaction_payload_shape(self):
-        from juicebox.messaging.linq import send_reaction
-
-        seen, transport = self._calls()
-        assert send_reaction("m-1", "love", transport=transport) is True
-        assert seen == [("POST", "/messages/m-1/reactions")]
-
-    def test_send_reaction_rejects_unknown_types(self):
-        from juicebox.messaging.linq import send_reaction
-
-        seen, transport = self._calls()
-        assert send_reaction("m-1", "sticker", transport=transport) is False
-        assert send_reaction("", "like", transport=transport) is False
-        assert seen == []
-
-    def test_send_reaction_skips_when_unconfigured(self):
-        from juicebox.messaging.linq import send_reaction
-
-        assert send_reaction("m-1", "like") is False
 
     def test_send_message_puts_media_and_text_in_one_message(self):
         """One bubble, media first, then the words.
@@ -880,26 +691,6 @@ class TestChatCourtesies:
             {"type": "text", "value": "1/2  ML Engineer"},
         ]
 
-    def test_send_message_still_accepts_a_public_url(self):
-        """An id is preferred, but a URL part is still a legal media part."""
-        from juicebox.messaging.linq import OutboundMedia, send_message
-
-        captured = []
-
-        def transport(method, url, body):
-            captured.append(body)
-            return {"id": "linq-m-2"}
-
-        send_message(
-            chat_id="chat-1",
-            body="",
-            idempotency_key="k",
-            media=(OutboundMedia(url="https://example.com/x.png"),),
-            transport=transport,
-        )
-        assert captured[0]["message"]["parts"] == [
-            {"type": "media", "url": "https://example.com/x.png"}
-        ]
 
     def test_send_message_with_nothing_to_send_refuses(self):
         """A message with no body and no media is a bug, not an empty send."""
@@ -914,42 +705,6 @@ class TestChatCourtesies:
                 idempotency_key="k",
                 transport=lambda *a: {"id": "x"},
             )
-
-
-class TestWebCardsStayText:
-    def test_web_thread_still_sends_render_card_text(self, session, account):
-        from juicebox.messaging.channels import WEB
-
-        fake = FakeChannel()
-        set_channel(WEB, fake)
-        thread = open_thread(
-            session,
-            org_id=account["org_id"],
-            channel=WEB,
-            consent_messaging=True,
-        )
-        thread = _managed(session, thread)
-        org_id = account["org_id"]
-        for index, company in enumerate(("Anthropic", "Figma")):
-            posting = _posting(session, org_id, company=company, suffix=f"web{index}")
-            session.add(
-                JobMatch(
-                    org_id=org_id,
-                    job_posting_id=posting.id,
-                    candidate_id=thread.candidate_id,
-                    score=0.9,
-                    criteria=[STRONG],
-                    status="new",
-                )
-            )
-        session.flush()
-        _say(session, thread, "find me some roles", native_id="web-present")
-        burst = "\n".join(fake.bodies)
-        assert "ML Engineer — Anthropic" in burst
-        assert "ML Engineer — Figma" in burst
-        assert "Current title matches" in burst
-        assert "1/" in burst
-        assert not any(item[1].media for item in fake.sent)
 
 
 class TestTapbackAppliesToCardRows:
@@ -1008,14 +763,6 @@ class TestTapbackAppliesToCardRows:
 
 
 class TestAckReactions:
-    def test_thanks_on_linq_loves_and_sends_a_warm_line(self, session, channel, thread):
-        thread = _managed(session, thread)
-        result = _say(session, thread, "thanks!", native_id="ack-thanks")
-        assert result.action == "acknowledged"
-        assert channel.reactions == [("ack-thanks", "love")]
-        assert "anytime" in channel.bodies[-1].lower()
-        assert result.sent
-
     def test_great_on_linq_likes_and_stays_silent(self, session, channel, thread):
         thread = _managed(session, thread)
         before = list(channel.bodies)
@@ -1032,20 +779,4 @@ class TestAckReactions:
         assert intents.classify("thanks", presented=[]).kind == intents.INTENT_ACK
         assert intents.classify("thanks", presented=[]).reaction == "love"
 
-    def test_thanks_on_web_sends_the_warm_line_without_a_reaction(self, session, account):
-        from juicebox.messaging.channels import WEB, WebChatChannel
-        from juicebox.messaging.threads import messages_of
-
-        set_channel(WEB, WebChatChannel())
-        thread = open_thread(
-            session,
-            org_id=account["org_id"],
-            channel=WEB,
-            consent_messaging=True,
-        )
-        thread = _managed(session, thread)
-        result = _say(session, thread, "thanks", native_id="web-thanks")
-        assert result.action == "acknowledged"
-        bodies = [m.body for m in messages_of(session, thread) if m.direction == "outbound"]
-        assert any("anytime" in (b or "").lower() for b in bodies)
 

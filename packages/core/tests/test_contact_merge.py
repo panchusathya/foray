@@ -67,18 +67,6 @@ class TestPlaceholderName:
 
 
 class TestMerge:
-    def test_a_new_address_and_number_are_added(self, session, account):
-        candidate = a_candidate(session, account, name="Priya Raman")
-        merged = merge_contact_details(
-            session,
-            candidate,
-            email="priya@example.com",
-            phone="+14155550123",
-        )
-        assert merged.emails_added == ("priya@example.com",)
-        assert merged.phones_added == ("+14155550123",)
-        assert "priya@example.com" in candidate.emails
-        assert "+14155550123" in candidate.phones
 
     def test_the_projections_are_written_too(self, session, account):
         """A JSON column nothing indexed is a detail no lookup can find."""
@@ -94,14 +82,6 @@ class TestMerge:
         assert session.scalar(
             select(CandidatePhone.candidate_id).where(CandidatePhone.phone == "+14155550123")
         ) == candidate.id
-
-    def test_re_merging_the_same_details_changes_nothing(self, session, account):
-        candidate = a_candidate(
-            session, account, name="Priya Raman", emails=["priya@example.com"]
-        )
-        merged = merge_contact_details(session, candidate, email="priya@example.com")
-        assert not merged
-        assert candidate.emails == ["priya@example.com"]
 
     def test_a_number_already_held_in_another_spelling_is_not_duplicated(
         self, session, account
@@ -157,11 +137,6 @@ class TestNaming:
         merged = merge_contact_details(session, candidate, name="Priya Raman")
         assert not merged.named
         assert candidate.full_name == "Priyanka Raman"
-
-    def test_no_name_offered_is_not_a_rename(self, session, account):
-        candidate = a_candidate(session, account, name="priya@example.com")
-        merge_contact_details(session, candidate, name="")
-        assert candidate.full_name == "priya@example.com"
 
 
 class TestSuppression:

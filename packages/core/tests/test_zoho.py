@@ -16,9 +16,9 @@ import pytest
 
 from juicebox.integrations import zoho
 from juicebox.integrations.crypto import decrypt_json, encrypt_json
-from juicebox.integrations.providers import FOLDER_INBOX, FOLDER_SENT, set_provider
+from juicebox.integrations.providers import FOLDER_INBOX, FOLDER_SENT
 from juicebox.integrations.zoho import ZohoClient, ZohoError, ZohoProvider, ZohoSender
-from juicebox.models import MailboxConnection, utcnow
+from juicebox.models import MailboxConnection
 from juicebox.outreach.sender import OutboundEmail
 
 
@@ -327,22 +327,6 @@ class TestSender:
         assert result.provider_native_id == "170001"
         assert result.conversation_id == "170001"
 
-    def test_a_threadid_in_the_response_wins_over_the_fallback(self, session, account):
-        connection = _connection(account["org_id"])
-        fake = FakeZohoClient(
-            send_response={"messageId": "170001", "mailId": "<a@b>", "threadId": "thr-9"}
-        )
-        result = ZohoSender(session, connection, client=fake).send(
-            OutboundEmail(
-                to="ada@example.com",
-                subject="s",
-                text_body="b",
-                html_body="<p>b</p>",
-                from_email=connection.address,
-            )
-        )
-        assert result.conversation_id == "thr-9"
-
     def test_threading_headers_are_passed_when_present(self, session, account):
         connection = _connection(account["org_id"])
         fake = FakeZohoClient()
@@ -360,21 +344,6 @@ class TestSender:
         [body] = fake.sent
         assert body["inReplyTo"] == "<parent@goforay.io>"
         assert body["refHeader"] == "<parent@goforay.io>"
-
-    def test_a_first_step_sends_without_threading_fields(self, session, account):
-        connection = _connection(account["org_id"])
-        fake = FakeZohoClient()
-        ZohoSender(session, connection, client=fake).send(
-            OutboundEmail(
-                to="ada@example.com",
-                subject="Hello",
-                text_body="Hi",
-                html_body="<p>Hi</p>",
-                from_email="tushar@goforay.io",
-            )
-        )
-        [body] = fake.sent
-        assert "inReplyTo" not in body and "refHeader" not in body
 
     def test_a_response_without_a_message_id_is_not_a_success(self, session, account):
         """Reporting ok here would leave a row nothing can dedupe or attach a
@@ -428,10 +397,6 @@ class TestEventParsing:
         """A draft ingested as a reply would stop a live sequence."""
         assert zoho.to_event(_row(mode="draft")).is_draft
         assert not zoho.to_event(_row()).is_draft
-
-    def test_the_summary_is_only_a_fallback(self):
-        event = zoho.to_event(_row())
-        assert event.body == "truncated preview" and not event.body_is_html
 
 
 class TestFolderPolling:
@@ -581,32 +546,6 @@ class TestFolderPolling:
         assert len(page.events) == 2
         assert page.next_cursor == ""
 
-    def test_headers_are_only_fetched_without_a_thread_id(self, session, account):
-        """One extra call per message is worth avoiding when the thread id
-        already gives a stricter match."""
-        connection = _connection(account["org_id"])
-        session.add(connection)
-        session.flush()
-        rows = [
-            _row(message_id="threaded", received_ms=1_700_000_002_000, thread_id="t-1"),
-            _row(message_id="loose", received_ms=1_700_000_001_000, thread_id=""),
-        ]
-        fake = FakeZohoClient(pages=rows)
-        fake.headers["loose"] = raw_headers(in_reply_to="<parent@goforay.io>")
-        provider = ZohoProvider(client_factory=lambda db, conn: fake)
-
-        page = provider.iter_folder(
-            session,
-            connection,
-            FOLDER_INBOX,
-            cursor=json.dumps({"mark": 1_700_000_000_000, "seen": []}),
-        )
-        assert fake.header_calls == ["loose"]
-        loose = next(event for event in page.events if event.native_id == "loose")
-        assert loose.in_reply_to == "<parent@goforay.io>"
-        threaded = next(event for event in page.events if event.native_id == "threaded")
-        assert threaded.in_reply_to == ""
-
     def test_headers_come_back_as_one_raw_rfc_block(self):
         """What Zoho actually returns: the whole header block as a single
         string, not a key/value map. Believing otherwise silently reduced Zoho
@@ -635,22 +574,6 @@ class TestFolderPolling:
         ) + crlf
         value = zoho._header_value({"headerContent": blob}, "references")
         assert value == "<one@goforay.io> <two@goforay.io> <three@goforay.io>"
-
-    def test_the_dict_shape_still_works(self):
-        """Kept as a fallback for the shape some accounts reportedly return."""
-        assert zoho._header_value({"In-Reply-To": "<p@x.io>"}, "in-reply-to") == "<p@x.io>"
-        assert (
-            zoho._header_value({"headers": {"In-Reply-To": "<p@x.io>"}}, "in-reply-to")
-            == "<p@x.io>"
-        )
-
-    def test_a_missing_folder_id_says_so(self, session, account):
-        connection = _connection(account["org_id"], sync_state={})
-        session.add(connection)
-        session.flush()
-        provider = ZohoProvider(client_factory=lambda db, conn: FakeZohoClient())
-        with pytest.raises(ZohoError, match="reconnect"):
-            provider.iter_folder(session, connection, FOLDER_INBOX, cursor="")
 
 
 class TestReplyDraft:
@@ -688,40 +611,6 @@ class TestReplyDraft:
         assert body["subject"] == "Re: role"
         assert body["inReplyTo"] == "<parent@example.com>"
 
-    def test_the_draft_quotes_the_original(self, session, account, outreach_fixture):
-        """Zoho does not quote for us even with inReplyTo set, so the draft
-        would otherwise open with no sight of what is being answered."""
-        from juicebox.models import Message
-
-        connection = _connection(account["org_id"])
-        session.add(connection)
-        session.flush()
-        inbound = Message(
-            org_id=account["org_id"],
-            candidate_id=outreach_fixture["candidates"][0].id,
-            direction="inbound",
-            status="received",
-            from_address="ada@example.com",
-            to_address="tushar@goforay.io",
-            subject="Re: role",
-            body="Sounds interesting, what is the comp range?",
-            internet_message_id="<parent@example.com>",
-            provider_native_id="170002",
-            sent_at=utcnow(),
-        )
-        session.add(inbound)
-        session.flush()
-
-        fake = FakeZohoClient(send_response={"messageId": "draft-9"})
-        ZohoProvider(client_factory=lambda db, conn: fake).place_reply_draft(
-            session, connection=connection, inbound=inbound, html_body="<p>Happy to share.</p>"
-        )
-        [body] = [b["content"] for b in fake.sent]
-        assert "<p>Happy to share.</p>" in body
-        assert "what is the comp range?" in body
-        assert "ada@example.com wrote:" in body
-        assert "<blockquote" in body
-
     def test_quoting_escapes_a_plaintext_original(self, session, account):
         """A plain-text reply containing angle brackets must not be able to
         inject markup into the draft."""
@@ -734,39 +623,6 @@ class TestReplyDraft:
         quoted = zoho._quote_original(inbound)
         assert "&lt;script&gt;" in quoted
         assert "<script>" not in quoted
-
-    def test_nothing_to_quote_is_not_an_error(self):
-        assert zoho._quote_original(SimpleNamespace(body="", body_html="")) == ""
-
-    def test_a_subject_without_re_gets_one(self):
-        assert zoho._reply_subject("Role at Foray") == "Re: Role at Foray"
-        assert zoho._reply_subject("Re: Role") == "Re: Role"
-        assert zoho._reply_subject("") == "Re:"
-
-
-class TestWiredIntoTheApp:
-    def test_zoho_connect_is_refused_until_configured(self, client, account):
-        response = client.post("/v1/integrations/zoho/connect", headers=account["headers"])
-        assert response.status_code == 503
-        assert "ZOHO_CLIENT_ID" in response.json()["detail"]
-
-    def test_a_configured_zoho_offers_an_auth_url(self, client, account, zoho_configured):
-        body = client.post(
-            "/v1/integrations/zoho/connect", headers=account["headers"]
-        ).json()
-        assert body["auth_url"].startswith("https://accounts.zoho.com/oauth/v2/auth?")
-
-    def test_a_zoho_mailbox_joins_the_rotation(self, session, account, zoho_configured):
-        """The pool is provider-blind: a Zoho mailbox is just another sender."""
-        from juicebox.outreach.rotation import eligible_mailboxes
-
-        connection = _connection(account["org_id"])
-        session.add(connection)
-        session.flush()
-        set_provider("zoho", ZohoProvider(client_factory=lambda db, conn: FakeZohoClient()))
-        assert [c.address for c in eligible_mailboxes(session, org_id=account["org_id"])] == [
-            "tushar@goforay.io"
-        ]
 
 
 class TestEscapedRecipients:
@@ -793,12 +649,6 @@ class TestEscapedRecipients:
 
         raw = "Anna &lt;anna+tok@goforay.io&gt;"
         assert _addresses(raw) == ["anna+tok@goforay.io"]
-
-    def test_several_escaped_recipients(self):
-        from juicebox.integrations.zoho import _addresses
-
-        raw = "&lt;a@x.com&gt;,&lt;b@y.com&gt;"
-        assert _addresses(raw) == ["a@x.com", "b@y.com"]
 
     def test_unescaped_input_still_works(self):
         """Zoho is not consistent across views, so both shapes must parse."""

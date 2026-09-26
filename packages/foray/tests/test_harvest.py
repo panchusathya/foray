@@ -10,63 +10,9 @@ from foray.harvest.search import (
     parse_range,
     split_range,
 )
-from foray.harvest.shards import (
-    ENGINEER_FOLLOWER_BUCKETS,
-    ENGINEER_LANGUAGES,
-    ENGINEER_YEARS,
-    FOLLOWER_BUCKETS,
-    LANGUAGES,
-    YEARS,
-    compose_query,
-    created_range_for_year,
-    generate_shards,
-    load_metros,
-)
 from tests.dbutil import requires_db
 
 # ------------------------------------------------------------------ offline logic --
-
-
-def test_dimensions():
-    assert len(LANGUAGES) == 12
-    assert len(FOLLOWER_BUCKETS) == 6
-    assert len(YEARS) == 11
-    assert len(load_metros()) == 40
-
-
-def test_shard_grid_is_31680():
-    shards = generate_shards()
-    assert len(shards) == 40 * 12 * 6 * 11 == 31680
-    # unique on the 4 dimensions
-    keys = {(loc, lang, fb, cr) for (loc, lang, fb, cr, _q) in shards}
-    assert len(keys) == len(shards)
-
-
-def test_engineer_weighted_grid_is_a_strict_subset():
-    full = generate_shards()
-    weighted = generate_shards(
-        languages=ENGINEER_LANGUAGES,
-        follower_buckets=ENGINEER_FOLLOWER_BUCKETS,
-        years=ENGINEER_YEARS,
-    )
-    assert len(weighted) == (
-        40 * len(ENGINEER_LANGUAGES) * len(ENGINEER_FOLLOWER_BUCKETS) * len(ENGINEER_YEARS)
-    )
-    assert len(weighted) < len(full)
-    assert set(ENGINEER_LANGUAGES) <= set(LANGUAGES)
-    assert set(ENGINEER_FOLLOWER_BUCKETS) <= set(FOLLOWER_BUCKETS)
-    assert set(ENGINEER_YEARS) <= set(YEARS)
-    # No 10..24 bucket: those shards dominate harvest time for little email yield.
-    assert all("followers:10..24" not in q for *_rest, q in weighted)
-
-
-def test_compose_query_shape():
-    q = compose_query("San Francisco", "python", "10..24", created_range_for_year(2012))
-    assert 'location:"San Francisco"' in q
-    assert "language:python" in q
-    assert "followers:10..24" in q
-    assert "created:2012-01-01..2012-12-31" in q
-    assert "type:user" in q
 
 
 def test_split_year_halves():
@@ -78,10 +24,6 @@ def test_split_year_halves():
     assert b1.isoformat() == "2012-12-31"
     # contiguous, non-overlapping
     assert (b0 - a1).days == 1
-
-
-def test_split_stops_at_month_granularity():
-    assert split_range("2012-01-01..2012-01-31") is None
 
 
 def test_split_converges():

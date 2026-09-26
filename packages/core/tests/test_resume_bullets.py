@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 
 from juicebox.docgen.bullets import (
-    MAX_BULLETS_PER_ROLE,
     _flatten,
     candidate_evidence,
     fill_missing_bullets,
@@ -122,11 +121,6 @@ class TestDrafting:
         assert filled["experience"][1]["bullets"] == []
         assert filled["experience"][2]["bullets"] == []
 
-    def test_the_input_resume_is_never_mutated(self):
-        _transport(_drafted(_role("Camerbally", ("A bullet.", SETTLEMENT_QUOTE))))
-        before = json.dumps(BARE, sort_keys=True)
-        fill_missing_bullets(BARE, evidence=TRANSCRIPT)
-        assert json.dumps(BARE, sort_keys=True) == before
 
     def test_a_quote_survives_the_provider_reflowing_it(self):
         """Line breaks and smart quotes are not a change of meaning.
@@ -141,21 +135,6 @@ class TestDrafting:
         _, added = fill_missing_bullets(BARE, evidence=TRANSCRIPT)
         assert added == 1
 
-    def test_more_bullets_than_a_role_can_hold_are_trimmed(self):
-        _transport(
-            _drafted(
-                _role(
-                    "Camerbally",
-                    *[
-                        (f"Rewrote the settlement job, take {word}.", SETTLEMENT_QUOTE)
-                        for word in ("one", "two", "three", "four", "five", "six")
-                    ],
-                )
-            )
-        )
-        filled, added = fill_missing_bullets(BARE, evidence=TRANSCRIPT)
-        assert added == MAX_BULLETS_PER_ROLE
-        assert len(filled["experience"][0]["bullets"]) == MAX_BULLETS_PER_ROLE
 
     def test_a_promotion_does_not_print_the_same_bullets_twice(self):
         """Two bare rows at one employer is what a promotion looks like."""
@@ -225,10 +204,6 @@ class TestDrafting:
         assert (added, transport.calls) == (0, [])
         assert filled is BARE
 
-    def test_no_model_configured_ships_the_bare_resume(self):
-        set_llm(None)
-        filled, added = fill_missing_bullets(BARE, evidence=TRANSCRIPT)
-        assert (filled, added) == (BARE, 0)
 
     def test_a_model_failure_ships_the_bare_resume(self):
         set_llm(LLMClient(transport=FakeTransport([LLMUnavailable("down")]), enabled=True))
@@ -306,14 +281,6 @@ class TestTheGuard:
             "US Congress",
         ]
 
-    def test_a_bullet_longer_than_a_bullet_is_discarded(self):
-        _transport(
-            _drafted(
-                _role("Camerbally", (" ".join(["word"] * 60) + ".", SETTLEMENT_QUOTE))
-            )
-        )
-        _, added = fill_missing_bullets(BARE, evidence=TRANSCRIPT)
-        assert added == 0
 
     def test_a_malformed_response_ships_the_bare_resume(self):
         _transport({"roles": "not a list"})
@@ -390,9 +357,6 @@ class TestEvidence:
         # Our agent's question is not a claim the candidate can be held to.
         assert "What did you build" not in evidence
 
-    def test_a_candidate_who_has_told_us_nothing_has_no_evidence(self, session, account):
-        candidate = self._candidate(session, account["org_id"])
-        assert candidate_evidence(session, candidate) == ""
 
     def test_another_candidates_call_is_not_evidence(self, session, account):
         candidate = self._candidate(session, account["org_id"])

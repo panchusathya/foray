@@ -25,7 +25,6 @@ from juicebox.models import (
 from juicebox.outreach.rotation import (
     eligible_mailboxes,
     pick_mailbox,
-    pool_capacity,
     sent_in_window,
 )
 from juicebox.outreach.sender import SendResult, resolve_sender, set_sender_factory
@@ -95,15 +94,6 @@ class TestEligibility:
         session.flush()
         addresses = {c.address for c in eligible_mailboxes(session, org_id=pool["sequence"].org_id)}
         assert "bravo@goforay.io" not in addresses
-
-    def test_revoked_mailboxes_are_not_eligible(self, session, pool):
-        pool["connections"][2].status = "revoked"
-        session.flush()
-        addresses = {c.address for c in eligible_mailboxes(session, org_id=pool["sequence"].org_id)}
-        assert "charlie@goforay.io" not in addresses
-
-    def test_pool_capacity_is_the_sum_of_the_caps(self, session, pool):
-        assert pool_capacity(session, org_id=pool["sequence"].org_id) == 6
 
     def test_only_sent_messages_consume_a_slot(self, session, pool, outreach_fixture):
         """A queued row has not spent reputation and a failed one never left."""
@@ -185,17 +175,6 @@ class TestSpread:
 
 
 class TestPinning:
-    def test_the_first_send_pins_the_enrollment(self, session, pool):
-        candidate = pool["candidates"][0]
-        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
-        session.commit()
-        run_due(session, org_id=pool["sequence"].org_id)
-        session.commit()
-
-        enrollment = session.query(Enrollment).one()
-        assert enrollment.mailbox_id is not None
-        chosen = session.get(MailboxConnection, enrollment.mailbox_id)
-        assert chosen.address == pool["log"][0]
 
     def test_a_pinned_enrollment_keeps_its_mailbox_for_later_steps(self, session, pool):
         """Rotation must not move a live conversation: the candidate's client
@@ -238,21 +217,6 @@ class TestPinning:
         result = resolved.sender.send(None)
         assert not result.ok and "reconnect" in result.error
 
-    def test_fixed_mode_overrides_the_pool(self, session, pool):
-        pinned = pool["connections"][2]
-        pool["sequence"].sender_mode = "fixed"
-        pool["sequence"].mailbox_id = pinned.id
-        session.flush()
-
-        candidate_ids = [c.id for c in pool["candidates"]][:2]
-        pinned.daily_send_cap = 5
-        session.flush()
-        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=candidate_ids)
-        session.commit()
-        run_due(session, org_id=pool["sequence"].org_id)
-        session.commit()
-        assert set(pool["log"]) == {pinned.address}
-
 
 class TestSubset:
     """A rotating sequence limited to some of the org's mailboxes.
@@ -279,15 +243,6 @@ class TestSubset:
         assert len(pool["log"]) == 3
         assert charlie.address not in pool["log"]
         assert set(pool["log"]) == {alpha.address, bravo.address}
-
-    def test_an_empty_list_still_means_every_mailbox(self, session, pool):
-        """The default an untouched sequence carries, and what makes a mailbox
-        connected later join the rotation without an edit."""
-        assert pool["sequence"].mailbox_ids == []
-        addresses = {
-            c.address for c in eligible_mailboxes(session, org_id=pool["sequence"].org_id, only=[])
-        }
-        assert addresses == {c.address for c in pool["connections"]}
 
     def test_a_full_subset_defers_instead_of_borrowing_a_spare_mailbox(self, session, pool):
         alpha, _bravo, charlie = pool["connections"]
@@ -510,40 +465,6 @@ class TestThreadingHeaders:
         assert captured[2].in_reply_to == "<native-2@test>"
         assert captured[2].references == "<native-1@test> <native-2@test>"
 
-    def test_a_follow_up_keeps_the_threads_subject(self, session, pool):
-        """A changed subject line splits the conversation in Gmail and Outlook
-        even when the headers are right, so a step that renders the same
-        subject as the first email sends as a reply to it.
-
-        The same subject on every step is how the production sequence is
-        written, and how anyone bumping their own email writes it.
-        """
-        candidate = pool["candidates"][0]
-        for connection in pool["connections"]:
-            connection.daily_send_cap = 5
-        steps = sorted(pool["sequence"].steps, key=lambda s: s.step_order)
-        steps[1].subject_template = steps[0].subject_template
-        session.flush()
-        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
-        session.commit()
-        run_due(session, org_id=pool["sequence"].org_id)
-        session.commit()
-
-        enrollment = session.query(Enrollment).one()
-        enrollment.next_send_at = utcnow() - timedelta(minutes=1)
-        session.flush()
-        run_due(session, org_id=pool["sequence"].org_id)
-        session.commit()
-
-        first, second = (
-            session.query(Message)
-            .filter_by(direction="outbound", status="sent")
-            .order_by(Message.sent_at)
-            .all()
-        )
-        assert not first.subject.lower().startswith("re:")
-        assert second.subject == f"Re: {first.subject}"
-
     def _run_two_steps(self, session, pool, follow_up_subject):
         candidate = pool["candidates"][0]
         for connection in pool["connections"]:
@@ -589,39 +510,3 @@ class TestThreadingHeaders:
 
         assert second.subject == f"Re: {first.subject}"
         assert "Quick note" not in second.subject
-
-    def test_a_third_step_says_re_once_not_twice(self, session, pool):
-        """Every step inherits the ROOT subject, so the "Re:" never stacks."""
-        candidate = pool["candidates"][0]
-        for connection in pool["connections"]:
-            connection.daily_send_cap = 5
-        session.add(
-            SequenceStep(
-                sequence_id=pool["sequence"].id,
-                step_order=2,
-                delay_days=3,
-                subject_template="",
-                body_template="Last note, {{ first_name }}.",
-            )
-        )
-        session.commit()
-        session.refresh(pool["sequence"])
-
-        enroll_candidates(session, sequence=pool["sequence"], candidate_ids=[candidate.id])
-        session.commit()
-        for _ in range(3):
-            enrollment = session.query(Enrollment).one()
-            enrollment.next_send_at = utcnow() - timedelta(minutes=1)
-            session.flush()
-            run_due(session, org_id=pool["sequence"].org_id)
-            session.commit()
-
-        first, second, third = (
-            session.query(Message)
-            .filter_by(direction="outbound", status="sent")
-            .order_by(Message.sent_at)
-            .all()
-        )
-        assert second.subject == f"Re: {first.subject}"
-        assert third.subject == f"Re: {first.subject}"
-

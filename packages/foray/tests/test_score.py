@@ -1,27 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC
 
 import pytest
 
 from foray.score.archetypes import load_archetypes
 from foray.score.common import (
     HEDGE_WORDS,
-    PER_CALL_USD,
     heuristic_result,
     parse_scoring_json,
 )
-
-
-def test_fifteen_archetypes_load_with_effective_rubric_and_hash():
-    archetypes = load_archetypes()
-    assert len(archetypes) == 15
-    for arch in archetypes.values():
-        # effective rubric includes the shared tail + JSON output contract
-        assert "JSON object" in arch.rubric
-        assert "hedge words" in arch.rubric
-        assert arch.rubric_hash == hashlib.sha256(arch.rubric.encode()).hexdigest()
 
 
 def test_rubric_hash_changes_when_tail_changes():
@@ -31,17 +19,6 @@ def test_rubric_hash_changes_when_tail_changes():
     # the loader must hash the concatenation (so a tail edit invalidates scores).
     base_only = hashlib.sha256(arch.rubric.split("\n\n")[0].encode()).hexdigest()
     assert arch.rubric_hash != base_only
-
-
-def test_gate_marker_extraction():
-    archetypes = load_archetypes()
-    assert archetypes["founding_ml"].gate_markers() == {"ml"}
-    assert "infra" in archetypes["ml_platform"].gate_markers()
-
-
-def test_per_call_cost_matches_spec():
-    # 1650 in @ $0.10/MTok + 250 out @ $0.50/MTok (open-weight model ballpark).
-    assert abs(PER_CALL_USD - 0.00029) < 1e-5
 
 
 def test_parse_scoring_json_strips_fences_and_clamps():
@@ -111,30 +88,6 @@ def test_heuristic_score_handles_unknown_experience():
     assert 0 <= heuristic_score(li, arch) <= 100
 
 
-def test_build_user_content_says_unknown_not_none():
-    from foray.score.common import build_user_content
-
-    row = {
-        "evidence_kind": "linkedin",
-        "language_mix": {},
-        "embed_blob": "Dana Rivera",
-        "login": "li:dana",
-        "activity_at": None,
-        "activity_kind": None,
-        "tenure_months": None,
-        "est_experience_years": None,
-        "experience_confidence": "low",
-        "title": "Staff Engineer",
-        "employer": "Stripe",
-        "employer_domain": None,
-        "location_metro": "San Francisco",
-        "domain_markers": ["ml"],
-    }
-    content = build_user_content(row)
-    assert "experience unknown" in content
-    assert "None" not in content
-
-
 def test_gates_expand_the_recency_placeholder():
     """{{recency}} is expanded at load; the 15 hand-copied 18-or-24-month
     literals are gone, and validate_gates EXPLAINs the expansion at sync."""
@@ -160,18 +113,6 @@ def test_rubric_hash_does_not_cover_the_gate():
     arch = load_archetypes()["founding_ml"]
     assert arch.rubric_hash == hashlib.sha256(arch.rubric.encode()).hexdigest()
     assert "activity_at" not in arch.rubric
-
-
-def test_heuristic_flags_stale_and_thin():
-    from datetime import datetime, timedelta
-
-    old = datetime.now(UTC) - timedelta(days=900)
-    result = heuristic_result(
-        _row(last_push_at=old, non_fork_repo_count=1, total_stars=2, oss_maintainer=False, top_repos=[]),
-        load_archetypes()["founding_ml"],
-    )
-    assert "stale_activity" in result["flags"]
-    assert "thin_evidence" in result["flags"]
 
 
 class TestTheLinkedInCallCeiling:

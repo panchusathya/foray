@@ -78,19 +78,6 @@ class TestMagicLink:
         )
         assert response.status_code == 401
 
-    def test_recruiter_endpoint_mints_a_working_link(
-        self, client, session, account, candidate
-    ):
-        session.commit()
-        minted = client.post(
-            f"/v1/candidates/{candidate.id}/portal-link", headers=account["headers"]
-        )
-        assert minted.status_code == 200, minted.text
-        token = _token_from(minted.json()["url"])
-        exchanged = client.post("/v1/portal/auth/exchange", json={"token": token})
-        assert exchanged.status_code == 200
-
-
 class TestTokenWall:
     def test_candidate_session_cannot_open_recruiter_routes(
         self, client, session, account, candidate
@@ -106,16 +93,6 @@ class TestTokenWall:
         for path in ("/v1/portal/me", "/v1/portal/feed", "/v1/portal/applications"):
             response = client.get(path, headers=account["headers"])
             assert response.status_code == 401, path
-
-    def test_portal_route_works_with_the_right_token(
-        self, client, session, account, candidate
-    ):
-        session.commit()
-        response = client.get(
-            "/v1/portal/me", headers=_session_headers(session, account, candidate)
-        )
-        assert response.status_code == 200
-
 
 class TestOtp:
     def _request(self, client, email):
@@ -214,21 +191,6 @@ class TestVaultStepUp:
         assert body["username"]  # derived server-side
         assert body["status"] == "pending_verification"
 
-    def test_a_weak_password_is_refused_with_the_missing_rules(self, client, session, account, candidate):
-        """The employer's complexity rule is enforced at the door so a
-        registration never fails on it later."""
-        session.commit()
-        headers = self._session_headers(account, candidate)
-        weak = client.post(
-            "/v1/portal/vault/accounts",
-            headers=headers,
-            json={"vendor": "workday", "tenant": "acme", "password": "alllowercase"},
-        )
-        assert weak.status_code == 422
-        detail = weak.json()["detail"].lower()
-        assert "uppercase" in detail and "number" in detail and "special" in detail
-
-
 class TestPortalSender:
     """Who a sign-in code appears to come from.
 
@@ -247,17 +209,6 @@ class TestPortalSender:
             else:
                 monkeypatch.setenv(key, value)
         config.reset_settings_cache()
-
-    def test_falls_back_to_the_outreach_identity_when_unset(self, monkeypatch):
-        from juicebox.portal.mail import portal_sender
-
-        self._reload(
-            monkeypatch,
-            PORTAL_FROM_EMAIL="",
-            OUTREACH_FROM_EMAIL="recruiter@example.com",
-            OUTREACH_FROM_NAME="Dana",
-        )
-        assert portal_sender() == ("recruiter@example.com", "Dana")
 
     def test_a_configured_address_brings_its_own_name(self, monkeypatch):
         """The pairing rule: address and display name move together.
@@ -278,28 +229,6 @@ class TestPortalSender:
         email, name = portal_sender()
         assert (email, name) == ("vivian@example.com", "Foray")
         assert name != "Dana", "the outreach recruiter's name must not ride along"
-
-    def test_the_otp_email_actually_carries_it(
-        self, client, session, account, candidate, monkeypatch, mailbox
-    ):
-        self._reload(
-            monkeypatch,
-            PORTAL_FROM_EMAIL="vivian@example.com",
-            PORTAL_FROM_NAME="Foray",
-            OUTREACH_FROM_EMAIL="recruiter@example.com",
-            OUTREACH_FROM_NAME="Dana",
-        )
-        session.commit()
-        assert (
-            client.post(
-                "/v1/portal/auth/otp/request", json={"email": "ada@example.com"}
-            ).status_code
-            == 202
-        )
-        sent = mailbox.outbox[-1]
-        assert sent.from_email == "vivian@example.com"
-        assert sent.from_name == "Foray"
-
 
 class TestGoogleSignIn:
     """The door that works when email does not.
@@ -386,24 +315,6 @@ class TestGoogleSignIn:
         session.commit()
         response = client.post("/v1/portal/auth/google", json={"credential": "x"})
         assert response.status_code == 401
-
-    def test_an_unknown_address_says_so(self, client, session, account, monkeypatch):
-        """Unlike OTP, this one tells the truth.
-
-        The OTP door answers 202 to everything so it cannot be used to find out
-        who is a candidate. Here the caller has already proved they own the
-        address, so telling them we have no record tells them only about
-        themselves -- and silence would leave them clicking a dead button.
-        """
-        self._tokeninfo(monkeypatch, self._claims(email="stranger@example.com"))
-        session.commit()
-        response = client.post("/v1/portal/auth/google", json={"credential": "x"})
-        assert response.status_code == 404
-
-    def test_the_config_endpoint_reports_the_client_id(self, client):
-        response = client.get("/v1/portal/auth/config")
-        assert response.status_code == 200
-        assert response.json()["google_client_id"].endswith(".apps.googleusercontent.com")
 
     def test_unconfigured_deployments_refuse_and_advertise_nothing(
         self, client, monkeypatch

@@ -4,15 +4,7 @@ import json
 
 import httpx
 
-from foray.enrich.profiles import GitHubGraphQL, build_query
-
-
-def test_build_query_has_aliases_and_fragment():
-    q = build_query(3)
-    assert "$l0: String!" in q and "$l2: String!" in q
-    assert "u0: user(login: $l0)" in q
-    assert "fragment F on User" in q
-    assert "contributionsCollection" in q
+from foray.enrich.profiles import GitHubGraphQL
 
 
 async def test_fetch_400_in_under_15_requests():

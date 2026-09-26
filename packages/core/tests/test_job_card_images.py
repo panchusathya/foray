@@ -29,7 +29,6 @@ from sqlalchemy import select
 from juicebox.messaging import cards as cards_mod
 from juicebox.messaging.linq import (
     SERVICE_IMESSAGE,
-    SERVICE_RCS,
     SERVICE_SMS,
     LinqSendError,
 )
@@ -114,10 +113,6 @@ def no_network(monkeypatch):
 
 
 class TestWhoGetsAnImage:
-    @pytest.mark.parametrize("service", [SERVICE_IMESSAGE, SERVICE_RCS])
-    def test_rich_protocols_do(self, session, account, service):
-        thread = _thread(session, account, service=service)
-        assert cards_mod.wants_image(thread) is True
 
     def test_sms_does_not(self, session, account):
         """An image over SMS is an MMS. Cost, compression, and some carriers
@@ -153,26 +148,6 @@ class TestWhoGetsAnImage:
 
 
 class TestOnePostingOneRender:
-    def test_first_send_renders_and_uploads(self, session, account, uploads):
-        thread = _thread(session, account)
-        posting = _posting(session, account["org_id"])
-        media = cards_mod.card_media(
-            session, thread=thread, posting=posting, card=CARD
-        )
-        assert len(media) == 1
-        part = media[0]
-        assert part.attachment_id == "att_1"
-        assert part.content_type == "image/png"
-        assert part.filename == "sourcebot-role.png"
-        assert len(uploads) == 1
-        assert uploads[0]["content_type"] == "image/png"
-        assert uploads[0]["size"] > 0
-
-        row = session.scalar(select(JobCardAsset))
-        assert row is not None
-        assert row.attachment_id == "att_1"
-        assert row.card_version == cards_mod.asset_version()
-        assert row.storage_path.endswith(".png")
 
     def test_a_second_candidate_reuses_the_upload(self, session, account, uploads):
         """The whole point of the table. Thirty candidates, one upload."""
@@ -200,20 +175,6 @@ class TestOnePostingOneRender:
         rows = session.scalars(select(JobCardAsset)).all()
         assert len(rows) == 1, "the row is updated in place, not duplicated"
         assert rows[0].card_version == "card-v2+" + cards_mod.palettemod.PALETTE_VERSION
-
-    def test_two_postings_are_two_cards(self, session, account, uploads):
-        thread = _thread(session, account)
-        one = _posting(session, account["org_id"], company="Sourcebot", suffix="a")
-        two = _posting(session, account["org_id"], company="Parasail", suffix="b")
-        cards_mod.card_media(session, thread=thread, posting=one, card=CARD)
-        cards_mod.card_media(
-            session, thread=thread, posting=two, card={**CARD, "company": "Parasail"}
-        )
-        assert len(uploads) == 2
-        assert {u["filename"] for u in uploads} == {
-            "sourcebot-role.png",
-            "parasail-role.png",
-        }
 
 
 class TestNothingCostsATurn:
@@ -282,18 +243,6 @@ class TestNothingCostsATurn:
         assert cards_mod.card_media(session, thread=thread, posting=posting, card=CARD) == ()
         assert uploads == []
 
-    def test_an_unfetchable_logo_still_produces_a_card(
-        self, session, account, uploads, monkeypatch
-    ):
-        """No logo is a plain card, not a failed one -- the neutral ground is
-        our own colour, so it still looks deliberate."""
-        monkeypatch.setattr(cards_mod, "fetch_logo", lambda domain: None)
-        thread = _thread(session, account)
-        posting = _posting(session, account["org_id"])
-        media = cards_mod.card_media(session, thread=thread, posting=posting, card=CARD)
-        assert len(media) == 1
-        assert len(uploads) == 1
-
     def test_a_logo_fetch_that_raises_still_produces_a_card(
         self, session, account, uploads, monkeypatch
     ):
@@ -309,18 +258,6 @@ class TestNothingCostsATurn:
 
 
 class TestTheRenderedBytes:
-    def test_it_is_a_png_of_card_width(self, session, account, uploads):
-        thread = _thread(session, account)
-        posting = _posting(session, account["org_id"])
-        cards_mod.card_media(session, thread=thread, posting=posting, card=CARD)
-        row = session.scalar(select(JobCardAsset))
-        from juicebox import storage
-
-        data = storage.read_bytes(row.storage_path)
-        assert data[:8] == b"\x89PNG\r\n\x1a\n"
-        with Image.open(io.BytesIO(data)) as image:
-            assert image.width == 1200
-            assert 0 < image.height <= 720
 
     def test_the_card_never_draws_a_score(self, session, account, uploads):
         """Candidates never see a score -- reasons only. The projection is

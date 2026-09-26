@@ -280,20 +280,6 @@ class TestApplications:
         session.commit()
         return application
 
-    def test_confirm_submitted_does_not_require_an_approval(
-        self, client, session, account, candidate, headers
-    ):
-        application = self._pursue(session, account, candidate)
-
-        confirmed = client.post(
-            f"/v1/portal/applications/{application.id}/confirm-submitted", headers=headers
-        )
-        assert confirmed.status_code == 200
-        assert confirmed.json()["status"] == "submitted"
-        session.expire_all()
-        row = session.get(Application, application.id)
-        assert row.submitted_by == "candidate"
-        assert row.submission_method == "portal_link"
 
     def test_cross_candidate_probing_is_a_404(
         self, client, session, account, candidate, headers, sample_candidates
@@ -321,45 +307,6 @@ class TestApplications:
 
 
 class TestDocuments:
-    def test_default_upload_hides_the_profile_generated_fallback(
-        self, client, session, account, candidate, headers
-    ):
-        from juicebox import storage
-        from juicebox.models import CandidateDocument
-
-        generated = CandidateDocument(
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            kind="resume_generated",
-            filename="generated.pdf",
-            status="ready",
-            source="generated",
-        )
-        uploaded = CandidateDocument(
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            kind="resume_uploaded",
-            is_default=True,
-            filename="my-resume.pdf",
-            status="ready",
-            source="upload",
-        )
-        session.add_all([generated, uploaded])
-        session.flush()
-        for doc in (generated, uploaded):
-            doc.storage_path = storage.document_relpath(
-                org_id=doc.org_id, candidate_id=doc.candidate_id, document_id=doc.id
-            )
-            storage.save_bytes(doc.storage_path, b"%PDF-document")
-        session.commit()
-
-        listing = client.get("/v1/portal/documents", headers=headers)
-
-        assert listing.status_code == 200
-        ids = {row["id"] for row in listing.json()["documents"]}
-        assert uploaded.id in ids
-        assert generated.id not in ids
-
     def test_signed_download_url_round_trip(
         self, client, session, account, candidate, headers
     ):

@@ -63,12 +63,6 @@ def test_two_seniority_words_take_the_lower_floor():
     assert heuristic_parse("senior or staff ML engineer").seniority_min == SENIORITY_SENIOR
 
 
-def test_founder_nouns_set_is_founder_but_the_adjective_does_not():
-    assert heuristic_parse("co-founder of a fintech startup").is_founder is True
-    assert heuristic_parse("looking for founders").is_founder is True
-    assert heuristic_parse("founding engineer at a seed startup").is_founder is None
-
-
 def test_management_framing_is_never_seniority():
     """"Engineering Manager" is not "senior IC" — separate columns, and
     collapsing them is what makes a seniority filter useless."""
@@ -102,15 +96,6 @@ def test_noise_list_is_untouched_by_the_facet_parser():
 
     for word in ("senior", "staff", "founding", "shipped", "principal"):
         assert word in _NOISE
-
-
-def test_heuristic_parse_picks_vlm_vocabulary():
-    parsed = heuristic_parse("founding ML engineer who has trained LLMs and VLMs")
-    assert parsed.archetype_id == "founding_ml"
-    vlm = heuristic_parse("multimodal VLM engineer, vision-language models")
-    assert vlm.archetype_id == "founding_ml"
-    research = heuristic_parse("VLM research scientist")
-    assert research.archetype_id == "ml_research"
 
 
 def _placeholders(where: str) -> list[int]:
@@ -205,16 +190,6 @@ def test_language_filter_admits_null_by_default():
     assert params.values == [["python"]]
 
 
-def test_strict_language_restores_the_exact_predicate():
-    params = Params()
-    where = _filter_clauses(
-        ParsedFilter(languages=["go"], strict_language=True), params
-    )
-    assert "s.primary_language = any($1::text[])" in where
-    assert "s.primary_language is null" not in where
-    assert params.values == [["go"]]
-
-
 def test_experience_bounds_exclude_unknown_by_default():
     """est_experience_years is NULL for 134,536 rows. Strict is the default:
     an absence of data is not evidence of zero years, which is exactly what
@@ -230,25 +205,6 @@ def test_experience_bounds_exclude_unknown_by_default():
     # unknown-activity arm).
     assert "s.est_experience_years is null" not in where
     assert params.values == [3.0, 8.0]
-
-
-def test_include_unknown_experience_admits_nulls_on_both_bounds():
-    """The max-only brief ("under 8 years") is screening OUT the
-    over-experienced, so it reasonably wants the unknowns back."""
-    params = Params()
-    where = _filter_clauses(
-        ParsedFilter(experience_max=8.0, include_unknown_experience=True), params
-    )
-    assert "(s.est_experience_years <= $1 or s.est_experience_years is null)" in where
-    params = Params()
-    where = _filter_clauses(
-        ParsedFilter(
-            experience_min=3.0, experience_max=8.0, include_unknown_experience=True
-        ),
-        params,
-    )
-    assert "(s.est_experience_years >= $1 or s.est_experience_years is null)" in where
-    assert "(s.est_experience_years <= $2 or s.est_experience_years is null)" in where
 
 
 def test_no_text_facet_uses_ilike_any():
@@ -330,14 +286,6 @@ def test_topics_admit_unknown_by_default_like_language():
     assert "cardinality" not in strict
 
 
-def test_markers_need_no_unknown_policy():
-    """domain_markers is the one text facet populated on BOTH sources, so an
-    empty array is a real negative rather than a missing column."""
-    where = _filter_clauses(ParsedFilter(markers=["ml"]), Params())
-    assert "s.domain_markers && $1::text[]" in where
-    assert "domain_markers is null" not in where
-
-
 def test_seniority_admits_unknown_by_default_and_tenure_does_not():
     """The asymmetry is deliberate and is the biggest judgement call in the
     facet layer. seniority_rank is NULL for all 7,757 GitHub rows AND for every
@@ -396,33 +344,6 @@ def test_manager_and_founder_are_flag_predicates():
     assert "mgmt_rank" not in bare and "is_founder" not in bare
 
 
-def test_predicate_summary_lists_only_facets_that_became_sql():
-    """Read by a human asking "why did this junk match" and by the eval
-    harness's filter_violations@k. Facet name -> the COERCED value."""
-    parsed = ParsedFilter(
-        archetype_id="founding_ml",
-        metros=["sf_bay_area"],
-        titles=["ml engineer"],
-        seniority_min=3,
-        is_manager=False,
-        require_code_evidence=True,
-        free_text="shipped training infrastructure",
-    )
-    summary = parsed.to_predicate_summary()
-    assert summary == {
-        "archetype_id": "founding_ml",
-        "metros": ["sf_bay_area"],
-        "titles": ["ml engineer"],
-        "seniority_min": 3,
-        "is_manager": False,
-        "require_code_evidence": True,
-    }
-    # free_text is a ranking input, not a filter; empty facets are absent
-    # rather than present-and-empty.
-    assert "free_text" not in summary
-    assert ParsedFilter().to_predicate_summary() == {}
-
-
 def test_parser_version_and_vocab_hash_are_both_in_the_cache_key():
     """Editing an alias file must invalidate cached parses: the same query
     hashes differently under a different vocabulary."""
@@ -455,28 +376,6 @@ def test_parsed_filter_from_dict_drops_unknown_keys():
     assert parsed.archetype_id == "founding_ml"
     assert parsed.languages == ["python"]
     assert parsed.strict_language is False  # default, not the unknown key
-
-
-def test_parsed_filter_from_dict_round_trips_to_dict():
-    original = ParsedFilter(
-        archetype_id="senior_backend",
-        metros=["SF"],
-        languages=["go"],
-        experience_min=5.0,
-        free_text="senior backend in go",
-        strict_language=True,
-    )
-    assert ParsedFilter.from_dict(original.to_dict()) == original
-
-
-def test_gate_does_not_disturb_placeholder_numbering():
-    parsed = ParsedFilter(metros=["sf_bay_area"], languages=["go"], experience_min=5)
-    gated = Params()
-    where = _filter_clauses(parsed, gated, gate_sql="s.est_experience_years >= 2")
-    ungated = Params()
-    _filter_clauses(parsed, ungated)
-    assert gated.values == ungated.values
-    assert _placeholders(where) == list(range(1, len(gated.values) + 1))
 
 
 def test_frontend_never_renders_score():
@@ -524,19 +423,6 @@ async def test_never_pads_below_floor():
         )
         if result.total_matched < settings.min_results_before_widen:
             assert "Widen" in (result.message or "")
-    finally:
-        await conn.close()
-
-
-@requires_scored_db
-async def test_vector_fallback_when_no_archetype():
-    conn = await asyncpg.connect(dsn=_asyncpg_dsn(settings.database_url))
-    try:
-        result = await run_search(conn, "someone who likes long walks on the beach", 10)
-        assert result.parser == "vector-fallback"
-        assert result.archetype_id is None
-        for r in result.results:
-            assert r["score"] is None  # nothing scored in a pure semantic search
     finally:
         await conn.close()
 

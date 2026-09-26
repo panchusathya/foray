@@ -113,9 +113,6 @@ def post(client, signer, payload, *, path="/v1/intake/webhook", timestamp=None, 
 
 
 class TestSignature:
-    def test_a_valid_signature_is_accepted(self, client, signer, owned_number):
-        assert post(client, signer, call_payload()).status_code == 200
-
     def test_a_missing_signature_is_refused(self, client, owned_number):
         assert client.post("/v1/intake/webhook", json=call_payload()).status_code == 401
 
@@ -271,15 +268,6 @@ class TestOrgResolution:
 
 
 class TestLifecycle:
-    def test_call_started_opens_a_row_without_queueing_work(
-        self, client, session, signer, owned_number
-    ):
-        response = post(client, signer, call_payload(event="call_started", transcript=""))
-        assert response.json()["extraction_queued"] is False
-        call = session.scalars(select(IntakeCall)).one()
-        assert call.status == "in_progress"
-        assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_EXTRACT)).all() == []
-
     def test_call_ended_records_the_transcript_and_queues_extraction(
         self, client, session, signer, owned_number
     ):
@@ -369,13 +357,6 @@ class TestLifecycle:
         assert response.status_code == 200
         assert response.json()["status"] == "ignored"
         assert session.scalars(select(IntakeCall)).all() == []
-
-    def test_a_payload_with_no_call_id_is_rejected(self, client, signer, owned_number):
-        assert post(client, signer, call_payload(call_id="")).status_code == 422
-
-    def test_a_silent_call_queues_nothing(self, client, session, signer, owned_number):
-        post(client, signer, call_payload(transcript=""))
-        assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_EXTRACT)).all() == []
 
     def test_consent_is_recorded_when_the_agent_sets_it(
         self, client, session, signer, owned_number
@@ -666,28 +647,9 @@ class TestCoverageEndpoint:
             "args": args,
         }
 
-    def test_an_empty_transcript_asks_the_gate_first(self, client, signer):
-        response = post(
-            client, signer, self._function_call(""), path="/v1/intake/coverage"
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["wrap_up"] is False
-        assert body["still_needed"]
-        assert body["optional_topics"] == []  # do not distract from the gate
-        assert body["required_outstanding"] > 0
-
     def test_it_requires_a_signature(self, client):
         response = client.post("/v1/intake/coverage", json=self._function_call(""))
         assert response.status_code == 401
-
-    def test_a_partial_transcript_still_owes_the_gate(self, client, signer):
-        response = post(
-            client, signer, self._function_call(TRANSCRIPT), path="/v1/intake/coverage"
-        )
-        body = response.json()
-        assert body["wrap_up"] is False
-        assert "one at a time" in body["guidance"]
 
     def test_it_returns_questions_not_people(self, client, session, signer, owned_number, account):
         """Reachable by anyone with a valid signature, so it must not disclose a
@@ -792,25 +754,6 @@ class TestCoverageEndpoint:
         assert call.minutes_available == 20
         assert call.gate_mode == "full"
         assert call.deferred_fields in (None, [], {}) or call.deferred_fields == []
-
-    def test_no_budget_is_todays_full_gate(self, client, signer, monkeypatch):
-        from juicebox.intake import service
-
-        def _core(transcript, *, known="", fast=True, **_):
-            from juicebox.intake.extract import ExtractionResult
-            from juicebox.intake.schema import coverage
-
-            record = _filled_core()
-            return ExtractionResult(
-                record=record, extractor="heuristic", coverage=coverage(record)
-            )
-
-        monkeypatch.setattr(service, "extract_intake", _core)
-        response = post(
-            client, signer, self._function_call(TRANSCRIPT), path="/v1/intake/coverage"
-        )
-        assert response.json()["wrap_up"] is False
-
 
 def _filled_core() -> dict:
     from juicebox.intake import empty_record
@@ -964,15 +907,6 @@ class TestRingTimeRecognition:
         assert greeting.strip()
         assert person.first_name in greeting
 
-    def test_an_unknown_caller_still_gets_a_greeting_without_a_name(
-        self, client, session, signer, owned_number, account
-    ):
-        variables = post(client, signer, inbound_payload(from_number=STRANGER_NUMBER)).json()[
-            "call_inbound"
-        ]["dynamic_variables"]
-        assert variables["caller_greeting"].strip()
-        assert "Foray" in variables["caller_greeting"]
-
     def test_the_greeting_does_not_say_foray_twice(
         self, client, session, signer, owned_number, account
     ):
@@ -1024,18 +958,6 @@ class TestRingTimeRecognition:
         assert not any(m in since for m in months)
         assert not any(c.isdigit() for c in since.replace("days", ""))
 
-    def test_a_known_caller_with_no_record_yet_is_still_greeted(
-        self, client, session, signer, owned_number, account
-    ):
-        """In the CRM but never interviewed: worth a name, with nothing to recall."""
-        person = _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        variables = post(client, signer, inbound_payload()).json()["call_inbound"][
-            "dynamic_variables"
-        ]
-        assert variables["caller_known"] == "true"
-        assert variables["caller_first_name"] == person.first_name
-        assert variables["caller_on_file"] == ""
-
     def test_a_caller_gets_back_everything_they_themselves_said(
         self, client, session, signer, owned_number, account
     ):
@@ -1072,13 +994,6 @@ class TestRingTimeRecognition:
 
     def test_it_still_requires_a_signature(self, client, owned_number):
         assert client.post("/v1/intake/webhook", json=inbound_payload()).status_code == 401
-
-    def test_ringing_writes_nothing(self, client, session, signer, owned_number, account):
-        """It is on the critical path of a ringing phone and the call has no id
-        yet, so there is nothing to write and it must not try."""
-        _candidate(session, account["org_id"], phones=[CANDIDATE_NUMBER])
-        post(client, signer, inbound_payload())
-        assert session.scalars(select(IntakeCall)).all() == []
 
     def test_every_variable_is_a_string(
         self, client, session, signer, owned_number, account

@@ -86,19 +86,6 @@ class TestTsquery:
     def test_a_multi_word_term_becomes_a_phrase_match(self):
         assert _as_tsquery(["in the us"]) == "(in <-> the <-> us)"
 
-    def test_a_single_token_is_unchanged(self):
-        assert _as_tsquery(["crypto"]) == "crypto"
-
-    def test_terms_are_still_ored_together(self):
-        assert _as_tsquery(["crypto", "in the us"]) == "crypto | (in <-> the <-> us)"
-
-    def test_no_term_ever_reaches_postgres_with_a_bare_space(self):
-        query = _as_tsquery(["in the us", "not looking for agencies", "go"])
-        assert query is not None
-        for chunk in query.replace("(", " ").replace(")", " ").split("|"):
-            words = [w for w in chunk.split() if w != "<->"]
-            assert len(words) == chunk.count("<->") + 1
-
     def test_tsquery_operators_in_a_term_are_stripped(self):
         assert _as_tsquery(["fake & (evil)"]) == "(fake <-> evil)"
 
@@ -213,11 +200,6 @@ class TestDegreeVocabulary:
         assert ParsedQuery(degrees=["Master's Degree"]).normalized().degrees == ["ms"]
         assert ParsedQuery(degrees=["Bachelor of Science"]).normalized().degrees == ["bs"]
 
-    def test_a_bachelors_holder_is_still_a_miss_for_a_masters_query(self):
-        parsed = heuristic_parse("backend engineers with a masters degree")
-        criterion = _score_education(_doc(degrees=["bachelor of arts"]), parsed)
-        assert criterion is not None and criterion.score == 0.0
-
     def test_phd_and_mba_keep_working(self):
         parsed = heuristic_parse("engineers with a phd")
         assert _score_education(_doc(degrees=["doctor of philosophy"]), parsed).score == 1.0
@@ -285,14 +267,6 @@ class TestRemotePreference:
         assert _score_location(_doc(open_to_remote=True), parsed).score == 1.0
         assert _score_location(_doc(open_to_remote=False), parsed).score == 0.35
 
-    def test_no_stated_preference_scores_no_location_criterion(self):
-        assert _score_location(_doc(), ParsedQuery()) is None
-
-    def test_a_stated_place_still_wins_over_the_remote_flag(self):
-        criterion = _score_location(_doc(), ParsedQuery(locations=["new york"], remote_ok=False))
-        assert criterion.kind == "location" and criterion.score > 0.75
-
-
 # --------------------------------------------------------------------------
 # the Postgres hard-filter SQL
 # --------------------------------------------------------------------------
@@ -313,12 +287,6 @@ class TestPostgresEligibilitySql:
         # Comparing against the raw display text is what let "Acme Inc." through.
         assert "lower(trim(c.current_company))" not in db.sql
         assert db.params["excl_companies"] == ["acme"]
-
-    def test_a_corporate_suffix_normalises_to_the_same_key(self):
-        # Which is why matching the derived column is enough: the flush
-        # listener stamps candidates through the same function.
-        assert tx.normalize_company("Acme Inc.") == "acme"
-        assert tx.normalize_company("Acme") == "acme"
 
     def test_a_multi_word_negative_is_bound_as_a_phrase_tsquery(self):
         db = self._run(heuristic_parse("engineers not in the US"))

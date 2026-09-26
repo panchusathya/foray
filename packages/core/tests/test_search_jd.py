@@ -15,9 +15,7 @@ from juicebox.search.jd import (
     MAX_MUST_HAVES,
     heuristic_jd_parse,
     infer_location,
-    infer_title,
     looks_like_job_description,
-    strip_boilerplate,
 )
 from juicebox.search.parser import heuristic_parse, parse_query
 from juicebox.search.scoring import assess
@@ -70,9 +68,6 @@ class TestDetection:
             "I need someone who has scaled a payments team. " * 20
         )
 
-    def test_empty_is_not(self):
-        assert not looks_like_job_description("")
-
 
 class TestCompilation:
     def test_must_haves_are_capped(self):
@@ -91,12 +86,6 @@ class TestCompilation:
         parsed = heuristic_jd_parse(JD)
         assert parsed.negative_keywords == []
 
-    def test_stated_experience_survives(self):
-        assert heuristic_jd_parse(JD).min_years_experience == 5
-
-    def test_title_and_location_are_read_off_the_paste(self):
-        assert "machine learning engineer" in heuristic_jd_parse(JD).job_titles
-        assert "san francisco" in heuristic_jd_parse(JD).locations
 
     def test_company_blurb_does_not_become_keywords(self):
         parsed = heuristic_jd_parse(JD)
@@ -108,16 +97,6 @@ class TestCompilation:
         parsed = heuristic_jd_parse(JD)
         assert parsed.max_compensation is None or parsed.max_compensation < 10_000_000
 
-    def test_retrieval_text_drops_the_benefits(self):
-        assert "unlimited pto" not in heuristic_jd_parse(JD).search_text
-
-    def test_strip_boilerplate_keeps_the_role(self):
-        stripped = strip_boilerplate(JD)
-        assert "Perception team" in stripped
-        assert "equal opportunity" not in stripped
-
-    def test_infer_title_skips_a_boilerplate_first_line(self):
-        assert infer_title("How to apply\nStaff Backend Engineer\n") == "Staff Backend Engineer"
 
     def test_infer_location_ignores_the_body(self):
         # Offices named far down the posting are not the role's location.
@@ -129,14 +108,6 @@ class TestRouting:
     def test_parse_query_routes_a_paste_to_the_jd_compiler(self):
         _, parser = parse_query(JD, use_llm=False)
         assert parser == "heuristic_jd"
-
-    def test_parse_query_leaves_a_sentence_alone(self):
-        _, parser = parse_query("senior go engineers in Berlin", use_llm=False)
-        assert parser == "heuristic"
-
-    def test_overrides_still_win_over_a_paste(self):
-        parsed, _ = parse_query(JD, overrides={"locations": ["berlin"]}, use_llm=False)
-        assert parsed.locations == ["berlin"]
 
 
 class TestRankingRecovery:

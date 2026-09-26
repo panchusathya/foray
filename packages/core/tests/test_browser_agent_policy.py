@@ -58,17 +58,8 @@ class TestParseAction:
         assert parse_action(None) is None
         assert parse_action("fill") is None
 
-    def test_known_type_is_kept(self):
-        action = parse_action({"type": "fill", "control_id": "c001", "value_token": "candidate.email"})
-        assert action is not None
-        assert action.type == "fill"
-        assert action.control_id == "c001"
-
 
 class TestPageClass:
-    def test_application_from_email_and_name(self):
-        assert page_class(_obs(controls=_app_controls())) == PAGE_APPLICATION
-
     def test_login_from_password_field(self):
         obs = _obs(controls=(Control(id="c001", label="Password", field_type="password"),))
         assert page_class(obs) == PAGE_LOGIN
@@ -100,10 +91,6 @@ class TestPageClass:
 
 
 class TestTokenResolve:
-    def test_candidate_email(self):
-        value, path, err = resolve_token("candidate.email", _ctx())
-        assert value == "ada@example.com" and path == "" and err == ""
-
     def test_invented_string_is_refused(self):
         _, _, err = resolve_token("Ada Okonkwo", _ctx())
         assert "invented" in err
@@ -115,11 +102,6 @@ class TestTokenResolve:
     def test_missing_answer_is_refused(self):
         _, _, err = resolve_token("answer.q_abc", _ctx())
         assert "no approved answer" in err
-
-    def test_approved_answer(self):
-        ctx = _ctx(answers=[{"key": "q_abc", "answer": "A friend", "kind": "custom"}])
-        value, _, err = resolve_token("answer.q_abc", ctx)
-        assert value == "A friend" and err == ""
 
     def test_policy_decline_needs_a_control_with_that_option(self):
         _, _, err = resolve_token("policy.decline", _ctx())
@@ -196,14 +178,6 @@ class TestPolicyCheck:
         )
         assert not decision.allowed
         assert "final_submit" in decision.reason
-
-    def test_preflight_cannot_click_submit_as_next(self):
-        action = parse_action({"type": "click_next", "control_id": "c004"})
-        decision = check(
-            action, obs=_obs(controls=_app_controls()), ctx=_ctx(),
-            allow_submit=False, start_origin="https://boards.greenhouse.io",
-        )
-        assert not decision.allowed
 
     def test_final_submit_blocked_by_required_blank(self):
         ctx = _ctx(

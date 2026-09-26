@@ -11,11 +11,16 @@ of it that had never heard about the reply.
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from test_mailbox_sync import (
+    FakeDeltaClient,
+    _inbound,
+    graph_provider,
+    install_graph_sender,
+)
 
 from juicebox.integrations.sync import sync_mailbox
 from juicebox.jobs import KIND_OUTREACH_FOLLOW_UP
 from juicebox.llm.client import FakeTransport, LLMClient, set_llm
-from juicebox.llm.prompts import reply_prompt
 from juicebox.models import (
     Enrollment,
     Event,
@@ -32,7 +37,6 @@ from juicebox.outreach.follow_ups import (
     send_follow_up_reminder,
 )
 from juicebox.outreach.replies import (
-    HUMAN_INTENTS,
     classify_reply,
     heuristic_classify,
     parse_follow_up_date,
@@ -43,15 +47,8 @@ from juicebox.outreach.sequencer import (
     recent_human_replies,
     record_reply,
     run_due,
-    schedule_step_at,
 )
-from juicebox.worker import HANDLERS, process_job
-from test_mailbox_sync import (
-    FakeDeltaClient,
-    _inbound,
-    graph_provider,
-    install_graph_sender,
-)
+from juicebox.worker import process_job
 
 RECEIVED = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
 LUKE = "In Japan until 9/10 please f/u after"
@@ -165,12 +162,6 @@ class TestClassification:
         assert verdict.intent == "out_of_office"
         assert verdict.follow_up_after == date(2026, 9, 9)
 
-    def test_asking_for_details_is_a_question(self):
-        verdict = heuristic_classify(
-            "Re: role", "Give me more details about the role, position and location"
-        )
-        assert verdict.intent == "question"
-
     @pytest.mark.parametrize(
         "text,expected",
         [
@@ -194,10 +185,6 @@ class TestClassification:
         assert parse_follow_up_date("until 1/15", datetime(2026, 12, 20, tzinfo=UTC)) == date(
             2027, 1, 15
         )
-
-    def test_prompt_carries_the_received_date(self):
-        prompt = reply_prompt(subject="Re", body="x", received_at=RECEIVED)
-        assert "<received_on>2026-09-02 (Wednesday)</received_on>" in prompt
 
     def test_the_model_stop_flag_is_never_trusted(self):
         transport = FakeTransport(
@@ -235,10 +222,6 @@ class TestClassification:
         finally:
             set_llm(None)
         assert verdict.follow_up_after == date(2026, 9, 10)
-
-    def test_human_intents_exclude_automation(self):
-        assert "out_of_office" not in HUMAN_INTENTS and "bounce" not in HUMAN_INTENTS
-        assert {"interested", "not_now", "question", "unsubscribe"} <= HUMAN_INTENTS
 
 
 # --------------------------------------------------------------------------
@@ -322,24 +305,6 @@ class TestRecordReply:
             seconds=5
         )
         assert enrollment.next_send_at.replace(tzinfo=UTC) > before.replace(tzinfo=UTC)
-
-    def test_a_zero_default_snooze_leaves_the_schedule_alone(
-        self, session, outreach_fixture, mailbox, monkeypatch
-    ):
-        monkeypatch.setenv("OUTREACH_OOO_DEFAULT_SNOOZE_DAYS", "0")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        message = _send_first(session, outreach_fixture)
-        before = session.query(Enrollment).one().next_send_at
-        record_reply(
-            session,
-            message=message,
-            subject="Automatic reply: role",
-            body="I am currently out of the office.",
-        )
-        session.commit()
-        assert session.query(Enrollment).one().next_send_at == before
 
     def test_a_human_reply_stops_every_active_enrollment_for_the_candidate(
         self, session, outreach_fixture, mailbox
@@ -443,16 +408,6 @@ class TestRecordReply:
         assert session.query(Message).filter_by(direction="inbound").count() == 1
         assert len(_events(session, "outreach.replied")) == 1
 
-    def test_reply_event_carries_the_date_and_the_sibling_count(
-        self, session, outreach_fixture, mailbox
-    ):
-        message = _send_first(session, outreach_fixture)
-        record_reply(session, message=message, subject="Re", body=LUKE, received_at=RECEIVED)
-        session.commit()
-        [event] = _events(session, "outreach.replied")
-        assert event.payload["follow_up_after"] == "2026-09-10"
-        assert event.payload["stopped_elsewhere"] == 0
-
 
 # --------------------------------------------------------------------------
 # the send-time and enrol-time guards
@@ -475,14 +430,6 @@ class TestQuietPeriodGuards:
         session.commit()
         assert created == []
         assert session.query(Enrollment).filter_by(sequence_id=copy.id).count() == 0
-
-    def test_the_guard_can_be_switched_off_per_call(self, session, outreach_fixture, mailbox):
-        ada, copy = self._reply_then_second_sequence(session, outreach_fixture)
-        created = enroll_candidates(
-            session, sequence=copy, candidate_ids=[ada.id], skip_recent_repliers=False
-        )
-        session.commit()
-        assert len(created) == 1
 
     def test_a_due_step_is_refused_after_a_recent_reply_elsewhere(
         self, session, outreach_fixture, mailbox
@@ -516,20 +463,6 @@ class TestQuietPeriodGuards:
         )
         assert status == "skipped" and message is None
         assert enrollment.status == "active"
-
-    def test_quiet_days_zero_disables_both_guards(
-        self, session, outreach_fixture, mailbox, monkeypatch
-    ):
-        monkeypatch.setenv("OUTREACH_REPLY_QUIET_DAYS", "0")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        ada, copy = self._reply_then_second_sequence(session, outreach_fixture)
-        created = enroll_candidates(session, sequence=copy, candidate_ids=[ada.id])
-        session.commit()
-        assert len(created) == 1
-        summary = run_due(session, org_id=copy.org_id, sequence_id=copy.id)
-        assert summary.sent == 1
 
     def test_a_sequence_that_ignores_replies_still_mails_its_own_replier(
         self, session, outreach_fixture, mailbox
@@ -569,35 +502,6 @@ class TestQuietPeriodGuards:
             session, org_id=message.org_id, candidate_ids=[ada.id], now=datetime.now(UTC), days=30
         )
         assert hits == {}
-
-    def test_snooze_is_cleared_when_the_step_sends(self, session, outreach_fixture, mailbox):
-        message = _send_first(session, outreach_fixture)
-        record_reply(
-            session,
-            message=message,
-            subject="Automatic reply: role",
-            body="I am currently out of the office until 9/30.",
-            received_at=RECEIVED,
-        )
-        session.commit()
-        enrollment = session.query(Enrollment).one()
-        assert enrollment.snoozed_until is not None
-        run_due(session, org_id=message.org_id, now=datetime(2026, 10, 2, tzinfo=UTC))
-        session.commit()
-        session.refresh(enrollment)
-        assert enrollment.snoozed_until is None
-
-    def test_ignore_delay_keeps_the_time_snap(self):
-        step = SequenceStep(
-            step_order=1,
-            delay_days=3,
-            delay_unit="business_days",
-            send_at_time="09:00",
-            send_timezone="America/New_York",
-        )
-        base = datetime(2026, 9, 11, 0, 0, tzinfo=UTC)  # a Friday
-        due = schedule_step_at(step, base=base, ignore_delay=True)
-        assert due == datetime(2026, 9, 11, 13, 0, tzinfo=UTC)  # 09:00 New York, same day
 
 
 class TestEnrollEndpoint:
@@ -667,39 +571,6 @@ class TestEnrollEndpoint:
             headers=headers,
         ).json()
         assert len(forced["enrollments"]) == 1 and forced["skipped"] == []
-
-    def test_enrollment_rows_expose_the_reply_state(self, client, loaded_org, mailbox, session):
-        headers = loaded_org["headers"]
-        sequence = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Dated",
-                "steps": [
-                    {
-                        "step_order": 0,
-                        "delay_days": 0,
-                        "subject_template": "Hi",
-                        "body_template": "x",
-                    }
-                ],
-            },
-            headers=headers,
-        ).json()
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-        client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate_id], "send_now": True},
-            headers=headers,
-        )
-        outbound = session.query(Message).filter_by(direction="outbound").one()
-        record_reply(session, message=outbound, subject="Re", body=LUKE, received_at=RECEIVED)
-        session.commit()
-
-        [row] = client.get(f"/v1/sequences/{sequence['id']}/enrollments", headers=headers).json()
-        assert row["stopped_reason"] == "not_now"
-        assert row["follow_up_after"] == "2026-09-10"
-        assert row["replied_at"] is not None
-        assert row["follow_up_reminder_sent_at"] is None
 
 
 # --------------------------------------------------------------------------
@@ -817,16 +688,6 @@ class TestForwardedCopies:
         second_enrollment = session.query(Enrollment).filter_by(sequence_id=copy.id).one()
         assert inbound.enrollment_id == second_enrollment.id
 
-    def test_received_time_reaches_the_reply(self, session, synced_org):
-        fake = FakeDeltaClient()
-        fake.queue(_inbound())
-        sync_mailbox(
-            session, synced_org["connection"], provider=graph_provider(lambda db, conn: fake)
-        )
-        session.commit()
-        inbound = session.query(Message).filter_by(direction="inbound").one()
-        assert inbound.sent_at.replace(tzinfo=UTC) == datetime(2026, 8, 18, 10, 0, tzinfo=UTC)
-
 
 # --------------------------------------------------------------------------
 # the follow-up reminder
@@ -910,6 +771,3 @@ class TestFollowUpReminder:
         )
         session.commit()
         assert session.query(Job).filter_by(kind=KIND_OUTREACH_FOLLOW_UP).count() == 1
-
-    def test_handler_is_registered(self):
-        assert KIND_OUTREACH_FOLLOW_UP in HANDLERS

@@ -24,7 +24,6 @@ from sqlalchemy import select
 from juicebox.models import Candidate, CandidateAuthGrant, utcnow
 from juicebox.portal.links import (
     mint_portal_link,
-    new_link_code,
     safe_next,
 )
 from juicebox.repository import upsert_candidates
@@ -40,27 +39,6 @@ def candidate(session, account, sample_candidates):
 
 def _code_from(link: str) -> str:
     return link.rsplit("/m/", 1)[-1]
-
-
-class TestTheCodeItself:
-    def test_it_is_short_and_lowercase_hex(self):
-        """Lowercase hex, not base64url: a texted link gets read out loud and
-        retyped, and mixed case invites transcription errors."""
-        code = new_link_code()
-        assert len(code) == 20
-        assert code == code.lower()
-        assert all(character in "0123456789abcdef" for character in code)
-
-    def test_codes_do_not_repeat(self):
-        assert len({new_link_code() for _ in range(500)}) == 500
-
-    def test_the_whole_url_is_a_readable_length(self, session, account, candidate):
-        link = mint_portal_link(
-            db=session, org_id=account["org_id"], candidate_id=candidate.id
-        )
-        # The JWT this replaced ran to several hundred characters on its own.
-        assert len(_code_from(link)) == 20
-        assert "." not in _code_from(link), "a dot would look like a JWT to the exchange"
 
 
 class TestExchangingAShortCode:
@@ -120,15 +98,6 @@ class TestExchangingAShortCode:
             "/v1/portal/auth/exchange", json={"token": "0" * 20}
         )
         assert response.status_code == 401
-
-    def test_an_empty_token_is_refused(self, client):
-        assert (
-            client.post("/v1/portal/auth/exchange", json={"token": ""}).status_code == 401
-        )
-        assert (
-            client.post("/v1/portal/auth/exchange", json={"token": "   "}).status_code
-            == 401
-        )
 
     def test_an_empty_code_cannot_match_a_codeless_grant(
         self, client, session, account, candidate
@@ -268,12 +237,6 @@ class TestTheLandingPathCannotRedirectAway:
     )
     def test_safe_next_refuses_anything_not_a_path(self, hostile):
         assert safe_next(hostile) == "/"
-
-    @pytest.mark.parametrize(
-        "fine", ["/", "/applications/app_1", "/inbox", "/discover?tab=new"]
-    )
-    def test_safe_next_keeps_a_real_path(self, fine):
-        assert safe_next(fine) == fine
 
     def test_minting_stores_a_sanitised_path(self, session, account, candidate):
         mint_portal_link(

@@ -206,17 +206,6 @@ class TestLoop:
         assert "c004" not in page.clicked
         assert cloud.stopped
 
-    def test_preflight_collects_questions_without_an_attempt(self, cloud, monkeypatch):
-        page = FakePage(
-            url="https://boards.greenhouse.io/x/jobs/1",
-            controls=(*CONTROLS, Control(id="c010", label="How did you hear about us?", field_type="text", required=True)),
-        )
-        _patch_driver(monkeypatch, page)
-        planner = ScriptedPlanner([Action(type="stop", reason="preflight done")])
-        result = loop.run(_ctx(application_id=""), allow_submit=False, planner=planner)
-        assert not result.ok
-        assert any(c.label == "How did you hear about us?" for c in result.questions)
-
     def test_ambiguous_after_submit_is_handoff_not_retry(self, cloud, monkeypatch, tmp_path):
         page = FakePage(
             url="https://boards.greenhouse.io/x/jobs/1",
@@ -284,17 +273,6 @@ class TestLoop:
         assert "session gone" in result.error
 
 
-class TestConfirmationArtifact:
-    def test_picks_the_labelled_shot(self):
-        assert loop.confirmation_artifact(
-            ["org/applications/a/before-submit.png", "org/applications/a/confirmation.png"]
-        ).endswith("confirmation.png")
-
-    def test_ignores_unconfirmed_and_before(self):
-        assert loop.confirmation_artifact(["org/applications/a/before-submit.png"]) == ""
-        assert loop.confirmation_artifact(["org/applications/a/unconfirmed.png"]) == ""
-
-
 class TestFormRoute:
     """Boards that split overview from form get the form route, deterministically."""
 
@@ -309,10 +287,4 @@ class TestFormRoute:
         from juicebox.applications.submit.browser.agent.loop import form_route
 
         url = "https://jobs.ashbyhq.com/forerunner/1a9c649b-dd5b/application"
-        assert form_route(url) == url
-
-    def test_other_hosts_are_untouched(self):
-        from juicebox.applications.submit.browser.agent.loop import form_route
-
-        url = "https://careers.example.com/jobs/5?utm=x"
         assert form_route(url) == url

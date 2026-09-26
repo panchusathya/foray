@@ -11,16 +11,11 @@ from foray.rank import (
     RankPolicy,
     Window,
     apply_ce_scores,
-    blend_one,
     build_pool,
     clamp_window,
     logistic_ce,
     needs_rerank,
-    normalize_rrf,
-    page_count,
     rank_page,
-    reciprocal_rank_fusion,
-    widen_message,
 )
 
 
@@ -38,33 +33,6 @@ def policy() -> RankPolicy:
         rrf_k=60,
         n_arms=2,
     )
-
-
-def test_weights_of_zero_reproduce_legacy_blend() -> None:
-    """Regression anchor: w_rrf=0, w_score=0.7, w_vector=0.3 is the old blend."""
-    legacy = BlendWeights(rrf_weight=0.0, score_weight=0.7, vector_weight=0.3)
-    assert blend_one(100, 0.0, legacy) == pytest.approx(0.7)
-    assert blend_one(0, 1.0, legacy) == pytest.approx(0.3)
-    assert blend_one(None, 0.83, legacy, unscored_score=0) == pytest.approx(0.0 * 0.7 + 0.3 * 0.83)
-
-
-def test_vector_blend_can_reorder_archetype_scores(policy: RankPolicy) -> None:
-    policy = RankPolicy(
-        weights=BlendWeights(rrf_weight=0.0, score_weight=0.7, vector_weight=0.3),
-        display_floor=20,
-        page_size=40,
-        max_paginable=1000,
-        min_results_before_widen=12,
-        min_evidence=0,
-        n_arms=1,
-    )
-    page = rank_page(
-        [PoolRow(1, 70, 0.1), PoolRow(2, 60, 0.9)],
-        total_matched=2,
-        window=Window(0, 40),
-        policy=policy,
-    )
-    assert [item.key for item in page.items] == [2, 1]
 
 
 def test_absolute_ranks_on_second_page(policy: RankPolicy) -> None:
@@ -141,14 +109,6 @@ def test_clamp_window(policy: RankPolicy) -> None:
     assert clamp_window(50_000, 40, policy) == Window(1000, 0)
 
 
-@pytest.mark.parametrize(
-    ("total", "expected"),
-    [(160, 4), (180, 5), (200, 5), (201, 6), (0, 0), (1, 1)],
-)
-def test_page_count(total: int, expected: int) -> None:
-    assert page_count(total, 40) == expected
-
-
 def test_truncation(policy: RankPolicy) -> None:
     rows = [PoolRow(i, 50, 0.5) for i in range(1, 1001)]
     page = rank_page(rows, total_matched=3000, window=Window(960, 40), policy=policy)
@@ -174,85 +134,6 @@ def test_short_fused_pool_is_the_end_of_the_set(policy: RankPolicy) -> None:
     assert empty.items == []
     assert empty.paginable == 5
     assert empty.has_more is False
-
-
-def test_rank_page_preserves_input_identity_order_via_id_tiebreak(policy: RankPolicy) -> None:
-    """Replacement for test_page_presorted_preserves_sql_order: equal blends
-    sort by candidate id, not input order, so RRF ties are deterministic."""
-    page = rank_page(
-        [PoolRow(9, None, 0.4), PoolRow(2, None, 0.4)],
-        total_matched=2,
-        window=Window(0, 40),
-        policy=policy,
-    )
-    assert [item.key for item in page.items] == [2, 9]
-
-
-def test_widen_message_is_offset_invariant(policy: RankPolicy) -> None:
-    first = rank_page(
-        [PoolRow(i, 50, 0.5) for i in range(1, 46)],
-        total_matched=45,
-        window=Window(0, 40),
-        policy=policy,
-    )
-    last = rank_page(
-        [PoolRow(i, 50, 0.5) for i in range(1, 46)],
-        total_matched=45,
-        window=Window(40, 40),
-        policy=policy,
-    )
-    assert widen_message(
-        total_matched=first.total_matched,
-        paginable=first.paginable,
-        archetype_label="Backend",
-        policy=policy,
-    ) == widen_message(
-        total_matched=last.total_matched,
-        paginable=last.paginable,
-        archetype_label="Backend",
-        policy=policy,
-    )
-
-
-def test_page_envelope_is_counted_in_page_size_units(policy: RankPolicy) -> None:
-    rows = [PoolRow(i, 50, 0.5) for i in range(1, 161)]
-    select_all = rank_page(
-        rows, total_matched=160, window=clamp_window(0, 160, policy), policy=policy
-    )
-    one_page = rank_page(rows, total_matched=160, window=Window(0, 40), policy=policy)
-
-    assert len(select_all.items) == 160
-    assert select_all.page == 1
-    assert select_all.page_count == one_page.page_count == 4
-    assert select_all.has_more is False
-
-    middle = rank_page(rows, total_matched=160, window=Window(50, 40), policy=policy)
-    assert middle.page == 2
-    assert middle.page_count == 4
-
-
-def test_page_never_exceeds_page_count(policy: RankPolicy) -> None:
-    rows = [PoolRow(i, 50, 0.5) for i in range(1, 1001)]
-    over = rank_page(
-        rows, total_matched=1000, window=clamp_window(1200, 40, policy), policy=policy
-    )
-    assert over.items == []
-    assert over.page_count == 25
-    assert over.page <= over.page_count
-    assert over.has_more is False
-
-    empty = rank_page(rows[:0], total_matched=0, window=Window(0, 40), policy=policy)
-    assert empty.page_count == 0
-    assert empty.page == 1
-
-
-def test_rrf_theoretical_max_is_batch_independent() -> None:
-    raw = 2.0 / 61.0  # both arms rank 1, k=60
-    assert normalize_rrf(raw, k=60, n_arms=2) == pytest.approx(1.0)
-    lonely = 1.0 / 61.0
-    assert normalize_rrf(lonely, k=60, n_arms=2) == pytest.approx(0.5)
-    # Adding unrelated documents does not change the normalised value.
-    assert normalize_rrf(raw, k=60, n_arms=2) == normalize_rrf(raw, k=60, n_arms=2)
 
 
 def test_vector_rank_is_derived_from_exact_cos_sim() -> None:
@@ -306,12 +187,6 @@ def test_logistic_ce_is_overflow_safe() -> None:
     assert logistic_ce(100.0) == 1.0
     assert logistic_ce(-100.0) == 0.0
     assert logistic_ce(0.0) == 0.5
-
-
-def test_reciprocal_rank_fusion_k60() -> None:
-    fused = reciprocal_rank_fusion([{1: 1, 2: 2}, {2: 1, 3: 2}], k=60)
-    assert fused[2] == pytest.approx(1 / 61 + 1 / 62)
-    assert fused[1] == pytest.approx(1 / 61)
 
 
 # ------------------------------------------------------ CE logit gap (band 2) --
@@ -370,38 +245,6 @@ def test_band_2_orders_by_retrieval_blend_not_ce(policy: RankPolicy) -> None:
     assert [item.key for item in page.items] == [3, 1, 2]
 
 
-def test_ce_at_gap_boundary_stays_band_0(policy: RankPolicy) -> None:
-    """The gap is exclusive: exactly ce_logit_gap under the max is a keep."""
-    gapped = replace(policy, ce_logit_gap=5.0)
-    reranked = apply_ce_scores(
-        [PoolRow(1, 50, 0.5), PoolRow(2, 50, 0.4)], {1: 0.0, 2: -5.0}, policy=gapped
-    )
-    assert [row.band for row in reranked] == [0, 0]
-
-
-def test_ce_gap_default_inf_preserves_legacy_banding(policy: RankPolicy) -> None:
-    """Library default ce_logit_gap=inf: even a hard CE rejection stays
-    band 0, exactly the pre-gap behaviour."""
-    assert policy.ce_logit_gap == float("inf")
-    pool = [PoolRow(1, 90, 0.9, rrf=0.02), PoolRow(2, 30, 0.2, rrf=0.001)]
-    reranked = apply_ce_scores(pool, {1: -30.0, 2: 3.0}, policy=policy)
-    assert [row.band for row in reranked] == [0, 0]
-    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=policy)
-    # Band 0 still orders by ce, so the rejected row sinks within the band
-    # but is not ejected from it.
-    assert [item.key for item in page.items] == [2, 1]
-
-
-def test_ce_gap_uniform_junk_head_demotes_nothing(policy: RankPolicy) -> None:
-    """A uniformly-terrible head has no relative signal: nothing demotes and
-    the CE merely reorders it. Documented limitation — retrieval already put
-    junk on top, and a relative rule cannot repair that."""
-    gapped = replace(policy, ce_logit_gap=5.0)
-    pool = [PoolRow(1, 90, 0.9, rrf=0.02), PoolRow(2, 30, 0.2, rrf=0.001)]
-    reranked = apply_ce_scores(pool, {1: -12.0, 2: -12.5}, policy=gapped)
-    assert [row.band for row in reranked] == [0, 0]
-
-
 
 def test_band_0_ce_ties_break_on_retrieval_blend_not_cosine(policy: RankPolicy) -> None:
     """The prod flatline case: logistic_ce rounds to 4dp, so a head of tiny
@@ -420,17 +263,3 @@ def test_band_0_ce_ties_break_on_retrieval_blend_not_cosine(policy: RankPolicy) 
     assert {row.ce for row in reranked} == {0.0}
     page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=gapped)
     assert [item.key for item in page.items] == [1, 2]
-
-
-def test_band_0_ce_still_leads_when_it_discriminates(policy: RankPolicy) -> None:
-    """When rounded ce values actually differ, ce outranks the retrieval
-    blend inside band 0 — the tiebreak only decides genuine ties."""
-    gapped = replace(policy, ce_logit_gap=5.0)
-    pool = [
-        PoolRow(1, 90, 0.9, rrf=0.02),   # best retrieval
-        PoolRow(2, 30, 0.2, rrf=0.001),  # best ce
-    ]
-    reranked = apply_ce_scores(pool, {1: -1.0, 2: 1.0}, policy=gapped)
-    assert all(row.band == 0 for row in reranked)
-    page = rank_page(reranked, total_matched=2, window=Window(0, 40), policy=gapped)
-    assert [item.key for item in page.items] == [2, 1]

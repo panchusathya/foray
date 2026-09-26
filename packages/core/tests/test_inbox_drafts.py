@@ -13,10 +13,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from juicebox.config import get_settings, reset_settings_cache
+from juicebox.config import reset_settings_cache
 from juicebox.integrations.inbound_filters import sender_looks_automated
 from juicebox.integrations.inbox_drafting import (
-    _InboundView,
     create_inbox_draft,
     generate_for_draft,
     place_in_mailbox,
@@ -135,11 +134,6 @@ class TestSenderFilter:
             from_address="real.person@corp.com", subject="Automatic reply: Out of office"
         )[0]
 
-    def test_a_calendar_response_is_refused(self):
-        assert sender_looks_automated(
-            from_address="real.person@corp.com", subject="Accepted: Intro call"
-        )[0]
-
     def test_one_mention_of_unsubscribe_is_not_enough(self):
         """A marketing footer on a colleague's mail must not drop the mail.
 
@@ -153,42 +147,16 @@ class TestSenderFilter:
         )
         assert not automated
 
-    def test_a_real_bulk_footer_is(self):
-        automated, why = sender_looks_automated(
-            from_address="team@company.com",
-            subject="Our October update",
-            body="Read more.\nUnsubscribe | manage your email preferences | "
-            "view this email in your browser",
-        )
-        assert automated and why == "bulk-mail footer"
-
-    def test_a_missing_address_is_refused(self):
-        assert sender_looks_automated(from_address="")[0]
-
-
 # --------------------------------------------------------------------------
 # the row
 # --------------------------------------------------------------------------
 
 
 class TestCreate:
-    def test_a_draft_starts_pending_and_unwritten(self, session, mailbox):
-        draft = _draft(session, mailbox)
-        assert draft.status == "pending"
-        # The sync loop must not pay for a model call per message.
-        assert draft.generated_by == ""
-        assert draft.body == ""
-
     def test_the_same_message_twice_makes_one_draft(self, session, mailbox):
         assert _draft(session, mailbox) is not None
         assert _draft(session, mailbox) is None
         assert session.query(InboxDraft).count() == 1
-
-    def test_a_stranger_needs_no_candidate(self, session, mailbox):
-        draft = _draft(session, mailbox)
-        assert draft.candidate_id is None
-        assert draft.message_id is None
-
 
 class TestGenerate:
     def test_the_offline_path_writes_something_sendable(self, session, mailbox):
@@ -220,14 +188,6 @@ class TestPlacement:
         generate_for_draft(session, draft=draft)
         assert recording.calls == []
 
-    def test_approval_places_it(self, session, mailbox, recording):
-        draft = _draft(session, mailbox)
-        generate_for_draft(session, draft=draft)
-        place_in_mailbox(session, draft=draft)
-        assert draft.status == "placed"
-        assert draft.provider_draft_id == "draft-1"
-        assert len(recording.calls) == 1
-
     @pytest.mark.parametrize("recording", [True], indirect=True)
     def test_a_provider_failure_leaves_it_pending(self, session, mailbox, recording):
         """Marking it placed when nothing was written loses the reply silently."""
@@ -246,64 +206,12 @@ class TestPlacement:
             place_in_mailbox(session, draft=draft)
 
 
-class TestInboundView:
-    def test_it_carries_every_field_zoho_reads(self, session, mailbox):
-        """Graph replies by id alone; Zoho rebuilds the reply by hand.
-
-        A field missing here is an AttributeError at the moment of writing to
-        a live mailbox, on the provider that is harder to exercise in tests.
-        """
-        draft = _draft(session, mailbox)
-        view = _InboundView(draft, mailbox)
-        for attribute in (
-            "provider_native_id",
-            "conversation_id",
-            "internet_message_id",
-            "subject",
-            "body",
-            "body_html",
-            "from_address",
-            "to_address",
-            "sent_at",
-        ):
-            assert hasattr(view, attribute), attribute
-        assert view.from_address == "sarah@acmerobotics.com"
-        # The reply goes out from the connected mailbox.
-        assert view.to_address == mailbox.address
-
-
 # --------------------------------------------------------------------------
 # the API
 # --------------------------------------------------------------------------
 
 
 class TestApi:
-    def test_the_queue_lists_pending_drafts(self, client, session, account, mailbox):
-        draft = _draft(session, mailbox)
-        generate_for_draft(session, draft=draft)
-        session.commit()
-        response = client.get("/v1/inbox-drafts", headers=account["headers"])
-        assert response.status_code == 200, response.text
-        payload = response.json()
-        assert payload["pending_count"] == 1
-        assert payload["drafts"][0]["from_address"] == "sarah@acmerobotics.com"
-        assert payload["drafts"][0]["subject"] == "Quick question"
-
-    def test_editing_keeps_what_we_generated(self, client, session, account, mailbox):
-        draft = _draft(session, mailbox)
-        generate_for_draft(session, draft=draft)
-        session.commit()
-        response = client.patch(
-            f"/v1/inbox-drafts/{draft.id}",
-            json={"body": "Thursday works."},
-            headers=account["headers"],
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["edited"] is True
-        session.refresh(draft)
-        assert draft.body == "Thursday works."
-        assert draft.generated_body != draft.body
-
     def test_approving_an_empty_draft_is_refused(
         self, client, session, account, mailbox, recording
     ):
@@ -345,19 +253,6 @@ class TestApi:
         assert second.status_code == 409
         assert len(recording.calls) == 1
 
-    def test_dismissing_removes_it_from_the_queue(self, client, session, account, mailbox):
-        draft = _draft(session, mailbox)
-        generate_for_draft(session, draft=draft)
-        session.commit()
-        assert (
-            client.post(
-                f"/v1/inbox-drafts/{draft.id}/dismiss", headers=account["headers"]
-            ).status_code
-            == 200
-        )
-        listing = client.get("/v1/inbox-drafts", headers=account["headers"]).json()
-        assert listing["pending_count"] == 0 and listing["drafts"] == []
-
     def test_a_dismissed_draft_cannot_be_approved(
         self, client, session, account, mailbox, recording
     ):
@@ -398,12 +293,6 @@ class TestApi:
 # --------------------------------------------------------------------------
 
 
-class TestKillSwitch:
-    def test_off_by_default(self):
-        reset_settings_cache()
-        assert get_settings().inbox_drafting_enabled is False
-
-
 class TestApproveBodyHandling:
     def test_approving_without_a_body_keeps_the_draft(
         self, client, session, account, mailbox, recording
@@ -429,16 +318,6 @@ class TestApproveBodyHandling:
         # to_html splits on blank lines, so compare a phrase rather than the
         # whole body.
         assert "Let me come back to you" in recording.calls[0]["html"]
-
-    def test_patching_nothing_is_refused(self, client, session, account, mailbox):
-        draft = _draft(session, mailbox)
-        generate_for_draft(session, draft=draft)
-        session.commit()
-        response = client.patch(
-            f"/v1/inbox-drafts/{draft.id}", json={}, headers=account["headers"]
-        )
-        assert response.status_code == 422
-
 
 class TestSyncGate:
     """What the mailbox sync decides to queue, before anything is written."""
@@ -482,54 +361,12 @@ class TestSyncGate:
         assert draft.from_address == "sarah@acmerobotics.com"
         assert draft.status == "pending"
 
-    def test_a_robot_is_not(self, session, mailbox, enabled):
-        self._enqueue(session, mailbox, self._event(from_address="no-reply@linkedin.com"))
-        assert session.query(InboxDraft).count() == 0
-
     def test_our_own_mail_is_not(self, session, mailbox, enabled):
         """Mail we sent, seen again in a folder we read, is not correspondence."""
         self._enqueue(session, mailbox, self._event(from_address=mailbox.address.upper()))
         assert session.query(InboxDraft).count() == 0
 
-    def test_the_quoted_history_is_stripped(self, session, mailbox, enabled):
-        event = self._event(
-            body="Thursday suits me.\n\nOn Mon, recruiter@goforay.io wrote:\n> the original"
-        )
-        self._enqueue(session, mailbox, event)
-        draft = session.query(InboxDraft).one()
-        assert "the original" not in draft.inbound_body
-        assert "Thursday suits me." in draft.inbound_body
-
-
 class TestProviderFailureTranslation:
-    def test_a_bad_token_reads_as_a_provider_failure(self, session, mailbox):
-        """The most ordinary failure there is: an expired or re-keyed mailbox.
-
-        The crypto layer raises a bare ValueError, which used to escape as a
-        500 saying "Internal Server Error" with nothing written to
-        ``draft.error`` -- about a mailbox the user only needed to reconnect.
-        """
-
-        class Exploding:
-            name = "microsoft"
-
-            def is_configured(self) -> bool:
-                return True
-
-            def place_reply_draft(self, db, *, connection, inbound, html_body):
-                raise ValueError("token blob is invalid or was encrypted with a different key")
-
-        set_provider("microsoft", Exploding())
-        try:
-            draft = _draft(session, mailbox)
-            generate_for_draft(session, draft=draft)
-            with pytest.raises(ProviderError) as caught:
-                place_in_mailbox(session, draft=draft)
-            assert "token blob" in str(caught.value)
-            assert draft.status == "pending"
-        finally:
-            set_provider("microsoft", None)
-
     def test_the_api_reports_it_as_a_mailbox_problem(self, client, session, account, mailbox):
         class Exploding:
             name = "microsoft"

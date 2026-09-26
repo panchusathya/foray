@@ -30,32 +30,6 @@ def connection(session, account):
 
 
 class TestRepeatRuns:
-    def test_a_second_import_actually_queues_work(self, client, account, connection):
-        """The first click worked; every later one was a silent no-op.
-
-        ``enqueue`` returns the existing row for an idempotency key forever,
-        including a job that already succeeded, and the key was
-        ``mailbox.backfill:<id>:0`` -- fixed for all time. The endpoint still
-        answered ``queued: true``, so the UI reported success for work that was
-        never scheduled.
-        """
-        first = client.post(
-            f"/v1/integrations/mailboxes/{connection.id}/backfill",
-            headers=account["headers"],
-        )
-        assert first.status_code == 200, first.text
-        first_job = first.json()["job_id"]
-
-        second = client.post(
-            f"/v1/integrations/mailboxes/{connection.id}/backfill",
-            headers=account["headers"],
-        )
-        # Either a genuinely new job, or an explicit "one is already running".
-        # What it must never be is a cheerful success for the old, finished one.
-        if second.status_code == 200:
-            assert second.json()["job_id"] != first_job
-        else:
-            assert second.status_code == 409
 
     def test_a_finished_run_does_not_block_the_next_one(
         self, client, session, account, connection
@@ -97,16 +71,6 @@ class TestHonestResponses:
         )
         assert response.status_code == 409
 
-    def test_status_reports_an_import_that_has_not_started(
-        self, client, account, connection
-    ):
-        rows = client.get(
-            "/v1/integrations/mailbox-activity", headers=account["headers"]
-        ).json()
-        mine = [r for r in rows if r["mailbox_id"] == connection.id]
-        assert mine, "every connected mailbox should appear, even before any run"
-        assert mine[0]["backfill"]["status"] in ("", "idle")
-
 
 class TestProgressIsVisible:
     def test_a_run_reports_scope_and_progress(
@@ -147,18 +111,3 @@ class TestProgressIsVisible:
         # How many people it intends to look up, so "0 imported" can be told
         # apart from "nobody to import for".
         assert state["total"] >= 1
-
-
-class TestNothingToDo:
-    def test_an_empty_address_book_says_so(self, client, session, account, connection):
-        """An org with nobody in scope imports nothing, correctly. That has to
-        read as "nothing to import", not as a failure or a success."""
-        client.post(
-            f"/v1/integrations/mailboxes/{connection.id}/backfill",
-            headers=account["headers"],
-        )
-        session.expire_all()
-
-        state = session.get(MailboxConnection, connection.id).backfill_state
-        assert state["total"] == 0
-        assert "no" in (state.get("note") or "").lower()

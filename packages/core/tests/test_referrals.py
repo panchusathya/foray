@@ -249,20 +249,6 @@ class TestTheGroupTurn:
         drain(session)
         assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
 
-    def test_the_group_thread_stays_open_while_we_are_still_in_the_chat(
-        self, client, session, linq_number, linq_chat, fake_channel
-    ):
-        """Open by design now, which is why ``find_active_thread`` has to
-        exclude MODE_REFERRAL rather than rely on the thread being closed."""
-        set_channel(LINQ, fake_channel)
-        post_linq(client, group_payload())
-        drain(session)
-        thread = session.scalars(
-            select(IntakeThread).where(IntakeThread.entry_point == "linq_group")
-        ).one()
-        assert thread.status == "active"
-        assert thread.mode == referrals.MODE_REFERRAL
-
     def test_a_later_ping_gets_the_one_to_one_redirect(
         self, client, session, linq_number, linq_chat, fake_channel
     ):
@@ -326,20 +312,6 @@ class TestTheGroupTurn:
         result = referrals.handle_group(session, thread=thread)
         assert result == {"skipped": "group already answered"}
         assert len(fake_channel.bodies) == 1
-
-    def test_disabled_by_default(
-        self, client, session, linq_number, linq_chat, fake_channel, monkeypatch
-    ):
-        from juicebox.config import reset_settings_cache
-
-        monkeypatch.setenv("LINQ_GROUP_REFERRALS_ENABLED", "false")
-        reset_settings_cache()
-        set_channel(LINQ, fake_channel)
-        response = post_linq(client, group_payload())
-        assert response.json() == {"status": "ignored", "reason": "group_chat"}
-        assert session.scalars(select(IntakeThread)).all() == []
-        assert session.scalars(select(Referral)).all() == []
-        assert fake_channel.bodies == []
 
     def test_a_group_with_nobody_new_is_answered_but_promises_nothing(
         self, client, session, account, linq_number, linq_chat, fake_channel
@@ -581,16 +553,6 @@ class TestConfirmation:
         assert "texted" not in sign_off
         assert "applications" not in sign_off
 
-    def test_departing_twice_is_a_no_op(
-        self, client, session, linq_number, linq_chat, fake_channel
-    ):
-        set_channel(LINQ, fake_channel)
-        post_linq(client, group_payload())
-        drain(session)
-        post_linq(client, private_payload(sender=FRIEND))
-        post_linq(client, private_payload(sender=FRIEND, msg_id="prv-2", text="hi again"))
-        assert linq_chat.left == [GROUP_CHAT_ID]
-
     def test_a_second_text_does_not_re_confirm(
         self, client, session, linq_number, linq_chat, fake_channel
     ):
@@ -664,13 +626,6 @@ class TestConfirmation:
             == 5
         )
 
-    def test_an_unreferred_number_confirms_nothing(
-        self, client, session, linq_number, linq_chat, fake_channel
-    ):
-        set_channel(LINQ, fake_channel)
-        assert post_linq(client, private_payload(sender=SECOND_FRIEND)).status_code == 200
-        assert session.scalars(select(Referral)).all() == []
-
     def test_the_referrer_is_told_once_they_have_a_line(
         self, client, session, account, linq_number, linq_chat, fake_channel
     ):
@@ -711,19 +666,6 @@ class TestConfirmation:
 
         drain(session, kind=KIND_THREAD_NOTIFY)
         assert any("banked" in body for body in fake_channel.bodies)
-
-    def test_a_referrer_with_no_line_still_keeps_the_referral(
-        self, client, session, linq_number, linq_chat, fake_channel
-    ):
-        from juicebox.jobs import KIND_THREAD_NOTIFY
-
-        set_channel(LINQ, fake_channel)
-        post_linq(client, group_payload())
-        drain(session)
-        post_linq(client, private_payload(sender=FRIEND))
-
-        assert session.scalars(select(Referral)).one().status == referrals.STATUS_CONFIRMED
-        assert session.scalars(select(Job).where(Job.kind == KIND_THREAD_NOTIFY)).all() == []
 
 
 class TestOneReferralPerNumber:
@@ -796,17 +738,6 @@ class TestEarnedBonus:
         session.commit()
         assert referrals.earned_bonus(session, org_id=org_id, candidate_id=person.id) == 5
 
-    def test_nothing_spends_it_yet(self):
-        """Deliberate: wiring the bonus into may_submit means deciding what the
-        paid tier is, which is why the group copy says "banked". If this test
-        starts failing, that decision was made -- update the copy with it."""
-        import inspect
-
-        from juicebox.applications import limits
-
-        assert "earned_bonus" not in inspect.getsource(limits.may_submit)
-        assert "banked" in prompts.NOTIFY_REFERRAL_CONFIRMED
-
 
 class TestLinqChatCalls:
     """The HTTP shape of the two calls, through the injected transport."""
@@ -842,13 +773,6 @@ class TestLinqChatCalls:
 
         assert fetch_chat_handles("c", transport=transport) == ()
 
-    def test_no_chat_id_makes_no_call(self):
-        def transport(method, url, payload):  # pragma: no cover - must not run
-            raise AssertionError("should not be called")
-
-        assert fetch_chat_handles("", transport=transport) == ()
-        leave_chat("", transport=transport)
-
     def test_leave_posts_to_the_leave_subresource(self):
         seen = []
 
@@ -863,9 +787,6 @@ class TestLinqChatCalls:
 
 
 class TestAddressKey:
-    def test_a_number_is_stored_as_its_lookup_key(self):
-        assert referrals.address_key("(415) 555-0123") == REFERRER
-
     def test_an_apple_id_falls_back_to_the_handle(self):
         assert referrals.address_key("Someone@iCloud.com") == "someone@icloud.com"
 

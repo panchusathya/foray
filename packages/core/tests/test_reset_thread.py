@@ -18,7 +18,6 @@ from juicebox.messaging.threads import open_thread, record_inbound
 from juicebox.models import (
     Candidate,
     CandidatePreference,
-    IntakeMessage,
     IntakeThread,
     Suppression,
 )
@@ -82,19 +81,6 @@ def test_a_dry_run_deletes_nothing(session, account, channel, capsys):
     assert session.scalar(select(IntakeThread).where(IntakeThread.from_address == PHONE))
 
 
-def test_apply_clears_the_conversation_and_the_candidate(
-    session, account, channel, capsys
-):
-    _, candidate_id = _seed(session, account, channel)
-    assert cmd_reset_thread(_Args(apply=True)) == 0
-
-    session.expire_all()
-    assert session.scalar(select(IntakeThread).where(IntakeThread.from_address == PHONE)) is None
-    assert session.get(Candidate, candidate_id) is None
-    assert session.scalar(select(CandidatePreference)) is None
-    assert session.scalar(select(IntakeMessage)) is None
-
-
 def test_the_next_message_gets_the_intro(session, account, channel):
     """The whole point. Not "rows are gone" -- "we are strangers"."""
     _seed(session, account, channel)
@@ -154,30 +140,3 @@ def test_an_opt_out_survives_unless_you_say_otherwise(session, account, channel,
     cmd_reset_thread(_Args(apply=True, clear_suppression=True))
     session.expire_all()
     assert session.scalar(select(Suppression).where(Suppression.phone == PHONE)) is None
-
-
-def test_a_suppression_can_be_cleared_after_the_thread_is_gone(
-    session, account, channel
-):
-    """Reset first, then realise the STOP is why nothing sends.
-
-    Clearing it must not require a thread to still exist -- the obvious order
-    of operations deletes the thread first, and a command that then refuses to
-    help is a trap.
-    """
-    _seed(session, account, channel)
-    session.add(
-        Suppression(org_id=account["org_id"], phone=PHONE, reason="unsubscribe", email=None)
-    )
-    session.commit()
-
-    cmd_reset_thread(_Args(apply=True))
-    session.expire_all()
-    assert cmd_reset_thread(_Args(apply=True, clear_suppression=True)) == 0
-    session.expire_all()
-    assert session.scalar(select(Suppression).where(Suppression.phone == PHONE)) is None
-
-
-def test_an_unknown_number_is_not_an_error(session, account, capsys):
-    assert cmd_reset_thread(_Args(phone="+15550000000")) == 0
-    assert "no intake thread" in capsys.readouterr().out

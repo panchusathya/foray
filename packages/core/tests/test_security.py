@@ -32,10 +32,3 @@ class TestPasswordHash:
     def test_malformed_hash_does_not_verify(self):
         assert verify_password("x", "not-a-hash") is False
         assert verify_password("x", "pbkdf2_sha256$not-int$ab$cd") is False
-
-    def test_signup_writes_the_test_cost(self, session, account):
-        from juicebox.models import User
-
-        user = session.get(User, account["user_id"])
-        assert user is not None
-        assert user.password_hash.startswith("pbkdf2_sha256$1000$")

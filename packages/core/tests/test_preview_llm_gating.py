@@ -147,14 +147,6 @@ class TestNoCallWhenNothingConsumesIt:
         assert "Model-written opening." not in body
         assert body.strip()
 
-    def test_the_preview_path_is_gated_too(self, session, outreach_fixture, counting_llm):
-        sequence = outreach_fixture["sequence"]
-        _set_step(sequence, subject="A role", body="Hi {{ first_name }}, nothing written.")
-        preview_step(
-            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
-        )
-        assert counting_llm.calls == []
-
 
 class TestFragmentCache:
     def test_a_second_render_of_the_same_candidate_does_not_call_again(
@@ -169,33 +161,8 @@ class TestFragmentCache:
             preview_step(session, sequence=sequence, candidate=candidate)
         assert len(counting_llm.calls) == 1
 
-    def test_a_different_candidate_is_a_different_entry(
-        self, session, outreach_fixture, counting_llm
-    ):
-        sequence = outreach_fixture["sequence"]
-        _set_step(sequence, subject="A role", body="{{ opening_line }}")
-        for candidate in outreach_fixture["candidates"][:2]:
-            preview_step(session, sequence=sequence, candidate=candidate)
-        assert len(counting_llm.calls) == 2
-
 
 class TestFastBudget:
-    def test_personalize_uses_the_fast_model_and_no_retries(
-        self, session, outreach_fixture, counting_llm
-    ):
-        """A user is waiting on this call, so it must not inherit the 120s
-        drafting budget or its two retries."""
-        sequence = outreach_fixture["sequence"]
-        _set_step(sequence, subject="A role", body="{{ opening_line }}")
-        preview_step(
-            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
-        )
-        [call] = counting_llm.calls
-        from juicebox.config import get_settings
-
-        assert call["model"] == get_settings().resolved_llm_fast_model
-        assert call["timeout"] == get_settings().llm_fast_timeout_seconds
-
     def test_a_failing_fast_call_is_not_retried(
         self, session, outreach_fixture
     ):

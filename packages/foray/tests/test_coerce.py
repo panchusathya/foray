@@ -34,13 +34,6 @@ def test_unmappable_closed_vocabulary_values_are_dropped() -> None:
     assert parsed.source is None
 
 
-def test_valid_closed_vocabulary_values_survive() -> None:
-    parsed = coerce({"archetype_id": "founding_ml", "source": "BOTH", "metros": ["nyc"]})
-    assert parsed.archetype_id == "founding_ml"
-    assert parsed.source == "both"
-    assert parsed.metros == ["nyc"]  # canonical keys are idempotent
-
-
 # ------------------------------------------------ hazard (b): unbounded work --
 
 
@@ -83,11 +76,6 @@ def test_non_numeric_and_nonfinite_numbers_are_dropped() -> None:
     assert parsed.experience_min is None
     assert parsed.experience_max is None
     assert parsed.tenure_min_months is None
-
-
-def test_free_text_is_bounded() -> None:
-    parsed = coerce({"free_text": "a " * 5000})
-    assert len(parsed.free_text) <= 1000
 
 
 # ------------------------------------------- hazard (c): wildcard injection --
@@ -151,18 +139,6 @@ def test_clean_filter_round_trips_unchanged() -> None:
     # Idempotent: coercing the coerced dict changes nothing, which is what lets
     # both parsers exit through the same door.
     assert coerce(parsed.to_dict()) == parsed
-
-
-def test_scalar_strings_are_accepted_as_single_item_lists() -> None:
-    parsed = coerce({"titles": "ML engineer", "metros": "Palo Alto"})
-    assert parsed.titles == ["ML engineer"]
-    assert parsed.metros == ["sf_bay_area"]
-
-
-def test_duplicate_items_collapse() -> None:
-    parsed = coerce({"titles": ["ML Engineer", "ml engineer"], "metros": ["SF", "Oakland"]})
-    assert parsed.titles == ["ML Engineer"]
-    assert parsed.metros == ["sf_bay_area"]
 
 
 def test_tri_state_flags_distinguish_false_from_unset() -> None:

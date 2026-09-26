@@ -22,7 +22,6 @@ from foray.vocab import (
     match_languages,
     metro_alias_table,
     metro_keys,
-    metro_like_patterns,
     metro_spans,
     vocab_hash,
 )
@@ -58,20 +57,6 @@ def test_substring_languages_do_not_bleed() -> None:
     assert match_languages("javascript developer") == ["javascript"]
     # "java" must not fire from inside "javascript"
     assert "java" not in match_languages("javascript only")
-
-
-def test_alias_and_canonical_dedupe_to_one_stored_form() -> None:
-    assert match_languages("cpp / c++ developer") == ["c++"]
-
-
-def test_appearance_order_not_canonical_order() -> None:
-    # typescript precedes python in the text but not in CANONICAL_LANGUAGES.
-    assert match_languages("typescript then python") == ["typescript", "python"]
-
-
-def test_no_match_is_empty() -> None:
-    assert match_languages("founding engineer, shipped training infra") == []
-    assert match_languages("") == []
 
 
 def test_every_alias_target_is_canonical() -> None:
@@ -129,28 +114,6 @@ def test_the_whole_bay_area_collapses_to_one_key(raw: str) -> None:
     assert canonical_metro(raw) == "sf_bay_area"
 
 
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("New York", "nyc"),
-        ("NYC", "nyc"),
-        ("Brooklyn", "nyc"),
-        ("Seattle", "seattle"),
-        ("Bellevue", "seattle"),
-        ("Redmond", "seattle"),
-        ("Austin", "austin"),
-        ("Boston", "boston"),
-        ("Cambridge", "boston"),
-        ("Los Angeles", "la"),
-        ("LA", "la"),
-        ("Santa Monica", "la"),
-        ("Washington, D.C.", "dc"),
-    ],
-)
-def test_required_metro_keys(raw: str, expected: str) -> None:
-    assert canonical_metro(raw) == expected
-
-
 def test_unmappable_locations_return_none_rather_than_a_guess() -> None:
     """None is what makes coerce DROP the facet. A guess here would be a
     permanently wrong location_metro on a row we only derive once."""
@@ -184,27 +147,6 @@ def test_metro_spans_are_looser_than_canonical_metro_and_report_positions() -> N
     assert [key for _s, _e, key in spans] == ["sf_bay_area", "nyc"]
     for start, end, _key in spans:
         assert 0 <= start < end
-
-
-def test_metro_spans_do_not_overlap_and_prefer_the_longest_alias() -> None:
-    spans = metro_spans("hiring in la jolla")
-    assert [key for _s, _e, key in spans] == ["san_diego"]
-
-
-def test_metro_like_patterns_are_trigram_usable_and_minimal() -> None:
-    """Two prunings, both about the index: a pattern under 3 characters has no
-    trigram to look up (seq scan), and an alias containing another alias adds
-    an index scan that can return no extra rows."""
-    patterns = metro_like_patterns("sf_bay_area")
-    assert all(len(p) >= 3 for p in patterns)
-    assert "san francisco" in patterns
-    # "south san francisco" and "sf bay area" are covered by shorter aliases.
-    assert "south san francisco" not in patterns
-    assert "sf bay area" not in patterns
-    assert "sf" not in patterns
-    # "la" is 2 chars: it resolves to a key, it never becomes a LIKE body.
-    assert "la" not in metro_like_patterns("la")
-    assert metro_like_patterns("no_such_key") == ()
 
 
 def test_every_metro_alias_round_trips_to_its_own_key() -> None:

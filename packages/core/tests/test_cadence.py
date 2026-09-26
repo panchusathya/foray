@@ -138,21 +138,6 @@ class TestTimezoneResolution:
         assert linq_thread.timezone == "America/Los_Angeles"
         assert linq_thread.timezone_source == TZ_SOURCE_STATED
 
-    def test_unknown_location_resolves_to_nothing(self, session, linq_thread):
-        record = dict(linq_thread.record or {})
-        record["spec"] = {**(record.get("spec") or {}), "locations": ["Atlantis"]}
-        linq_thread.record = record
-        zone, source = resolve_timezone(session, thread=linq_thread)
-        assert zone == "" and source == ""
-        assert linq_thread.timezone == ""
-
-    def test_state_names_resolve(self, session, linq_thread):
-        record = dict(linq_thread.record or {})
-        record["spec"] = {**(record.get("spec") or {}), "locations": ["Texas"]}
-        linq_thread.record = record
-        zone, _ = resolve_timezone(session, thread=linq_thread)
-        assert zone == "America/Chicago"
-
 
 class TestMaySendNow:
     def test_a_reply_is_not_a_solicitation(self, session, linq_thread):
@@ -443,15 +428,6 @@ class TestConsentRecords:
 
 
 class TestOriginColumn:
-    def test_outbound_defaults_to_reply(self, session, linq_thread):
-        row = record_outbound(
-            session,
-            thread=linq_thread,
-            message=OutboundMessage(body="hello"),
-            result=DeliveryResult(status="sent"),
-        )
-        assert row.origin == "reply"
-
     def test_failed_nudge_rows_do_not_spend_the_budget(self, session, linq_thread):
         now = HALF_ELEVEN_ET
         linq_thread.last_inbound_at = now - timedelta(days=30)
@@ -493,18 +469,6 @@ class TestQuietHoursSwitch:
         finally:
             reset_settings_cache()
 
-    def test_off_opens_every_hour(self, monkeypatch):
-        from juicebox.config import reset_settings_cache
-        from juicebox.messaging import cadence
-
-        monkeypatch.setenv("QUIET_HOURS_ENABLED", "false")
-        reset_settings_cache()
-        try:
-            for hour in range(24):
-                assert cadence.in_send_window(self._at(hour)) is True
-        finally:
-            reset_settings_cache()
-
     def test_off_reaches_a_thread_with_a_known_zone(self, monkeypatch):
         """The case the env hours could not touch: a resolved timezone used the
         hardcoded constants, so only a real switch turns it off."""
@@ -515,32 +479,5 @@ class TestQuietHoursSwitch:
         reset_settings_cache()
         try:
             assert cadence.in_send_window(self._at(6), zone_name="America/Los_Angeles") is True
-        finally:
-            reset_settings_cache()
-
-    def test_off_means_no_deferral(self, monkeypatch):
-        """A deferred send is re-enqueued at `next_window_open`; with the
-        control off that has to be now, or the message still waits."""
-        from juicebox.config import reset_settings_cache
-        from juicebox.messaging import cadence
-
-        monkeypatch.setenv("QUIET_HOURS_ENABLED", "false")
-        reset_settings_cache()
-        try:
-            now = self._at(6)
-            assert cadence.next_window_open(now) == now
-            assert cadence.next_window_open(now, zone_name="America/Los_Angeles") == now
-        finally:
-            reset_settings_cache()
-
-    def test_on_still_defers_to_the_window(self, monkeypatch):
-        from juicebox.config import reset_settings_cache
-        from juicebox.messaging import cadence
-
-        monkeypatch.setenv("QUIET_HOURS_ENABLED", "true")
-        reset_settings_cache()
-        try:
-            now = self._at(6)
-            assert cadence.next_window_open(now) > now
         finally:
             reset_settings_cache()

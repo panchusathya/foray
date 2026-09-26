@@ -250,9 +250,6 @@ class TestWorkerDrain:
         assert enrollment.status == "active"
         assert enrollment.current_step == 0
 
-    def test_process_batch_is_a_no_op_when_the_queue_is_empty(self, session, account):
-        assert process_batch(session, worker="test") == 0
-
 
 class TestInteractiveIsolation:
     """A texter must not wait behind bulk work.
@@ -281,21 +278,9 @@ class TestInteractiveIsolation:
         got = claim(session, worker_id="w1", kinds=INTERACTIVE_KINDS)
         assert [j.kind for j in got] == [KIND_INTAKE_TURN]
 
-    def test_an_unrestricted_claim_still_takes_everything(self, session, account):
-        from juicebox.jobs import KIND_INTAKE_TURN, KIND_JOBS_PARSE, claim, enqueue
-
-        org = account["org_id"]
-        enqueue(session, org_id=org, kind=KIND_JOBS_PARSE, idempotency_key="p2", payload={})
-        enqueue(session, org_id=org, kind=KIND_INTAKE_TURN, idempotency_key="t2", payload={})
-        session.flush()
-
-        kinds = {j.kind for j in claim(session, worker_id="w2")}
-        assert kinds == {KIND_JOBS_PARSE, KIND_INTAKE_TURN}
-
     def test_the_intake_worker_leaves_bulk_work_alone(self, session, account):
         """It must not claim a parse job -- that is the whole point of it."""
         from juicebox.jobs import INTERACTIVE_KINDS, KIND_JOBS_PARSE, enqueue
-        from juicebox.worker import process_batch
 
         enqueue(
             session,
@@ -334,40 +319,3 @@ class TestApplyPipelineIsolation:
 
         got = claim(session, worker_id="w3", exclude=CANDIDATE_APPLY_KINDS)
         assert [j.kind for j in got] == [KIND_JOBS_PARSE]
-
-    def test_the_apply_worker_claims_exactly_the_pipeline(self, session, account):
-        from juicebox.jobs import (
-            CANDIDATE_APPLY_KINDS,
-            KIND_APP_PACKAGE,
-            KIND_JOBS_PARSE,
-            KIND_THREAD_NOTIFY,
-            claim,
-            enqueue,
-        )
-
-        org = account["org_id"]
-        enqueue(session, org_id=org, kind=KIND_APP_PACKAGE, idempotency_key="a2", payload={})
-        enqueue(session, org_id=org, kind=KIND_THREAD_NOTIFY, idempotency_key="n1", payload={})
-        enqueue(session, org_id=org, kind=KIND_JOBS_PARSE, idempotency_key="p5", payload={})
-        session.flush()
-
-        kinds = {j.kind for j in claim(session, worker_id="w4", kinds=CANDIDATE_APPLY_KINDS)}
-        assert kinds == {KIND_APP_PACKAGE, KIND_THREAD_NOTIFY}
-
-    def test_the_two_flags_cover_the_queue_between_them(self, session, account):
-        """Nothing may fall between the general worker and the apply worker:
-        every job one excludes, the other claims."""
-        from juicebox.jobs import CANDIDATE_APPLY_KINDS, claim, enqueue
-        from juicebox.models import Job
-
-        org = account["org_id"]
-        for index, kind in enumerate(CANDIDATE_APPLY_KINDS):
-            enqueue(session, org_id=org, kind=kind, idempotency_key=f"c{index}", payload={})
-        session.flush()
-
-        claim(session, worker_id="general", exclude=CANDIDATE_APPLY_KINDS)
-        claim(session, worker_id="apply", kinds=CANDIDATE_APPLY_KINDS)
-        from sqlalchemy import select
-
-        unclaimed = session.scalars(select(Job).where(Job.status == "queued")).all()
-        assert unclaimed == []

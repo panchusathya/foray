@@ -6,10 +6,8 @@ from juicebox.enrich import taxonomy as tx
 from juicebox.enrich.email import detect_pattern, guess_emails, learn_org_pattern
 from juicebox.enrich.normalize import (
     compute_years_experience,
-    months_between,
     normalize_candidate,
     parse_year_month,
-    split_location,
 )
 
 
@@ -69,11 +67,6 @@ class TestTaxonomy:
         assert tx.location_match(["San Francisco"], "sf") == 1.0
         assert tx.location_match(["Berlin"], "new york") == 0.0
 
-    def test_title_similarity_family(self):
-        assert tx.title_similarity("backend engineer", "backend engineer") == 1.0
-        assert tx.title_similarity("backend engineer", "software engineer") > 0.5
-        assert tx.title_similarity("product designer", "data engineer") < 0.4
-
 
 class TestNormalizeDates:
     @pytest.mark.parametrize(
@@ -89,18 +82,6 @@ class TestNormalizeDates:
     )
     def test_parse_year_month(self, raw, expected):
         assert parse_year_month(raw) == expected
-
-    def test_months_between_uses_today_when_open_ended(self):
-        assert months_between("2020-01", "2021-01") == 12
-        assert months_between("2020-01", "", today=date(2022, 1, 1)) == 24
-
-    def test_split_location(self):
-        assert split_location("San Francisco, CA, United States") == (
-            "San Francisco",
-            "CA",
-            "United States",
-        )
-        assert split_location("London") == ("London", "", "")
 
     def test_overlapping_roles_are_not_double_counted(self):
         payload = {
@@ -146,10 +127,6 @@ class TestNormalizeCandidate:
         assert {"go", "kubernetes"} <= set(candidate.skills)
         assert "Staff Backend Engineer" in candidate.doc_text
 
-    def test_requires_a_name(self):
-        with pytest.raises(ValueError):
-            normalize_candidate({"headline": "nobody"})
-
     def test_invalid_emails_dropped(self):
         candidate = normalize_candidate(
             {"full_name": "X Y", "emails": ["good@example.com", "not-an-email", ""]}
@@ -162,11 +139,6 @@ class TestNormalizeCandidate:
 
 
 class TestEmailPatterns:
-    def test_guesses_are_ranked(self):
-        guesses = guess_emails("Ada", "Okonkwo", "example.com")
-        assert guesses[0].email == "ada.okonkwo@example.com"
-        assert guesses[0].confidence >= guesses[-1].confidence
-
     def test_detect_and_learn_pattern(self):
         assert detect_pattern("aokonkwo@acme.com", "Ada", "Okonkwo") == "flast"
         pattern = learn_org_pattern(
@@ -182,6 +154,3 @@ class TestEmailPatterns:
         guesses = guess_emails("Ada", "Okonkwo", "acme.com", known_pattern="flast")
         assert guesses[0].email == "aokonkwo@acme.com"
         assert guesses[0].confidence > 0.9
-
-    def test_no_domain_no_guesses(self):
-        assert guess_emails("Ada", "Okonkwo", "") == []

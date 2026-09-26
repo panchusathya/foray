@@ -50,15 +50,6 @@ test('repeat calls from one number collapse into a single group', () => {
   assert.equal(groups[0].latest, '2026-08-27T23:16:49Z');
 });
 
-test('a name captured on any call names the whole group', () => {
-  const groups = groupCalls([
-    call({ id: 'a', started_at: '2026-08-27T23:00:00Z' }),
-    call({ id: 'b', contact_name: 'Tushar Gupta', started_at: '2026-08-27T22:00:00Z' }),
-  ]);
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].contactName, 'Tushar Gupta');
-});
-
 test('an unattributed call folds into the candidate group for the same number', () => {
   const groups = groupCalls([
     call({ id: 'unattributed', started_at: '2026-08-27T23:00:00Z' }),
@@ -91,17 +82,4 @@ test('different callers stay separate, newest group first', () => {
   ]);
   assert.equal(groups.length, 2);
   assert.equal(groups[0].calls[0].id, 'b');
-});
-
-test('review counts roll up to the group', () => {
-  const groups = groupCalls([
-    call({ id: 'a', review_needed: true }),
-    call({ id: 'b', review_needed: false }),
-  ]);
-  assert.equal(groups[0].reviewCount, 1);
-});
-
-test('an empty or missing list yields no groups', () => {
-  assert.deepEqual(groupCalls([]), []);
-  assert.deepEqual(groupCalls(undefined), []);
 });

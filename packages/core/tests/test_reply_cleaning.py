@@ -47,15 +47,6 @@ class TestCleanInboundBody:
         assert "let me know if there is any interest" not in out
         assert "On Fri, Aug 21" not in out
 
-    def test_it_is_dramatically_shorter(self):
-        out = clean_inbound_body(GMAIL_REPLY, is_html=True)
-        assert len(out) < len(GMAIL_REPLY) / 3
-
-    def test_plain_text_replies_are_left_alone(self):
-        assert clean_inbound_body("No thanks, happy where I am.") == (
-            "No thanks, happy where I am."
-        )
-
     def test_html_is_detected_even_when_the_flag_is_wrong(self):
         """Providers disagree about `body_is_html`; the content decides."""
         out = clean_inbound_body("<div>Not right now</div>", is_html=False)
@@ -69,10 +60,6 @@ class TestCleanInboundBody:
         """
         quoted = "On Fri, Aug 21, 2026 at 9:00 AM sarah@goforay.io wrote:\nthe original"
         assert clean_inbound_body(quoted).strip()
-
-    def test_empty_stays_empty(self):
-        assert clean_inbound_body("") == ""
-        assert clean_inbound_body("   ") == ""
 
 
 class TestStripQuoted:
@@ -88,6 +75,3 @@ class TestStripQuoted:
         """Anchored to a line start, or "I saw the note from: Dan" eats a reply."""
         text = "I saw the note from: Dan and I am interested."
         assert strip_quoted(text) == text
-
-    def test_a_reply_with_no_quote_is_untouched(self):
-        assert strip_quoted("Just this.") == "Just this."

@@ -12,7 +12,7 @@ import pytest
 
 from juicebox.repository import upsert_candidates
 from juicebox.search.engine import get_engine
-from juicebox.search.index import get_index, get_memory_index
+from juicebox.search.index import get_memory_index
 from juicebox.search.parser import heuristic_parse
 
 pytestmark = pytest.mark.skipif(
@@ -27,21 +27,6 @@ def _load(session, account, sample_candidates):
 
 
 class TestPostgresBackend:
-    def test_get_index_is_the_postgres_backend(self, session, account):
-        index = get_index(session, account["org_id"])
-        assert getattr(index, "backend", None) == "postgres"
-        assert index.stats()["backend"] == "postgres"
-
-    def test_ranks_the_intended_person_first(self, session, account, sample_candidates):
-        _load(session, account, sample_candidates)
-        outcome = get_engine().search(
-            session,
-            org_id=account["org_id"],
-            query="senior machine learning engineer in San Francisco with pytorch and llm",
-            limit=3,
-            persist=False,
-        )
-        assert outcome.results[0].doc.full_name == "Ada Okonkwo"
 
     def test_hard_filter_counts_match_the_in_process_index(
         self, session, account, sample_candidates

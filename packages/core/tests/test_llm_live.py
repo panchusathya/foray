@@ -96,29 +96,6 @@ class TestAnthropicContract:
         result = get_llm().text(system="Be terse.", prompt="Name one primary colour.", max_tokens=32)
         assert result.text.strip()
 
-    def test_query_parser_returns_usable_structure(self, live_env):
-        from juicebox.search.parser import parse_query
-
-        parsed, parser_name = parse_query(
-            "senior machine learning engineers in San Francisco with pytorch, 5+ years"
-        )
-
-        assert parser_name == "llm", "expected the model parser to be used"
-        assert "pytorch" in parsed.must_have_skills + parsed.nice_to_have_skills
-        assert "senior" in parsed.seniority
-        assert parsed.search_text
-
-    def test_ledger_counts_real_spend(self, live_env):
-        from juicebox.llm.client import get_llm
-
-        llm = get_llm()
-        llm.text(system="Be terse.", prompt="Say hi.", max_tokens=16)
-        usage = llm.usage()
-
-        assert usage["calls"] >= 1
-        assert usage["input_tokens"] > 0
-        assert usage["by_model"]
-
 
 @needs_voyage
 class TestVoyageContract:

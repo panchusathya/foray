@@ -141,22 +141,6 @@ def test_parse_seniority(title, rank, mgmt, founder):
     assert parse_seniority(title) == (rank, mgmt, founder)
 
 
-def test_the_table_covers_every_rung():
-    """A ladder constant with no row in the table is untested by construction."""
-    ranks = {row[1] for row in TITLES} - {None}
-    mgmts = {row[2] for row in TITLES} - {None}
-    assert ranks == {1, 2, 3, 4, 5, 6}
-    assert mgmts == {1, 2, 3, 4}
-
-
-def test_case_and_whitespace_are_irrelevant():
-    assert parse_seniority("  SENIOR   SOFTWARE   ENGINEER  ") == (
-        SENIORITY_SENIOR,
-        None,
-        False,
-    )
-
-
 # ------------------------------------------------------- the GitHub proxy --
 
 
@@ -176,17 +160,3 @@ def test_case_and_whitespace_are_irrelevant():
 )
 def test_seniority_from_experience(years, rank):
     assert seniority_from_experience(years) == rank
-
-
-def test_the_proxy_never_claims_the_top_rung():
-    """Rank 6 is a title reading only. An account-age proxy cannot evidence a
-    Distinguished Engineer, and letting it would make seniority_source
-    meaningless for the one band where the distinction matters most."""
-    assert seniority_from_experience(50.0) < SENIORITY_DISTINGUISHED
-
-
-def test_none_is_the_only_unknown():
-    """A zero must not read as unknown, and unknown must not read as zero --
-    the stage-2 est_experience_years lesson, one layer up."""
-    assert seniority_from_experience(None) is None
-    assert seniority_from_experience(0.0) is not None

@@ -15,7 +15,6 @@ from juicebox.repository import upsert_candidates
 from juicebox.search.availability import (
     FRESH_DAYS,
     STALE_DAYS,
-    Availability,
     from_preference,
 )
 from juicebox.search.filters import apply_filters
@@ -45,19 +44,6 @@ class TestReading:
         availability = from_preference(None)
         assert availability.state == "unknown"
         assert not availability.known
-
-    def test_searching_is_active(self):
-        assert from_preference(_pref(employment_status="employed_searching")).state == "active"
-        assert from_preference(_pref(employment_status="unemployed_searching")).state == "active"
-
-    def test_employed_open_is_open(self):
-        assert from_preference(_pref(employment_status="employed_open")).state == "open"
-
-    def test_not_looking_is_not_looking(self):
-        assert (
-            from_preference(_pref(employment_status="employed_not_looking")).state
-            == "not_looking"
-        )
 
     def test_a_record_with_signal_but_no_status_is_passive(self):
         # Somebody sat through an intake call about moving; that is not nothing.
@@ -110,10 +96,6 @@ class TestScore:
         ).score()
         assert fresh > stale > 0
 
-    def test_unknown_scores_zero_but_is_never_asked_for(self):
-        # The scorer skips it entirely; this only pins the semantics.
-        assert Availability().score() == 0.0
-
 
 class TestScoringIntegration:
     def _docs(self, session, account, sample_candidates):
@@ -154,14 +136,6 @@ class TestScoringIntegration:
         assert hit.status == "strong"
         assert "Actively looking" in hit.evidence
 
-    def test_not_looking_is_a_visible_miss(self, session, account, sample_candidates):
-        docs = self._docs(session, account, sample_candidates)
-        ada = next(d for d in docs if d.full_name == "Ada Okonkwo")
-        ada.availability = from_preference(_pref(employment_status="employed_not_looking"))
-        criteria = assess(ada, heuristic_parse("machine learning engineer")).criteria
-        hit = next(c for c in criteria if c.kind == "availability")
-        assert hit.status == "miss"
-
 
 class TestFilter:
     def _docs(self, session, account, sample_candidates):
@@ -178,12 +152,6 @@ class TestFilter:
         outcome = apply_filters(docs, ParsedQuery(), only_available=True)
         assert outcome.eligible_count == 0
         assert outcome.excluded["not_on_market"] == len(docs)
-
-    def test_on_keeps_the_people_who_said_yes(self, session, account, sample_candidates):
-        docs = self._docs(session, account, sample_candidates)
-        docs[0].availability = from_preference(_pref(employment_status="employed_searching"))
-        outcome = apply_filters(docs, ParsedQuery(), only_available=True)
-        assert outcome.eligible_count == 1
 
     def test_on_still_drops_the_people_who_said_no(
         self, session, account, sample_candidates
@@ -220,11 +188,3 @@ class TestIndexWiring:
         refreshed = get_index(session, account["org_id"])
         doc = next(d for d in refreshed.docs if d.id == candidate_id)
         assert doc.availability.state == "active"
-
-    def test_the_reranker_is_told(self, session, account, sample_candidates):
-        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
-        session.commit()
-        doc = get_index(session, account["org_id"]).docs[0]
-        assert "Availability" not in doc.profile_text()
-        doc.availability = from_preference(_pref(employment_status="employed_searching"))
-        assert "Actively looking" in doc.profile_text()

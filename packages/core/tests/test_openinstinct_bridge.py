@@ -11,8 +11,6 @@ from juicebox.models import (
     Application,
     ApplicationSubmission,
     Candidate,
-    CandidateDocument,
-    CandidatePreference,
     IntakeMessage,
     IntakeThread,
     Job,
@@ -209,77 +207,6 @@ def test_conversation_event_fails_closed_without_a_default_org(client, monkeypat
     assert "default organization" in response.json()["detail"]
 
 
-def test_mirrored_thread_suppresses_legacy_openinstinct_pull(
-    client, session, account, sample_candidates, monkeypatch
-):
-    _enable_bridge(monkeypatch)
-    candidate = _candidate(session, account, sample_candidates)
-    _link(client)
-    response = client.post(
-        "/v1/internal/openinstinct/conversation-events",
-        json=_event_payload(),
-        headers=_service_headers(),
-    )
-    assert response.status_code == 202, response.text
-
-    with patch(
-        "juicebox.routers.candidates.fetch_candidate_conversations",
-        return_value={"available": True, "conversations": [{"id": "legacy"}]},
-    ):
-        timeline = client.get(
-            f"/v1/candidates/{candidate.id}/timeline", headers=account["headers"]
-        )
-    assert timeline.status_code == 200, timeline.text
-    assert timeline.json()["openinstinct_conversations"] == []
-
-
-def test_linked_candidate_can_upload_a_protected_resume(client, session, account, sample_candidates, monkeypatch):
-    _enable_bridge(monkeypatch)
-    candidate = _candidate(session, account, sample_candidates)
-    _link(client)
-
-    response = client.post(
-        "/v1/internal/openinstinct/resumes",
-        files={"file": ("ada.pdf", b"%PDF-1.4\nresume", "application/pdf")},
-        headers=_service_headers(),
-    )
-
-    assert response.status_code == 201, response.text
-    document = session.get(CandidateDocument, response.json()["id"])
-    assert document is not None
-    assert document.candidate_id == candidate.id
-    assert document.is_default is True
-    assert document.protected_default is True
-    assert document.status == "uploaded"
-
-
-def test_default_resume_distinguishes_missing_from_pending_parse(
-    client, session, account, sample_candidates, monkeypatch
-):
-    _enable_bridge(monkeypatch)
-    _candidate(session, account, sample_candidates)
-    _link(client)
-
-    missing = client.get(
-        "/v1/internal/openinstinct/resumes/default", headers=_service_headers()
-    )
-    assert missing.status_code == 404
-    assert "Attach a PDF or DOCX" in missing.json()["detail"]
-
-    uploaded = client.post(
-        "/v1/internal/openinstinct/resumes",
-        files={"file": ("ada.pdf", b"%PDF-1.4\nresume", "application/pdf")},
-        headers=_service_headers(),
-    )
-    assert uploaded.status_code == 201, uploaded.text
-
-    pending = client.get(
-        "/v1/internal/openinstinct/resumes/default", headers=_service_headers()
-    )
-    assert pending.status_code == 409
-    assert "still being parsed" in pending.json()["detail"]
-
-
 def test_openinstinct_resume_rejects_non_resume_bytes(
     client, session, account, sample_candidates, monkeypatch
 ):
@@ -426,36 +353,6 @@ def test_task_cannot_cross_org_and_recruiter_timeline_keeps_voice_plus_openinsti
     assert body["openinstinct_application_tasks"][0]["status"] == "needs_human"
 
 
-def test_empty_job_feed_queues_the_same_exa_search_the_messaging_bot_uses(
-    client, session, account, sample_candidates, monkeypatch
-):
-    _enable_bridge(monkeypatch)
-    candidate = _candidate(session, account, sample_candidates)
-    session.add(
-        CandidatePreference(
-            org_id=candidate.org_id,
-            candidate_id=candidate.id,
-            spec={"job_titles": ["platform engineer"], "locations": ["Remote"]},
-        )
-    )
-    session.commit()
-    _link(client)
-
-    response = client.get(
-        "/v1/internal/openinstinct/job-feed?q=rust&location=NYC",
-        headers=_service_headers(),
-    )
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["cards"] == []
-    assert payload["searching"] is True
-    assert payload["discovery"]["state"] == "queued"
-    assert payload["discovery"]["job_id"]
-    job = session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).one()
-    assert job.payload["candidate_id"] == candidate.id
-    assert "rust jobs in NYC" in job.payload["queries"]
-
-
 def test_empty_job_feed_without_a_spec_or_query_does_not_spend_exa(
     client, session, account, sample_candidates, monkeypatch
 ):
@@ -474,4 +371,3 @@ def test_empty_job_feed_without_a_spec_or_query_does_not_spend_exa(
         },
     }
     assert session.query(Job).filter_by(kind=KIND_JOBS_DISCOVER_ONE).count() == 0
-

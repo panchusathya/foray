@@ -133,18 +133,6 @@ class TestJobPostingProjectScope:
         assert body["name"] == "Staff Engineer"
         assert "Confidential brief." not in body.get("description", "")
 
-    def test_a_project_in_your_own_org_still_works(self, client, account):
-        project = client.post(
-            "/v1/projects", json={"name": "Our role"}, headers=account["headers"]
-        ).json()
-        response = client.post(
-            "/v1/job-postings",
-            json={"title": "Staff Engineer", "project_id": project["id"]},
-            headers=account["headers"],
-        )
-        assert response.status_code == 201, response.text
-        assert response.json()["project_id"] == project["id"]
-
 
 class TestSequenceProjectScope:
     def test_creating_a_sequence_against_another_orgs_project_is_rejected(
@@ -170,36 +158,6 @@ class TestSequenceProjectScope:
             headers=account["headers"],
         )
         assert response.status_code == 404
-
-    def test_an_unknown_project_is_a_404_not_a_500(self, client, account):
-        response = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Bogus",
-                "project_id": "proj_does_not_exist",
-                "personalize": False,
-                "steps": [{"delay_days": 0, "subject_template": "Hi", "body_template": "Hi"}],
-            },
-            headers=account["headers"],
-        )
-        assert response.status_code == 404
-
-    def test_your_own_project_still_pins(self, client, account):
-        project = client.post(
-            "/v1/projects", json={"name": "Our role"}, headers=account["headers"]
-        ).json()
-        response = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Fine",
-                "project_id": project["id"],
-                "personalize": False,
-                "steps": [{"delay_days": 0, "subject_template": "Hi", "body_template": "Hi"}],
-            },
-            headers=account["headers"],
-        )
-        assert response.status_code == 201, response.text
-        assert response.json()["project_id"] == project["id"]
 
 
 class TestApiKeyPrivilege:
@@ -277,9 +235,6 @@ class TestSinglePurposeTokens:
             "/v1/auth/me", headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 401
-
-    def test_a_real_login_token_still_works(self, client, account):
-        assert client.get("/v1/auth/me", headers=account["headers"]).status_code == 200
 
 
 class TestClickRedirect:

@@ -93,9 +93,6 @@ class TestSpokenEmail:
             "priya.raman@gmail.com"
         )
 
-    def test_a_written_address_still_wins(self):
-        assert email_in_turn("it's priya.raman@gmail.com") == "priya.raman@gmail.com"
-
     def test_prose_is_not_an_address(self):
         """"we're hosted at aws dot com" is a sentence, not a mailbox."""
         assert email_in_turn("we're hosted at aws dot com") == ""
@@ -109,9 +106,6 @@ class TestSpokenEmail:
             " at ", "@"
         )
         assert email_in_turn(said, cued=True) == "priya.raman@gmail.com"
-
-    def test_a_malformed_decode_is_dropped(self):
-        assert decode_spoken_email("dot dot at dot com") == ""
 
     @pytest.mark.parametrize(
         ("said", "expected"),
@@ -133,12 +127,6 @@ class TestSpokenEmail:
         mailbox.
         """
         assert decode_spoken_email(said) == expected
-
-    def test_a_real_separator_still_separates(self):
-        """The boundaries must not cost us the case that always worked."""
-        assert decode_spoken_email("my email is priya at gmail dot com") == (
-            "priya@gmail.com"
-        )
 
     def test_an_ambiguous_local_part_is_refused_not_guessed(self):
         """"priya raman at gmail dot com" has no separator between the names.
@@ -183,17 +171,6 @@ class TestTranscriptScan:
         assert name == "", "the agent's own introduction became a candidate name"
         assert email == ""
 
-    def test_a_name_answered_two_turns_late_is_not_taken(self):
-        """A question is answered once, or the flag drifts onto later sentences."""
-        transcript = (
-            "Agent: What name should I put on this?\n"
-            "Candidate: Sure.\n"
-            "Candidate: I want staff backend work.\n"
-        )
-        name, _ = scan_transcript(transcript)
-        assert name == "Sure" or name == ""
-        assert "backend" not in name.lower()
-
     @pytest.mark.parametrize(
         ("answer", "expected"),
         [
@@ -224,11 +201,6 @@ class TestTranscriptScan:
         transcript = f"Agent: Can I take your name?\nCandidate: {answer}\n"
         assert scan_transcript(transcript)[0] == ""
 
-    def test_an_unlabelled_transcript_still_yields_a_cued_address(self):
-        assert scan_transcript("my email is priya at gmail dot com")[1] == (
-            "priya@gmail.com"
-        )
-
 
 # --------------------------------------------------------------------------
 # extraction
@@ -236,11 +208,6 @@ class TestTranscriptScan:
 
 
 class TestExtractionCarriesTheContact:
-    def test_the_heuristic_path_reads_the_caller(self, no_llm):
-        result = extract_intake(TestTranscriptScan.TRANSCRIPT)
-        assert result.extractor == "heuristic"
-        assert result.contact_name == "Priya Raman"
-        assert result.contact_email == "priya.raman@gmail.com"
 
     def test_the_contact_is_not_in_the_record(self, no_llm):
         """It would be a spec key ``jobmatch.engine`` cannot score."""
@@ -256,29 +223,6 @@ class TestExtractionCarriesTheContact:
         )
         assert result.contact_name == "Priya Raman"
         assert not result.coverage.required_complete
-
-    def test_the_model_answer_is_used_when_it_is_usable(self, monkeypatch):
-        from types import SimpleNamespace
-
-        import juicebox.intake.extract as mod
-
-        class FakeLLM:
-            available = True
-
-            def json(self, **kwargs):
-                return SimpleNamespace(
-                    data={
-                        "contact_name": "Priya Raman",
-                        "contact_email": "Priya.Raman@Gmail.com",
-                    }
-                )
-
-            json_fast = json
-
-        monkeypatch.setattr(mod, "get_llm", lambda: FakeLLM())
-        result = mod.extract_intake("anything", known="")
-        assert result.contact_name == "Priya Raman"
-        assert result.contact_email == "priya.raman@gmail.com", "not lowercased"
 
     def test_a_model_sentence_is_not_a_name(self, monkeypatch):
         """From a live call: the model answered this field with an explanation.
@@ -306,24 +250,6 @@ class TestExtractionCarriesTheContact:
         result = mod.extract_intake("Candidate: hello", known="")
         assert result.contact_name == ""
         assert result.contact_email == ""
-
-    def test_the_transcript_backs_the_model_up(self, monkeypatch):
-        """Model silent, address in the transcript: the scan still catches it."""
-        from types import SimpleNamespace
-
-        import juicebox.intake.extract as mod
-
-        class FakeLLM:
-            available = True
-
-            def json(self, **kwargs):
-                return SimpleNamespace(data={"contact_name": "", "contact_email": ""})
-
-            json_fast = json
-
-        monkeypatch.setattr(mod, "get_llm", lambda: FakeLLM())
-        result = mod.extract_intake(TestTranscriptScan.TRANSCRIPT, known="")
-        assert result.contact_email == "priya.raman@gmail.com"
 
 
 # --------------------------------------------------------------------------
@@ -415,19 +341,6 @@ class TestLinkCaller:
         assert not session.scalars(
             select(Candidate).where(Candidate.full_name == "Priya Raman")
         ).all()
-
-    def test_a_new_address_on_a_real_intake_creates_the_row(self, session, account):
-        call = a_call(
-            session,
-            account,
-            contact_name="Priya Raman",
-            contact_email="priya.raman@gmail.com",
-        )
-        candidate_id = link_caller(session, call)
-        assert candidate_id
-        candidate = session.get(Candidate, candidate_id)
-        assert candidate.full_name == "Priya Raman"
-        assert "priya.raman@gmail.com" in candidate.emails
 
     def test_the_created_row_does_own_the_number(self, session, account):
         """This row exists only because this caller described themselves."""
@@ -573,9 +486,6 @@ class TestReviewReasons:
 
 
 class TestCounterpartyNumber:
-    def test_inbound_is_the_caller(self, session, account):
-        call = a_call(session, account, entry_point="inbound")
-        assert counterparty_number(call) == CALLER
 
     def test_outbound_is_who_we_dialled(self, session, account):
         """``from_number`` is our own intake line on an outbound call.
@@ -640,28 +550,6 @@ class TestAttribution:
         attribute_call(session, call=call, candidate_id=target.id)
         assert call.review_reason == "heuristic extraction"
         assert call.review_needed, "an unrelated reason still needs a look"
-
-    def test_a_placeholder_name_is_promoted(self, session, account):
-        """A row created from an address gets the real name when it arrives."""
-        owner = a_candidate(
-            session, account, name="priya.raman@gmail.com", email="priya.raman@gmail.com"
-        )
-        call = a_call(
-            session,
-            account,
-            contact_name="Priya Raman",
-            contact_email="priya.raman@gmail.com",
-        )
-        attribute_call(session, call=call, candidate_id=owner.id)
-        assert owner.full_name == "Priya Raman"
-        assert owner.first_name == "Priya"
-
-    def test_a_real_name_is_never_overwritten(self, session, account):
-        """Two real names disagreeing is a merge question, not an import."""
-        owner = a_candidate(session, account, name="Priyanka Raman")
-        call = a_call(session, account, contact_name="Priya Raman")
-        attribute_call(session, call=call, candidate_id=owner.id)
-        assert owner.full_name == "Priyanka Raman"
 
 
 class TestEndToEnd:

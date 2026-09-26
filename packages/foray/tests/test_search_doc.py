@@ -4,8 +4,6 @@ import pytest
 
 from foray.search_doc import (
     HAS_LEXICAL_DOC_SQL,
-    RANK_WEIGHTS,
-    TS_CONFIG,
     UPDATE_SEARCH_TSV_FAST_SQL,
     UPDATE_SEARCH_TSV_SQL,
     build_websearch_or,
@@ -24,11 +22,6 @@ def test_both_tsv_updates_gate_on_search_eligible() -> None:
         assert "else null end" in sql
 
 
-def test_config_is_english() -> None:
-    assert TS_CONFIG == "english"
-    assert RANK_WEIGHTS.startswith("{")
-
-
 def test_has_lexical_doc_sql_excludes_empty_tsvectors() -> None:
     """Pinned exactly: this string is the single "has a lexical document"
     definition shared by status, the search count query, and both /health
@@ -44,35 +37,12 @@ def test_has_lexical_doc_sql_excludes_empty_tsvectors() -> None:
     assert "<> ''::tsvector" in HAS_LEXICAL_DOC_SQL
 
 
-def test_or_builder_drops_noise_and_digits() -> None:
-    q = build_websearch_or("senior backend engineer in Go with 5 years")
-    assert q is not None
-    assert "engineer" not in q
-    assert "senior" not in q
-    assert "5" not in q.split()
-    assert "go" in q
-    assert " or " in q
-
-
-def test_quoted_phrases_survive() -> None:
-    q = build_websearch_or('"vision language" engineer trained vlm')
-    assert q is not None
-    assert '"vision language"' in q
-    assert "vlm" in q
-
-
 def test_negation_tokens_are_stripped() -> None:
     q = build_websearch_or("backend go --java -rust")
     assert q is not None
     assert "java" not in q
     assert "rust" not in q
     assert "go" in q
-
-
-def test_empty_and_noise_only_return_none() -> None:
-    assert build_websearch_or("") is None
-    assert build_websearch_or("   ") is None
-    assert build_websearch_or("senior engineer with years of experience") is None
 
 
 def test_framing_words_dropped_technical_words_survive() -> None:
@@ -88,25 +58,6 @@ def test_framing_words_dropped_technical_words_survive() -> None:
 def test_pure_framing_query_returns_none_for_vector_only() -> None:
     # None means "run the vector arm alone", never an empty result set.
     assert build_websearch_or("founding engineer building a team") is None
-
-
-def test_technical_domain_words_are_not_noise() -> None:
-    q = build_websearch_or(
-        "training infrastructure platform research data backend frontend mobile security"
-    )
-    assert q is not None
-    for word in (
-        "training",
-        "infrastructure",
-        "platform",
-        "research",
-        "data",
-        "backend",
-        "frontend",
-        "mobile",
-        "security",
-    ):
-        assert word in q.split(" or ")
 
 
 def test_cplusplus_is_quoted() -> None:

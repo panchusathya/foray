@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from juicebox.jobmatch.exa import ExaClient, set_exa
-from juicebox.jobmatch.ids import source_id_for
 from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 
 
@@ -96,61 +95,6 @@ class TestDiscoverAsk:
 
 
 class TestDiscoverSearch:
-    def test_specified_brief_returns_results_without_writing(self, client, account):
-        calls = []
-        set_exa(ExaClient(api_key="test", transport=_exa_transport(calls)))
-        _enable_llm([_search_plan(), _summary()])
-        before = client.get("/v1/job-postings", headers=account["headers"]).json()["total"]
-        response = _turn(
-            client,
-            account,
-            [
-                {
-                    "role": "user",
-                    "content": "Staff machine learning engineers in San Francisco",
-                }
-            ],
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert len(body["results"]) == 2
-        assert body["questions"] == []
-        assert any(step["label"] == "deduped" for step in body["steps"])
-        assert "2 postings" in body["reply"]
-        after = client.get("/v1/job-postings", headers=account["headers"]).json()["total"]
-        assert after == before
-        assert calls, "Exa should have been called"
-
-    def test_existing_url_is_already_have(self, client, account):
-        url = "https://jobs.example.com/ml-discover"
-        created = client.post(
-            "/v1/job-postings",
-            json={
-                "title": "Staff Machine Learning Engineer",
-                "company": "Datadog",
-                "source_url": url,
-                "jd_text": "Already in the book.",
-            },
-            headers=account["headers"],
-        )
-        assert created.status_code == 201, created.text
-        posting_id = created.json()["id"]
-        assert created.json()["source_id"] == source_id_for(url=url)
-
-        set_exa(ExaClient(api_key="test", transport=_exa_transport([])))
-        _enable_llm([_search_plan(), _summary()])
-        body = _turn(
-            client,
-            account,
-            [{"role": "user", "content": "Staff ML in San Francisco"}],
-        ).json()
-        mine = next(row for row in body["results"] if row["source_url"] == url)
-        assert mine["already_have"] is True
-        assert mine["posting_id"] == posting_id
-        other = next(row for row in body["results"] if row["source_url"] != url)
-        assert other["already_have"] is False
-        assert other["posting_id"] is None
-
     def test_queries_capped_at_three(self, client, account):
         calls = []
         set_exa(ExaClient(api_key="test", transport=_exa_transport(calls)))

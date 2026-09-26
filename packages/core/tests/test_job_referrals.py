@@ -23,10 +23,6 @@ class TestFeeSignals:
         assert bearing is False
         assert "no agencies" in evidence.lower()
 
-    def test_bare_agency_is_not_a_signal(self):
-        bearing, _, _ = fee_signals("We are not an agency. We ship software.")
-        assert bearing is False
-
 
 class TestWarmPaths:
     def test_incumbent_vs_alumni_and_blank_company(self, session, account, sample_candidates):

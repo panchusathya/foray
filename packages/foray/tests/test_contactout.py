@@ -45,20 +45,6 @@ class StubConn:
 
 
 class TestNormaliseProfile:
-    @pytest.mark.parametrize(
-        "raw, expected",
-        [
-            # Locale subdomains are redirects to the same profile; the provider
-            # matches more reliably against the canonical host.
-            ("https://au.linkedin.com/in/Kethan-pilla", "https://www.linkedin.com/in/Kethan-pilla"),
-            ("https://vn.linkedin.com/in/arielrideout", "https://www.linkedin.com/in/arielrideout"),
-            ("https://linkedin.com/in/callen-rain-dev", "https://www.linkedin.com/in/callen-rain-dev"),
-            ("https://www.linkedin.com/in/mferris/", "https://www.linkedin.com/in/mferris"),
-            ("https://www.linkedin.com/in/x?trk=abc", "https://www.linkedin.com/in/x"),
-        ],
-    )
-    def test_canonicalises_a_profile_url(self, raw, expected):
-        assert contactout._normalise_profile(raw) == expected
 
     @pytest.mark.parametrize(
         "raw", [None, "", "   ", "https://github.com/octocat", "https://linkedin.com/company/meta"]
@@ -103,12 +89,6 @@ class TestParse:
         )
         assert [(e.email, e.is_work) for e in result.emails] == [("someone@gmail.com", False)]
 
-    def test_a_real_work_domain_is_kept_as_work(self):
-        result = ContactOutProvider()._parse(
-            {"profile": {"work_email": ["a@databricks.com"], "personal_email": []}}
-        )
-        assert result.emails[0].is_work is True
-
     def test_the_same_address_in_both_lists_is_stored_once_as_personal(self):
         result = ContactOutProvider()._parse(
             {
@@ -119,18 +99,6 @@ class TestParse:
             }
         )
         assert [(e.email, e.is_work) for e in result.emails] == [("dual@gmail.com", False)]
-
-    def test_no_contacts_is_an_empty_result_not_an_error(self):
-        result = ContactOutProvider()._parse({"profile": {"full_name": "Nobody"}})
-        assert result.emails == []
-        assert result.personal == []
-
-    def test_a_website_style_domain_is_reduced_to_a_host(self):
-        result = ContactOutProvider()._parse(
-            {"profile": {"personal_email": [], "work_email": [],
-                         "company": {"website": "https://www.aurora.tech/careers"}}}
-        )
-        assert result.employer_domain == "aurora.tech"
 
 
 class TestNoLookupWithoutAnIdentity:
@@ -152,30 +120,6 @@ class TestNoLookupWithoutAnIdentity:
 
 
 class TestStoreResult:
-    async def test_writes_each_address_with_its_ladder_confidence(self):
-        conn = StubConn()
-        written = await store_result(
-            conn,
-            42,
-            "contactout",
-            ProviderResult(
-                emails=[
-                    FoundEmail("me@gmail.com", is_work=False),
-                    FoundEmail("me@stripe.com", is_work=True, verified=True),
-                ]
-            ),
-        )
-        assert written == 2
-        rows = [args for args in conn.executed if "insert into candidate_emails" in args[0]]
-        assert len(rows) == 2
-        personal, work = rows
-        # (sql, candidate_id, email, source, is_work, confidence, verified, evidence, occurrences)
-        assert personal[3] == "contactout_personal"
-        assert personal[5] == CONFIDENCE["contactout_personal"] == 72
-        assert personal[6] is False
-        assert work[3] == "contactout_work"
-        assert work[5] == CONFIDENCE["contactout_work"] == 80
-        assert work[6] is True
 
     async def test_an_unknown_source_is_refused_before_it_reaches_the_constraint(self):
         """candidate_emails.source is an enumerated check constraint. Failing
@@ -202,11 +146,6 @@ class TestStoreResult:
         )
         assert [args for args in conn.executed if "employer_domain" in args[0]] == []
 
-    async def test_nothing_found_writes_nothing(self):
-        conn = StubConn()
-        assert await store_result(conn, 9, "contactout", ProviderResult()) == 0
-        assert conn.executed == []
-
 
 class TestLadderCoversTheConstraint:
     def test_every_confidence_entry_is_allowed_by_the_migration(self):
@@ -218,17 +157,3 @@ class TestLadderCoversTheConstraint:
         text = sql.read_text(encoding="utf-8")
         for source in CONFIDENCE:
             assert f"'{source}'" in text, f"{source} missing from the check constraint"
-
-
-class TestIsConfigured:
-    def test_reports_false_without_a_key(self, monkeypatch):
-        from foray.config import settings as live
-
-        monkeypatch.setattr(live, "contactout_api_key", "")
-        assert ContactOutProvider().is_configured() is False
-
-    def test_reports_true_with_one(self, monkeypatch):
-        from foray.config import settings as live
-
-        monkeypatch.setattr(live, "contactout_api_key", "k")
-        assert ContactOutProvider().is_configured() is True

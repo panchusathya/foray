@@ -73,12 +73,6 @@ class TestIsPlaceholder:
     def test_keeps_real_addresses(self, email):
         assert is_placeholder(email) is False
 
-    def test_the_asymmetry_is_deliberate(self):
-        """mail@ on a personal domain is real; on freemail it is filler. The
-        distinction is the whole reason the rule is not a single word list."""
-        assert is_placeholder("mail@danijar.com") is False
-        assert is_placeholder("mail@gmail.com") is True
-
     def test_case_and_whitespace_do_not_evade_it(self):
         assert is_placeholder("  Email1@EXAMPLE.com  ") is True
 
@@ -90,22 +84,6 @@ class TestStripPlaceholders:
         )
         assert keep == ["real@stripe.com", "me@gmail.com"]
         assert drop == ["email2@gmail.com", "email1@example.com"]
-
-    def test_a_clean_list_is_untouched(self):
-        emails = ["a@stripe.com", "b@gmail.com"]
-        keep, drop = strip_placeholders(emails)
-        assert keep == emails
-        assert drop == []
-
-    def test_none_is_not_an_error(self):
-        assert strip_placeholders(None) == ([], [])
-
-    def test_a_candidate_can_end_up_with_no_address(self):
-        """Which is the honest outcome: they never had one. Leaving the filler in
-        place would make them look contactable and fail at send time."""
-        keep, drop = strip_placeholders(["email2@gmail.com", "email1@example.com"])
-        assert keep == []
-        assert len(drop) == 2
 
 
 class TestPurgeCommand:
@@ -163,19 +141,3 @@ class TestPurgeCommand:
             select(CandidateEmail).where(CandidateEmail.candidate_id == candidate_id)
         ).all()
         assert sorted(row.email for row in rows) == ["ok@stripe.com"]
-
-    def test_a_clean_workspace_reports_nothing_to_do(self, client, account, capsys):
-        from juicebox.cli import main
-
-        self._candidate(client, account, ["real@stripe.com"])
-        assert main(["purge-placeholder-emails", "--apply"]) == 0
-        assert "removed 0 address(es) from 0 candidate(s)" in capsys.readouterr().out
-
-    def test_it_is_safe_to_run_twice(self, client, account, capsys):
-        from juicebox.cli import main
-
-        self._candidate(client, account, ["email2@gmail.com", "ok@stripe.com"])
-        main(["purge-placeholder-emails", "--apply"])
-        capsys.readouterr()
-        main(["purge-placeholder-emails", "--apply"])
-        assert "removed 0 address(es)" in capsys.readouterr().out

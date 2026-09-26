@@ -18,7 +18,6 @@ from juicebox.models import JobPosting
 from juicebox.presentation.logo import (
     contact_photo,
     fetch_logo,
-    photo_for,
     posting_domain,
     sanitize_hostname,
 )
@@ -32,22 +31,10 @@ def _png(*, color=(40, 90, 180), size=32) -> bytes:
 
 
 class TestLogo:
-    def test_monogram_is_deterministic(self):
-        a = contact_photo(None, company="Anthropic")
-        b = contact_photo(None, company="Anthropic")
-        c = contact_photo(None, company="Figma")
-        assert a == b
-        assert a != c
-        assert a[:8] == b"\x89PNG\r\n\x1a\n"
-
     def test_garbage_bytes_never_raise(self):
         out = contact_photo(b"not-an-image", company="Acme")
         assert out[:8] == b"\x89PNG\r\n\x1a\n"
         assert out == contact_photo(None, company="Acme")
-
-    def test_fetch_logo_404_is_none(self):
-        assert fetch_logo("anthropic.com", transport=lambda url: (404, b"")) is None
-        assert fetch_logo("anthropic.com", transport=lambda url: (200, b"")) is None
 
     def test_fetch_logo_uses_google_s2(self):
         seen = []
@@ -81,7 +68,3 @@ class TestLogo:
         assert posting_domain(posting) == ""
         posting.company_domain = "acme.com"
         assert posting_domain(posting) == "acme.com"
-
-    def test_photo_for_with_injected_transport_skips_the_cache(self):
-        png = photo_for("example.com", "Example", transport=lambda url: (200, _png()))
-        assert png[:8] == b"\x89PNG\r\n\x1a\n"

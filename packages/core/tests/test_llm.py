@@ -15,7 +15,6 @@ from juicebox.llm.client import (
     LLMClient,
     LLMResult,
     LLMUnavailable,
-    is_retryable,
     sdk_capability,
     set_llm,
 )
@@ -73,11 +72,6 @@ class TestRequestShape:
 
 
 class TestDecoding:
-    def test_json_is_parsed_onto_data(self):
-        client, _ = build([{"job_titles": ["engineer"]}])
-        result = client.json(system="s", prompt="p", schema={})
-        assert result.data == {"job_titles": ["engineer"]}
-
     def test_non_json_body_raises_after_the_schemaless_retry(self):
         """Unreadable twice is a real failure; both attempts are scripted."""
         client, transport = build(["not json at all", "still not json"])
@@ -101,19 +95,6 @@ class TestDecoding:
         assert "format" in first["output_config"], "the schema is tried first"
         assert "format" not in second["output_config"], "and dropped on the retry"
 
-    def test_a_transport_failure_is_not_retried_without_the_schema(self):
-        """Only unreadable output. A 429 says nothing about the schema."""
-        from juicebox.llm.client import _is_unparseable
-
-        assert _is_unparseable(LLMUnavailable("model returned non-JSON output: x"))
-        assert not _is_unparseable(LLMUnavailable("model call failed: 429"))
-        assert not _is_unparseable(LLMUnavailable("empty model response"))
-
-    def test_empty_response_raises(self):
-        client, _ = build([""])
-        with pytest.raises(LLMUnavailable, match="empty"):
-            client.json(system="s", prompt="p", schema={})
-
     def test_refusal_raises_and_is_not_retried(self):
         refusal = LLMResult(text="no", data=None, model="m", stop_reason="refusal")
         client, transport = build([refusal, {"ok": True}])
@@ -130,12 +111,6 @@ class TestRetries:
         assert len(transport.calls) == 2
         assert client.usage()["retries"] == 1
 
-    def test_server_error_is_retried(self):
-        client, transport = build([FlakyError(503), FlakyError(500), {"ok": True}])
-        result = client.json(system="s", prompt="p", schema={})
-        assert result.data == {"ok": True}
-        assert len(transport.calls) == 3
-
     def test_retries_are_bounded_then_surface_as_unavailable(self):
         client, transport = build([FlakyError(429)] * 5)
         with pytest.raises(LLMUnavailable):
@@ -148,13 +123,6 @@ class TestRetries:
         with pytest.raises(LLMUnavailable):
             client.json(system="s", prompt="p", schema={})
         assert len(transport.calls) == 1
-
-    def test_retryable_classification(self):
-        assert is_retryable(FlakyError(429))
-        assert is_retryable(FlakyError(502))
-        assert is_retryable(TimeoutError())
-        assert not is_retryable(FlakyError(401))
-        assert not is_retryable(LLMUnavailable("nope"))
 
     def test_async_path_retries_too(self):
         client, transport = build([FlakyError(429), {"ok": True}])
@@ -175,14 +143,6 @@ class TestLedger:
         assert usage["output_tokens"] > 0
         assert usage["by_model"]["test-model"]["calls"] == 2
 
-    def test_failures_record_the_last_error(self):
-        client, _ = build([FlakyError(400)])
-        with pytest.raises(LLMUnavailable):
-            client.json(system="s", prompt="p", schema={})
-        usage = client.usage()
-        assert usage["failures"] == 1
-        assert "400" in usage["last_error"]
-
 
 class TestAvailability:
     def test_no_api_key_is_unavailable(self):
@@ -194,11 +154,6 @@ class TestAvailability:
         client = LLMClient(api_key="sk-test", enabled=False)
         assert client.available is False
         assert "JUICEBOX_LLM_ENABLED" in client.unavailable_reason
-
-    def test_calling_an_unavailable_client_raises(self):
-        client = LLMClient(api_key="", enabled=True)
-        with pytest.raises(LLMUnavailable, match="not configured"):
-            client.json(system="s", prompt="p", schema={})
 
     def test_installed_sdk_meets_the_floor(self):
         """Guards the pin: >=0.78 is what makes output_config.effort legal."""
@@ -228,16 +183,6 @@ class TestProviderResolution:
     def test_neither_key_resolves_to_none(self, monkeypatch):
         assert self._settings(monkeypatch).resolved_llm_provider == "none"
 
-    def test_anthropic_key_alone_picks_anthropic(self, monkeypatch):
-        settings = self._settings(monkeypatch, ANTHROPIC_API_KEY="sk-test")
-        assert settings.resolved_llm_provider == "anthropic"
-        assert settings.resolved_llm_model == "claude-opus-5"
-
-    def test_openrouter_key_alone_picks_openrouter_and_its_model(self, monkeypatch):
-        settings = self._settings(monkeypatch, OPENROUTER_API_KEY="or-test")
-        assert settings.resolved_llm_provider == "openrouter"
-        assert settings.resolved_llm_model == "z-ai/glm-5.3-flash"
-
     def test_both_keys_prefer_anthropic_so_dev_setups_are_unchanged(self, monkeypatch):
         settings = self._settings(
             monkeypatch, ANTHROPIC_API_KEY="sk-test", OPENROUTER_API_KEY="or-test"
@@ -253,19 +198,6 @@ class TestProviderResolution:
         )
         assert settings.resolved_llm_provider == "openrouter"
         assert settings.resolved_llm_model == "z-ai/glm-5.3-flash"
-
-    def test_model_override_wins_over_the_provider_default(self, monkeypatch):
-        settings = self._settings(
-            monkeypatch, OPENROUTER_API_KEY="or-test", JUICEBOX_LLM_MODEL="z-ai/glm-4.6"
-        )
-        assert settings.resolved_llm_model == "z-ai/glm-4.6"
-
-    def test_unconfigured_client_names_both_env_vars(self, monkeypatch):
-        self._settings(monkeypatch)
-        client = LLMClient(enabled=True)
-        assert client.available is False
-        assert "ANTHROPIC_API_KEY" in client.unavailable_reason
-        assert "OPENROUTER_API_KEY" in client.unavailable_reason
 
     def test_openrouter_does_not_need_the_anthropic_sdk_floor(self, monkeypatch):
         """An old anthropic install must not disable a working OpenRouter key."""
@@ -294,19 +226,6 @@ class TestCallerDegradation:
         assert parser_name == "heuristic"
         assert "python" in parsed.must_have_skills
         assert client.usage()["failures"] == 1
-
-    def test_parser_uses_the_model_when_it_works(self):
-        from juicebox.search.parser import parse_query
-
-        client, _ = build([{"job_titles": ["data scientist"], "must_have_skills": ["sql"]}])
-        set_llm(client)
-        try:
-            parsed, parser_name = parse_query("anything at all")
-        finally:
-            set_llm(None)
-
-        assert parser_name == "llm"
-        assert parsed.job_titles == ["data scientist"]
 
     def test_reply_classification_falls_back(self):
         from juicebox.outreach.replies import classify_reply

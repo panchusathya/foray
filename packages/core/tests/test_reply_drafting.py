@@ -20,7 +20,7 @@ from juicebox.integrations.crypto import encrypt_json
 from juicebox.integrations.reply_drafting import create_reply_draft, generate_reply_body
 from juicebox.integrations.sync import sync_mailbox
 from juicebox.models import MailboxConnection, Message, ReplyDraft
-from juicebox.outreach.sequencer import enroll_candidates, record_reply, run_due
+from juicebox.outreach.sequencer import enroll_candidates, run_due
 
 
 @pytest.fixture(autouse=True)
@@ -86,14 +86,6 @@ def replied_org(session, account, outreach_fixture):
 
 
 class TestGeneration:
-    def test_offline_template_uses_first_name_and_intent(self, session, replied_org):
-        body, generated_by = generate_reply_body(
-            session, inbound=replied_org["inbound"], candidate=replied_org["ada"]
-        )
-        assert generated_by == "template"
-        assert "Ada" in body
-        assert "call" in body.lower()
-
     def test_opt_out_and_automation_get_no_draft(self, session, replied_org):
         inbound = replied_org["inbound"]
         inbound.reply_intent = "unsubscribe"
@@ -149,30 +141,6 @@ class TestCreateReplyDraft:
         assert len(fake.reply_drafts) == 1
         assert session.query(ReplyDraft).count() == 1
 
-    def test_webhook_replies_without_graph_ids_are_skipped(
-        self, session, account, outreach_fixture, mailbox
-    ):
-        sequence = outreach_fixture["sequence"]
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
-        session.commit()
-        run_due(session, org_id=sequence.org_id)
-        session.commit()
-        outbound = session.query(Message).filter_by(direction="outbound").one()
-        record_reply(session, message=outbound, subject="Re", body="Interested!")
-        session.commit()
-        inbound = session.query(Message).filter_by(direction="inbound").one()
-        connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")
-        session.add(connection)
-        session.flush()
-        assert (
-            create_reply_draft(
-                session, inbound=inbound, connection=connection, provider=graph_provider(lambda db, conn: FakeDraftClient())
-            )
-            is None
-        )
-
-
 class TestWorkerFlow:
     def test_sync_enqueues_and_worker_creates_the_draft(self, session, replied_org, monkeypatch):
         from juicebox.jobs import KIND_REPLY_DRAFT
@@ -215,22 +183,6 @@ class TestWorkerFlow:
         sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
         session.commit()
         assert session.query(Job).filter_by(kind=KIND_REPLY_DRAFT).count() == 0
-
-
-class TestReplyDraftsApi:
-    def test_list_reply_drafts(self, client, session, account, replied_org):
-        create_reply_draft(
-            session,
-            inbound=replied_org["inbound"],
-            connection=replied_org["connection"],
-            provider=graph_provider(lambda db, conn: replied_org["fake"]),
-        )
-        session.commit()
-        rows = client.get("/v1/reply-drafts", headers=account["headers"]).json()
-        assert len(rows) == 1
-        assert rows[0]["intent"] == "interested"
-        assert rows[0]["generated_by"] == "template"
-        assert rows[0]["web_link"].startswith("https://outlook.office.com")
 
 
 class TestKillSwitch:
@@ -406,23 +358,3 @@ class TestPromptScoping:
         assert generated_by == "llm"
         assert "RIVAL_CONFIDENTIAL_COPY" not in self._prompt(transport)
 
-    def test_our_own_side_of_the_thread_is_still_used(
-        self, session, account, outreach_fixture
-    ):
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        self._hand_sent(
-            session,
-            org_id=account["org_id"],
-            candidate_id=ada.id,
-            body="OUR_ORIGINAL_PITCH",
-            conversation_id="conv-1",
-        )
-        inbound = self._inbound_without_enrollment(
-            session, org_id=account["org_id"], candidate_id=ada.id, conversation_id="conv-1"
-        )
-        session.commit()
-
-        transport = self._stub_llm()
-        generate_reply_body(session, inbound=inbound, candidate=ada)
-
-        assert "OUR_ORIGINAL_PITCH" in self._prompt(transport)

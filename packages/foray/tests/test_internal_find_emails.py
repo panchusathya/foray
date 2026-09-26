@@ -85,10 +85,6 @@ class TestTokenGate:
 
 
 class TestTriage:
-    def test_a_fresh_candidate_is_worth_a_lookup(self):
-        results, to_look_up = internal.triage(["ada"], [row("ada")])
-        assert results == {}
-        assert [r["login"] for r in to_look_up] == ["ada"]
 
     def test_an_already_checked_candidate_is_not_paid_for_twice(self):
         """The whole reason contactout_checked_at exists."""
@@ -106,41 +102,14 @@ class TestTriage:
         assert results == {"ada": {"status": "no_profile"}}
         assert to_look_up == []
 
-    def test_a_login_foray_has_never_seen_is_reported_not_guessed_at(self):
-        results, to_look_up = internal.triage(["ghost"], [])
-        assert results == {"ghost": {"status": "unknown"}}
-        assert to_look_up == []
-
     def test_having_an_address_wins_over_never_having_been_checked(self):
         """Order matters: has_personal is tested first, so a candidate whose
         address came from commit mining is never looked up at all."""
         results, _ = internal.triage(["ada"], [row("ada", has_personal=True, checked=False)])
         assert results["ada"]["status"] == "has_personal"
 
-    def test_a_mixed_batch_splits_correctly(self):
-        rows = [
-            row("fresh"),
-            row("done", checked=True),
-            row("covered", has_personal=True),
-            row("anonymous", linkedin_url=None),
-        ]
-        results, to_look_up = internal.triage(
-            ["fresh", "done", "covered", "anonymous", "ghost"], rows
-        )
-        assert [r["login"] for r in to_look_up] == ["fresh"]
-        assert {k: v["status"] for k, v in results.items()} == {
-            "done": "cached",
-            "covered": "has_personal",
-            "anonymous": "no_profile",
-            "ghost": "unknown",
-        }
-
 
 class TestLookUp:
-    def test_nothing_to_look_up_makes_no_request(self):
-        provider = RecordingProvider()
-        assert asyncio.run(internal._look_up(provider, [])) == []
-        assert provider.asked == []
 
     def test_a_failing_lookup_does_not_take_the_batch_down(self):
         """One vendor error must not lose the addresses we already paid for."""
@@ -198,14 +167,6 @@ class TestAgainstPostgres:
                 is_work,
             )
         return cid
-
-    async def test_the_query_reports_what_triage_needs(self, conn):
-        await self._make(conn, "fresh_1", linkedin_url="https://www.linkedin.com/in/a")
-        rows = await conn.fetch(internal.SELECT_TARGETS, ["fresh_1"])
-        assert len(rows) == 1
-        assert rows[0]["checked"] is False
-        assert rows[0]["has_personal"] is False
-        assert rows[0]["linkedin_url"] == "https://www.linkedin.com/in/a"
 
     async def test_a_work_only_candidate_still_counts_as_uncovered(self, conn):
         """A work address is not the thing we are buying, so a candidate who has

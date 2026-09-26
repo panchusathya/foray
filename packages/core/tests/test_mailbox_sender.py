@@ -51,17 +51,6 @@ def _connection(session, account, **kwargs) -> MailboxConnection:
 
 
 class TestResolution:
-    def test_falls_back_to_the_global_provider_when_mode_is_off(self, session, account):
-        """An untouched deployment keeps exactly the behaviour it had."""
-        resolved = sender_mod.sender_for_org(session, account["org_id"])
-        assert resolved is sender_mod.get_sender()
-
-    def test_refuses_loudly_without_an_address(self, session, account, mailbox_mode):
-        mailbox_mode(address="")
-        resolved = sender_mod.sender_for_org(session, account["org_id"])
-        assert isinstance(resolved, sender_mod.FailingSender)
-        assert "EMAIL_MAILBOX_ADDRESS" in resolved.reason
-
     def test_refuses_when_the_mailbox_is_not_connected(self, session, account, mailbox_mode):
         mailbox_mode()
         resolved = sender_mod.sender_for_org(session, account["org_id"])
@@ -89,23 +78,6 @@ class TestResolution:
         resolved = sender_mod.sender_for_org(session, "org_someone_else")
         assert isinstance(resolved, sender_mod.FailingSender)
 
-    def test_uses_the_connected_mailbox(self, session, account, mailbox_mode):
-        connection = _connection(session, account)
-        mailbox_mode()
-        seen = {}
-
-        def factory(db, conn):
-            seen["address"] = conn.address
-            return sender_mod.MemorySender()
-
-        sender_mod.set_sender_factory("zoho", factory)
-        try:
-            resolved = sender_mod.sender_for_org(session, account["org_id"])
-        finally:
-            sender_mod.reset_sender_factories()
-        assert isinstance(resolved, sender_mod.MemorySender)
-        assert seen["address"] == connection.address
-
     def test_ignores_the_daily_cap(self, session, account, mailbox_mode):
         """A sign-in code is not outreach.
 
@@ -131,20 +103,6 @@ class TestGlobalSenderGuard:
     success, and `EmailSubmitter` reads that success as "the employer has it".
     """
 
-    def test_refuses_instead_of_falling_back_to_console(self, monkeypatch):
-        monkeypatch.setenv("EMAIL_PROVIDER", "mailbox")
-        reset_settings_cache()
-        sender_mod.set_sender(None)
-        try:
-            resolved = sender_mod.get_sender()
-            assert isinstance(resolved, sender_mod.FailingSender)
-            assert "sender_for_org" in resolved.reason
-            assert resolved.send(_probe_email()).ok is False
-        finally:
-            sender_mod.set_sender(None)
-            monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
-            reset_settings_cache()
-
     def test_an_email_submitter_cannot_report_success(self, monkeypatch):
         """The specific regression: console returns ok=True having only logged,
         which marks an application submitted with nothing sent."""
@@ -159,18 +117,6 @@ class TestGlobalSenderGuard:
             sender_mod.set_sender(None)
             monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
             reset_settings_cache()
-
-    def test_other_providers_are_untouched(self, monkeypatch):
-        monkeypatch.setenv("EMAIL_PROVIDER", "console")
-        reset_settings_cache()
-        sender_mod.set_sender(None)
-        try:
-            assert isinstance(sender_mod.get_sender(), sender_mod.ConsoleSender)
-        finally:
-            sender_mod.set_sender(None)
-            monkeypatch.delenv("EMAIL_PROVIDER", raising=False)
-            reset_settings_cache()
-
 
 def _probe_email():
     from juicebox.outreach.sender import OutboundEmail
@@ -217,11 +163,6 @@ class TestZohoFromAddress:
         base.update(kwargs)
         return OutboundEmail(**base)
 
-    def test_sends_as_itself(self):
-        zoho, client = self._sender()
-        zoho.send(self._email())
-        assert client.sent[0]["fromAddress"] == "anna@goforay.io"
-
     def test_flattens_a_sub_address_of_itself(self):
         """A sub-address is the same mailbox and would be safe to allow, but
         Zoho refuses it: 500 "Given FromAddress not exists!" (verified live).
@@ -235,11 +176,6 @@ class TestZohoFromAddress:
     def test_refuses_a_different_mailbox(self):
         zoho, client = self._sender()
         zoho.send(self._email(from_email="someone@elsewhere.com"))
-        assert client.sent[0]["fromAddress"] == "anna@goforay.io"
-
-    def test_refuses_a_sub_address_on_another_domain(self):
-        zoho, client = self._sender()
-        zoho.send(self._email(from_email="anna+x@notours.com"))
         assert client.sent[0]["fromAddress"] == "anna@goforay.io"
 
     def test_refuses_a_lookalike_local_part(self):

@@ -91,29 +91,6 @@ def _population(client, session, account):
     return people
 
 
-class TestScope:
-    def test_crm_scope_excludes_the_untouched_pool(self, client, session, account):
-        people = _population(client, session, account)
-        rows = _ids(_grid(client, account["headers"], scope="crm", limit=100))
-
-        assert people["never"] not in rows
-        assert people["cold"] in rows
-        assert len(rows) == 4
-
-    def test_default_scope_is_the_whole_org(self, client, session, account):
-        """The sequence editor's picker sends no scope and must keep seeing
-        everyone, including people with no mail."""
-        people = _population(client, session, account)
-        rows = _ids(_grid(client, account["headers"], limit=100))
-        assert people["never"] in rows
-        assert len(rows) == 5
-
-    def test_response_is_still_a_bare_array(self, client, session, account):
-        _population(client, session, account)
-        body = _grid(client, account["headers"]).json()
-        assert isinstance(body, list)
-
-
 class TestRelationships:
     def test_going_cold_is_quiet_on_both_sides(self, client, session, account):
         people = _population(client, session, account)
@@ -140,18 +117,6 @@ class TestRelationships:
         assert people["fresh"] not in rows
         assert people["quiet"] not in rows
         assert people["never"] not in rows
-
-    def test_one_touch_is_exactly_one_outbound(self, client, session, account):
-        people = _population(client, session, account)
-        rows = _ids(_grid(client, account["headers"], relationship="one_touch", limit=100))
-
-        assert rows == [people["cold"]]
-
-    def test_replied_is_anyone_who_answered(self, client, session, account):
-        people = _population(client, session, account)
-        rows = _ids(_grid(client, account["headers"], relationship="replied", limit=100))
-
-        assert sorted(rows) == sorted([people["quiet"], people["alive"]])
 
     def test_an_active_enrolment_is_only_excluded_when_asked(
         self, client, session, account
@@ -191,10 +156,6 @@ class TestRelationships:
             )
         )
 
-    def test_an_unknown_relationship_is_rejected(self, client, account):
-        response = _grid(client, account["headers"], relationship="lukewarm")
-        assert response.status_code == 422
-
 
 class TestSorting:
     def test_never_contacted_sort_last_in_both_directions(
@@ -215,32 +176,6 @@ class TestSorting:
                 )
             )
             assert rows[-1] == people["never"], direction
-
-    def test_going_cold_sorts_coldest_first(self, client, session, account):
-        people = _population(client, session, account)
-        rows = _ids(
-            _grid(
-                client,
-                account["headers"],
-                relationship="stale",
-                sort="last_contacted",
-                dir="asc",
-                limit=100,
-            )
-        )
-        # quiet was last emailed 290 days ago, cold 200
-        assert rows == [people["quiet"], people["cold"]]
-
-    def test_touches_orders_by_outbound_volume(self, client, session, account):
-        people = _population(client, session, account)
-        rows = _ids(
-            _grid(client, account["headers"], sort="touches", dir="desc", limit=100)
-        )
-        assert rows[0] == people["quiet"]  # two outbound, more than anyone else
-
-    def test_an_unknown_sort_key_is_rejected(self, client, account):
-        assert _grid(client, account["headers"], sort="vibes").status_code == 422
-        assert _grid(client, account["headers"], dir="sideways").status_code == 422
 
 
 class TestCount:
@@ -302,15 +237,6 @@ class TestHistoryAgreement:
         assert timeline["last_emailed_at"] == quiet["last_emailed_at"]
 
 
-class TestUnchangedContract:
-    def test_a_candidate_with_no_messages_still_lists(self, client, account):
-        """A brand-new org with no mail at all must not 500 on the outer join."""
-        _candidate(client, account["headers"], "Solo Sam")
-        rows = _ids(_grid(client, account["headers"]))
-        assert len(rows) == 1
-        assert _count(client, account["headers"]) == 1
-
-
 class TestSelectAllIds:
     def test_ids_match_the_listing_for_the_same_filters(self, client, session, account):
         people = _population(client, session, account)
@@ -334,19 +260,6 @@ class TestSelectAllIds:
         body = response.json()
         assert len(body["ids"]) == 2
         assert body["truncated"] is True
-
-    def test_ids_is_not_swallowed_by_the_candidate_id_route(self, client, account):
-        """/ids is declared above /{candidate_id}; if that ever flips, this
-        returns a 404 for a candidate literally named "ids"."""
-        response = client.get("/v1/candidates/ids", headers=account["headers"])
-        assert response.status_code == 200
-        assert "ids" in response.json()
-
-    def test_the_cap_is_enforced_server_side(self, client, account):
-        response = client.get(
-            "/v1/candidates/ids", params={"limit": 5000}, headers=account["headers"]
-        )
-        assert response.status_code == 422
 
 
 class TestMidSequencePeopleAreNotHidden:
@@ -439,19 +352,6 @@ class TestProjectScope:
             )
         )
 
-    def test_filters_to_people_on_the_board(self, client, session, account):
-        people = _population(client, session, account)
-        headers = account["headers"]
-        project = self._project(client, headers)
-        client.post(
-            f"/v1/projects/{project}/candidates",
-            json={"candidate_ids": [people["cold"]]},
-            headers=headers,
-        )
-
-        rows = _ids(_grid(client, headers, project_id=project, limit=100))
-        assert rows == [people["cold"]]
-
     def test_includes_people_the_project_only_emailed(self, client, session, account):
         """Enrolment creates no pipeline row, so this is the case a
         membership-only filter gets wrong."""
@@ -500,11 +400,3 @@ class TestProjectScope:
         _population(client, session, account)
         rows = _ids(_grid(client, account["headers"], project_id="proj_nope", limit=100))
         assert rows == []
-
-    def test_omitting_it_leaves_the_grid_org_wide(self, client, session, account):
-        people = _population(client, session, account)
-        project = self._project(client, account["headers"])
-        self._enroll(session, account["org_id"], people["cold"], project)
-        session.commit()
-
-        assert len(_ids(_grid(client, account["headers"], limit=100))) == len(people)

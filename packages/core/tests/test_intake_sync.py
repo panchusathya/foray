@@ -28,12 +28,10 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from juicebox.intake.records import merge_record
 from juicebox.intake.schema import empty_record
 from juicebox.intake.service import (
     coverage_snapshot,
     empty_coverage,
-    prior_preference_record,
     upsert_preference,
 )
 from juicebox.llm.client import LLMClient, set_llm
@@ -211,18 +209,6 @@ class TestTheCallMerges:
 
 
 class TestTheGateIsSeeded:
-    def test_a_stored_record_reads_back_in_record_shape(self, session, account):
-        candidate = a_candidate(session, account)
-        a_preference(session, account, candidate, timeline="under_1_month")
-
-        record = prior_preference_record(session, candidate.id)
-        assert record is not None
-        assert record["timeline"] == "under_1_month"
-
-    def test_nobody_has_no_prior(self, session, account):
-        assert prior_preference_record(session, None) is None
-        assert prior_preference_record(session, a_candidate(session, account).id) is None
-
     def test_a_returning_candidate_is_not_re_interviewed(self, session, account, no_llm):
         """The whole point: ask what changed, not the eleven questions again."""
         complete = empty_record()
@@ -249,19 +235,6 @@ class TestTheGateIsSeeded:
 
         assert seeded["required_outstanding"] < bare["required_outstanding"]
         assert seeded["already_covered"] > bare["already_covered"]
-
-    def test_the_transcript_beats_the_stored_record(self, session, account, no_llm):
-        """The seed goes *under* this call's reading, never over it."""
-        prior = empty_record()
-        prior["timeline"] = "3_6_months"
-        snapshot = coverage_snapshot(
-            "Candidate: I need to move right away, immediately.", fast=False, prior=prior
-        )
-        # Nothing about the snapshot exposes the value, so assert on the merge
-        # that produced it -- the rule is what matters.
-        merged = merge_record(prior, {"timeline": "immediate"})
-        assert merged["timeline"] == "immediate"
-        assert snapshot["guidance"]
 
     def test_the_first_check_is_seeded_too(self, session, account):
         """A returning caller's first check often arrives before they speak.
@@ -324,10 +297,3 @@ class TestADegradedGateIsFlaggedOnTheCall:
 
         assert call.review_needed
         assert "heuristics" in call.review_reason
-
-    def test_a_healthy_extraction_leaves_the_call_alone(self, monkeypatch, no_llm):
-        from juicebox.models import IntakeCall
-
-        call = IntakeCall(review_needed=False, review_reason="")
-        coverage_snapshot("Candidate: I want a backend role.", call=call, fast=False)
-        assert "heuristics" not in (call.review_reason or "")

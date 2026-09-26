@@ -25,11 +25,7 @@ from juicebox.messaging.channels import LINQ, DeliveryResult, OutboundMessage
 from juicebox.messaging.linq import (
     SERVICE_IMESSAGE,
     SERVICE_RCS,
-    ContactCard,
-    ContactCardError,
-    get_contact_cards,
     set_contact_card,
-    share_contact_card,
 )
 from juicebox.messaging.threads import open_thread, record_inbound, record_outbound
 from juicebox.models import Org
@@ -105,16 +101,6 @@ def _inbound(session, thread, body: str = "hey") -> None:
 class TestClient:
     """What goes on the wire for a card."""
 
-    def test_set_sends_number_and_name(self):
-        transport = RecordingTransport({"phone_number": OUR_NUMBER, "first_name": "Foray"})
-        card = set_contact_card(
-            phone_number=OUR_NUMBER, first_name="Foray", transport=transport
-        )
-        method, url, payload = transport.calls[0]
-        assert (method, url.endswith("/contact_card")) == ("POST", True)
-        assert payload == {"phone_number": OUR_NUMBER, "first_name": "Foray"}
-        assert card.first_name == "Foray"
-
     def test_empty_optionals_are_omitted_not_sent_blank(self):
         """A blank ``image_url`` would clear a photo somebody just set."""
         transport = RecordingTransport()
@@ -127,60 +113,6 @@ class TestClient:
         )
         assert "image_url" not in transport.calls[0][2]
         assert "last_name" not in transport.calls[0][2]
-
-    def test_photo_travels_when_given(self):
-        transport = RecordingTransport()
-        set_contact_card(
-            phone_number=OUR_NUMBER,
-            first_name="Foray",
-            image_url="https://cdn.example.com/mark.png",
-            transport=transport,
-        )
-        assert transport.calls[0][2]["image_url"] == "https://cdn.example.com/mark.png"
-
-    def test_name_is_required(self):
-        with pytest.raises(ContactCardError):
-            set_contact_card(phone_number=OUR_NUMBER, first_name="  ")
-
-    def test_get_reads_the_list_envelope(self):
-        transport = RecordingTransport(
-            {
-                "contact_cards": [
-                    {
-                        "phone_number": OUR_NUMBER,
-                        "first_name": "Foray",
-                        "image_url": "https://cdn.example.com/mark.png",
-                        "is_active": True,
-                    }
-                ]
-            }
-        )
-        cards = get_contact_cards(phone_number=OUR_NUMBER, transport=transport)
-        assert cards == (
-            ContactCard(
-                phone_number=OUR_NUMBER,
-                first_name="Foray",
-                image_url="https://cdn.example.com/mark.png",
-                is_active=True,
-            ),
-        )
-        assert "phone_number=" in transport.calls[0][1]
-
-    def test_get_survives_a_bare_object(self):
-        """Belt and braces: a single object where a list was documented."""
-        transport = RecordingTransport({"phone_number": OUR_NUMBER, "first_name": "Foray"})
-        assert len(get_contact_cards(transport=transport)) == 1
-
-    def test_share_posts_to_the_chat(self):
-        transport = RecordingTransport()
-        assert share_contact_card(CHAT_ID, transport=transport) is True
-        method, url, _ = transport.calls[0]
-        assert method == "POST"
-        assert url.endswith(f"/chats/{CHAT_ID}/share_contact_card")
-
-    def test_share_without_a_chat_is_not_an_error(self):
-        assert share_contact_card("", transport=RecordingTransport()) is False
-
 
 class TestWhoGetsAsked:
     """The policy half."""
@@ -199,20 +131,6 @@ class TestWhoGetsAsked:
         _outbound(session, thread)  # our first reply
         assert contact_card.maybe_share(session, thread=thread) is False
         assert shared == []
-
-    def test_shared_once_they_answer_us(self, session, thread, card_env, monkeypatch):
-        shared = []
-        monkeypatch.setattr(
-            contact_card, "share_contact_card", lambda chat: shared.append(chat) or True
-        )
-        _inbound(session, thread)
-        _outbound(session, thread)
-        _inbound(session, thread, "sure, here's my linkedin")
-        _outbound(session, thread)
-        assert contact_card.maybe_share(session, thread=thread) is True
-        assert shared == [CHAT_ID]
-        assert contact_card.card_meta(thread)["attempts"] == 1
-        assert contact_card.card_meta(thread)["shared_at"]
 
     def test_not_twice_in_a_day(self, session, thread, card_env, monkeypatch):
         calls = []

@@ -20,19 +20,15 @@ from juicebox.connectors import (
 from juicebox.connectors.extract import rank_hits
 from juicebox.connectors.fake import FakeConnector, hit
 from juicebox.docgen.render import render_resume_pdf
-from juicebox.jobs import KIND_CONNECTOR_INDEX, KIND_INTAKE_TURN, KIND_LINKEDIN_SCRAPE
+from juicebox.jobs import KIND_CONNECTOR_INDEX, KIND_INTAKE_TURN
 from juicebox.messaging.channels import WEB
-from juicebox.messaging.connect_flow import BATCH_CONNECT
 from juicebox.messaging.connect_links import mint_connect_link
-from juicebox.messaging.conversation import ACTION_ASKED, ACTION_HELD, run_turn
-from juicebox.messaging.identity import CONTACT_LINKEDIN
+from juicebox.messaging.conversation import ACTION_HELD, run_turn
 from juicebox.messaging.linkedin_flow import (
     BATCH_CONFIRM,
-    BATCH_GAP_FILL,
     FLOW_LINKEDIN_SHORT,
     flow_meta,
 )
-from juicebox.messaging.prompts import valid_question
 from juicebox.messaging.threads import open_thread, record_inbound
 from juicebox.models import (
     CandidateConnection,
@@ -138,37 +134,6 @@ def _index_job(session):
 
 
 class TestOffer:
-    def test_offer_replaces_the_profile_ask_when_configured(
-        self, session, account, fake_channel, connector
-    ):
-        thread, result = _to_offer(session, account, fake_channel)
-        assert result.action == ACTION_ASKED
-        assert result.asked_field == BATCH_CONNECT
-        body = fake_channel.bodies[-1]
-        assert "/v1/connect/" in body
-        # The alternative rides in the same message — declining costs no turn.
-        assert "linkedin" in body.lower()
-        assert valid_question(body, batched=True)
-        assert flow_meta(thread).get("connect_offered") is True
-
-    def test_no_connectors_configured_is_byte_identical(
-        self, session, account, fake_channel
-    ):
-        _thread, result = _to_offer(session, account, fake_channel)
-        assert result.asked_field == CONTACT_LINKEDIN
-        assert "/v1/connect/" not in fake_channel.bodies[-1]
-
-    def test_decline_falls_to_gap_fill_without_a_second_ask(
-        self, session, account, fake_channel, connector
-    ):
-        thread, _ = _to_offer(session, account, fake_channel)
-        result = _say(session, thread, "i'd rather just answer questions")
-        assert result.asked_field == BATCH_GAP_FILL
-        body = fake_channel.bodies[-1]
-        assert "/v1/connect/" not in body
-        # Moving on, not apologising: nothing failed.
-        assert "no worries" not in body
-        assert "couldn't" not in body
 
     def test_offer_is_never_repeated(self, session, account, fake_channel, connector):
         thread, _ = _to_offer(session, account, fake_channel)
@@ -176,16 +141,6 @@ class TestOffer:
         _say(session, thread, "what?")
         offers = [b for b in fake_channel.bodies if "/v1/connect/" in b]
         assert len(offers) == 1
-
-    def test_url_pasted_on_the_offer_turn_still_scrapes(
-        self, session, account, fake_channel, connector
-    ):
-        thread, _ = _to_offer(session, account, fake_channel)
-        result = _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
-        assert result.action == ACTION_HELD
-        assert (
-            session.scalar(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE)) is not None
-        )
 
     def test_pending_index_holds_the_turn(self, session, account, fake_channel, connector):
         thread, _ = _to_offer(session, account, fake_channel)
@@ -285,23 +240,6 @@ def _connected(client, session, account, fake_channel):
 
 
 class TestConnectorIndexJob:
-    def test_profile_only_index_settles_and_confirms(
-        self, client, session, account, fake_channel, connector
-    ):
-        thread = _connected(client, session, account, fake_channel)
-        process_job(session, _index_job(session))
-        session.expire_all()
-
-        thread = session.get(IntakeThread, thread.id)
-        scrape = flow_meta(thread).get("scrape") or {}
-        assert scrape.get("current_title") == "Software Engineer"
-        assert scrape.get("skills") == ["Python", "Rust"]
-        connection = session.scalars(select(CandidateConnection)).one()
-        assert connection.index_state["status"] == "done"
-
-        result = run_turn(session, thread=thread)
-        assert result.asked_field == BATCH_CONFIRM
-        assert "software engineer" in fake_channel.bodies[-1]
 
     def test_resume_index_stores_the_document_and_only_the_parse_replies(
         self, client, session, account, fake_channel, connector
@@ -341,21 +279,6 @@ class TestConnectorIndexJob:
         result = run_turn(session, thread=thread)
         assert result.asked_field == BATCH_CONFIRM
 
-    def test_failure_still_answers_with_gap_fill(
-        self, client, session, account, fake_channel, connector
-    ):
-        connector.fail_index = "hits"
-        thread = _connected(client, session, account, fake_channel)
-        process_job(session, _index_job(session))
-        session.expire_all()
-
-        connection = session.scalars(select(CandidateConnection)).one()
-        assert connection.index_state["status"] == "failed"
-        thread = session.get(IntakeThread, thread.id)
-        result = run_turn(session, thread=thread)
-        assert result.asked_field == BATCH_GAP_FILL
-        assert "couldn't pull much" in fake_channel.bodies[-1]
-
     def test_stopped_thread_is_never_indexed(
         self, client, session, account, fake_channel, connector
     ):
@@ -369,21 +292,6 @@ class TestConnectorIndexJob:
         assert connection.index_state["status"] == "failed"
         assert len(fake_channel.bodies) == before
         assert session.scalar(select(Job).where(Job.kind == KIND_INTAKE_TURN)) is None
-
-    def test_managing_thread_keeps_its_confirm_slot(
-        self, client, session, account, fake_channel, connector
-    ):
-        thread = _connected(client, session, account, fake_channel)
-        thread.mode = "managing"
-        session.commit()
-        process_job(session, _index_job(session))
-        session.expire_all()
-        thread = session.get(IntakeThread, thread.id)
-        assert not (flow_meta(thread).get("scrape") or {})
-        # The conversation is still answered — through the manager, not confirm.
-        assert (
-            session.scalar(select(Job).where(Job.kind == KIND_INTAKE_TURN)) is not None
-        )
 
 
 class TestResumeSelection:

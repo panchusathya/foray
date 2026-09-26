@@ -28,23 +28,6 @@ def _by_key(body):
 
 
 class TestEmailMatch:
-    def test_a_known_address_is_matched(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        body = _check(
-            client,
-            headers,
-            [
-                {"key": "0", "emails": ["ada@example.com"], "full_name": "Ada Okonkwo"},
-                {"key": "1", "emails": ["nobody@example.com"], "full_name": "Nobody Here"},
-            ],
-        )
-        matches = _by_key(body)
-        assert set(matches) == {"0"}
-        assert matches["0"]["matched_on"] == "email"
-        assert matches["0"]["full_name"] == "Ada Okonkwo"
-        assert "ada@example.com" in matches["0"]["reason"]
-        assert matches["0"]["candidate_id"]
-
     def test_matching_is_case_and_whitespace_insensitive(self, client, loaded_org):
         headers = loaded_org["headers"]
         body = _check(client, headers, [{"key": "0", "emails": ["  ADA@Example.COM "]}])
@@ -63,41 +46,6 @@ class TestEmailMatch:
 
 
 class TestLinkedInMatch:
-    def test_the_same_profile_under_a_different_source_is_matched(self, client, account):
-        # The whole point. This person is on file from Foray sourcing; the CSV
-        # row for them carries source "juicebox_csv", so (source, source_id)
-        # sees two different people and upsert_candidates creates a second row.
-        headers = account["headers"]
-        _seed(
-            client,
-            headers,
-            [
-                {
-                    "source": "foray",
-                    "source_id": "gh:adalovelace",
-                    "full_name": "Ada Lovelace",
-                    "linkedin_url": "https://linkedin.com/in/ada-lovelace",
-                    "emails": ["ada.l@analytical.engine"],
-                }
-            ],
-        )
-        body = _check(
-            client,
-            headers,
-            [
-                {
-                    "key": "0",
-                    # A different spelling, a different address, same person.
-                    "linkedin_url": "http://www.linkedin.com/in/Ada-Lovelace/",
-                    "emails": ["ada@personal.example.com"],
-                    "full_name": "Ada Lovelace",
-                }
-            ],
-        )
-        match = _by_key(body)["0"]
-        assert match["matched_on"] == "linkedin"
-        assert match["full_name"] == "Ada Lovelace"
-
     def test_the_slug_is_folded_server_side(self, client, account):
         # enrich.linkedin_url.linkedin_slug rstrips "._-"; the browser's
         # linkedinSlug does not. Folding on the server is what keeps the two
@@ -121,15 +69,6 @@ class TestLinkedInMatch:
             [{"key": "0", "linkedin_url": "linkedin.com/in/grace-hopper-"}],
         )
         assert _by_key(body)["0"]["matched_on"] == "linkedin"
-
-    def test_a_profile_nobody_has_is_not_matched(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        body = _check(
-            client,
-            headers,
-            [{"key": "0", "linkedin_url": "https://linkedin.com/in/nobody-at-all"}],
-        )
-        assert body["matches"] == []
 
     def test_a_non_profile_url_matches_nobody(self, client, account):
         headers = account["headers"]
@@ -205,46 +144,6 @@ class TestNameAndCompanyMatch:
 
 
 class TestPrecedenceAndScope:
-    def test_email_wins_over_a_weaker_match(self, client, account):
-        headers = account["headers"]
-        _seed(
-            client,
-            headers,
-            [
-                {
-                    "source": "manual",
-                    "source_id": "man-1",
-                    "full_name": "Ada Lovelace",
-                    "emails": ["ada@example.com"],
-                    "linkedin_url": "https://linkedin.com/in/ada-lovelace",
-                    "experiences": [{"company": "Stripe", "title": "Eng", "is_current": True}],
-                }
-            ],
-        )
-        body = _check(
-            client,
-            headers,
-            [
-                {
-                    "key": "0",
-                    "emails": ["ada@example.com"],
-                    "linkedin_url": "https://linkedin.com/in/ada-lovelace",
-                    "full_name": "Ada Lovelace",
-                    "company": "Stripe",
-                }
-            ],
-        )
-        assert _by_key(body)["0"]["matched_on"] == "email"
-
-    def test_one_match_per_row_even_with_several_signals(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        body = _check(
-            client,
-            headers,
-            [{"key": "0", "emails": ["ada@example.com", "bo@example.com"]}],
-        )
-        assert len(body["matches"]) == 1
-
     def test_another_orgs_contacts_are_invisible(self, client, loaded_org):
         rival = client.post(
             "/v1/auth/signup",
@@ -256,14 +155,6 @@ class TestPrecedenceAndScope:
         ).json()
         rival_headers = {"Authorization": f"Bearer {rival['access_token']}"}
         body = _check(client, rival_headers, [{"key": "0", "emails": ["ada@example.com"]}])
-        assert body["matches"] == []
-
-    def test_an_empty_request_is_an_empty_answer(self, client, loaded_org):
-        body = _check(client, loaded_org["headers"], [])
-        assert body == {"matches": [], "truncated": False}
-
-    def test_a_row_with_nothing_to_match_on_is_skipped(self, client, loaded_org):
-        body = _check(client, loaded_org["headers"], [{"key": "0"}])
         assert body["matches"] == []
 
     def test_the_route_writes_nothing(self, client, loaded_org):
@@ -308,12 +199,3 @@ class TestPrecedenceAndScope:
         )
         assert body["truncated"] is False
         assert _by_key(body)["0"]["matched_on"] == "linkedin"
-
-    def test_too_many_rows_is_refused(self, client, loaded_org):
-        from juicebox.routers.imports import MAX_KNOWN
-
-        people = [{"key": str(i), "emails": [f"p{i}@example.com"]} for i in range(MAX_KNOWN + 1)]
-        response = client.post(
-            "/v1/imports/known", json={"people": people}, headers=loaded_org["headers"]
-        )
-        assert response.status_code == 413

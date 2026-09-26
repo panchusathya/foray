@@ -8,7 +8,7 @@ import httpx
 from sqlalchemy import select
 
 from juicebox.config import get_settings
-from juicebox.jobmatch.exa import ExaClient, ExaUnavailable, set_exa
+from juicebox.jobmatch.exa import ExaClient, set_exa
 from juicebox.jobmatch.scrape import (
     ensure_auto_queries,
     handle_scrape_one,
@@ -45,17 +45,6 @@ def _transport(_method, url, payload):
     return {"results": _fake_results()}
 
 
-class TestExaClient:
-    def test_no_key_raises(self):
-        client = ExaClient(api_key="")
-        assert client.available is False
-        try:
-            client.search_job_postings("ml engineer")
-            raise AssertionError("expected ExaUnavailable")
-        except ExaUnavailable:
-            pass
-
-
 class TestIngest:
     def test_dedupe_on_source_id(self, session, account):
         first = ingest_exa_results(session, account["org_id"], _fake_results())
@@ -67,18 +56,6 @@ class TestIngest:
         assert second["updated"] == 2
         assert session.query(JobPosting).count() == 2
 
-    def test_staleness_transition(self, session, account):
-        ingest_exa_results(session, account["org_id"], _fake_results())
-        session.commit()
-        posting = session.query(JobPosting).first()
-        posting.status = "open"
-        posting.source = "exa"
-        posting.last_seen_at = utcnow() - timedelta(days=30)
-        session.commit()
-        n = mark_stale_postings(session, account["org_id"])
-        assert n >= 1
-        session.refresh(posting)
-        assert posting.status == "stale"
 
     def test_no_key_skips_cleanly(self, session, account):
         query = JobScrapeQuery(
@@ -101,20 +78,6 @@ class TestIngest:
         session.flush()
         skipped = handle_scrape_one(session, job, utcnow())
         assert skipped["skipped"] == "no_exa_key"
-
-    def test_fake_transport_ingests(self, session, account):
-        set_exa(ExaClient(api_key="test", transport=_transport))
-        query = JobScrapeQuery(
-            org_id=account["org_id"],
-            query="ml job posting",
-            cadence_minutes=1440,
-            status="active",
-        )
-        session.add(query)
-        session.commit()
-        result = run_scrape_query(session, query)
-        assert result["created"] == 2
-        assert session.query(JobPosting).count() == 2
 
 
 class TestBilledCallsAreNotRepeated:

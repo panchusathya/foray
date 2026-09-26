@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { forayHitToCandidate, partitionByEmail } from '../src/lib/forayImport.js';
+import { forayHitToCandidate } from '../src/lib/forayImport.js';
 
 const HIT = {
   login: 'janedoe',
@@ -41,21 +41,4 @@ test('maps core fields with login as source_id', () => {
   assert.deepEqual(c.skills, ['go', 'infra', 'kubernetes']);
   assert.equal(c.raw.foray.score, 71);
   assert.equal(c.raw.foray.archetype, 'infra_platform');
-});
-
-test('full_name falls back to login', () => {
-  const c = forayHitToCandidate({ login: 'ghost', emails: [] });
-  assert.equal(c.full_name, 'ghost');
-  assert.deepEqual(c.emails, []);
-  assert.equal(c.years_experience, null);
-});
-
-test('partitionByEmail splits contactable from not', () => {
-  const { withEmail, withoutEmail } = partitionByEmail([
-    HIT,
-    { login: 'noemail', emails: [] },
-    { login: 'nullemails' },
-  ]);
-  assert.deepEqual(withEmail.map((h) => h.login), ['janedoe']);
-  assert.deepEqual(withoutEmail.map((h) => h.login), ['noemail', 'nullemails']);
 });

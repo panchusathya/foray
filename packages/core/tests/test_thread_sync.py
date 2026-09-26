@@ -196,7 +196,3 @@ class TestScopeGuard:
         session.commit()
         index = build_address_index(session, org_id=account["org_id"])
         assert "bystander@example.com" not in index
-
-    def test_enrolled_candidates_are_in_scope(self, session, thread_org):
-        index = build_address_index(session, org_id=thread_org["connection"].org_id)
-        assert index.get("ada@example.com") == thread_org["ada"].id

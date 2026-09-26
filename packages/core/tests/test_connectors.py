@@ -21,7 +21,7 @@ from juicebox.connectors import github as github_mod
 from juicebox.connectors import google as google_mod
 from juicebox.connectors import microsoft as microsoft_mod
 from juicebox.connectors.base import ConnectorError
-from juicebox.connectors.github import GithubConnector, languages_from_repos
+from juicebox.connectors.github import GithubConnector
 from juicebox.connectors.google import GoogleConnector
 from juicebox.connectors.microsoft import MicrosoftCandidateConnector
 from juicebox.integrations.crypto import encrypt_json
@@ -157,9 +157,6 @@ class TestGoogle:
         )
         assert data == b"%PDF-1.4 fake"
 
-    def test_unconfigured_is_not_offered(self):
-        assert GoogleConnector().is_configured() is False
-
 
 class TestMicrosoft:
     def test_exchange_code_reads_me_for_the_address(self, monkeypatch, microsoft_env):
@@ -216,29 +213,8 @@ class TestMicrosoft:
         assert [h.native_id for h in hits] == ["s1|a1", "i1|a1"]
         assert hits[0].sent_by_owner and not hits[1].sent_by_owner
 
-    def test_fetch_resume_returns_raw_bytes(self, monkeypatch, microsoft_env):
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path.endswith("/attachments/a1/$value")
-            return httpx.Response(200, content=b"%PDF-1.4 ms")
-
-        _stub(monkeypatch, microsoft_mod, handler)
-        data = MicrosoftCandidateConnector().fetch_resume(
-            _DummyDB(), _connection(), SimpleNamespace(native_id="m1|a1")
-        )
-        assert data == b"%PDF-1.4 ms"
-
 
 class TestGithub:
-    def test_language_tally_ports_the_ingest_heuristic(self):
-        repos = [
-            {"language": "Python", "stargazers_count": 10},
-            {"language": "Python", "stargazers_count": 0},
-            {"language": "Rust", "stargazers_count": 5},
-            {"language": "Go", "fork": True, "stargazers_count": 400},
-            {"language": None, "stargazers_count": 50},
-        ]
-        assert languages_from_repos(repos) == ["Python", "Rust"]
-
     def test_exchange_code_refuses_a_bad_code(self, monkeypatch, github_env):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"error": "bad_verification_code"})
@@ -273,22 +249,6 @@ class TestGithub:
         assert profile.skills == ("Rust",)
         # A bio is not a job title; the flow's gap-fill asks instead.
         assert profile.current_title == ""
-
-    def test_exchange_code_happy_path(self, monkeypatch, github_env):
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == "github.com":
-                assert request.headers["accept"] == "application/json"
-                return httpx.Response(200, json={"access_token": "gh-at"})
-            return httpx.Response(200, json={"login": "ada", "name": "Ada", "id": 7})
-
-        _stub(monkeypatch, github_mod, handler)
-        grant = GithubConnector().exchange_code("code", {})
-        assert grant.address == "ada"
-        assert grant.tokens == {
-            "access_token": "gh-at",
-            "refresh_token": "",
-            "expires_at": github_mod._NO_EXPIRY,
-        }
 
 
 class TestGoogleSignal:

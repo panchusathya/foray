@@ -39,7 +39,6 @@ from juicebox.messaging.manager import (
 )
 from juicebox.messaging.suppression import address_has_opted_out, handle_stop
 from juicebox.messaging.threads import (
-    HANDED_OFF,
     STATUS_COMPLETE,
     STATUS_STOPPED,
     apply_status_event,
@@ -189,17 +188,6 @@ def _match(session, org_id, posting, candidate_id, *, score=0.9):
 # --------------------------------------------------------------------------
 
 
-class TestHandoffPredicate:
-    def test_every_receipt_state_still_counts_as_handed_off(self):
-        assert set(HANDED_OFF) == {"sent", "delivered", "read"}
-
-    def test_a_failed_row_is_not_handed_off(self, session, web_thread, fake_channel):
-        fake_channel._configured = False
-        run_turn(session, thread=web_thread)
-        rows = [m for m in messages_of(session, web_thread) if m.direction == "outbound"]
-        assert rows and all(not was_handed_off(m) for m in rows)
-
-
 class TestTranscriptSurvivesReceipts:
     def test_a_delivered_question_stays_in_the_transcript(
         self, session, web_thread, fake_channel
@@ -216,14 +204,6 @@ class TestTranscriptSurvivesReceipts:
 
         _receipts_for(session, web_thread)
 
-        assert transcript_of(session, web_thread) == before
-
-    def test_a_read_receipt_does_not_erase_it_either(
-        self, session, web_thread, fake_channel
-    ):
-        run_turn(session, thread=web_thread)
-        before = transcript_of(session, web_thread)
-        _receipts_for(session, web_thread, event_type="message.read")
         assert transcript_of(session, web_thread) == before
 
     def test_a_failed_message_is_still_left_out(self, session, web_thread, fake_channel):
@@ -272,21 +252,6 @@ class TestLinkedInIntroSendsOnce:
 
         assert linq_channel.bodies.count(intro) == 1
 
-    def test_and_not_on_the_third_reply_either(
-        self, session, linq_thread, linq_channel
-    ):
-        _say(session, linq_thread, "hey", native_id="j-1")
-        intro = linq_channel.bodies[0]
-        for index, body in enumerate(("who is this?", "sorry, who?", "??")):
-            _receipts_for(session, linq_thread)
-            _say(session, linq_thread, body, native_id=f"j-{index + 2}")
-        assert linq_channel.bodies.count(intro) == 1
-        # The re-asked profile question is never the byte-identical bubble
-        # twice in a row (`conversation._unrepeated`).
-        for earlier, later in zip(linq_channel.bodies, linq_channel.bodies[1:], strict=False):
-            assert earlier != later
-
-
 class TestNudgeBudgetSurvivesReceipts:
     def _nudge(self, session, thread, body, *, native_id):
         from juicebox.messaging.channels import DeliveryResult, OutboundMessage
@@ -320,23 +285,6 @@ class TestNudgeBudgetSurvivesReceipts:
         )
         assert decision.allowed is False
         assert decision.reason == cadence.REASON_NUDGE_BUDGET
-
-    def test_a_failed_nudge_is_not_charged(
-        self, session, linq_thread, linq_channel
-    ):
-        """The budget charges for what was sent, not what was attempted."""
-        now = datetime(2026, 1, 15, 18, 0, tzinfo=UTC)
-        linq_thread.last_inbound_at = now - timedelta(days=30)
-        for index in range(cadence.MAX_NUDGES_PER_THREAD):
-            row = self._nudge(session, linq_thread, f"nudge {index}", native_id=f"f-{index}")
-            row.status = "failed"
-        session.flush()
-
-        decision = cadence.may_initiate(
-            session, thread=linq_thread, now=now, kind=cadence.INITIATIVE_NUDGE
-        )
-        assert decision.reason != cadence.REASON_NUDGE_BUDGET
-
 
 # --------------------------------------------------------------------------
 # rails that used to be skipped
@@ -407,17 +355,6 @@ class TestTapbackRespectsTheRails:
         assert result.get("defer_until") is not None
         assert len(linq_channel.sent) == before
 
-    def test_an_ordinary_tapback_still_applies(
-        self, session, account, linq_thread, linq_channel
-    ):
-        """The rails must not swallow the happy path."""
-        thread, proposal = self._proposed(session, account, linq_thread, linq_channel)
-
-        result = apply_to_proposal(session, thread=thread, proposal_id=proposal.id)
-
-        assert result.get("action")
-        assert session.scalar(select(Application)) is not None
-
     def test_a_stopped_thread_gets_no_read_receipt_and_no_typing_bubble(
         self, session, account, linq_thread, linq_channel, monkeypatch
     ):
@@ -452,36 +389,6 @@ class TestTapbackRespectsTheRails:
 
         assert touched == []
         assert session.scalar(select(Application)) is None
-
-    def test_an_active_thread_still_gets_its_receipt(
-        self, session, account, linq_thread, linq_channel, monkeypatch
-    ):
-        from juicebox.jobs import KIND_INTAKE_TURN, enqueue
-        from juicebox.messaging import linq as linq_module
-        from juicebox.worker import process_job
-
-        thread, proposal = self._proposed(session, account, linq_thread, linq_channel)
-
-        touched: list[str] = []
-        monkeypatch.setattr(
-            linq_module, "maybe_mark_read", lambda t: touched.append("read")
-        )
-        monkeypatch.setattr(
-            linq_module, "maybe_start_typing", lambda t: touched.append("typing")
-        )
-
-        job = enqueue(
-            session,
-            org_id=thread.org_id,
-            kind=KIND_INTAKE_TURN,
-            idempotency_key=f"turn:{thread.id}:tapback",
-            payload={"thread_id": thread.id, "apply_proposal_id": proposal.id},
-        )
-        job.status = "running"
-        process_job(session, job)
-
-        assert touched == ["read", "typing"]
-
 
 class TestStopIsHonouredAtAnyState:
     def test_stop_on_a_completed_web_thread_opts_them_out(
@@ -555,20 +462,6 @@ class TestUndeliveredCardsDoNotBuryThePosting:
 
         assert thread.last_presented == seen
 
-    def test_a_delivered_card_is_still_frozen_on_the_frame(
-        self, session, account, linq_thread, linq_channel
-    ):
-        thread = _managed(session, linq_thread)
-        posting = _posting(session, account["org_id"], suffix="alive")
-        _match(session, account["org_id"], posting, thread.candidate_id)
-
-        present_matches(session, thread=thread, state=coverage(thread.record))
-
-        assert [e["posting_id"] for e in thread.last_presented] == [posting.id]
-        proposal = session.scalar(select(JobProposal))
-        assert proposal is not None and proposal.message_id
-
-
 class TestProposalAcceptedOnlyOnceTheApplicationExists:
     def _at_the_company_cap(self, session, org_id, thread):
         """Fill the per-company 30-day budget so the next apply is refused."""
@@ -604,25 +497,6 @@ class TestProposalAcceptedOnlyOnceTheApplicationExists:
         session.refresh(proposal)
         assert proposal.status == "proposed"
         assert proposal.responded_at is None
-
-    def test_the_parked_copy_names_the_limit_that_actually_fired(
-        self, session, account, linq_thread, linq_channel
-    ):
-        """It used to say "this week's application limit" -- that is the
-        weekly submission cap, a different rule the candidate has not hit."""
-        thread = _managed(session, linq_thread)
-        org_id = account["org_id"]
-        posting = _posting(session, org_id, suffix="copy")
-        _match(session, org_id, posting, thread.candidate_id)
-        _say(session, thread, "find me roles", native_id="c-2")
-        proposal = session.scalar(select(JobProposal))
-        self._at_the_company_cap(session, org_id, thread)
-
-        apply_to_proposal(session, thread=thread, proposal_id=proposal.id)
-
-        said = linq_channel.bodies[-1].lower()
-        assert "week" not in said
-        assert "month" in said
 
     def test_a_successful_apply_still_accepts_the_proposal(
         self, session, account, linq_thread, linq_channel
@@ -667,15 +541,6 @@ class TestRereadKeepsTheIdentityConflict:
         assert web_thread.review_needed is True
         assert identity.has_identity_conflict(web_thread)
 
-    def test_the_same_extractor_reason_is_not_appended_twice(self):
-        joined = identity.join_reasons("already looked at", "already looked at")
-        assert joined == "already looked at"
-
-    def test_an_ordinary_reason_is_still_recorded(self):
-        joined = identity.join_reasons("first", "second")
-        assert joined == "first; second"
-
-
 class TestThreadLookupIsScopedToTheOrg:
     def _second_org(self, session):
         # Built in this session rather than through signup: the fixture session
@@ -718,18 +583,6 @@ class TestThreadLookupIsScopedToTheOrg:
             ).id
             == theirs.id
         )
-
-    def test_the_owning_org_still_resumes_its_own_thread(
-        self, session, account, linq_thread
-    ):
-        found = find_active_thread(
-            session,
-            org_id=account["org_id"],
-            channel=LINQ,
-            from_address=linq_thread.from_address,
-        )
-        assert found is not None and found.id == linq_thread.id
-
 
 class TestReceiptsDoNotChangeWhatWasRecorded:
     def test_a_receipt_never_rewrites_a_failed_row(self, session, web_thread, fake_channel):

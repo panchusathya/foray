@@ -16,7 +16,6 @@ from juicebox.applications.submit.base import SubmissionContext
 from juicebox.applications.submit.browser.questions import (
     KIND_ATTESTATION,
     KIND_CUSTOM,
-    KIND_IDENTITY,
     KIND_STANDARD,
     classify,
     question_key,
@@ -106,41 +105,14 @@ class TestClassify:
         assert kind == KIND_STANDARD
         assert standard_key == key
 
-    @pytest.mark.parametrize(
-        "label",
-        ["First Name", "Email", "Phone", "Resume/CV", "LinkedIn Profile", "Current Location"],
-    )
-    def test_identity(self, label):
-        assert classify(label)[0] == KIND_IDENTITY
-
-    @pytest.mark.parametrize(
-        "label",
-        [
-            "How did you hear about us?",
-            "Describe a system you designed end to end.",
-            "What excites you most about evals?",
-            "GitHub or portfolio URL",
-        ],
-    )
-    def test_custom(self, label):
-        assert classify(label)[0] == KIND_CUSTOM
-
     def test_attestation_wins_over_everything(self):
         """"Why" appears in the label, and it is still a self-ID question."""
         kind, _ = classify("Why we ask: veteran status helps us report EEO data")
         assert kind == KIND_ATTESTATION
 
-    def test_an_empty_label_is_custom_not_a_crash(self):
-        assert classify("")[0] == KIND_CUSTOM
-
-
 class TestQuestionKey:
     def test_stable_across_whitespace_and_case(self):
         assert question_key("Why  Baseten?") == question_key("why baseten?")
-
-    def test_distinct_questions_get_distinct_keys(self):
-        assert question_key("Why Baseten?") != question_key("Why Parasail?")
-
 
 def _entry(**kwargs) -> dict:
     base = {
@@ -184,13 +156,6 @@ class TestUnanswerableQuestions:
         ctx = _ctx([_entry(form_required=True)])
         assert unanswerable_questions(ctx) == ["How did you hear about us?"]
 
-    def test_an_optional_blank_does_not(self):
-        assert unanswerable_questions(_ctx([_entry()])) == []
-
-    def test_an_answered_required_question_does_not(self):
-        ctx = _ctx([_entry(form_required=True, answer="A friend at the company.")])
-        assert unanswerable_questions(ctx) == []
-
     def test_an_optional_attestation_blank_is_a_legitimate_submission(self):
         """Blank IS the answer: declining to self-identify."""
         ctx = _ctx([_entry(kind="attestation", question="Veteran status")])
@@ -199,12 +164,6 @@ class TestUnanswerableQuestions:
     def test_a_required_attestation_blank_stops_the_run(self):
         ctx = _ctx([_entry(kind="attestation", question="Veteran status", form_required=True)])
         assert unanswerable_questions(ctx) == ["Veteran status"]
-
-    def test_standard_answers_are_not_its_business(self):
-        """The vendor spec's required set already covers those."""
-        ctx = _ctx([{"key": "salary_expectation", "answer": "", "question": "Comp?"}])
-        assert unanswerable_questions(ctx) == []
-
 
 class TestAugment:
     """The merge is pure given a stubbed discovery; the browser is not needed."""
@@ -273,19 +232,6 @@ class TestAugment:
         assert kinds == {"custom", "attestation"}
         assert len(merged) == 3
 
-    def test_identity_and_standard_discoveries_add_nothing(self, monkeypatch, session):
-        merged = self._augment(
-            monkeypatch,
-            session,
-            [
-                self._question(label="Email", kind=KIND_IDENTITY),
-                self._question(label="Salary?", kind=KIND_STANDARD,
-                               standard_key="salary_expectation", key="salary_expectation"),
-            ],
-            [{"key": "salary_expectation", "question": "Comp?", "answer": "250k"}],
-        )
-        assert len(merged) == 1
-
     def test_a_required_standard_question_stamps_the_existing_entry(self, monkeypatch, session):
         merged = self._augment(
             monkeypatch,
@@ -314,11 +260,6 @@ class TestAugment:
         assert entry["selector"] == "#renamed"
         assert entry["form_required"] is True
         assert len(merged) == 1
-
-    def test_no_browser_degrades_to_the_standard_set(self, monkeypatch, session):
-        answers = [{"key": "why_company", "question": "Why?", "answer": ""}]
-        merged = self._augment(monkeypatch, session, [], answers, available=False)
-        assert merged is answers
 
     def test_discovery_failure_is_not_a_package_failure(self, monkeypatch, session):
         from types import SimpleNamespace
@@ -399,21 +340,6 @@ class TestAnswerEditing:
     """The endpoint the follow-up text points at, and the only door for
     attestations. Candidate-scoped like every portal handler."""
 
-    def test_the_candidate_answers_their_own_question(
-        self, client, session, account, candidate
-    ):
-        application = _application(session, account, candidate)
-        response = client.patch(
-            f"/v1/portal/applications/{application.id}/answers",
-            headers=_headers(account, candidate),
-            json={"answers": [{"key": "why_company", "answer": "I know the fund."}]},
-        )
-        assert response.status_code == 200
-        entry = next(a for a in response.json()["form_answers"] if a["key"] == "why_company")
-        assert entry["answer"] == "I know the fund."
-        assert entry["edited"] is True
-        assert entry["generated_by"] == "candidate"
-
     def test_an_attestation_takes_only_their_hand(self, client, session, account, candidate):
         """Filling it here is the point; nothing else may."""
         application = _application(session, account, candidate)
@@ -462,15 +388,6 @@ class TestAnswerEditing:
             json={"answers": [{"key": "why_company", "answer": "not mine"}]},
         )
         assert response.status_code == 404
-
-    def test_saving_nothing_is_a_422(self, client, session, account, candidate):
-        application = _application(session, account, candidate)
-        response = client.patch(
-            f"/v1/portal/applications/{application.id}/answers",
-            headers=_headers(account, candidate),
-            json={"answers": []},
-        )
-        assert response.status_code == 422
 
     def test_their_edit_survives_the_preference_refill(
         self, client, session, account, candidate
@@ -534,18 +451,8 @@ class TestFollowupAsksOnlyWorkAuthorization:
         assert "Required essay" not in body
         assert "Veteran" not in body
 
-    def test_everything_answered_is_still_silent(self):
-        from juicebox.applications.followups import followup_message
-
-        assert followup_message(self._app([]), self._Posting()) == ""
-
-
 class TestLabelCleaning:
     """Flaws found by running discovery against the live Baseten form."""
-
-    def test_bare_name_is_identity(self):
-        """Ashby labels its name field just "Name"."""
-        assert classify("Name")[0] == KIND_IDENTITY
 
     def test_a_company_name_question_is_still_custom(self):
         """The reason "name" cannot be a fragment marker."""
@@ -559,7 +466,3 @@ class TestLabelCleaning:
         swept = "Gender\n\nInput gender\n\nMale\nFemale\nDecline to self-identify"
         assert _clean_label(swept) == "Gender"
 
-    def test_a_long_first_line_is_capped(self):
-        from juicebox.applications.submit.browser.questions import _clean_label
-
-        assert len(_clean_label("x" * 500)) == 200

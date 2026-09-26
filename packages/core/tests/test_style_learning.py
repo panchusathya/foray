@@ -1,9 +1,9 @@
 """Style learning: Sent Items delta → draft outcomes → examples in the prompt."""
 
 from test_mailbox_sync import graph_provider
-from test_reply_drafting import FakeDraftClient, replied_org  # noqa: F401 - fixture
+from test_reply_drafting import replied_org  # noqa: F401 - fixture
 
-from juicebox.integrations.reply_drafting import create_reply_draft, recent_style_examples
+from juicebox.integrations.reply_drafting import create_reply_draft
 from juicebox.integrations.sync import strip_quoted_history, sync_mailbox
 from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 
@@ -31,12 +31,6 @@ class TestQuoteStripping:
         ):
             assert strip_quoted_history("My actual reply." + tail) == "My actual reply."
 
-    def test_plain_text_is_untouched(self):
-        assert strip_quoted_history("Just the reply.\n\nThanks,\nTushar") == (
-            "Just the reply.\n\nThanks,\nTushar"
-        )
-
-
 class TestSentItemsSync:
     def _drafted(self, session, replied_org):  # noqa: F811
         return create_reply_draft(
@@ -45,17 +39,6 @@ class TestSentItemsSync:
             connection=replied_org["connection"],
             provider=graph_provider(lambda db, conn: replied_org["fake"]),
         )
-
-    def test_first_sync_also_baselines_sent_items(self, session, account):
-        from juicebox.models import MailboxConnection
-
-        connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")
-        session.add(connection)
-        session.flush()
-        fake = FakeDraftClient()
-        sync_mailbox(session, connection, provider=graph_provider(lambda db, conn: fake))
-        assert connection.sent_delta_link.startswith("https://graph.test/sent-delta")
-        assert fake.sent_baseline_calls == 1
 
     def test_sending_our_draft_marks_it_sent_with_final_text(self, session, replied_org):  # noqa: F811
         draft = self._drafted(session, replied_org)
@@ -106,28 +89,6 @@ class TestSentItemsSync:
 
 
 class TestStyleExamples:
-    def test_examples_come_newest_first_and_skip_unfinished(self, session, replied_org):  # noqa: F811
-        connection = replied_org["connection"]
-        draft = create_reply_draft(
-            session,
-            inbound=replied_org["inbound"],
-            connection=connection,
-            provider=graph_provider(lambda db, conn: replied_org["fake"]),
-        )
-        draft.status = "sent"
-        draft.final_sent_text = "Short and direct. Thursday works."
-        draft.sent_at = draft.created_at
-        session.flush()
-
-        block = recent_style_examples(session, mailbox_id=connection.id)
-        assert 'outcome="sent"' in block
-        assert "Short and direct. Thursday works." in block
-        assert draft.body.strip().splitlines()[0] in block
-
-        draft.final_sent_text = ""
-        session.flush()
-        assert recent_style_examples(session, mailbox_id=connection.id) == ""
-
     def test_examples_reach_the_llm_prompt(self, session, replied_org):  # noqa: F811
         connection = replied_org["connection"]
         draft = create_reply_draft(

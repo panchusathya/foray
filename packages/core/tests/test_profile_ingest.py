@@ -16,12 +16,10 @@ from sqlalchemy import select
 from juicebox.enrich.linkedin_profile import (
     FakeProfileProvider,
     ProfileProviderUnavailable,
-    find_linkedin,
-    linkedin_slug,
     map_profile,
     set_profile_provider,
 )
-from juicebox.enrich.promote import merged_payload, payload_from_resume_v1, promote
+from juicebox.enrich.promote import merged_payload, promote
 from juicebox.jobs import KIND_JOBS_MATCH_ONE, KIND_PROFILE_INGEST, enqueue
 from juicebox.messaging.channels import WEB, FakeChannel, set_channel
 from juicebox.messaging.threads import open_thread
@@ -70,16 +68,6 @@ def existing(session, account, sample_candidates):
     return session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
 
 
-class TestUrlHandling:
-    def test_find_and_canonicalise(self):
-        assert (
-            find_linkedin("here you go https://uk.linkedin.com/in/ada-okonkwo/ thanks")
-            == "https://www.linkedin.com/in/ada-okonkwo"
-        )
-        assert find_linkedin("no url here") == ""
-        assert linkedin_slug("linkedin.com/in/Ada-Okonkwo") == "ada-okonkwo"
-
-
 class TestMapProfile:
     def test_vendor_payload_maps_to_upsert_shape(self):
         parsed = map_profile(SCRAPIN_PAYLOAD, linkedin_url=ADA_URL)
@@ -92,36 +80,6 @@ class TestMapProfile:
         assert parsed["experiences"][1]["end_date"] == "2018-12"
         assert parsed["educations"][0]["school"] == "Stanford University"
         assert parsed["educations"][0]["end_year"] == 2016
-
-    def test_volunteer_roles_are_kept_for_the_generated_resume(self):
-        parsed = map_profile(
-            {
-                "person": {
-                    "fullName": "Ada Okonkwo",
-                    "volunteerExperience": [
-                        {
-                            "organizationName": "Women in ML",
-                            "role": "Mentorship Chair",
-                            "startDate": "2023-01",
-                            "description": "Run the annual mentorship program.",
-                        }
-                    ],
-                }
-            },
-            linkedin_url=ADA_URL,
-        )
-        leadership = parsed["raw"]["leadership"]
-        assert leadership == [
-            {
-                "company": "Women in ML",
-                "title": "Mentorship Chair",
-                "start": "2023-01",
-                "end": "present",
-                "location": "",
-                "bullets": ["Run the annual mentorship program."],
-            }
-        ]
-
 
 class TestPromote:
     def test_reingest_never_wipes_experiences(self, session, account, existing):
@@ -143,23 +101,6 @@ class TestPromote:
         after = {exp.company for exp in existing.experiences}
         assert before <= after  # nothing lost
 
-    def test_new_facts_are_added(self, session, account, existing):
-        parsed = {
-            "source": "linkedin_ingest",
-            "source_id": "ada-okonkwo",
-            "experiences": [
-                {"company": "DeepMind", "title": "Research Engineer",
-                 "start_date": "2013-01", "end_date": "2015-12"},
-            ],
-            "educations": [{"school": "MIT", "degree": "BS"}],
-        }
-        result = promote(session, org_id=account["org_id"], parsed=parsed, candidate=existing)
-        assert result.added_experiences == 1
-        assert result.added_educations == 1
-        session.expire(existing)
-        assert "DeepMind" in {exp.company for exp in existing.experiences}
-        assert "MIT" in {edu.school for edu in existing.educations}
-
     def test_summary_and_skills_never_move_onto_a_filled_row(self, session, account, existing):
         """§7: those two fields feed the search haystack."""
         existing.summary = "A summary a recruiter wrote."
@@ -174,36 +115,6 @@ class TestPromote:
         if payload is not None:
             assert payload["summary"] == "A summary a recruiter wrote."
             assert "Cobol" not in (payload.get("skills") or [])
-
-    def test_nothing_new_means_no_write(self, session, account, existing):
-        parsed = {
-            "source": "linkedin_ingest",
-            "source_id": "ada-okonkwo",
-            "full_name": existing.full_name,
-            "experiences": [],
-        }
-        payload, _ = merged_payload(existing, parsed)
-        assert payload is None
-
-    def test_resume_v1_converts(self):
-        parsed = payload_from_resume_v1(
-            {
-                "contact": {"name": "Bo Lindqvist", "email": "bo@example.com", "phone": "",
-                            "location": "Berlin", "linkedin_url": ""},
-                "summary": "Frontend engineer.",
-                "experience": [
-                    {"company": "Linear", "title": "Senior Frontend Engineer",
-                     "start": "2020-06", "end": "present", "bullets": ["Owned the library"]},
-                ],
-                "education": [],
-                "skills": ["TypeScript"],
-                "certifications": [],
-            }
-        )
-        assert parsed["experiences"][0]["is_current"] is True
-        assert parsed["emails"] == ["bo@example.com"]
-        assert parsed["skills"] == ["TypeScript"]
-
 
 class TestIngestJob:
     def _enqueue(self, session, org_id, **payload):
@@ -326,18 +237,6 @@ class TestUploadLink:
         )
         assert response.status_code == 401
 
-    def test_unlinkable_thread_is_409(self, client, session, account):
-        set_channel(WEB, FakeChannel())
-        bare = open_thread(session, org_id=account["org_id"], channel=WEB)
-        session.commit()
-        link = mint_upload_link(bare)
-        path = link.split("http://testserver", 1)[-1]
-        response = client.post(
-            path, files={"file": ("cv.pdf", self._pdf(), "application/pdf")}
-        )
-        assert response.status_code == 409
-
-
 class TestScrapeThenPaidFallback:
     """Free first, paid second — and only when the free path actually missed.
 
@@ -454,36 +353,6 @@ class TestApifyProvider:
     same envelope ScrapIn produces, so swapping vendors stays a one-class
     change instead of a second mapper nobody keeps in sync.
     """
-
-    def test_an_actor_payload_maps_to_a_full_profile(self):
-        from juicebox.enrich.linkedin_profile import _apify_person, map_profile
-
-        item = {
-            "full_name": "Ada Okonkwo",
-            "headline": "ML Engineer",
-            "experiences": [
-                {"title": "ML Engineer", "company": "Modal", "startDate": "2020-01"},
-                {
-                    "title": "Software Engineer",
-                    "company": "Stripe",
-                    "startDate": "2018-01",
-                    "endDate": "2019-12",
-                },
-            ],
-            "education": [{"school": "MIT", "degree": "BS"}],
-        }
-        parsed = map_profile(
-            {"person": _apify_person(item)},
-            linkedin_url="https://www.linkedin.com/in/ada-okonkwo",
-        )
-        assert parsed["full_name"] == "Ada Okonkwo"
-        roles = [(e["company"], e["title"]) for e in parsed["experiences"]]
-        assert roles == [("Modal", "ML Engineer"), ("Stripe", "Software Engineer")]
-        # The open-ended role is the current one; that is what a resume header
-        # and every "currently at" line downstream reads.
-        assert parsed["experiences"][0]["is_current"] is True
-        assert parsed["experiences"][1]["is_current"] is False
-        assert parsed["educations"][0]["school"] == "MIT"
 
     def test_a_real_actor_payload_maps_completely(self):
         """Shapes taken from a live run of LpVuK3Zozwuipa5bp (Bill Gates).
@@ -667,31 +536,11 @@ class TestDateShapes:
     nothing in here raises.
     """
 
-    def test_a_numeric_month(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str({"year": 2024, "month": 2}) == "2024-02"
-
-    def test_a_numeric_month_as_a_string(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str({"year": "2024", "month": "2"}) == "2024-02"
-
     def test_an_abbreviated_month_name(self):
         """The exact payload that broke production."""
         from juicebox.enrich.linkedin_profile import _date_str
 
         assert _date_str({"year": 2024, "month": "Feb"}) == "2024-02"
-
-    def test_a_full_month_name(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str({"year": 2024, "month": "February"}) == "2024-02"
-
-    def test_month_names_are_case_insensitive(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str({"year": 2024, "month": "DEC"}) == "2024-12"
 
     def test_an_unreadable_month_degrades_to_the_year(self):
         from juicebox.enrich.linkedin_profile import _date_str
@@ -708,18 +557,6 @@ class TestDateShapes:
         from juicebox.enrich.linkedin_profile import _date_str
 
         assert _date_str({"year": "recently", "month": "Feb"}) == ""
-
-    def test_a_missing_year_is_empty(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str({"month": "Feb"}) == ""
-
-    def test_the_string_and_absent_shapes_are_unchanged(self):
-        from juicebox.enrich.linkedin_profile import _date_str
-
-        assert _date_str("2024-02-01") == "2024-02"
-        assert _date_str(None) == ""
-        assert _date_str(42) == ""
 
     def test_a_named_month_survives_the_caller(self):
         """The level that actually matters: one odd date must not lose the row

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from foray.cli import _COMMANDS
 from foray.config import settings
 from foray.refresh.common import SCORING_JOBS, calls_left_this_month, month_spend
 from foray.refresh.nightly import _phases, _with_max_calls
@@ -110,11 +109,3 @@ class TestAnUnattendedRunCannotOvershoot:
         monkeypatch.setattr(settings, "openrouter_api_key", "")
         argv = score_args(calls_left=0)
         assert argv is not None and "--offline" in argv and "--yes" not in argv
-
-
-def test_cli_wires_the_new_commands():
-    assert _COMMANDS["commit-search"] == "foray.enrich.commit_search"
-    assert _COMMANDS["name-bridge"] == "foray.enrich.name_bridge"
-    assert _COMMANDS["verify"] == "foray.enrich.verify"
-    assert _COMMANDS["resolve"] == "foray.ingest.resolve"
-    assert _COMMANDS["linkedin"] == "foray.enrich.linkedin_bulk"

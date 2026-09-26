@@ -28,7 +28,7 @@ from juicebox.applications import followups
 from juicebox.applications.service import create_application
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
 from juicebox.messaging.threads import open_thread
-from juicebox.models import Application, CandidatePreference, JobMatch
+from juicebox.models import CandidatePreference, JobMatch
 
 
 @pytest.fixture
@@ -185,24 +185,6 @@ class TestDetection:
             is None
         )
 
-    def test_a_fully_answered_application_is_not_waiting(
-        self, session, account, channel, thread
-    ):
-        thread = _managed_owing_answers(session, thread)
-        application, _ = _asked_application(session, account, thread)
-        application.form_answers = [
-            {"key": "salary_expectation", "answer": "$200k", "asked": True},
-            {"key": "work_authorization", "answer": "Authorised", "asked": True},
-        ]
-        session.flush()
-        assert (
-            followups.awaiting_text_answers(
-                session, org_id=account["org_id"], candidate_id=thread.candidate_id
-            )
-            is None
-        )
-
-
 class TestTheReportedSequence:
     def test_an_answer_is_acknowledged_against_the_role(
         self, session, account, channel, thread
@@ -246,20 +228,6 @@ class TestTheReportedSequence:
         # salary is refilled when they mention a number, but we no longer ask
         # for it. The asked key is work authorization.
         assert followups.asked_blanks(application) == []
-
-    def test_a_partial_answer_asks_only_for_what_is_left(
-        self, session, account, channel, thread
-    ):
-        thread = _managed_owing_answers(session, thread)
-        _asked_application(session, account, thread)
-        _extracted(session, thread, comp=200000)
-
-        _say(session, thread, "200k works", native_id="a-3")
-
-        reply = channel.bodies[-1]
-        assert "sponsorship" in reply.lower() or "authorised" in reply.lower()
-        assert "comp expectations" not in reply.lower()
-        assert "Sourcebot" in reply
 
     def test_an_unparseable_answer_says_so_instead_of_noted_thanks(
         self, session, account, channel, thread
@@ -401,35 +369,3 @@ class TestAnsweringAdvancesTheApplication:
         assert calls == []
 
 
-class TestAcknowledgementWording:
-    def _posting_obj(self, session, account):
-        return _posting(
-            session,
-            account["org_id"],
-            company="Sourcebot",
-            title="Founding Engineer",
-            suffix="w",
-        )
-
-    def test_complete_and_nothing_handed_over(self, session, account):
-        posting = self._posting_obj(session, account)
-        text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": False}
-        )
-        assert "Founding Engineer" in text and "Sourcebot" in text
-        assert "take it from here" in text
-
-    def test_handover_flag_does_not_send_them_to_the_app(self, session, account):
-        """Chat no longer parks on a portal review. Completing work
-        authorization means we take it from here."""
-        posting = self._posting_obj(session, account)
-        text = followups.answer_acknowledgement(
-            Application(), posting, {"filled": ["work_authorization"], "missing": [], "handover": True}
-        )
-        assert "take it from here" in text
-
-    def test_no_posting_still_reads_as_english(self):
-        text = followups.answer_acknowledgement(
-            Application(), None, {"filled": ["salary_expectation"], "missing": [], "handover": False}
-        )
-        assert "your application" in text

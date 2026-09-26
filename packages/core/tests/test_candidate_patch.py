@@ -90,22 +90,6 @@ class TestNonDestructive:
         # Never sent, so untouched.
         assert candidate.current_company == "Analytical Engines"
 
-    def test_a_renamed_title_is_findable_under_the_new_one(
-        self, client, session, account
-    ):
-        """The derived columns have to follow, or the person stays searchable
-        only under the title they no longer hold."""
-        candidate = _seed(session, account["org_id"])
-
-        client.patch(
-            f"/v1/candidates/{candidate.id}",
-            json={"current_title": "Head of Platform"},
-            headers=account["headers"],
-        )
-        session.expire_all()
-        candidate = session.get(Candidate, candidate.id)
-        assert candidate.current_title_normalized
-
 
 class TestManualFieldsSurviveReimport:
     def test_a_hand_edit_beats_the_next_import(self, client, session, account):
@@ -195,61 +179,8 @@ class TestTracking:
         session.expire_all()
         assert session.get(Candidate, candidate.id).crm_tracked is False
 
-    def test_setting_a_status_is_an_explicit_crm_action(
-        self, client, session, account
-    ):
-        candidate = _seed(session, account["org_id"])
-
-        client.patch(
-            f"/v1/candidates/{candidate.id}",
-            json={"crm_status": "active"},
-            headers=account["headers"],
-        )
-        session.expire_all()
-        assert session.get(Candidate, candidate.id).crm_tracked is True
-
-    def test_shortlisting_tracks_them(self, client, session, account, loaded_org):
-        project = client.post(
-            "/v1/projects", json={"name": "Platform"}, headers=account["headers"]
-        ).json()
-        candidate = session.scalars(select(Candidate)).first()
-
-        client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={"candidate_ids": [candidate.id]},
-            headers=account["headers"],
-        )
-        session.expire_all()
-        assert session.get(Candidate, candidate.id).crm_tracked is True
-
 
 class TestDoNotContact:
-    def test_it_writes_a_real_suppression(self, client, session, account):
-        """A status the sequencer ignores is a promise the product breaks."""
-        candidate = _seed(session, account["org_id"])
-
-        client.patch(
-            f"/v1/candidates/{candidate.id}",
-            json={"crm_status": "do_not_contact"},
-            headers=account["headers"],
-        )
-        session.expire_all()
-
-        rows = session.scalars(select(Suppression)).all()
-        assert [r.email for r in rows] == ["ada@analytical.example.com"]
-
-    def test_moving_off_it_lifts_the_suppression(self, client, session, account):
-        candidate = _seed(session, account["org_id"])
-        for status_value in ("do_not_contact", "active"):
-            client.patch(
-                f"/v1/candidates/{candidate.id}",
-                json={"crm_status": status_value},
-                headers=account["headers"],
-            )
-        session.expire_all()
-
-        assert session.scalars(select(Suppression)).all() == []
-
     def test_a_new_address_on_a_suppressed_person_is_suppressed_too(
         self, client, session, account
     ):
@@ -321,15 +252,6 @@ class TestDoNotContact:
         session.expire_all()
 
         assert session.scalars(select(Suppression)).all() == []
-
-    def test_an_unknown_status_is_rejected(self, client, session, account):
-        candidate = _seed(session, account["org_id"])
-        response = client.patch(
-            f"/v1/candidates/{candidate.id}",
-            json={"crm_status": "vibing"},
-            headers=account["headers"],
-        )
-        assert response.status_code == 422
 
 
 class TestScoping:

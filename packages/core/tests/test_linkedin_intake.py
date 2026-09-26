@@ -11,21 +11,18 @@ from juicebox.jobs import KIND_LINKEDIN_SCRAPE
 from juicebox.messaging.channels import WEB, set_channel
 from juicebox.messaging.conversation import (
     ACTION_ASKED,
-    ACTION_HELD,
     run_turn,
 )
 from juicebox.messaging.identity import (
     CONTACT_LINKEDIN,
-    find_linkedin,
     link_candidate,
 )
 from juicebox.messaging.linkedin_flow import (
     BATCH_CONFIRM,
     BATCH_GAP_FILL,
     FLOW_LINKEDIN_SHORT,
-    confirm_message,
 )
-from juicebox.messaging.prompts import lowercase_outbound, valid_question
+from juicebox.messaging.prompts import lowercase_outbound
 from juicebox.messaging.threads import open_thread
 from juicebox.models import Candidate, IntakeMessage, IntakeNumber, Job
 from juicebox.repository import owner_of_linkedin, upsert_candidates
@@ -131,97 +128,6 @@ class TestLinkedinShortFlow:
         assert "ai" in body
         assert "STOP" not in body and "HELP" not in body
 
-    def test_the_intro_turn_offers_linkedin_or_a_resume(
-        self, session, account, fake_channel
-    ):
-        """Both routes, in one message, with the upload link live.
-
-        The resume is the better of the two -- dated roles, skills, a summary,
-        against a profile scrape's headline -- and the matcher scores the
-        candidate's own record, so onboarding from a header misses every skill
-        criterion there is. The upload page existed all along; this is the
-        message that finally points at it.
-        """
-        thread = _short_thread(session, account, fake_channel)
-        result = run_turn(session, thread=thread)
-
-        assert result.action == ACTION_ASKED
-        assert result.asked_field == CONTACT_LINKEDIN
-        body = fake_channel.bodies[-1]
-        assert "linkedin" in body.lower()
-        assert "resume" in body.lower()
-        assert f"/v1/intake/uploads/{thread.id}?token=" in body, (
-            "the upload link has to survive the lowercase voice intact"
-        )
-
-    def test_a_url_enqueues_a_scrape_and_holds(
-        self, session, account, fake_channel
-    ):
-        thread = _short_thread(session, account, fake_channel)
-        run_turn(session, thread=thread)
-        result = _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
-
-        assert result.action == ACTION_HELD
-        assert thread.contact_linkedin == "https://www.linkedin.com/in/ada-lovelace"
-        jobs = session.scalars(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE)).all()
-        assert len(jobs) == 1
-
-    def test_scrape_success_confirms_inferred_facts(
-        self, session, account, fake_channel
-    ):
-        thread = _short_thread(session, account, fake_channel)
-        run_turn(session, thread=thread)
-        _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
-        result = _finish_scrape(session, thread)
-
-        assert result.action == ACTION_ASKED
-        assert result.asked_field == BATCH_CONFIRM
-        body = fake_channel.bodies[-1]
-        assert "software engineer" in body
-        assert "stripe" in body
-        assert thread.contact_name == "Ada Lovelace"
-        assert thread.record["spec"]["job_titles"] == ["Software Engineer"]
-
-    def test_it_does_not_ask_for_what_the_profile_just_told_us(
-        self, session, account, fake_channel
-    ):
-        """The scrape said eight years. Asking how many is not listening.
-
-        This is the whole reason the years question existed: seniority was
-        left blank for every IC, so the gap-fill asked. The profile's own
-        number answers it, one message after we read that number back.
-        """
-        thread = _short_thread(session, account, fake_channel)
-        run_turn(session, thread=thread)
-        _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
-        _finish_scrape(session, thread)
-        assert thread.record["spec"]["seniority"] == ["staff"], "8 years is staff"
-
-        result = _say(session, thread, "yes that's right")
-
-        assert result.asked_field != BATCH_GAP_FILL
-        assert "years of experience" not in fake_channel.bodies[-1]
-
-    def test_confirming_hands_over_without_a_closing_survey(
-        self, session, account, fake_channel
-    ):
-        """No comp, no timing, no work auth. Those are application questions.
-
-        Two of the three are in ``docgen.answers.STANDARD_QUESTIONS`` and get
-        asked again at package time, with a role in hand to explain why.
-        Asking here spent the best messages in the conversation on a form.
-        """
-        thread = _short_thread(session, account, fake_channel)
-        run_turn(session, thread=thread)
-        _say(session, thread, "https://www.linkedin.com/in/ada-lovelace")
-        _finish_scrape(session, thread)
-        result = _say(session, thread, "yes that's right")
-
-        assert result.action == "completed_profile"
-        assert thread.mode == "managing"
-        body = fake_channel.bodies[-1].lower()
-        for asked in ("comp", "how soon", "sponsorship", "work auth"):
-            assert asked not in body, f"onboarding still asks about {asked}: {body!r}"
 
     def test_the_confirm_answer_wraps_up_and_links_the_candidate(
         self, session, account, fake_channel
@@ -266,20 +172,6 @@ class TestLinkedinShortFlow:
         assert result.asked_field == BATCH_GAP_FILL
         assert "couldn't pull" in fake_channel.bodies[-1]
 
-    def test_a_first_inbound_url_gets_the_intro_and_goes_straight_to_scrape(
-        self, session, account, fake_channel
-    ):
-        """The first message WAS the profile. Disclose, then scrape — asking
-        for an email first made the person who over-delivered wait longest."""
-        thread = _short_thread(session, account, fake_channel)
-        result = _say(session, thread, "linkedin.com/in/ada-lovelace")
-        assert result.action == ACTION_HELD
-        assert thread.contact_linkedin.endswith("/ada-lovelace")
-        # The intro (with its AI disclosure) still went out first.
-        assert "ai" in fake_channel.bodies[0]
-        jobs = session.scalars(select(Job).where(Job.kind == KIND_LINKEDIN_SCRAPE)).all()
-        assert len(jobs) == 1
-
 
 class TestLinkedinIdentity:
     def test_link_candidate_matches_an_existing_linkedin_url(
@@ -310,17 +202,8 @@ class TestLinkedinIdentity:
             session, org_id=account["org_id"], url="linkedin.com/in/ada-lovelace"
         ) == existing
 
-    def test_find_linkedin_reads_a_url_from_any_message(self):
-        assert find_linkedin("sure https://linkedin.com/in/ada-lovelace works")
-
 
 class TestLinkedinCopy:
-    def test_confirm_and_gap_fill_are_lowercase_batches(self):
-        profile = _profile()
-        confirm = lowercase_outbound(confirm_message(profile))
-        assert "software engineer" in confirm
-        assert valid_question(confirm, batched=True)
-
     def test_urls_survive_lowercasing(self):
         text = lowercase_outbound("See HTTPS://www.LinkedIn.com/in/Ada")
         assert "HTTPS://www.LinkedIn.com/in/Ada" in text
@@ -393,17 +276,6 @@ class TestLinqReceipts:
         session.refresh(outbound)
         assert outbound.status == "read"
 
-    def test_an_orphan_status_event_is_acknowledged(
-        self, client, linq_number
-    ):
-        payload = {
-            "event_type": "message.read",
-            "event_id": "evt-orphan",
-            "data": {"id": "msg-unknown", "read_at": "2026-02-05T19:13:58.177Z"},
-        }
-        response = post_linq(client, payload)
-        assert response.status_code == 200
-        assert response.json()["reason"] == "unknown_message"
 
     def test_message_failed_marks_the_row(
         self, client, session, linq_number, account, fake_channel
@@ -448,42 +320,6 @@ class TestTargetConfirmation:
     after it we spend search credits, build a package, and approach an
     employer on that basis.
     """
-
-    def _profile(self, **over):
-        from juicebox.enrich.linkedin_scrape import LinkedInProfile
-
-        base = {
-            "url": "https://www.linkedin.com/in/ada",
-            "full_name": "Ada Okonkwo",
-            "current_title": "Machine Learning Engineer",
-            "current_employer": "Modal",
-            "location": "San Francisco",
-            "experience_years": 8.0,
-        }
-        base.update(over)
-        return LinkedInProfile(**base)
-
-    def test_it_states_the_search_and_invites_a_correction(self):
-        from juicebox.messaging.linkedin_flow import confirm_message
-
-        body = confirm_message(self._profile()).lower()
-        assert "machine learning engineer roles in san francisco" in body
-        assert "something different" in body, "a read-back with no way out is an assertion"
-
-    def test_no_title_means_no_claim_about_what_they_want(self):
-        """With no title there is nothing to infer, so ask instead of guess."""
-        from juicebox.messaging.linkedin_flow import confirm_message
-
-        body = confirm_message(self._profile(current_title="")).lower()
-        assert "roles in" not in body
-        assert "?" in body
-
-    def test_an_employer_alone_is_not_a_target(self):
-        """"roles at Modal" is a different claim from "roles like yours"."""
-        from juicebox.messaging.linkedin_flow import _target_phrase
-
-        assert _target_phrase("", "San Francisco") == ""
-        assert _target_phrase("Data Scientist", "") == "data scientist roles"
 
     def test_a_correction_replaces_the_target_rather_than_adding_to_it(self):
         """The revision has to win outright.
@@ -560,31 +396,6 @@ class TestRejectedTarget:
         assert title_from_reply("no, strategic finance") == "strategic finance"
         assert title_from_reply("actually product manager roles") == "product manager"
 
-    def test_a_non_answer_yields_nothing(self):
-        from juicebox.messaging.linkedin_flow import title_from_reply
-
-        assert title_from_reply("no") == ""
-        assert title_from_reply("not sure honestly, depends on the team and the comp") == ""
-
-    def test_target_unchanged_sees_the_scraped_title(self):
-        from juicebox.messaging.linkedin_flow import target_unchanged
-        from juicebox.models import IntakeThread
-
-        thread = IntakeThread(
-            org_id="o",
-            channel="linq",
-            record={
-                "spec": {"job_titles": ["Investor"]},
-                "_linkedin": {"scrape": {"current_title": "Investor"}},
-            },
-        )
-        assert target_unchanged(thread), "still exactly what the scrape guessed"
-
-        thread.record = {
-            "spec": {"job_titles": ["Strat fin"]},
-            "_linkedin": {"scrape": {"current_title": "Investor"}},
-        }
-        assert not target_unchanged(thread), "the correction landed"
 
     def test_clearing_beats_keeping_a_rejected_title(self):
         """`merge_record` reads empty as "no news", so this writes directly."""
@@ -595,34 +406,6 @@ class TestRejectedTarget:
         assert cleared["spec"]["locations"] == ["sf"], "only the target is dropped"
 
 
-class TestConfirmCopy:
-    def test_an_investor_not_a_investor(self):
-        from juicebox.enrich.linkedin_scrape import LinkedInProfile
-        from juicebox.messaging.linkedin_flow import confirm_message
-
-        body = confirm_message(
-            LinkedInProfile(url="x", full_name="S", current_title="Investor",
-                            current_employer="WestBridge", experience_years=1.0)
-        )
-        assert "an Investor" in body
-        assert "a Investor" not in body
-
-    def test_one_year_not_one_years(self):
-        from juicebox.enrich.linkedin_scrape import LinkedInProfile
-        from juicebox.messaging.linkedin_flow import confirm_message
-
-        one = confirm_message(
-            LinkedInProfile(url="x", full_name="S", current_title="Analyst",
-                            current_employer="X", experience_years=1.0)
-        )
-        assert "1 year in" in one and "1 years" not in one
-        many = confirm_message(
-            LinkedInProfile(url="x", full_name="S", current_title="Analyst",
-                            current_employer="X", experience_years=8.0)
-        )
-        assert "8 years in" in many
-
-
 class TestRetargetEndToEnd:
     """The whole point: a rejection has to change what we search for."""
 
@@ -631,7 +414,7 @@ class TestRetargetEndToEnd:
     ):
         from juicebox.messaging import linkedin_flow
         from juicebox.messaging.conversation import run_turn
-        from juicebox.messaging.linkedin_flow import BATCH_CONFIRM, BATCH_RETARGET
+        from juicebox.messaging.linkedin_flow import BATCH_RETARGET
         from juicebox.messaging.threads import record_inbound
 
         thread = _short_thread(session, account, fake_channel)

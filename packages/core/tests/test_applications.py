@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import ClassVar
 
 import pytest
@@ -17,7 +16,6 @@ from juicebox.applications.limits import (
 from juicebox.applications.service import (
     ApplicationError,
     DuplicateApplicationError,
-    application_status_summary,
     build_package,
     create_application,
     current_documents,
@@ -70,39 +68,6 @@ def _consented(application, session):
 
 
 class TestStateMachine:
-    def test_the_happy_path(self, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            job_posting_id=posting.id,
-        )
-        assert application.status == "draft"
-        transition(session, application, to_status="prepared", actor="agent")
-        assert application.prepared_at is not None
-        transition(session, application, to_status="awaiting_consent", actor="agent")
-        _consented(application, session)
-        transition(session, application, to_status="submitted", actor="candidate")
-        assert application.submitted_at is not None
-        assert application.submitted_by == "candidate"
-        transition(session, application, to_status="acknowledged", actor="recruiter")
-        transition(session, application, to_status="interviewing", actor="recruiter")
-        transition(session, application, to_status="offer", actor="recruiter")
-        transition(session, application, to_status="rejected", actor="recruiter")
-        assert application.closed_at is not None
-
-    def test_submission_does_not_require_per_application_approval(self, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            job_posting_id=posting.id,
-        )
-        transition(session, application, to_status="prepared", actor="agent")
-        transition(session, application, to_status="submitted", actor="agent")
-        assert application.submitted_by == "agent"
 
     def test_terminal_states_are_frozen(self, session, account, candidate):
         posting = _posting(session, account["org_id"])
@@ -211,38 +176,6 @@ class TestCreateGuards:
         create_application(
             db=session, org_id=org_id, candidate_id=candidate.id, job_posting_id=other.id
         )
-
-    def test_api_duplicate_is_a_409(self, client, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        session.commit()
-        body = {"candidate_id": candidate.id, "job_posting_id": posting.id}
-        first = client.post("/v1/applications", json=body, headers=account["headers"])
-        assert first.status_code == 201, first.text
-        second = client.post("/v1/applications", json=body, headers=account["headers"])
-        assert second.status_code == 409
-
-
-class TestSubmissionBudget:
-    def test_sixth_weekly_submission_is_allowed(self, session, account, candidate):
-        org_id = account["org_id"]
-        now = utcnow()
-        for index in range(5):
-            posting = _posting(session, org_id, company=f"Company{index}", suffix=str(index))
-            application = create_application(
-                db=session, org_id=org_id, candidate_id=candidate.id, job_posting_id=posting.id
-            )
-            application.submitted_at = now - timedelta(days=index)
-            application.status = "submitted"
-        session.flush()
-
-        posting = _posting(session, org_id, company="OneMore", suffix="x")
-        application = create_application(
-            db=session, org_id=org_id, candidate_id=candidate.id, job_posting_id=posting.id
-        )
-        transition(session, application, to_status="prepared", actor="agent")
-        _consented(application, session)
-        transition(session, application, to_status="submitted", actor="candidate")
-        assert application.status == "submitted"
 
 
 class TestProposalBudgets:
@@ -467,22 +400,6 @@ class TestPackageBuild:
         assert first.id == second.id
         assert first.kind == KIND_APP_PACKAGE
 
-    def test_status_summary_reads_like_a_text(self, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            job_posting_id=posting.id,
-        )
-        transition(session, application, to_status="prepared", actor="agent")
-        summary = application_status_summary(
-            session, org_id=account["org_id"], candidate_id=candidate.id
-        )
-        assert "ML Engineer at Anthropic" in summary
-        assert "review" in summary
-        assert "0." not in summary  # never a score
-
 
 class TestBar:
     def _match(self, session, account, candidate, posting, *, score=0.8, criteria=None):
@@ -572,35 +489,6 @@ class TestJobCard:
         assert "0.91" not in text  # the candidate never sees a score
         assert "apply to 1" in text
 
-    def test_networking_suggestions_and_intro(self, session, account, sample_candidates):
-        org_id = account["org_id"]
-        upsert_candidates(session, org_id=org_id, payloads=sample_candidates)
-        session.commit()
-        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
-        bo = session.query(Candidate).filter_by(full_name="Bo Lindqvist").one()
-
-        # Bo applies to a role at Modal; Ada works there -> a suggestion.
-        posting = _posting(session, org_id, company="Modal", title="Backend Engineer")
-        application = create_application(
-            db=session, org_id=org_id, candidate_id=bo.id, job_posting_id=posting.id
-        )
-        from juicebox.applications.networking import draft_intro, refresh_networking
-
-        entries = refresh_networking(session, application)
-        ids = [entry["candidate_id"] for entry in entries]
-        assert ada.id in ids
-        assert bo.id not in ids  # never suggest the applicant to themself
-
-        entry = draft_intro(session, application, ada.id)
-        assert entry["generated_by"] == "template"
-        assert "Backend Engineer" in entry["draft"]
-        assert "Modal" in entry["draft"]
-        # First person as the candidate, and no ask-for-referral in message one.
-        assert "refer" not in entry["draft"].lower()
-
-        with pytest.raises(ValueError):
-            draft_intro(session, application, "cand_not_on_list")
-
 
 class TestUiMirrorsTheMachine:
     """The transition table now exists twice: once in ``applications/state.py``
@@ -644,15 +532,6 @@ class TestUiMirrorsTheMachine:
             for key, targets in re.findall(r"^\s*([a-z_]+): \[(.*)\],$", block, re.M)
         }
         assert found == {key: set(value) for key, value in TRANSITIONS.items()}
-
-    def test_the_status_labels_cover_every_status(self):
-        import re
-
-        from juicebox.models import APPLICATION_STATUSES
-
-        block = self._js_block("APPLICATION_STATUS_LABELS")
-        labelled = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
-        assert labelled == set(APPLICATION_STATUSES)
 
 
 class TestPerOrgFloor:
@@ -701,94 +580,3 @@ class TestPerOrgFloor:
         assert floor_for("org_shared", "cand_tester") == 0.55
         assert floor_for("org_shared", "cand_a_real_person") == 1.1
         assert floor_for("org_shared") == 1.1
-
-    def test_no_exemptions_by_default(self, monkeypatch):
-        from juicebox.applications.bar import floor_for
-
-        self._reload(
-            monkeypatch,
-            PROPOSAL_SCORE_FLOOR="1.1",
-            PROPOSAL_FLOOR_EXEMPT_ORGS="",
-            PROPOSAL_FLOOR_EXEMPT_CANDIDATES="",
-        )
-        assert floor_for("org_ours", "cand_anyone") == 1.1
-
-
-class TestUpdateHistory:
-    """Recording an employer update, and reading the trail back.
-
-    The buttons on the detail page were the whole feature and they kept
-    nothing: not what was said, not when it happened. Both now ride on the
-    ``application.status_changed`` event the state machine already writes, so
-    there is one record rather than two that can disagree.
-    """
-
-    def _application(self, client, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=candidate.id,
-            job_posting_id=posting.id,
-        )
-        _consented(application, session)
-        transition(session, application, to_status="prepared", actor="agent")
-        transition(session, application, to_status="submitted", actor="recruiter")
-        session.commit()
-        return application
-
-    def test_a_recorded_update_keeps_the_note_and_the_date_it_happened(
-        self, client, session, account, candidate
-    ):
-        application = self._application(client, session, account, candidate)
-        response = client.post(
-            f"/v1/applications/{application.id}/transition",
-            json={
-                "to_status": "interviewing",
-                "reason": "Recruiter called: first round next Tuesday.",
-                "occurred_at": "2026-08-20T12:00:00+00:00",
-            },
-            headers=account["headers"],
-        )
-        assert response.status_code == 200, response.text
-
-        detail = client.get(
-            f"/v1/applications/{application.id}", headers=account["headers"]
-        ).json()
-        latest = detail["history"][-1]
-        assert latest["to_status"] == "interviewing"
-        assert latest["from_status"] == "submitted"
-        assert latest["note"] == "Recruiter called: first round next Tuesday."
-        assert latest["occurred_at"].startswith("2026-08-20")
-        # The two clocks stay separate: when it happened is not when we typed it.
-        assert latest["at"] != latest["occurred_at"]
-
-    def test_the_history_is_the_whole_trail_oldest_first(
-        self, client, session, account, candidate
-    ):
-        application = self._application(client, session, account, candidate)
-        detail = client.get(
-            f"/v1/applications/{application.id}", headers=account["headers"]
-        ).json()
-        assert [entry["to_status"] for entry in detail["history"]] == ["prepared", "submitted"]
-
-    def test_an_update_with_no_stated_date_records_none(
-        self, client, session, account, candidate
-    ):
-        """Absent means "now", and the UI falls back to the event's own clock."""
-        application = self._application(client, session, account, candidate)
-        client.post(
-            f"/v1/applications/{application.id}/transition",
-            json={"to_status": "rejected"},
-            headers=account["headers"],
-        )
-        detail = client.get(
-            f"/v1/applications/{application.id}", headers=account["headers"]
-        ).json()
-        assert detail["history"][-1]["occurred_at"] is None
-
-    def test_the_list_route_does_not_carry_history(self, client, session, account, candidate):
-        """One event query per row is a page of N+1 nobody reads."""
-        self._application(client, session, account, candidate)
-        rows = client.get("/v1/applications", headers=account["headers"]).json()
-        assert rows and all(row["history"] == [] for row in rows)

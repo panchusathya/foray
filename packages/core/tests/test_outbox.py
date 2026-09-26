@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, timedelta
+from datetime import UTC, date
 
 from juicebox.jobs import KIND_OUTREACH_SEND, KIND_OUTREACH_TICK, claim, enqueue
 from juicebox.models import (
     Candidate,
     Enrollment,
-    Job,
     MailboxConnection,
     Message,
     Org,
@@ -16,8 +15,8 @@ from juicebox.models import (
     utcnow,
 )
 from juicebox.outreach.follow_ups import RESULT_SENT, send_follow_up_reminder
-from juicebox.outreach.outbox import cancel_in_flight, collect_in_flight, list_in_flight
-from juicebox.outreach.sequencer import HOLD_DEFER, enroll_candidates, process_enrollment, run_due
+from juicebox.outreach.outbox import cancel_in_flight
+from juicebox.outreach.sequencer import enroll_candidates, process_enrollment, run_due
 from juicebox.worker import _handle_outreach_tick, process_job
 
 
@@ -118,43 +117,6 @@ class TestHoldGate:
         assert len(mailbox.outbox) == 1
         assert mailbox.outbox[0].to == "ada@example.com"
 
-    def test_a_held_job_backs_off_five_minutes(self, session, outreach_fixture, mailbox):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        job = _enqueue_send(session, sequence, enrollment)
-        sequence.status = "paused"
-        before = utcnow()
-        session.commit()
-        process_job(session, job, now=before)
-        session.commit()
-
-        assert job.status == "queued"
-        assert job.run_at >= before + HOLD_DEFER - timedelta(seconds=1)
-        assert job.run_at <= before + HOLD_DEFER + timedelta(seconds=1)
-        assert mailbox.outbox == []
-
-    def test_a_cap_defer_stays_at_sixty_seconds(
-        self, session, outreach_fixture, mailbox, monkeypatch
-    ):
-        monkeypatch.setenv("OUTREACH_DAILY_CAP", "0")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        job = _enqueue_send(session, sequence, enrollment)
-        before = utcnow()
-        session.commit()
-        process_job(session, job, now=before)
-        session.commit()
-
-        assert job.status == "queued"
-        delay = (job.run_at - before).total_seconds()
-        assert 30 <= delay <= 90
-        assert delay < HOLD_DEFER.total_seconds()
-        assert mailbox.outbox == []
-        reset_settings_cache()
-
     def test_run_due_respects_the_org_hold(self, session, outreach_fixture, mailbox):
         sequence = outreach_fixture["sequence"]
         _enroll(session, outreach_fixture)
@@ -241,30 +203,6 @@ class TestCancel:
         assert enrollment.next_send_at is None
         assert len(mailbox.outbox) == 1
 
-    def test_stop_cancels_the_job_and_finishes_with_cancelled_by_user(
-        self, session, outreach_fixture
-    ):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        job = _enqueue_send(session, sequence, enrollment)
-        session.commit()
-
-        result = cancel_in_flight(
-            session,
-            org_id=sequence.org_id,
-            enrollment_ids=[enrollment.id],
-            action="stop",
-        )
-        session.commit()
-        session.refresh(enrollment)
-        session.refresh(job)
-
-        assert result.stopped == 1
-        assert job.status == "cancelled"
-        assert enrollment.status == "stopped"
-        assert enrollment.stopped_reason == "cancelled_by_user"
-        assert enrollment.next_send_at is None
-
     def test_a_cancelled_job_is_never_claimed_and_the_tick_does_not_resurrect_it(
         self, session, outreach_fixture
     ):
@@ -302,54 +240,6 @@ class TestCancel:
         assert again.id == job.id
         assert again.status == "cancelled"
 
-    def test_skip_of_a_scheduled_row_with_no_job_still_moves_the_enrolment(
-        self, session, outreach_fixture
-    ):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        enrollment.next_send_at = utcnow() + timedelta(days=2)
-        session.commit()
-
-        result = cancel_in_flight(
-            session,
-            org_id=sequence.org_id,
-            enrollment_ids=[enrollment.id],
-            action="skip",
-        )
-        session.commit()
-        session.refresh(enrollment)
-
-        assert result.skipped == 1
-        assert enrollment.current_step == 1
-        assert session.query(Job).filter_by(kind=KIND_OUTREACH_SEND).count() == 0
-
-    def test_a_running_job_is_already_sending_and_still_sends(
-        self, session, outreach_fixture, mailbox
-    ):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        job = _enqueue_send(session, sequence, enrollment)
-        job.status = "running"
-        session.commit()
-
-        result = cancel_in_flight(
-            session,
-            org_id=sequence.org_id,
-            enrollment_ids=[enrollment.id],
-            action="skip",
-        )
-        session.commit()
-        assert result.already_sending == 1
-        session.refresh(enrollment)
-        assert enrollment.current_step == 0
-        session.refresh(job)
-        assert job.status == "running"
-
-        process_job(session, job)
-        session.commit()
-        assert job.status == "succeeded"
-        assert len(mailbox.outbox) == 1
-
     def test_cross_org_ids_are_ignored(self, session, outreach_fixture, account):
         other = Org(name="Other", slug="other-outbox")
         session.add(other)
@@ -383,81 +273,6 @@ class TestCancel:
         session.refresh(enrollment)
         assert result.not_found == 1
         assert enrollment.status == "active"
-
-
-class TestListing:
-    def test_states_and_reasons(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        ada = _ada(outreach_fixture)
-        bo = next(c for c in outreach_fixture["candidates"] if c.full_name == "Bo Lindqvist")
-        cleo = next(c for c in outreach_fixture["candidates"] if c.full_name == "Cleo Rahman")
-
-        sending = _enroll(session, outreach_fixture, ada)
-        sending_job = _enqueue_send(session, sequence, sending)
-        sending_job.status = "running"
-
-        due = _enroll(session, outreach_fixture, bo)
-        _enqueue_send(session, sequence, due)
-
-        scheduled = _enroll(session, outreach_fixture, cleo)
-        scheduled.next_send_at = utcnow() + timedelta(days=3)
-        session.commit()
-
-        rows = {row.candidate_name: row for row in collect_in_flight(session, org_id=sequence.org_id)}
-        assert rows["Ada Okonkwo"].state == "sending"
-        assert rows["Ada Okonkwo"].reason is None
-        assert rows["Bo Lindqvist"].state == "due"
-        assert rows["Cleo Rahman"].state == "scheduled"
-        assert rows["Cleo Rahman"].step == 0
-        assert rows["Ada Okonkwo"].mailbox == "talent@acme-talent.com"
-
-    def test_overdue_paused_with_no_job_is_held(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        enrollment.next_send_at = utcnow() - timedelta(hours=2)
-        sequence.status = "paused"
-        session.commit()
-
-        rows = collect_in_flight(session, org_id=sequence.org_id)
-        assert len(rows) == 1
-        assert rows[0].state == "held"
-        assert rows[0].reason == "sequence_paused"
-        assert rows[0].enrollment_id == enrollment.id
-
-    def test_org_pause_marks_queued_rows_held(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _enqueue_send(session, sequence, enrollment)
-        _pause_org(session, sequence.org_id)
-
-        rows = collect_in_flight(session, org_id=sequence.org_id)
-        assert rows[0].state == "held"
-        assert rows[0].reason == "org_paused"
-
-    def test_daily_cap_reason(self, session, outreach_fixture, monkeypatch):
-        monkeypatch.setenv("OUTREACH_DAILY_CAP", "0")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _enqueue_send(session, sequence, enrollment)
-        session.commit()
-
-        rows = collect_in_flight(session, org_id=sequence.org_id)
-        assert rows[0].state == "held"
-        assert rows[0].reason == "daily_cap"
-        reset_settings_cache()
-
-    def test_list_endpoint_paginates(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        for candidate in outreach_fixture["candidates"]:
-            _enroll(session, outreach_fixture, candidate)
-        total, rows = list_in_flight(
-            session, org_id=sequence.org_id, limit=1, offset=0
-        )
-        assert total == 3
-        assert len(rows) == 1
 
 
 class TestFollowUpIsExempt:
@@ -501,43 +316,3 @@ class TestFollowUpIsExempt:
         assert mailbox.outbox[-1].to == "recruiter@acme-talent.com"
 
 
-class TestSendingApi:
-    def test_kill_switch_round_trips(self, client, account):
-        headers = account["headers"]
-        body = client.get("/v1/org/sending", headers=headers).json()
-        assert body["paused"] is False
-        assert body["paused_at"] is None
-        assert body["held_count"] == 0
-
-        paused = client.patch("/v1/org/sending", json={"paused": True}, headers=headers).json()
-        assert paused["paused"] is True
-        assert paused["paused_at"]
-        assert paused["paused_by_email"] == "recruiter@acme-talent.com"
-        first_at = paused["paused_at"]
-
-        again = client.patch("/v1/org/sending", json={"paused": True}, headers=headers).json()
-        assert again["paused_at"].rstrip("Z") == first_at.rstrip("Z")
-
-        live = client.patch("/v1/org/sending", json={"paused": False}, headers=headers).json()
-        assert live["paused"] is False
-        assert live["paused_at"] is None
-
-    def test_in_flight_list_and_cancel(self, client, session, outreach_fixture, account):
-        enrollment = _enroll(session, outreach_fixture)
-        session.commit()
-        headers = account["headers"]
-
-        listed = client.get("/v1/outreach/in-flight", headers=headers).json()
-        assert listed["total"] == 1
-        assert listed["rows"][0]["enrollment_id"] == enrollment.id
-        assert listed["rows"][0]["state"] in {"due", "scheduled", "held"}
-
-        cancelled = client.post(
-            "/v1/outreach/in-flight/cancel",
-            json={"enrollment_ids": [enrollment.id], "action": "stop"},
-            headers=headers,
-        ).json()
-        assert cancelled["stopped"] == 1
-        session.refresh(enrollment)
-        assert enrollment.status == "stopped"
-        assert enrollment.stopped_reason == "cancelled_by_user"

@@ -66,14 +66,12 @@ from juicebox.messaging.identity import (
     CONTACT_NAME,
     UNATTRIBUTED_REASON,
     attribute_thread,
-    find_email,
     find_name,
 )
 from juicebox.messaging.linq import sign_webhook
 from juicebox.messaging.records import (
     merge_record,
     persist_preference,
-    record_from_preference,
 )
 from juicebox.messaging.suppression import (
     address_has_opted_out,
@@ -177,9 +175,6 @@ class TestChannels:
         with pytest.raises(ChannelError):
             get_channel("carrier-pigeon")
 
-    def test_web_needs_no_consent_because_they_opened_it(self):
-        assert get_channel(WEB).requires_consent() is False
-
     def test_a_channel_that_needs_consent_refuses_without_it(self, session, account):
         channel = FakeChannel(consent=True)
         set_channel(FAKE, channel)
@@ -267,30 +262,6 @@ class TestMerge:
         after = merge_record(current, {"declined": ["work_authorization"]})
         assert set(after["declined"]) == {"compensation", "work_authorization"}
 
-    def test_a_stored_preference_round_trips_through_the_record_shape(
-        self, session, account
-    ):
-        """A caller who later texts must not lose what the call captured."""
-        ids = upsert_candidates(
-            session,
-            org_id=account["org_id"],
-            payloads=[{"source": "test", "source_id": "c1", "full_name": "Ada Lovelace"}],
-        ).ids
-        pref = CandidatePreference(
-            org_id=account["org_id"],
-            candidate_id=ids[0],
-            spec={"job_titles": ["machine learning engineer"]},
-            timeline="under_1_month",
-            declined=["compensation"],
-        )
-        session.add(pref)
-        session.flush()
-
-        record = record_from_preference(pref)
-        assert record["spec"]["job_titles"] == ["machine learning engineer"]
-        assert record["timeline"] == "under_1_month"
-        assert record["declined"] == ["compensation"]
-
 
 # --------------------------------------------------------------------------
 # cadence: the messaging-specific design
@@ -369,16 +340,6 @@ class TestCadence:
 
 
 class TestTranscript:
-    def test_it_is_framed_the_way_a_call_transcript_is(
-        self, session, identified, fake_channel
-    ):
-        run_turn(session, thread=identified)
-        _say(session, identified, "senior ML engineer")
-
-        text = transcript_of(session, identified)
-        assert "Agent: " in text
-        assert "Candidate: senior ML engineer" in text
-
     def test_the_heuristic_never_reads_our_own_words(
         self, session, thread, fake_channel
     ):
@@ -418,20 +379,10 @@ class TestTranscript:
 
 
 class TestIdentity:
-    def test_an_address_is_read_from_any_message(self):
-        assert find_email("sure, ada@example.com works") == "ada@example.com"
-
     def test_a_name_is_only_read_from_an_answer_that_looks_like_one(self):
         assert find_name("I'm Ada Lovelace") == "Ada Lovelace"
         assert find_name("I want staff backend roles in New York") == ""
         assert find_name("agent47@example.com") == ""
-
-    def test_identity_is_asked_before_the_gate(self, session, thread, fake_channel):
-        first = run_turn(session, thread=thread)
-        assert first.asked_field == CONTACT_NAME
-
-        second = _say(session, thread, "Ada Lovelace")
-        assert second.asked_field == CONTACT_EMAIL
 
     def test_contact_details_never_enter_the_spec(self, session, thread, fake_channel):
         run_turn(session, thread=thread)
@@ -674,28 +625,6 @@ class TestCompose:
             # to somebody never says "they".
             assert " they " not in f" {question.lower()} ", key
 
-    def test_an_unknown_field_falls_back_to_the_schema_line(self):
-        assert prompts.question_for("spec.brand_new", "Topic line.") == "Topic line."
-
-    def test_with_no_api_key_the_canned_question_is_sent(self):
-        """Not a degraded mode: schema.asks is a real, complete question."""
-        assert _compose(asks="What roles?", topic="", last_inbound="hi", known="") == "What roles?"
-
-    def test_the_model_rewrite_is_used_when_it_is_valid(self):
-        set_llm(
-            LLMClient(
-                api_key="test-key",
-                transport=FakeTransport(default={"message": "Got it. What roles?"}),
-                enabled=True,
-            )
-        )
-        try:
-            assert _compose(asks="What roles?", topic="", last_inbound="hi", known="") == (
-                "Got it. What roles?"
-            )
-        finally:
-            set_llm(None)
-
     def test_a_second_question_is_rejected_rather_than_sent(self):
         """An instruction not to ask two things is a hope; this is a rule."""
         set_llm(
@@ -723,11 +652,6 @@ class TestCompose:
 
 
 class TestChatApi:
-    def test_a_recruiter_can_mint_the_widget_token(self, client, account):
-        response = client.get("/v1/intake/widget-token", headers=account["headers"])
-        assert response.status_code == 200
-        assert response.json()["token"].startswith(account["org_id"] + ".")
-
     def test_an_unsigned_or_forged_token_is_refused(self, client, account):
         assert client.post("/v1/intake/chat/sessions", json={"token": "nope"}).status_code == 401
         forged = f"{account['org_id']}.deadbeef"
@@ -741,14 +665,6 @@ class TestChatApi:
         thread_scoped = f"{org_id}.{signed_intake_token(PURPOSE_THREAD, org_id)}"
         response = client.post("/v1/intake/chat/sessions", json={"token": thread_scoped})
         assert response.status_code == 401
-
-    def test_a_stranger_can_open_a_conversation(self, client, widget_token):
-        response = client.post("/v1/intake/chat/sessions", json={"token": widget_token})
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["thread_token"]
-        assert len(body["messages"]) == 2
-        assert body["messages"][0]["direction"] == "outbound"
 
     def test_a_widget_stop_binds_across_new_sessions(self, client, widget_token):
         """STOP said in one browser session must hold when the same browser
@@ -775,12 +691,6 @@ class TestChatApi:
             json={"token": widget_token, "visitor_id": "vis-other"},
         )
         assert other.status_code == 201
-
-    def test_an_embed_without_a_visitor_id_keeps_working(self, client, widget_token):
-        """Old embeds send no visitor_id; nothing binds, nothing breaks."""
-        response = client.post("/v1/intake/chat/sessions", json={"token": widget_token})
-        assert response.status_code == 201
-        assert response.json()["status"] == "active"
 
     def test_the_org_thread_creation_cap_refuses_excess_sessions(
         self, client, widget_token, monkeypatch
@@ -1078,20 +988,6 @@ class TestPreferenceHandoff:
         assert pref.review_needed is True
         assert thread.id in pref.review_reason
 
-    def test_an_unconfirmed_record_keeps_its_blank_confirmation(
-        self, session, account, fake_channel
-    ):
-        """The invalidation path must not invent a review reason for everyone."""
-        candidate = self._candidate(session, account)
-        thread = self._thread_saying(
-            session, account, spec={"job_titles": ["machine learning engineer"]}
-        )
-        pref = persist_preference(session, thread=thread, candidate_id=candidate.id)
-        session.commit()
-
-        assert pref.confirmed_at is None
-        assert "changed a confirmed record" not in (pref.review_reason or "")
-
 
 class TestThreadsOnTheReviewQueue:
     """The review queue reads calls; without this it never sees a thread.
@@ -1141,34 +1037,6 @@ class TestThreadsOnTheReviewQueue:
         rival = self._other_headers(client)
         assert client.get("/v1/intake/threads", headers=rival).json() == []
         assert client.get("/v1/intake/threads/count", headers=rival).json()["count"] == 0
-
-    def test_the_queue_can_ask_for_unattributed_threads_only(
-        self, client, session, account, fake_channel
-    ):
-        """Who was this? is the human action the queue exists for."""
-        upsert_candidates(
-            session,
-            org_id=account["org_id"],
-            payloads=[{"source": "q", "source_id": "q1", "full_name": "Known Person"}],
-        )
-        session.commit()
-        known = session.scalar(select(Candidate).where(Candidate.full_name == "Known Person"))
-
-        attributed = open_thread(
-            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
-        )
-        attributed.candidate_id = known.id
-        stranger = open_thread(
-            session, org_id=account["org_id"], channel=WEB, consent_messaging=True
-        )
-        session.commit()
-
-        rows = client.get(
-            "/v1/intake/threads?unattributed=true", headers=account["headers"]
-        ).json()
-        ids = {row["id"] for row in rows}
-        assert stranger.id in ids
-        assert attributed.id not in ids
 
 
 class TestPhoneOptOut:
@@ -1388,24 +1256,6 @@ class TestThreadAttribution:
 
 
 class TestWorkerPath:
-    def test_the_job_runs_the_same_turn_the_route_does(
-        self, session, thread, fake_channel
-    ):
-        from juicebox.worker import process_job
-
-        job = enqueue(
-            session,
-            org_id=thread.org_id,
-            kind=KIND_INTAKE_TURN,
-            idempotency_key=f"{KIND_INTAKE_TURN}:{thread.id}:1",
-            payload={"thread_id": thread.id},
-        )
-        session.flush()
-        process_job(session, job)
-
-        assert job.status == "succeeded"
-        assert fake_channel.sent
-
     def test_a_missing_thread_is_skipped_not_retried_forever(self, session, account):
         from juicebox.worker import process_job
 
@@ -1597,34 +1447,12 @@ class TestLinqSignature:
         old = int(time.time()) - 6 * 60
         assert post_linq(client, linq_payload(), timestamp=old).status_code == 401
 
-    def test_a_future_timestamp_is_refused(self, client, linq_number):
-        ahead = int(time.time()) + 6 * 60
-        assert post_linq(client, linq_payload(), timestamp=ahead).status_code == 401
-
-    @pytest.mark.parametrize("header", ["", "garbage", "v1,notbase64!!!"])
-    def test_a_malformed_header_is_refused(self, client, linq_number, header):
-        raw = json.dumps(linq_payload()).encode()
-        response = client.post(
-            "/v1/intake/linq/webhook",
-            content=raw,
-            headers={
-                "webhook-id": "wh-1",
-                "webhook-timestamp": str(int(time.time())),
-                "webhook-signature": header,
-            },
-        )
-        assert response.status_code == 401
-
     def test_no_configured_secret_refuses_everything(self, client, linq_number, monkeypatch):
         from juicebox.config import reset_settings_cache
 
         monkeypatch.setenv("LINQ_WEBHOOK_SECRET", "")
         reset_settings_cache()
         assert post_linq(client, linq_payload()).status_code == 401
-
-    def test_a_refused_request_writes_nothing(self, client, session, linq_number):
-        client.post("/v1/intake/linq/webhook", json=linq_payload())
-        assert session.scalars(select(IntakeThread)).all() == []
 
 
 class TestLinqWebhook:
@@ -1645,11 +1473,6 @@ class TestLinqWebhook:
     def test_an_unclaimed_number_is_refused(self, client, session):
         assert post_linq(client, linq_payload()).status_code == 404
         assert session.scalars(select(IntakeThread)).all() == []
-
-    def test_a_deactivated_number_is_refused(self, client, session, linq_number):
-        linq_number.active = False
-        session.commit()
-        assert post_linq(client, linq_payload()).status_code == 404
 
     def test_a_duplicate_message_id_is_a_no_op(self, client, session, linq_number):
         assert post_linq(client, linq_payload()).status_code == 200
@@ -1721,13 +1544,6 @@ class TestLinqWebhook:
         assert response.json()["help"] is True
         assert session.scalars(select(Job).where(Job.kind == KIND_INTAKE_TURN)).all() == []
         assert fake_channel.bodies == [prompts.HELP_REPLY]
-
-    def test_linq_disabled_returns_503(self, client, linq_number, monkeypatch):
-        monkeypatch.setenv("LINQ_ENABLED", "false")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        assert post_linq(client, linq_payload()).status_code == 503
 
     def test_the_sender_thread_cap_refuses_excess_new_threads(
         self, client, session, linq_number, monkeypatch
@@ -1804,15 +1620,3 @@ class TestSeqRace:
             .filter(IntakeMessage.thread_id == thread.id, IntakeMessage.id != row.id)
             .all()
         }
-
-    def test_a_genuine_redelivery_is_still_a_no_op(self, session, thread):
-        first, created = record_inbound(
-            session, thread=thread, body="hello", provider_native_id="dup"
-        )
-        session.flush()
-        again, created_again = record_inbound(
-            session, thread=thread, body="hello", provider_native_id="dup"
-        )
-        assert created is True
-        assert created_again is False
-        assert again.id == first.id

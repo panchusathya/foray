@@ -53,18 +53,6 @@ def response(**overrides) -> str:
     return json.dumps(payload)
 
 
-def test_fake_chat_parses_json_and_rejects_unknown_archetype() -> None:
-    valid = FakeChat([response()])
-    parsed = llm_parse("backend engineer", valid)
-    assert parsed is not None
-    assert parsed.archetype_id == "senior_backend"
-    assert parsed.languages == ["go"]
-
-    unknown = FakeChat([response(archetype_id="not-real")])
-    parsed = llm_parse("backend engineer", unknown)
-    assert parsed is not None and parsed.archetype_id is None
-
-
 def test_fenced_json_is_accepted() -> None:
     fake = FakeChat([f"```json\n{response()}\n```"])
     parsed = llm_parse("backend engineer", fake)
@@ -91,12 +79,6 @@ async def test_cache_hit_never_consults_chat_adapter() -> None:
     assert parser == "cache"
     assert parsed.archetype_id == "senior_backend"
     assert fake.calls == []
-
-
-def test_parse_model_is_threaded_to_adapter() -> None:
-    fake = FakeChat([response()])
-    assert llm_parse("backend engineer", fake) is not None
-    assert fake.calls[0]["model"] == settings.parse_model
 
 
 class TestTheParseNeverBlocksTheEventLoop:

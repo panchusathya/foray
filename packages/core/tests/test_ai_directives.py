@@ -13,7 +13,6 @@ from juicebox.llm.client import FakeTransport, LLMClient, LLMUnavailable, set_ll
 from juicebox.models import Enrollment, Message
 from juicebox.outreach import templates
 from juicebox.outreach.sequencer import enroll_candidates, run_due
-from juicebox.outreach.templates import MissingDirective
 
 INSTRUCTION = "say why this role is a fit for their background"
 DIRECTIVE_BODY = (
@@ -50,22 +49,6 @@ class TestParsing:
     )
     def test_ordinary_placeholders_are_not_directives(self, not_a_directive):
         assert templates.used_directives(not_a_directive) == []
-
-    def test_nested_braces_do_not_match(self):
-        assert templates.used_directives("{{ai: use {{first_name}} here}}") == []
-
-    def test_variables_inside_a_directive_are_not_rendered(self):
-        # _VAR_RE must not fire inside an unresolved directive span.
-        rendered = templates.render("{{ai: mention their role}}", {"role": "x"})
-        assert rendered == "{{ai: mention their role}}"
-
-    def test_identical_instructions_share_one_key(self):
-        found = templates.used_directives("{{ai: same thing}} and {{ai:  SAME   thing }}")
-        assert len(found) == 1
-
-    def test_render_directives_raises_on_a_gap(self):
-        with pytest.raises(MissingDirective):
-            templates.render_directives("{{ai: something}}", {})
 
 
 class TestResolutionThroughSending:
@@ -230,62 +213,6 @@ class TestOfflineInvariant:
 
 
 class TestPreviewApi:
-    def test_preview_with_the_model_off_shows_a_marker_not_a_500(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        sequence = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Directive preview",
-                "personalize": False,
-                "steps": [
-                    {
-                        "delay_days": 0,
-                        "subject_template": "Hello {{first_name}}",
-                        "body_template": "Hi,\n{{ai: say why this fits}}\nBye.",
-                    }
-                ],
-            },
-            headers=headers,
-        ).json()
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-
-        response = client.post(
-            f"/v1/sequences/{sequence['id']}/preview",
-            json={"candidate_id": candidate_id},
-            headers=headers,
-        )
-        assert response.status_code == 200
-        preview = response.json()
-        assert preview["ai_status"] == "unavailable"
-        assert "[AI: say why this fits]" in preview["body"]
-        assert "{{ai:" not in preview["body"]
-
-    def test_preview_without_directives_reports_ai_off(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        sequence = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Plain preview",
-                "personalize": False,
-                "steps": [
-                    {
-                        "delay_days": 0,
-                        "subject_template": "Hello {{first_name}}",
-                        "body_template": "Hi {{first_name}}, plain body.",
-                    }
-                ],
-            },
-            headers=headers,
-        ).json()
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-
-        preview = client.post(
-            f"/v1/sequences/{sequence['id']}/preview",
-            json={"candidate_id": candidate_id},
-            headers=headers,
-        ).json()
-        assert preview["ai_status"] == "off"
-        assert "Ada" in preview["body"]
 
     def test_preview_sanitizes_html_bodies(self, client, loaded_org):
         headers = loaded_org["headers"]

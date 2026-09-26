@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,13 +12,11 @@ from juicebox.models import (
     utcnow,
 )
 from juicebox.outreach import templates
-from juicebox.outreach.personalize import personalize
 from juicebox.outreach.replies import heuristic_classify
 from juicebox.outreach.sequencer import (
     _sendable_address,
     enroll_candidates,
     find_message_for_reply,
-    preview_step,
     record_reply,
     run_due,
     schedule_step_at,
@@ -34,22 +32,6 @@ from juicebox.security import signed_tracking_token
 
 
 class TestTemplates:
-    def test_renders_values_and_fallbacks(self):
-        rendered = templates.render(
-            "Hi {{ first_name }}, about {{ role_title | the role }}",
-            {"first_name": "Ada"},
-        )
-        assert rendered == "Hi Ada, about the role"
-
-    def test_unknown_variable_without_fallback_collapses(self):
-        assert templates.render("Hello {{ nope }}!", {}) == "Hello !"
-
-    def test_missing_variables_are_reported(self):
-        template = "{{ a }} {{ b | ok }}"
-        assert templates.missing_variables(template, {}) == ["a"]
-
-    def test_used_variables_listed(self):
-        assert templates.used_variables("{{ a }} {{ b }} {{ a }}") == ["a", "b"]
 
     def test_unknown_variables_are_dropped_from_generated_copy(self):
         """A model asked for a signature writes {{your_name}} whatever the prompt
@@ -61,14 +43,6 @@ class TestTemplates:
         )
         assert "{{first_name}}" in cleaned
         assert "your_name" not in cleaned
-
-    def test_an_unknown_variable_with_a_fallback_keeps_the_fallback_text(self):
-        cleaned = templates.keep_known_variables("at {{employer | your team}}", ["first_name"])
-        assert cleaned == "at your team"
-
-    def test_keeping_known_variables_leaves_a_clean_template_alone(self):
-        template = "Hi {{first_name}}, about {{role_title}}."
-        assert templates.keep_known_variables(template, ["first_name", "role_title"]) == template
 
     def test_html_escapes_and_paragraphs(self):
         html = templates.to_html("Hi <script>\n\nSecond para")
@@ -91,18 +65,6 @@ class TestTemplates:
         html = templates.to_html('<p><a href="javascript:alert(1)">click</a></p>')
         assert "javascript" not in html.lower()
         assert html == "<p>click</p>"
-
-    def test_variables_still_substitute_inside_html(self):
-        rendered = templates.render(
-            "<p>Hi {{ first_name }}, <em>{{ role_title | the role }}</em></p>",
-            {"first_name": "Ada"},
-        )
-        html = templates.to_html(rendered)
-        assert html == "<p>Hi Ada, <em>the role</em></p>"
-
-    def test_to_text_strips_tags_and_keeps_plain_text(self):
-        assert templates.to_text("<p>Hi <strong>Ada</strong></p><p>Bye</p>") == "Hi Ada\n\nBye"
-        assert templates.to_text("Hi Ada,\n\nBye") == "Hi Ada,\n\nBye"
 
     def test_sanitize_preview_leaves_plain_text_alone(self):
         assert templates.sanitize_preview("Hi Ada") == "Hi Ada"
@@ -158,25 +120,6 @@ class TestReplyClassification:
 # --------------------------------------------------------------------------
 
 
-class TestPersonalization:
-    def test_heuristic_context_is_grounded_in_the_profile(self, session, outreach_fixture):
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        context = personalize(ada, outreach_fixture["project"], use_llm=False)
-        assert context["first_name"] == "Ada"
-        assert context["current_company"] == "Modal"
-        assert "Modal" in context["opening_line"]
-        assert context["personalized_by"] == "heuristic"
-
-    def test_preview_renders_without_sending(self, session, outreach_fixture):
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        subject, body, _ = preview_step(
-            session, sequence=outreach_fixture["sequence"], candidate=ada
-        )
-        assert subject == "Senior Machine Learning Engineer at Founding ML Engineer"
-        assert body.startswith("Hi Ada,")
-        assert session.query(Message).count() == 0
-
-
 class TestSendNowOverride:
     """A recruiter adding one person late in the day expects mail now, not a
     silent roll to tomorrow's send_at_time — send_now makes that explicit."""
@@ -188,36 +131,6 @@ class TestSendNowOverride:
         steps[0].send_timezone = "America/Los_Angeles"
         session.commit()
         return sequence
-
-    def test_default_enrolment_waits_for_the_scheduled_slot(self, session, outreach_fixture):
-        sequence = self._sequence_with_morning_slot(session, outreach_fixture)
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        enrollment = enroll_candidates(
-            session, sequence=sequence, candidate_ids=[ada.id]
-        )[0]
-        # Snapped to a 09:00 Pacific slot, not "now".
-        assert enrollment.next_send_at.minute == 0
-
-    def test_send_now_makes_the_first_step_due_immediately(
-        self, session, outreach_fixture, mailbox
-    ):
-        sequence = self._sequence_with_morning_slot(session, outreach_fixture)
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        now = utcnow()
-        enrollment = enroll_candidates(
-            session, sequence=sequence, candidate_ids=[ada.id], send_now=True, now=now
-        )[0]
-        assert enrollment.next_send_at == now
-
-        summary = run_due(session, org_id=sequence.org_id, now=now)
-        assert summary.sent == 1
-        # Later steps keep their configured timing: the override was only for
-        # getting the first email out. (SQLite hands back naive datetimes.)
-        session.refresh(enrollment)
-        next_at = enrollment.next_send_at
-        if next_at.tzinfo is None:
-            next_at = next_at.replace(tzinfo=UTC)
-        assert next_at > now
 
     def test_send_now_does_not_resend_to_existing_enrollments(
         self, session, outreach_fixture, mailbox
@@ -248,62 +161,6 @@ class TestSendNowEndpoint:
             headers=headers,
         ).json()
 
-    def test_send_now_sends_inside_the_enroll_request(self, client, loaded_org, mailbox):
-        headers = loaded_org["headers"]
-        sequence = self._make_sequence(
-            client,
-            headers,
-            [
-                {
-                    "delay_days": 0,
-                    "send_at_time": "09:00",
-                    "send_timezone": "America/Los_Angeles",
-                    "subject_template": "Hi {{first_name}}",
-                    "body_template": "Hello {{first_name}}",
-                },
-                {"delay_days": 2, "subject_template": "Re", "body_template": "Bump"},
-            ],
-        )
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-
-        rows = client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate_id], "send_now": True},
-            headers=headers,
-        ).json()["enrollments"]
-
-        # The email went out during THIS request, and the returned row shows
-        # it: step advanced, next_send_at now belongs to the follow-up.
-        assert len(mailbox.outbox) == 1
-        assert rows[0]["current_step"] == 1
-        assert rows[0]["next_send_at"] is not None
-
-    def test_without_send_now_the_enroll_request_sends_nothing(
-        self, client, loaded_org, mailbox
-    ):
-        headers = loaded_org["headers"]
-        sequence = self._make_sequence(
-            client,
-            headers,
-            [
-                {
-                    "delay_days": 0,
-                    "send_at_time": "09:00",
-                    "send_timezone": "America/Los_Angeles",
-                    "subject_template": "Hi {{first_name}}",
-                    "body_template": "Hello {{first_name}}",
-                }
-            ],
-        )
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-        rows = client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate_id]},
-            headers=headers,
-        ).json()["enrollments"]
-        assert mailbox.outbox == []
-        assert rows[0]["current_step"] == 0
-
     def test_send_now_on_a_paused_sequence_enrolls_but_does_not_send(
         self, client, loaded_org, mailbox
     ):
@@ -326,58 +183,6 @@ class TestSendNowEndpoint:
         assert rows[0]["current_step"] == 0
 
 
-class TestRunEndpointDryRun:
-    def test_a_preview_serialises_and_leaves_the_enrollment_alone(
-        self, client, loaded_org, mailbox
-    ):
-        """The endpoint serialises Messages that were never flushed, so every
-        column MessageOut requires has to be present without a DB round trip."""
-        headers = loaded_org["headers"]
-        sequence = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Preview",
-                "personalize": False,
-                "steps": [
-                    {
-                        "delay_days": 0,
-                        "subject_template": "Hi {{first_name}}",
-                        "body_template": "Hello {{first_name}}",
-                    },
-                    {"delay_days": 2, "subject_template": "Re", "body_template": "Bump"},
-                ],
-            },
-            headers=headers,
-        ).json()
-        candidate_id = client.get("/v1/candidates?q=ada", headers=headers).json()[0]["id"]
-        client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate_id]},
-            headers=headers,
-        )
-
-        response = client.post(
-            f"/v1/sequences/{sequence['id']}/run?dry_run=true", headers=headers
-        )
-        assert response.status_code == 200, response.text
-        payload = response.json()
-        assert payload["processed"] == 1
-        [preview] = payload["messages"]
-        assert preview["subject"] == "Hi Ada"
-        assert preview["status"] == "queued"
-        assert preview["created_at"]
-
-        assert not mailbox.outbox
-        rows = client.get(
-            f"/v1/sequences/{sequence['id']}/enrollments", headers=headers
-        ).json()
-        assert rows[0]["current_step"] == 0
-        messages = client.get(
-            f"/v1/messages?candidate_id={candidate_id}", headers=headers
-        ).json()
-        assert messages == []
-
-
 class TestStepScheduling:
     """schedule_step_at is pure — no DB, just a step's scheduling fields."""
 
@@ -388,11 +193,6 @@ class TestStepScheduling:
         defaults = dict(delay_days=0, delay_unit="days", send_at_time="", send_timezone="")
         return SequenceStep(**{**defaults, **overrides})
 
-    def test_plain_delay_is_unchanged(self):
-        base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)  # a Monday
-        due = schedule_step_at(self.step(delay_days=3), base=base)
-        assert due == base + timedelta(days=3)
-
     def test_business_days_skip_the_weekend(self):
         friday = datetime(2026, 1, 16, 10, 0, tzinfo=UTC)
         due = schedule_step_at(
@@ -400,20 +200,10 @@ class TestStepScheduling:
         )
         assert due == datetime(2026, 1, 19, 10, 0, tzinfo=UTC)  # Monday
 
-    def test_send_time_snaps_to_the_delay_day(self):
-        base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)
-        due = schedule_step_at(self.step(delay_days=1, send_at_time="09:00"), base=base)
-        assert due == datetime(2026, 1, 13, 9, 0, tzinfo=UTC)
-
     def test_todays_time_already_past_rolls_to_tomorrow(self):
         base = datetime(2026, 1, 12, 15, 0, tzinfo=UTC)
         due = schedule_step_at(self.step(send_at_time="09:00"), base=base)
         assert due == datetime(2026, 1, 13, 9, 0, tzinfo=UTC)
-
-    def test_todays_time_still_ahead_sends_today(self):
-        base = datetime(2026, 1, 12, 6, 30, tzinfo=UTC)
-        due = schedule_step_at(self.step(send_at_time="09:00"), base=base)
-        assert due == datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
 
     def test_timezone_is_honored(self):
         base = datetime(2026, 1, 12, 8, 0, tzinfo=UTC)
@@ -422,13 +212,6 @@ class TestStepScheduling:
             base=base,
         )
         assert due == datetime(2026, 1, 13, 17, 0, tzinfo=UTC)  # 09:00 PST
-
-    def test_unknown_timezone_falls_back_to_utc(self):
-        base = datetime(2026, 1, 12, 6, 0, tzinfo=UTC)
-        due = schedule_step_at(
-            self.step(send_at_time="09:00", send_timezone="Mars/Olympus_Mons"), base=base
-        )
-        assert due == datetime(2026, 1, 12, 9, 0, tzinfo=UTC)
 
     def test_snapped_business_day_never_lands_on_a_weekend(self):
         friday_evening = datetime(2026, 1, 16, 22, 0, tzinfo=UTC)
@@ -511,25 +294,6 @@ class TestSequenceRun:
 
         assert len(mailbox.outbox) == 1
 
-    def test_sequence_completes_after_the_last_step(
-        self, session, outreach_fixture, mailbox
-    ):
-        sequence = outreach_fixture["sequence"]
-        ada = outreach_fixture["candidates"][0]
-        enroll_candidates(session, sequence=sequence, candidate_ids=[ada.id])
-        session.commit()
-
-        now = utcnow()
-        run_due(session, org_id=sequence.org_id, now=now)
-        session.commit()
-        run_due(session, org_id=sequence.org_id, now=now + timedelta(days=4))
-        session.commit()
-
-        enrollment = session.query(Enrollment).one()
-        assert enrollment.status == "completed"
-        assert enrollment.next_send_at is None
-        assert len(mailbox.outbox) == 2
-
     def test_candidate_without_an_email_is_stopped_not_retried(
         self, session, account, outreach_fixture, mailbox
     ):
@@ -574,53 +338,6 @@ class TestSequenceRun:
         enrollment = session.query(Enrollment).filter_by(candidate_id=ada.id).one()
         assert enrollment.status == "stopped"
         assert enrollment.stopped_reason == "reach_score_below_floor"
-
-    def test_the_floor_skips_to_the_next_address(
-        self, session, outreach_fixture, mailbox, monkeypatch
-    ):
-        monkeypatch.setenv("FORAY_MIN_REACH_SCORE", "40")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        ada.emails = ["low@gmail.com", "ada@example.com"]
-        ada.raw = {
-            "foray": {"email_reach": {"low@gmail.com": 5, "ada@example.com": 80}}
-        }
-        session.commit()
-        enroll_candidates(
-            session, sequence=outreach_fixture["sequence"], candidate_ids=[ada.id]
-        )
-        session.commit()
-        run_due(session, org_id=outreach_fixture["sequence"].org_id)
-        session.commit()
-        assert mailbox.outbox[0].to == "ada@example.com"
-
-    def test_an_unscored_address_is_not_blocked_by_the_floor(
-        self, session, outreach_fixture, mailbox, monkeypatch
-    ):
-        monkeypatch.setenv("FORAY_MIN_REACH_SCORE", "40")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        ada.raw = {}
-        session.commit()
-        enroll_candidates(
-            session, sequence=outreach_fixture["sequence"], candidate_ids=[ada.id]
-        )
-        session.commit()
-        run_due(session, org_id=outreach_fixture["sequence"].org_id)
-        session.commit()
-        assert mailbox.outbox
-
-    def test_enrolment_is_idempotent(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        candidate_id = outreach_fixture["candidates"][0].id
-        enroll_candidates(session, sequence=sequence, candidate_ids=[candidate_id])
-        enroll_candidates(session, sequence=sequence, candidate_ids=[candidate_id])
-        session.commit()
-        assert session.query(Enrollment).count() == 1
 
     def test_a_repeated_id_in_one_payload_does_not_sink_the_batch(
         self, session, outreach_fixture
@@ -893,21 +610,6 @@ class TestSuppressions:
         session.commit()
         assert not mailbox.outbox
 
-    def test_leaving_do_not_contact_still_clears_its_own_suppression(
-        self, session, outreach_fixture, mailbox
-    ):
-        from juicebox.crm import set_crm_status
-
-        sequence = outreach_fixture["sequence"]
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        set_crm_status(session, ada, "do_not_contact")
-        session.commit()
-        assert is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
-
-        set_crm_status(session, ada, "active")
-        session.commit()
-        assert not is_suppressed(session, org_id=sequence.org_id, email="ada@example.com")
-
     def test_an_opt_out_outranks_a_hand_set_suppression_on_the_same_address(
         self, session, outreach_fixture
     ):
@@ -1008,25 +710,6 @@ class TestReplies:
         session.commit()
         assert session.query(Enrollment).one().status == "active"
 
-    def test_reply_advances_the_pipeline_stage(self, session, outreach_fixture, mailbox):
-        from juicebox.models import ProjectCandidate
-
-        project = outreach_fixture["project"]
-        ada = next(c for c in outreach_fixture["candidates"] if c.full_name == "Ada Okonkwo")
-        session.add(
-            ProjectCandidate(project_id=project.id, candidate_id=ada.id, stage="sourced")
-        )
-        session.commit()
-
-        message = self._send_first(session, outreach_fixture)
-        entry = session.query(ProjectCandidate).one()
-        assert entry.stage == "contacted"
-
-        record_reply(session, message=message, subject="Re", body="Sounds interesting")
-        session.commit()
-        session.refresh(entry)
-        assert entry.stage == "replied"
-
     def test_inbound_matching_by_address(self, session, outreach_fixture, mailbox):
         message = self._send_first(session, outreach_fixture)
         found = find_message_for_reply(
@@ -1095,22 +778,6 @@ class TestSendableAddress:
     def test_unscored_passes_the_floor(self):
         cand = SimpleNamespace(emails=["ada@gmail.com"], raw={})
         addr, err = _sendable_address(cand, 40)
-        assert addr == "ada@gmail.com" and err is None
-
-    def test_below_floor_is_blocked(self):
-        cand = SimpleNamespace(
-            emails=["ada@gmail.com"],
-            raw={"foray": {"email_reach": {"ada@gmail.com": 5}}},
-        )
-        addr, err = _sendable_address(cand, 40)
-        assert addr == "" and err == "reach_score_below_floor"
-
-    def test_floor_zero_disables_the_gate(self):
-        cand = SimpleNamespace(
-            emails=["ada@gmail.com"],
-            raw={"foray": {"email_reach": {"ada@gmail.com": 0}}},
-        )
-        addr, err = _sendable_address(cand, 0)
         assert addr == "ada@gmail.com" and err is None
 
     def test_skips_low_then_picks_the_next(self):

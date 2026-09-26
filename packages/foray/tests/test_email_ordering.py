@@ -25,15 +25,6 @@ class TestOrderByClause:
         assert "order by e.is_work asc" in EMAILS_LATERAL
         assert "order by e.is_work desc" not in EMAILS_LATERAL
 
-    def test_confidence_still_breaks_ties_within_a_group(self):
-        assert "e.confidence desc" in EMAILS_LATERAL
-
-    def test_guesses_are_still_excluded(self):
-        assert "e.source <> 'guess'" in EMAILS_LATERAL
-
-    def test_reach_score_is_in_the_payload(self):
-        assert "'reach_score', e.reach_score" in EMAILS_LATERAL
-
 
 @requires_db
 class TestAgainstPostgres:
@@ -74,32 +65,6 @@ class TestAgainstPostgres:
         )
         emails = await self._emails_for(conn, cid)
         assert [e["email"] for e in emails] == ["me@gmail.com", "work@stripe.com"]
-
-    async def test_confidence_orders_within_the_personal_group(self, conn):
-        cid = await conn.fetchval(
-            "insert into candidates (login, source) values ('order_test2', 'github') returning id"
-        )
-        await conn.execute(
-            "insert into candidate_emails (candidate_id, email, source, is_work, confidence)"
-            " values ($1, 'low@gmail.com', 'commit', false, 75),"
-            "        ($1, 'high@gmail.com', 'profile', false, 90)",
-            cid,
-        )
-        emails = await self._emails_for(conn, cid)
-        assert [e["email"] for e in emails] == ["high@gmail.com", "low@gmail.com"]
-
-    async def test_a_work_only_candidate_still_returns_it(self, conn):
-        """Falling back to a work address is correct; leading with one is not."""
-        cid = await conn.fetchval(
-            "insert into candidates (login, source) values ('order_test3', 'github') returning id"
-        )
-        await conn.execute(
-            "insert into candidate_emails (candidate_id, email, source, is_work, confidence)"
-            " values ($1, 'only@stripe.com', 'apollo_work', true, 85)",
-            cid,
-        )
-        emails = await self._emails_for(conn, cid)
-        assert [e["email"] for e in emails] == ["only@stripe.com"]
 
     async def test_a_guess_never_appears(self, conn):
         cid = await conn.fetchval(

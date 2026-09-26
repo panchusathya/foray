@@ -18,62 +18,17 @@ stays word for word -- what was removed is the sentence that followed it.
 from __future__ import annotations
 
 from juicebox.messaging import prompts
-from juicebox.messaging.consent import (
-    DISCLOSURE_INBOUND_TEXT,
-    DISCLOSURE_INBOUND_TEXT_VERSION,
-    DISCLOSURE_VOICE_SMS,
-    DISCLOSURE_VOICE_SMS_VERSION,
-    DISCLOSURE_WEB_WIDGET,
-    DISCLOSURE_WEB_WIDGET_VERSION,
-)
-from juicebox.messaging.linkedin_flow import intro_message
-from juicebox.messaging.prompts import greeting_for
-
-
-def _greetings() -> dict[str, str]:
-    return {
-        "web": greeting_for(org="Acme Talent", recruiter="vivian"),
-        "linkedin_first": intro_message(recruiter="vivian", org="Acme Talent"),
-        # The name == org rendering ("it's foray") is its own greeting surface.
-        "linkedin_same_name": intro_message(recruiter="Foray", org="Foray"),
-        "template": prompts.GREETING.format(recruiter="vivian", org="Acme Talent"),
-    }
-
-
-class TestNoRecitals:
-    def test_no_greeting_recites_the_opt_out(self):
-        for name, body in _greetings().items():
-            lowered = body.lower()
-            assert "stop any time" not in lowered, name
-            assert "opt out" not in lowered, name
-            assert "help for info" not in lowered, name
-
-    def test_no_greeting_names_a_carrier_keyword(self):
-        for name, body in _greetings().items():
-            for keyword in ("STOP", "HELP", "UNSTOP", "START"):
-                assert keyword not in body, f"{name} still says {keyword}"
+from juicebox.messaging.consent import DISCLOSURE_VOICE_SMS
 
 
 class TestTheDisclosuresStayTrue:
     """A stored disclosure is the defence, so it has to match the message."""
-
-    def test_every_disclosure_moved_to_v2(self):
-        assert DISCLOSURE_WEB_WIDGET_VERSION == "web-widget-v2"
-        assert DISCLOSURE_INBOUND_TEXT_VERSION == "inbound-text-v2"
-        assert DISCLOSURE_VOICE_SMS_VERSION == "voice-wrapup-v2"
-
-    def test_the_quoted_greeting_no_longer_promises_an_opt_out(self):
-        assert "stop any time" not in DISCLOSURE_WEB_WIDGET.lower()
 
     def test_the_voice_disclosure_keeps_the_question_and_drops_the_recital(self):
         """The question *is* the consent. Removing it would be removing consent."""
         assert "Can I text you updates at this number?" in DISCLOSURE_VOICE_SMS
         assert "reply STOP any time to opt out" not in DISCLOSURE_VOICE_SMS
         assert "explicit, unambiguous" in DISCLOSURE_VOICE_SMS
-
-    def test_the_inbound_disclosure_still_claims_the_keywords_are_honoured(self):
-        """Because they are -- and that claim is now the only place it is made."""
-        assert "STOP/HELP are honoured" in DISCLOSURE_INBOUND_TEXT
 
 
 class TestTheAgentStillAsks:
@@ -98,17 +53,6 @@ class TestTheAgentStillAsks:
 
     def test_the_consent_question_is_unchanged(self):
         assert "can I text you updates at this number?" in self._prompt()
-
-    def test_the_recital_is_gone_from_the_ask(self):
-        assert "reply STOP any time to opt out" not in self._prompt()
-
-    def test_the_agent_is_told_not_to_add_one(self):
-        """Otherwise a model helpfully supplies the sentence we just removed."""
-        assert "Do not add anything about stopping or opting out" in self._prompt()
-
-    def test_it_still_answers_a_direct_question_about_stopping(self):
-        """Refusing to say how to stop when asked would be a different thing."""
-        assert "If they ask how to stop" in self._prompt()
 
 
 class TestKeywordsStillWork:

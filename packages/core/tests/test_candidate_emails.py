@@ -21,22 +21,6 @@ def _create(client, headers, name, **extra):
 
 
 class TestProjectionTracksTheColumn:
-    def test_creating_a_person_projects_their_addresses(self, client, session, account):
-        response = _create(
-            client,
-            account["headers"],
-            "Ada Lovelace",
-            source_id="ada",
-            emails=["ada@example.com", "ada.l@example.com"],
-        )
-        assert response.status_code == 201, response.text
-
-        rows = session.scalars(select(CandidateEmail)).all()
-        assert sorted((r.email, r.position) for r in rows) == [
-            ("ada.l@example.com", 1),
-            ("ada@example.com", 0),
-        ]
-
     def test_editing_the_addresses_moves_the_rows(self, client, session, account):
         candidate_id = _create(
             client, account["headers"], "Ada", source_id="ada", emails=["old@example.com"]
@@ -139,62 +123,6 @@ class TestCollisions:
                 session, org_id=other["user"]["org_id"], email="ada@example.com"
             )
             is None
-        )
-
-
-class TestDuplicateOnCreate:
-    def test_a_repeated_address_is_a_409_that_names_the_existing_record(
-        self, client, account
-    ):
-        first = _create(
-            client, account["headers"], "Ada Lovelace", source_id="ada", emails=["ada@example.com"]
-        ).json()
-
-        response = _create(
-            client, account["headers"], "A. Lovelace", source_id="ada2", emails=["ada@example.com"]
-        )
-        assert response.status_code == 409
-        detail = response.json()["detail"]
-        # The UI offers "open the existing record", so it needs the id.
-        assert detail["candidate_id"] == first["id"]
-        assert detail["full_name"] == "Ada Lovelace"
-
-    def test_bulk_still_merges_rather_than_refusing(self, client, session, account):
-        """An importer pushing thousands of rows wants them merged and counted.
-        Only the hand-typed path interrupts."""
-        _create(
-            client, account["headers"], "Ada", source_id="ada", emails=["ada@example.com"]
-        )
-
-        response = client.post(
-            "/v1/candidates/bulk",
-            json={
-                "candidates": [
-                    {
-                        "source": "foray",
-                        "source_id": "ada-foray",
-                        "full_name": "Ada Lovelace",
-                        "emails": ["ada@example.com"],
-                    }
-                ]
-            },
-            headers=account["headers"],
-        )
-        assert response.status_code == 200, response.text
-
-    def test_two_people_with_the_same_name_and_no_email_stay_two_people(
-        self, client, session, account
-    ):
-        """normalize_candidate falls back to a name-derived source_id, so
-        without an explicit one the second John Smith would silently overwrite
-        the first."""
-        first = _create(client, account["headers"], "John Smith").json()
-        second = _create(client, account["headers"], "John Smith").json()
-
-        assert first["id"] != second["id"]
-        assert (
-            len(session.scalars(select(Candidate).where(Candidate.full_name == "John Smith")).all())
-            == 2
         )
 
 

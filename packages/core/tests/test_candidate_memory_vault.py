@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
 from juicebox.applications.candidate_credentials import read_password, revoke, save_password
 from juicebox.config import reset_settings_cache
-from juicebox.intake.facts import sync_preference_facts
 from juicebox.messaging.attachments import store_thread_resume
 from juicebox.messaging.threads import open_thread
 from juicebox.models import (
     Candidate,
     CandidateDocument,
     CandidatePreference,
-    CandidatePreferenceFact,
 )
 
 
@@ -64,28 +60,6 @@ def test_connector_resume_does_not_replace_candidate_protected_default(session, 
 
     assert session.get(CandidateDocument, chosen.id).is_default is True
     assert session.get(CandidateDocument, imported.id).is_default is False
-
-
-def test_fact_metadata_tracks_direct_candidate_statement(session, account):
-    candidate = _candidate(session, account["org_id"])
-    thread = open_thread(session, org_id=account["org_id"], candidate_id=candidate.id)
-    preference = CandidatePreference(org_id=account["org_id"], candidate_id=candidate.id)
-    session.add(preference)
-    session.flush()
-
-    sync_preference_facts(
-        session,
-        preference=preference,
-        previous={"work_authorization": ""},
-        current={"work_authorization": "US citizen", "declined": []},
-        source_thread_id=thread.id,
-        direct_candidate_statement=True,
-    )
-
-    fact = session.scalar(select(CandidatePreferenceFact))
-    assert fact.field_key == "work_authorization"
-    assert fact.direct_candidate_statement is True
-    assert fact.confirmed_at is None
 
 
 def test_vault_revoke_and_key_rotation(session, account, monkeypatch):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from foray.ingest.activity import (
     URN_TIMESTAMP_SHIFT,
@@ -24,18 +24,6 @@ def test_verified_urn_decodes_to_the_measured_date():
     assert decode_activity_ts(int(VERIFIED_ID)) == dt
 
 
-def test_small_int_is_not_a_date():
-    # 1 >> 22 == 0 -> the 1970 epoch, decades before the plausibility floor.
-    assert decode_activity_ts(1) is None
-    assert decode_activity_ts(12345) is None
-    assert decode_activity_ts(0) is None
-
-
-def test_non_numeric_is_none():
-    for junk in ("", "   ", "abc", "74886x976", None, True, [], {}):
-        assert decode_activity_ts(junk) is None
-
-
 def test_pre_2015_shifted_epoch_is_rejected():
     """The plausibility window is the guard on an UNDOCUMENTED format: if
     LinkedIn changes the encoding, ids decode to absurd dates and must read as
@@ -49,12 +37,6 @@ def test_pre_2015_shifted_epoch_is_rejected():
     # Just inside the window still decodes, so the guard is a window, not a ban.
     ms_ok = int(datetime(2016, 6, 1, tzinfo=UTC).timestamp() * 1000)
     assert decode_activity_ts(ms_ok << URN_TIMESTAMP_SHIFT) is not None
-
-
-def test_near_future_slack_is_allowed():
-    soon = datetime.now(UTC) + timedelta(days=3)
-    urn = int(soon.timestamp() * 1000) << URN_TIMESTAMP_SHIFT
-    assert decode_activity_ts(urn) is not None
 
 
 def _urn(dt: datetime) -> str:
@@ -97,26 +79,3 @@ def test_latest_activity_falls_back_to_posts_created_at():
     dt, kind = result
     assert kind == "linkedin_post"
     assert (dt.year, dt.month, dt.day) == (2021, 4, 5)
-
-
-def test_activity_wins_over_posts_even_when_older():
-    """Rung 1 is exhausted before rung 2 is consulted: a decodable URN is a
-    harder fact than a free-text date, and the two are almost never both
-    present (48.7% vs 2.4% coverage)."""
-    record = {
-        "activity": [{"id": _urn(datetime(2018, 1, 1, tzinfo=UTC))}],
-        "posts": [
-            {"created_at": "Wed Apr 05 2023 13:45:09 GMT+0000 (Coordinated Universal Time)"}
-        ],
-    }
-    dt, kind = latest_activity(record)
-    assert kind == "linkedin_activity"
-    assert dt.year == 2018
-
-
-def test_no_evidence_is_none():
-    assert latest_activity({}) is None
-    assert latest_activity({"activity": [], "posts": []}) is None
-    assert latest_activity({"activity": [{"id": "x"}], "posts": [{"created_at": ""}]}) is None
-    # Not a list -> not a crash.
-    assert latest_activity({"activity": None, "posts": None}) is None

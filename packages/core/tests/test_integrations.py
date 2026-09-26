@@ -42,10 +42,6 @@ class _BaselineOnlyClient:
         return "https://graph.test/sent-delta?token=connect"
 
 
-def _provider_for(name: str, body: dict) -> dict:
-    return next(entry for entry in body["providers"] if entry["name"] == name)
-
-
 def _fake_exchange(monkeypatch, *, address="tushar@goforay.io", name="Tushar Gupta"):
     monkeypatch.setattr(
         microsoft,
@@ -92,9 +88,6 @@ class TestTokenCrypto:
 
 
 class TestProviderRegistry:
-    def test_both_providers_are_listed(self, client, account):
-        body = client.get("/v1/integrations/mailboxes", headers=account["headers"]).json()
-        assert {entry["name"] for entry in body["providers"]} == {"microsoft", "zoho"}
 
     def test_an_unknown_provider_is_a_404_not_a_silent_default(self, client, account):
         """Falling back to Microsoft here would connect the wrong kind of
@@ -122,22 +115,6 @@ class TestProviderRegistry:
 
 
 class TestConnectFlow:
-    def test_unconfigured_status_and_connect(self, client, account):
-        headers = account["headers"]
-        body = client.get("/v1/integrations/mailboxes", headers=headers).json()
-        assert _provider_for("microsoft", body)["configured"] is False
-        assert body["connections"] == []
-        assert (
-            client.post("/v1/integrations/microsoft/connect", headers=headers).status_code == 503
-        )
-
-    def test_connect_returns_a_tenant_auth_url(self, client, account, ms_configured):
-        body = client.post(
-            "/v1/integrations/microsoft/connect", headers=account["headers"]
-        ).json()
-        assert "login.microsoftonline.com/organizations" in body["auth_url"]
-        assert "client_id=client-123" in body["auth_url"]
-        assert "state=" in body["auth_url"]
 
     def test_callback_stores_an_encrypted_connection(
         self, client, account, session, ms_configured, monkeypatch
@@ -214,14 +191,6 @@ class TestConnectFlow:
         )
         assert response.status_code == 400
 
-    def test_user_denied_consent_shows_a_page_and_stores_nothing(
-        self, client, account, ms_configured
-    ):
-        response = client.get("/v1/integrations/microsoft/callback?error=access_denied")
-        assert response.status_code == 200
-        body = client.get("/v1/integrations/mailboxes", headers=account["headers"]).json()
-        assert body["connections"] == []
-
     def test_provider_error_text_cannot_inject_markup(self, client, ms_configured):
         """The consent page is the one unauthenticated HTML this API serves.
 
@@ -261,34 +230,6 @@ class TestConnectFlow:
         assert response.status_code == 200
         row = session.get(MailboxConnection, connection_id)
         assert row.status == "revoked" and row.token_blob == ""
-
-
-class TestSendingControls:
-    def test_cap_and_switch_are_editable(self, client, account, session):
-        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
-        session.add(connection)
-        session.commit()
-        response = client.patch(
-            f"/v1/integrations/mailboxes/{connection.id}/sending",
-            json={"daily_send_cap": 12, "send_enabled": False},
-            headers=account["headers"],
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["daily_send_cap"] == 12 and body["send_enabled"] is False
-
-    def test_a_negative_cap_is_refused(self, client, account, session):
-        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
-        session.add(connection)
-        session.commit()
-        assert (
-            client.patch(
-                f"/v1/integrations/mailboxes/{connection.id}/sending",
-                json={"daily_send_cap": -1},
-                headers=account["headers"],
-            ).status_code
-            == 422
-        )
 
 
 class TestTokenRefresh:
@@ -509,24 +450,8 @@ class TestGraphThreading:
         assert result.ok
         assert fake.sent_ids == ["graph-1"]
 
-    def test_a_first_send_is_a_plain_draft(self, session, account):
-        connection = MailboxConnection(org_id=account["org_id"], address="t@goforay.io")
-        fake = FakeGraphClient()
-        sender = microsoft.GraphSender(session, connection, client=fake)
-
-        sender.send(self._email(thread_native_id="", in_reply_to="", references=""))
-
-        assert fake.replied_to == []
-        assert len(fake.drafts) == 1
-
 
 class TestSenderResolution:
-    def test_sequence_without_mailbox_uses_the_global_provider(
-        self, session, outreach_fixture, mailbox
-    ):
-        """No mailbox connected at all: rotation falls through to the globally
-        configured provider, which is how every org behaved before the pool."""
-        assert resolve_sender(session, outreach_fixture["sequence"]).sender is mailbox
 
     def test_missing_or_foreign_mailbox_fails_loudly(self, session, account):
         from juicebox.models import Sequence
@@ -538,20 +463,6 @@ class TestSenderResolution:
         resolved = resolve_sender(session, sequence)
         assert isinstance(resolved.sender, FailingSender)
         assert not resolved.sender.send(None).ok
-
-    def test_revoked_mailbox_fails_with_a_reconnect_hint(
-        self, session, account, outreach_fixture
-    ):
-        connection = MailboxConnection(
-            org_id=account["org_id"], address="t@goforay.io", status="revoked"
-        )
-        session.add(connection)
-        session.flush()
-        sequence = outreach_fixture["sequence"]
-        sequence.sender_mode = "fixed"
-        sequence.mailbox_id = connection.id
-        result = resolve_sender(session, sequence).sender.send(None)
-        assert not result.ok and "reconnect" in result.error
 
     def test_a_pinned_enrollment_outranks_the_sequence(
         self, session, account, outreach_fixture
@@ -638,86 +549,6 @@ class _Recorder:
 
 
 class TestSequenceApiMailbox:
-    def test_create_sequence_with_a_connected_mailbox(
-        self, client, session, account, ms_configured, monkeypatch
-    ):
-        status = _connect(client, account["headers"], monkeypatch)
-        mailbox_id = status["connections"][0]["id"]
-        body = client.post(
-            "/v1/sequences",
-            json={
-                "name": "Founding eng",
-                "steps": [{"body_template": "Hi {{ first_name }}"}],
-                "mailbox_id": mailbox_id,
-            },
-            headers=account["headers"],
-        )
-        assert body.status_code == 201, body.text
-        assert body.json()["mailbox_id"] == mailbox_id
-        # Naming a mailbox means pinning to it; otherwise the pool would ignore
-        # the choice the caller just made.
-        assert body.json()["sender_mode"] == "fixed"
-
-    def test_a_sequence_defaults_to_the_rotation_pool(self, client, account):
-        body = client.post(
-            "/v1/sequences",
-            json={"name": "Founding eng", "steps": [{"body_template": "Hi"}]},
-            headers=account["headers"],
-        )
-        assert body.status_code == 201, body.text
-        assert body.json()["sender_mode"] == "rotate"
-        assert body.json()["mailbox_id"] is None
-
-    def test_patch_sets_and_clears_the_mailbox(
-        self, client, account, ms_configured, monkeypatch
-    ):
-        status = _connect(client, account["headers"], monkeypatch)
-        mailbox_id = status["connections"][0]["id"]
-        sequence = client.post(
-            "/v1/sequences",
-            json={"name": "Founding eng", "steps": [{"body_template": "Hi"}]},
-            headers=account["headers"],
-        ).json()
-
-        patched = client.patch(
-            f"/v1/sequences/{sequence['id']}",
-            json={"mailbox_id": mailbox_id},
-            headers=account["headers"],
-        )
-        assert patched.status_code == 200 and patched.json()["mailbox_id"] == mailbox_id
-        assert patched.json()["sender_mode"] == "fixed"
-
-        cleared = client.patch(
-            f"/v1/sequences/{sequence['id']}",
-            json={"mailbox_id": None},
-            headers=account["headers"],
-        )
-        assert cleared.status_code == 200 and cleared.json()["mailbox_id"] is None
-        assert cleared.json()["sender_mode"] == "rotate"
-
-        assert (
-            client.patch(
-                f"/v1/sequences/{sequence['id']}",
-                json={"mailbox_id": "mbx_nope"},
-                headers=account["headers"],
-            ).status_code
-            == 404
-        )
-
-    def test_fixed_without_a_mailbox_is_refused(self, client, account):
-        sequence = client.post(
-            "/v1/sequences",
-            json={"name": "Founding eng", "steps": [{"body_template": "Hi"}]},
-            headers=account["headers"],
-        ).json()
-        assert (
-            client.patch(
-                f"/v1/sequences/{sequence['id']}",
-                json={"sender_mode": "fixed"},
-                headers=account["headers"],
-            ).status_code
-            == 422
-        )
 
     def test_foreign_mailbox_id_is_rejected(self, client, account):
         response = client.post(

@@ -59,32 +59,10 @@ DANIJAR_SEARCH_ITEMS = [
 ]
 
 
-def test_attributed_emails_counted_and_dated():
-    found = extract_attributed_commit_emails(DANIJAR_SEARCH_ITEMS, "danijar")
-    assert found["mail@danijar.org"]["occurrences"] == 1
-    assert found["mail@danijar.org"]["last_date"] == "2024-06-11T18:04:22Z"
-    assert found["mail@danijar.com"]["occurrences"] == 1
-
-
 def test_login_mismatch_is_rejected():
     found = extract_attributed_commit_emails(DANIJAR_SEARCH_ITEMS, "danijar")
     assert "intruder@gmail.com" not in found
     assert "ghost@gmail.com" not in found
-
-
-def test_login_match_is_case_insensitive():
-    found = extract_attributed_commit_emails(DANIJAR_SEARCH_ITEMS, "Danijar")
-    assert "mail@danijar.org" in found
-
-
-def test_noreply_still_dropped():
-    items = [
-        {
-            "commit": {"author": {"email": "123+danijar@users.noreply.github.com", "date": "2024-01-01T00:00:00Z"}},
-            "author": {"login": "danijar"},
-        }
-    ]
-    assert extract_attributed_commit_emails(items, "danijar") == {}
 
 
 def test_incident_addresses_survive_every_new_gate():

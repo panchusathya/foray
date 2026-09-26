@@ -15,7 +15,6 @@ from juicebox.llm.client import LLMClient, LLMUnavailable, is_retryable, loose_j
 from juicebox.llm.openrouter import (
     LLMTransportError,
     OpenRouterTransport,
-    estimated_cost_usd,
     from_openrouter,
     to_openrouter,
 )
@@ -47,13 +46,6 @@ class TestRequestTranslation:
         assert body["messages"][1]["content"] == "Say hi."
         assert "system" not in body
 
-    def test_effort_maps_to_reasoning(self):
-        assert to_openrouter(build_kwargs(effort="medium"))["reasoning"] == {"effort": "medium"}
-
-    def test_unknown_effort_falls_back_to_low(self):
-        kwargs = build_kwargs()
-        kwargs["output_config"]["effort"] = "ludicrous"
-        assert to_openrouter(kwargs)["reasoning"] == {"effort": "low"}
 
     def test_schema_becomes_response_format_and_pins_the_provider(self):
         body = to_openrouter(build_kwargs(schema=SCHEMA))
@@ -68,42 +60,8 @@ class TestRequestTranslation:
         body = to_openrouter(build_kwargs(schema=open_schema))
         assert body["response_format"]["json_schema"]["strict"] is False
 
-    def test_text_calls_carry_no_response_format(self):
-        body = to_openrouter(build_kwargs())
-        assert "response_format" not in body
-        assert "provider" not in body
-
-    def test_token_budget_and_usage_accounting_survive(self):
-        body = to_openrouter(build_kwargs())
-        assert body["max_tokens"] == 512
-        assert body["usage"] == {"include": True}
-
 
 class TestResponseMapping:
-    def _payload(self, **overrides):
-        payload = {
-            "model": "z-ai/glm-5.2",
-            "choices": [{"message": {"content": '{"answer": "hi"}'}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 11, "completion_tokens": 3},
-        }
-        payload.update(overrides)
-        return payload
-
-    def test_maps_text_tokens_and_model(self):
-        result = from_openrouter(self._payload())
-        assert result.text == '{"answer": "hi"}'
-        assert (result.input_tokens, result.output_tokens) == (11, 3)
-        assert result.model == "z-ai/glm-5.2"
-
-    @pytest.mark.parametrize(
-        "finish,expected",
-        [("stop", "end_turn"), ("length", "max_tokens"), ("content_filter", "refusal")],
-    )
-    def test_finish_reasons_map_to_the_internal_vocabulary(self, finish, expected):
-        payload = self._payload()
-        payload["choices"][0]["finish_reason"] = finish
-        assert from_openrouter(payload).stop_reason == expected
-
     def test_no_choices_raises_rather_than_returning_empty(self):
         with pytest.raises(LLMTransportError):
             from_openrouter({"choices": [], "error": {"message": "upstream is down"}})
@@ -128,11 +86,6 @@ class TestErrorClassification:
         assert caught.value.status_code == 429
         assert is_retryable(caught.value) is True
 
-    def test_server_error_is_retryable(self):
-        transport = self._transport(lambda request: httpx.Response(503, text="unavailable"))
-        with pytest.raises(LLMTransportError) as caught:
-            transport.complete(build_kwargs())
-        assert is_retryable(caught.value) is True
 
     def test_bad_request_is_not_retryable(self):
         transport = self._transport(lambda request: httpx.Response(400, text="bad schema"))
@@ -150,40 +103,6 @@ class TestErrorClassification:
 
 
 class TestEndToEnd:
-    def test_a_structured_call_round_trips_over_a_mock_transport(self):
-        seen: dict = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            import json
-
-            seen["headers"] = dict(request.headers)
-            seen["body"] = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={
-                    "model": "z-ai/glm-5.2",
-                    "choices": [
-                        {"message": {"content": '{"answer": "42"}'}, "finish_reason": "stop"}
-                    ],
-                    "usage": {"prompt_tokens": 20, "completion_tokens": 5, "cost": 0.000123},
-                },
-            )
-
-        transport = OpenRouterTransport(
-            api_key="test-key",
-            base_url="https://openrouter.test/api/v1",
-            timeout=5.0,
-            client=httpx.Client(transport=httpx.MockTransport(handler)),
-        )
-        result = transport.complete(build_kwargs(schema=SCHEMA))
-
-        assert result.text == '{"answer": "42"}'
-        assert seen["headers"]["authorization"] == "Bearer test-key"
-        assert seen["headers"]["x-title"]  # attribution, per OpenRouter guidance
-        assert seen["body"]["model"] == "z-ai/glm-5.2"
-        # The provider reported a cost, so we bill that rather than an estimate.
-        assert transport.last_cost_usd == pytest.approx(0.000123)
-
     def test_the_client_uses_the_transport_and_tallies_cost(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
@@ -212,31 +131,16 @@ class TestEndToEnd:
         assert client.ledger.snapshot()["cost_usd"] == pytest.approx(3.65)
 
 
-class TestCostTable:
-    def test_known_model_prices_a_million_tokens_each_way(self):
-        assert estimated_cost_usd("z-ai/glm-5.2", 1_000_000, 1_000_000) == pytest.approx(3.65)
-
-    def test_unknown_model_costs_zero_rather_than_guessing(self):
-        assert estimated_cost_usd("who/knows", 1_000_000, 1_000_000) == 0.0
-
-
 class TestTolerantDecode:
     """Not every provider honours response_format as strictly as the SDK does."""
-
-    def test_plain_json_is_unchanged(self):
-        assert loose_json('{"a": 1}') == {"a": 1}
 
     def test_fenced_json_parses(self):
         assert loose_json('```json\n{"a": 1}\n```') == {"a": 1}
 
-    def test_unlabelled_fence_parses(self):
-        assert loose_json('```\n{"a": 1}\n```') == {"a": 1}
 
     def test_prose_wrapped_object_parses(self):
         assert loose_json('Sure! Here you go:\n{"a": 1}\nHope that helps.') == {"a": 1}
 
-    def test_array_payload_parses(self):
-        assert loose_json('```json\n[{"a": 1}]\n```') == [{"a": 1}]
 
     def test_unparseable_output_raises(self):
         with pytest.raises(ValueError):

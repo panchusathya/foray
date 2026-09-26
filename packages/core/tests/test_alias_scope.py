@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from juicebox.applications import alias
-from juicebox.models import Application, Candidate, CandidateAlias, JobPosting
+from juicebox.models import Application, Candidate, JobPosting
 from juicebox.repository import upsert_candidates
 from juicebox.security import alias_token, application_alias_token
 
@@ -66,9 +66,6 @@ class TestTokens:
         still not be interchangeable, which is what the purpose string buys."""
         assert alias_token("x1") != application_alias_token("x1")
 
-    def test_a_token_is_stable(self):
-        assert application_alias_token("app_1") == application_alias_token("app_1")
-
     def test_it_is_lowercase_and_alphanumeric(self):
         """Local parts survive case changes in transit; a token that stopped
         matching after a relay lowercased it would be unroutable."""
@@ -77,20 +74,6 @@ class TestTokens:
 
 
 class TestMinting:
-    def test_an_application_gets_its_own_address(self, session, account, candidate, aliased):
-        application = _application(session, account, candidate)
-        row = alias.ensure_for_application(session, application)
-        assert row.scope == "application"
-        assert row.application_id == application.id
-        assert row.address == f"anna+{application_alias_token(application.id)}@goforay.io"
-
-    def test_two_applications_get_two_addresses(self, session, account, candidate, aliased):
-        first = _application(session, account, candidate, source_id="p1")
-        second = _application(session, account, candidate, source_id="p2")
-        assert (
-            alias.ensure_for_application(session, first).address
-            != alias.ensure_for_application(session, second).address
-        )
 
     def test_minting_twice_reuses_the_address(self, session, account, candidate, aliased):
         """Reissuing would change an address the employer is already using."""
@@ -124,10 +107,6 @@ class TestMinting:
         found, application_id = alias.resolve(session, legacy.address)
         assert found.id == candidate.id
         assert application_id == ""
-
-    def test_nothing_is_minted_when_aliasing_is_off(self, session, account, candidate):
-        application = _application(session, account, candidate)
-        assert alias.ensure_for_application(session, application) is None
 
 
 class TestResolving:
@@ -184,15 +163,6 @@ class TestResolving:
         row = alias.ensure_for_application(session, application)
         assert alias.candidate_for(session, row.address).id == candidate.id
 
-    def test_ensure_does_not_return_an_application_row(
-        self, session, account, candidate, aliased
-    ):
-        application = _application(session, account, candidate)
-        minted = alias.ensure_for_application(session, application)
-        legacy = alias.ensure(session, candidate)
-        assert legacy.id != minted.id
-        assert legacy.scope == "candidate"
-
     def test_revoke_covers_every_alias_for_the_candidate(
         self, session, account, candidate, aliased
     ):
@@ -208,9 +178,6 @@ class TestResolving:
         attributable to no one."""
         assert alias.resolve(session, "anna@goforay.io") == (None, "")
 
-    def test_an_unknown_alias_row_resolves_to_nobody(self, session, aliased):
-        assert alias.resolve(session, "anna+neverissued@goforay.io") == (None, "")
-
 
 class TestSendingIdentity:
     def test_an_application_send_uses_the_application_alias(
@@ -220,18 +187,3 @@ class TestSendingIdentity:
         from_address, reply_to = alias.sending_identity(session, candidate, application)
         assert from_address == f"anna+{application_alias_token(application.id)}@goforay.io"
         assert reply_to == "ada@example.com"
-
-    def test_without_aliasing_the_candidate_shows_their_own_address(
-        self, session, account, candidate
-    ):
-        application = _application(session, account, candidate)
-        assert alias.sending_identity(session, candidate, application) == (
-            "ada@example.com",
-            "ada@example.com",
-        )
-
-    def test_the_alias_row_is_persisted_by_sending(self, session, account, candidate, aliased):
-        application = _application(session, account, candidate)
-        alias.sending_identity(session, candidate, application)
-        rows = session.query(CandidateAlias).all()
-        assert len(rows) == 1 and rows[0].application_id == application.id

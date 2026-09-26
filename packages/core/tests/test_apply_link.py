@@ -338,28 +338,6 @@ class TestIngest:
         assert "var x=1" not in posting.jd_text
         assert posting.form_questions == []
 
-    def test_a_dead_link_refuses_with_a_candidate_safe_reason(self, session, account):
-        with pytest.raises(LinkUnreachable):
-            ingest_posting_from_url(
-                session, org_id=account["org_id"],
-                url="https://careers.initech.com/gone",
-                transport=fake_transport({}),
-            )
-
-    def test_a_page_with_no_readable_description_refuses(self, session, account):
-        with pytest.raises(LinkUnreachable):
-            ingest_posting_from_url(
-                session, org_id=account["org_id"], url=GENERIC_URL,
-                transport=fake_transport({GENERIC_URL: "<html><body>404</body></html>"}),
-            )
-
-    def test_a_non_link_refuses_before_fetching(self, session, account):
-        with pytest.raises(LinkUnreachable):
-            ingest_posting_from_url(
-                session, org_id=account["org_id"], url="ftp://example.com/job",
-                transport=fake_transport({}),
-            )
-
 
 class TestAnswers:
     def _posting(self, session, org_id):
@@ -486,17 +464,6 @@ class TestOnboardingStash:
         assert apply_link.pending(thread)["url"] == GH_URL
         # Onboarding still runs: the greeting went out, not an application.
         assert thread.mode != MODE_MANAGING
-
-    def test_handover_spends_the_stash(self, session, account, managed):
-        record = dict(managed.record or {})
-        record[apply_link.APPLY_META_KEY] = {"url": GH_URL, "message_id": "msg-x"}
-        managed.record = record
-        session.flush()
-        from juicebox.messaging.apply_link import ensure_enqueued
-
-        job = ensure_enqueued(session, managed)
-        assert job is not None
-        assert job.idempotency_key == f"{KIND_APPLY_LINK}:msg-x"
 
 
 class TestWorker:

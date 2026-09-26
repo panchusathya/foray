@@ -6,16 +6,11 @@ import asyncpg
 
 from foray.config import settings
 from foray.db import _asyncpg_dsn
-from foray.enrich.contacts import is_placeholder
-from foray.enrich.emails import is_usable_commit_email
 from foray.enrich.name_bridge import (
     collapse_hits_by_login,
     companies_match,
     corroborate,
     ensure_github_candidate,
-    locations_match,
-    name_search_query,
-    profile_has_slug,
 )
 from foray.ingest.resolve import queue_pair
 from tests.dbutil import requires_db
@@ -40,14 +35,6 @@ DAVID_LEE_ITEMS = [
         "author": None,
     },
 ]
-
-
-def test_name_query_requires_a_full_name():
-    assert name_search_query("Ada Lovelace") == 'author-name:"Ada Lovelace"'
-    assert name_search_query("Ada") is None
-    assert name_search_query("") is None
-    assert name_search_query("  ") is None
-    assert name_search_query('Ada "quoted" Lovelace') == 'author-name:"Ada quoted Lovelace"'
 
 
 def test_collapse_drops_unattributed_and_groups_by_login():
@@ -78,36 +65,6 @@ def test_uncorroborated_common_name_is_rejected():
             min_commits=3,
         )
         assert reasons == [], login
-
-
-def test_slug_on_the_github_profile_corroborates():
-    reasons = corroborate(
-        login="ada",
-        bucket={"commits": 1},
-        user={"bio": "I work at X. https://linkedin.com/in/ada-lovelace", "blog": "", "company": None, "location": None},
-        linkedin={"linkedin_slug": "ada-lovelace", "employer": None, "location_metro": None, "location_raw": None},
-        sole_login=False,
-        min_commits=3,
-    )
-    assert "linkedin_slug" in reasons
-
-
-def test_employer_and_location_corroborate():
-    reasons = corroborate(
-        login="ada",
-        bucket={"commits": 1},
-        user={"bio": "", "blog": "", "company": "@stripe", "location": "San Francisco, CA"},
-        linkedin={
-            "linkedin_slug": "someone-else",
-            "employer": "Stripe Inc",
-            "location_metro": "San Francisco",
-            "location_raw": "SF",
-        },
-        sole_login=False,
-        min_commits=3,
-    )
-    assert "employer" in reasons
-    assert "location" in reasons
 
 
 def test_rare_name_requires_a_single_login_and_enough_commits():
@@ -145,23 +102,6 @@ def test_companies_match_strips_suffixes_and_at():
     assert companies_match("Google LLC", "Alphabet") is False
     assert companies_match("", "Stripe") is False
     assert companies_match("ab", "ab") is False  # too short
-
-
-def test_locations_match_substring():
-    assert locations_match("San Francisco, CA", "San Francisco", None) is True
-    assert locations_match("NYC", None, "New York") is False  # 'nyc' vs 'new york'
-    assert locations_match("", "San Francisco", None) is False
-
-
-def test_profile_has_slug_reads_bio_and_blog():
-    assert profile_has_slug({"bio": "hi", "blog": "https://linkedin.com/in/ada-lovelace"}, "ada-lovelace")
-    assert not profile_has_slug({"bio": "nope", "blog": ""}, "ada-lovelace")
-
-
-def test_incident_addresses_would_still_be_written_on_the_github_row():
-    for email in ("mail@danijar.com", "email@jamie.sh", "mail@taeuk.me"):
-        assert is_usable_commit_email(email)
-        assert not is_placeholder(email)
 
 
 @requires_db

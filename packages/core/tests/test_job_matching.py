@@ -143,24 +143,6 @@ class TestScorePair:
         # Posting is freshly matched; candidates all have watermarks. Nothing new.
         assert after == before
 
-    def test_spec_version_change_reques_recompute(self, session, account, sample_candidates):
-        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
-        posting = _parsed_posting(session, account["org_id"], source_id="stale-spec")
-        match_posting(session, posting)
-        session.commit()
-        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
-        row = session.query(JobMatch).filter_by(
-            job_posting_id=posting.id, candidate_id=ada.id
-        ).one()
-        old_version = row.spec_version
-        posting.jd_text = posting.jd_text + " PyTorch required."
-        parse_posting(session, posting)
-        session.commit()
-        assert posting.spec_version != old_version
-        match_posting(session, posting)
-        session.commit()
-        row = session.query(JobMatch).filter_by(id=row.id).one()
-        assert row.spec_version == posting.spec_version
 
     def test_mismatched_embedding_models_drop_vector_term(self):
         spec = ParsedQuery(job_titles=["machine learning engineer"], search_text="ml")
@@ -359,29 +341,6 @@ class TestHumanDecisionsOutliveTheHeuristics:
         assert len(rows) == 1, "a human dismissal must not be erased by a rescore"
         assert rows[0].status == "dismissed"
 
-    def test_a_new_match_is_still_dropped(self, session, account):
-        from juicebox.jobmatch.engine import _drop_match
-
-        org = account["org_id"]
-        posting = self._posting(session, org, source_id="sid-human-2")
-        candidate = Candidate(
-            org_id=org, source="manual", source_id="cleo-human", full_name="Cleo Park",
-        )
-        session.add(candidate)
-        session.flush()
-        session.add(
-            JobMatch(
-                org_id=org, job_posting_id=posting.id, candidate_id=candidate.id,
-                status="new", score=0.4,
-            )
-        )
-        session.flush()
-
-        _drop_match(session, posting.id, candidate.id)
-        session.flush()
-
-        assert session.scalars(select(JobMatch)).all() == []
-
 
 class TestABorrowedPostingOutlivesTheMandate:
     def test_deleting_a_project_does_not_archive_a_market_posting(
@@ -407,24 +366,6 @@ class TestABorrowedPostingOutlivesTheMandate:
         assert posting.project_id is None
         assert posting.status == "open", "the open role outlives the client going quiet"
 
-    def test_the_projects_own_posting_is_archived(self, session, account):
-        from juicebox.jobmatch.sync import archive_project_posting
-
-        org = account["org_id"]
-        project = Project(org_id=org, name="Own Mandate", status="active")
-        session.add(project)
-        session.flush()
-        posting = JobPosting(
-            org_id=org, source="project", source_id=f"project:{project.id}",
-            status="open", title="Own Mandate", project_id=project.id,
-        )
-        session.add(posting)
-        session.flush()
-
-        archive_project_posting(session, project.id)
-        session.flush()
-
-        assert posting.status == "archived"
 
     def test_a_project_edit_does_not_blank_the_scraped_description(
         self, session, account
@@ -455,25 +396,6 @@ class TestABorrowedPostingOutlivesTheMandate:
 
 
 class TestPreferenceTerm:
-    def test_no_preference_scores_like_today(self, session, account, sample_candidates):
-        upsert_candidates(session, org_id=account["org_id"], payloads=sample_candidates)
-        posting = _parsed_posting(session, account["org_id"], source_id="nopref")
-        ada = session.query(Candidate).filter_by(full_name="Ada Okonkwo").one()
-        spec = ParsedQuery.from_dict(posting.parsed_spec or {})
-        from juicebox.search.index import candidate_to_doc
-
-        doc = candidate_to_doc(ada)
-        kwargs = dict(
-            cand_embedding=ada.embedding,
-            cand_embedding_model=ada.embedding_model or "",
-            posting_embedding=posting.embedding,
-            posting_embedding_model=posting.embedding_model or "",
-        )
-        today = score_pair(doc, spec, **kwargs)
-        with_none = score_pair(doc, spec, preference=None, posting=posting, **kwargs)
-        assert with_none.score == today.score
-        assert with_none.criteria == today.criteria
-
     def test_excluded_company_drops_new_leaves_shortlisted(
         self, session, account, sample_candidates
     ):

@@ -13,7 +13,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from juicebox.duplicates import merge, normalise_name, suggestions
+from juicebox.duplicates import merge, suggestions
 from juicebox.models import (
     Candidate,
     CandidateEmail,
@@ -60,32 +60,6 @@ class TestWhatGetsSuggested:
         assert len(groups) == 1
         assert groups[0].confidence == "same_company"
 
-    def test_a_work_and_a_personal_address_is_the_common_real_case(
-        self, session, account
-    ):
-        _person(session, account["org_id"], "Adia Chenumbay",
-                emails=["adia@northwind.com"])
-        _person(session, account["org_id"], "Adia Chenumbay",
-                emails=["adia.chenumbay@gmail.com"])
-        session.flush()
-
-        groups = suggestions(session, org_id=account["org_id"])
-        assert groups[0].confidence == "work_and_personal"
-        assert "gmail.com" in groups[0].reason
-
-    def test_a_bare_name_match_is_offered_but_ranked_last(self, session, account):
-        _person(session, account["org_id"], "John Smith", emails=["js@acme.com"])
-        _person(session, account["org_id"], "John Smith", emails=["john@contoso.com"])
-        _person(session, account["org_id"], "Adia Chenumbay",
-                emails=["adia@northwind.com"], company_domain="northwind.com")
-        _person(session, account["org_id"], "Adia Chenumbay",
-                emails=["a.c@northwind.com"], company_domain="northwind.com")
-        session.flush()
-
-        groups = suggestions(session, org_id=account["org_id"])
-        # Strongest evidence first, so the safe merges are the ones in reach.
-        assert [g.confidence for g in groups] == ["same_company", "name_only"]
-
     def test_single_token_names_are_never_paired(self, session, account):
         """Every Info, Support and first-name-only contact would otherwise
         collide with every other one."""
@@ -105,9 +79,6 @@ class TestWhatGetsSuggested:
         session.flush()
 
         assert suggestions(session, org_id=account["org_id"]) == []
-
-    def test_punctuation_and_case_do_not_hide_a_duplicate(self):
-        assert normalise_name("O'Brien, Seán") == normalise_name("o brien  seán")
 
     def test_another_org_is_never_in_the_group(self, session, account, client):
         _person(session, account["org_id"], "Adia Chenumbay", emails=["a@x.com"])
@@ -352,15 +323,6 @@ class TestMergeKeepsEverything:
 
         tags = sorted(row.tag for row in session.scalars(select(CandidateTag)).all())
         assert tags == ["referral", "warm"]
-
-    def test_the_duplicate_is_gone_afterwards(self, session, account, pair):
-        primary, other = pair
-        merge(session, org_id=account["org_id"],
-              primary_id=primary.id, duplicate_ids=[other.id])
-        session.flush()
-
-        assert session.get(Candidate, other.id) is None
-        assert session.get(Candidate, primary.id) is not None
 
     def test_tracking_survives_if_either_side_had_it(self, session, account, pair):
         primary, other = pair

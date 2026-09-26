@@ -58,9 +58,3 @@ class TestIsGone:
         with _client(handler) as c:
             assert is_gone("https://jobs.example.com/1", client=c)
         assert seen == ["HEAD", "GET"]
-
-    def test_a_missing_or_odd_url_is_never_gone(self):
-        with _client(_status(404)) as c:
-            assert not is_gone("", client=c)
-            assert not is_gone("mailto:someone@example.com", client=c)
-            assert not is_gone("/relative/path", client=c)

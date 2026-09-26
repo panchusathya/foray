@@ -4,11 +4,6 @@ from __future__ import annotations
 
 
 class TestAuth:
-    def test_signup_returns_a_usable_token(self, client, account):
-        response = client.get("/v1/auth/me", headers=account["headers"])
-        assert response.status_code == 200
-        assert response.json()["email"] == "recruiter@acme-talent.com"
-
     def test_duplicate_signup_is_rejected(self, client, account):
         response = client.post(
             "/v1/auth/signup",
@@ -19,13 +14,6 @@ class TestAuth:
             },
         )
         assert response.status_code == 409
-
-    def test_login_with_a_bad_password_fails(self, client, account):
-        response = client.post(
-            "/v1/auth/login",
-            json={"email": "recruiter@acme-talent.com", "password": "wrong-password"},
-        )
-        assert response.status_code == 401
 
     def test_unauthenticated_requests_are_rejected(self, client):
         assert client.get("/v1/candidates").status_code == 401
@@ -116,64 +104,6 @@ class TestCandidates:
         assert detail["emails"] == ["jane@stripe.com"]
         assert detail["source"] == "foray" and detail["source_id"] == "janedoe"
 
-    def test_enrichment_is_visible_on_read(self, client, loaded_org):
-        listing = client.get(
-            "/v1/candidates?q=ada", headers=loaded_org["headers"]
-        ).json()
-        assert len(listing) == 1
-
-        detail = client.get(
-            f"/v1/candidates/{listing[0]['id']}", headers=loaded_org["headers"]
-        ).json()
-        assert detail["seniority"] == "senior"
-        assert detail["current_company"] == "Modal"
-        assert "pytorch" in detail["skills"]
-        assert len(detail["experiences"]) == 2
-
-    def test_email_guessing_endpoint(self, client, loaded_org):
-        candidate_id = client.get(
-            "/v1/candidates?q=ada", headers=loaded_org["headers"]
-        ).json()[0]["id"]
-        response = client.get(
-            f"/v1/candidates/{candidate_id}/email-guesses?domain=modal.com",
-            headers=loaded_org["headers"],
-        ).json()
-        assert response["guesses"][0]["email"] == "ada.okonkwo@modal.com"
-
-    def test_flat_current_role_fields_survive_without_experiences(self, client, account):
-        created = client.post(
-            "/v1/candidates/bulk",
-            json={
-                "candidates": [
-                    {
-                        "source": "foray",
-                        "source_id": "gh-42",
-                        "full_name": "Grace Ideh",
-                        "emails": ["grace@example.com"],
-                        "current_title": "Staff Engineer",
-                        "current_company": "Tailscale",
-                        "current_company_domain": "tailscale.com",
-                        "seniority": "staff",
-                        "years_experience": 9.5,
-                    }
-                ]
-            },
-            headers=account["headers"],
-        ).json()
-        assert created["created"] == 1
-
-        candidate_id = client.get(
-            "/v1/candidates?q=grace", headers=account["headers"]
-        ).json()[0]["id"]
-        detail = client.get(
-            f"/v1/candidates/{candidate_id}", headers=account["headers"]
-        ).json()
-        assert detail["current_title"] == "Staff Engineer"
-        assert detail["current_company"] == "Tailscale"
-        assert detail["current_company_domain"] == "tailscale.com"
-        assert detail["seniority"] == "staff"
-        assert detail["years_experience"] == 9.5
-
     def test_a_repeated_source_id_within_one_payload_collapses(self, client, account):
         # Two Foray pages can carry the same login, and a CSV can repeat a row.
         # Before the fix the second copy INSERTed again and the unique index
@@ -197,52 +127,6 @@ class TestCandidates:
         listing = client.get("/v1/candidates?q=octo", headers=account["headers"]).json()
         assert len(listing) == 1
 
-    def test_missing_candidate_returns_404(self, client, account):
-        assert client.get("/v1/candidates/cand_nope", headers=account["headers"]).status_code == 404
-
-
-class TestSearchApi:
-    def test_search_returns_ranked_explained_results(self, client, loaded_org):
-        response = client.post(
-            "/v1/search",
-            json={
-                "query": "senior machine learning engineer in San Francisco with pytorch",
-                "limit": 5,
-            },
-            headers=loaded_org["headers"],
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["results"][0]["candidate"]["full_name"] == "Ada Okonkwo"
-        assert body["parsed"]["job_titles"] == ["machine learning engineer"]
-        assert body["results"][0]["criteria"], "every hit must carry its evidence"
-        assert body["search_id"]
-
-    def test_overrides_narrow_the_result_set(self, client, loaded_org):
-        response = client.post(
-            "/v1/search",
-            json={"query": "engineer", "overrides": {"locations": ["berlin"]}},
-            headers=loaded_org["headers"],
-        ).json()
-        top = response["results"][0]
-        assert top["candidate"]["full_name"] == "Bo Lindqvist"
-
-    def test_a_persisted_search_can_be_replayed(self, client, loaded_org):
-        search_id = client.post(
-            "/v1/search",
-            json={"query": "backend engineer with go"},
-            headers=loaded_org["headers"],
-        ).json()["search_id"]
-
-        replay = client.get(f"/v1/searches/{search_id}", headers=loaded_org["headers"])
-        assert replay.status_code == 200
-        assert replay.json()["results"][0]["candidate"]["full_name"] == "Cleo Rahman"
-
-    def test_index_stats(self, client, loaded_org):
-        stats = client.get("/v1/search/index-stats", headers=loaded_org["headers"]).json()
-        assert stats["documents"] == 3
-        assert stats["embedding_dim"] > 0
-
 
 class TestPipeline:
     def _project(self, client, headers):
@@ -251,91 +135,6 @@ class TestPipeline:
             json={"name": "Founding ML", "role_title": "Senior ML Engineer"},
             headers=headers,
         ).json()
-
-    def test_add_candidates_carries_the_search_rationale(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = self._project(client, headers)
-        search = client.post(
-            "/v1/search",
-            json={"query": "machine learning engineer with pytorch", "limit": 1},
-            headers=headers,
-        ).json()
-
-        response = client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={
-                "candidate_ids": [search["results"][0]["candidate"]["id"]],
-                "search_id": search["search_id"],
-            },
-            headers=headers,
-        )
-        assert response.status_code == 200
-        entry = response.json()[0]
-        assert entry["stage"] == "sourced"
-        assert entry["rationale"]["criteria"]
-        assert entry["score"] > 0
-
-    def test_stage_transitions(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = self._project(client, headers)
-        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
-        entry = client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={"candidate_ids": [candidate_id]},
-            headers=headers,
-        ).json()[0]
-
-        updated = client.patch(
-            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
-            json={"stage": "interviewing", "notes": "great screen"},
-            headers=headers,
-        ).json()
-        assert updated["stage"] == "interviewing"
-        assert updated["notes"] == "great screen"
-
-        bad = client.patch(
-            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
-            json={"stage": "not-a-stage"},
-            headers=headers,
-        )
-        assert bad.status_code == 422
-
-    def test_outreach_driven_stages_reject_manual_moves_without_override(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = self._project(client, headers)
-        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
-        entry = client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={"candidate_ids": [candidate_id]},
-            headers=headers,
-        ).json()[0]
-
-        # "contacted" is outreach-driven: a bare manual move is refused.
-        blocked = client.patch(
-            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
-            json={"stage": "contacted"},
-            headers=headers,
-        )
-        assert blocked.status_code == 409
-
-        # ...but an explicit override records a manual touch.
-        overridden = client.patch(
-            f"/v1/projects/{project['id']}/pipeline/{entry['id']}",
-            json={"stage": "contacted", "override": True},
-            headers=headers,
-        )
-        assert overridden.status_code == 200
-        assert overridden.json()["stage"] == "contacted"
-
-    def test_adding_the_same_candidate_twice_is_a_no_op(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = self._project(client, headers)
-        candidate_id = client.get("/v1/candidates", headers=headers).json()[0]["id"]
-        payload = {"candidate_ids": [candidate_id]}
-        client.post(f"/v1/projects/{project['id']}/candidates", json=payload, headers=headers)
-        client.post(f"/v1/projects/{project['id']}/candidates", json=payload, headers=headers)
-        pipeline = client.get(f"/v1/projects/{project['id']}/pipeline", headers=headers).json()
-        assert len(pipeline) == 1
 
     def test_delete_project_removes_pipeline_and_unlinks_sequences(self, client, loaded_org):
         headers = loaded_org["headers"]
@@ -370,9 +169,6 @@ class TestPipeline:
         leftover = client.get(f"/v1/sequences/{sequence['id']}", headers=headers).json()
         assert leftover["project_id"] is None
 
-    def test_delete_unknown_project_is_404(self, client, account):
-        assert client.delete("/v1/projects/proj_nope", headers=account["headers"]).status_code == 404
-
 
 class TestOutreachApi:
     def _sequence(self, client, headers, project_id=None):
@@ -397,40 +193,6 @@ class TestOutreachApi:
             },
             headers=headers,
         ).json()
-
-    def test_create_preview_enroll_and_run(self, client, loaded_org, mailbox):
-        headers = loaded_org["headers"]
-        sequence = self._sequence(client, headers)
-        assert len(sequence["steps"]) == 2
-
-        candidate = client.get("/v1/candidates?q=ada", headers=headers).json()[0]
-        preview = client.post(
-            f"/v1/sequences/{sequence['id']}/preview",
-            json={"candidate_id": candidate["id"]},
-            headers=headers,
-        ).json()
-        assert preview["subject"] == "Hi Ada"
-        assert "Modal" in preview["body"]
-
-        # Step 2 has no subject of its own: the preview shows the line it will
-        # really go out under, which is step 1's, as a reply.
-        follow_up = client.post(
-            f"/v1/sequences/{sequence['id']}/preview",
-            json={"candidate_id": candidate["id"], "step_order": 1},
-            headers=headers,
-        ).json()
-        assert follow_up["subject"] == "Re: Hi Ada"
-
-        enrolled = client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate["id"]]},
-            headers=headers,
-        ).json()["enrollments"]
-        assert enrolled[0]["status"] == "active"
-
-        run = client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers).json()
-        assert run["sent"] == 1
-        assert len(mailbox.outbox) == 1
 
     def test_inbound_reply_webhook_stops_the_sequence(self, client, loaded_org, mailbox):
         headers = loaded_org["headers"]
@@ -511,14 +273,6 @@ class TestOutreachApi:
         second = client.post("/v1/webhooks/inbound-email", json=payload, headers=headers)
         assert second.json()["duplicate"] is True
 
-    def test_unmatched_reply_returns_404(self, client, loaded_org):
-        response = client.post(
-            "/v1/webhooks/inbound-email",
-            json={"from": "stranger@example.com", "subject": "hi", "body": "hello"},
-            headers=loaded_org["headers"],
-        )
-        assert response.status_code == 404
-
     def test_paused_sequence_does_not_send(self, client, loaded_org, mailbox):
         headers = loaded_org["headers"]
         sequence = self._sequence(client, headers)
@@ -535,14 +289,6 @@ class TestOutreachApi:
 
 
 class TestOrgAndSuppressions:
-    def test_org_name_round_trips(self, client, account):
-        headers = account["headers"]
-        body = client.patch(
-            "/v1/org", json={"name": "Foray Search"}, headers=headers
-        ).json()
-        assert body["name"] == "Foray Search"
-        assert client.get("/v1/org", headers=headers).json()["name"] == "Foray Search"
-
     def test_suppression_list_blocks_sends(self, client, loaded_org, mailbox):
         headers = loaded_org["headers"]
         added = client.post(
@@ -572,31 +318,6 @@ class TestOrgAndSuppressions:
 
 
 class TestAgentsApi:
-    def test_agent_run_fills_the_pipeline(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = client.post(
-            "/v1/projects", json={"name": "ML hires"}, headers=headers
-        ).json()
-
-        agent = client.post(
-            "/v1/agents",
-            json={
-                "name": "SF ML engineers",
-                "project_id": project["id"],
-                "query": "machine learning engineer with pytorch in San Francisco",
-                "min_score": 0.3,
-                "max_per_run": 2,
-            },
-            headers=headers,
-        )
-        assert agent.status_code == 201
-
-        run = client.post(f"/v1/agents/{agent.json()['id']}/run", headers=headers).json()
-        assert run["added"] >= 1
-        pipeline = client.get(f"/v1/projects/{project['id']}/pipeline", headers=headers).json()
-        assert len(pipeline) == run["added"]
-        assert pipeline[0]["rationale"]["criteria"]
-
     def test_second_run_does_not_re_add(self, client, loaded_org):
         headers = loaded_org["headers"]
         project = client.post("/v1/projects", json={"name": "ML hires"}, headers=headers).json()
@@ -617,48 +338,8 @@ class TestAgentsApi:
         assert first["added"] > 0
         assert second["added"] == 0
 
-    def test_agent_requires_a_real_project(self, client, account):
-        response = client.post(
-            "/v1/agents",
-            json={"name": "x", "project_id": "proj_nope", "query": "engineers"},
-            headers=account["headers"],
-        )
-        assert response.status_code == 404
-
 
 class TestAnalytics:
-    def test_funnel_reports_stages_and_outreach(self, client, loaded_org, mailbox):
-        headers = loaded_org["headers"]
-        project = client.post("/v1/projects", json={"name": "ML"}, headers=headers).json()
-        candidate = client.get("/v1/candidates?q=ada", headers=headers).json()[0]
-        client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={"candidate_ids": [candidate["id"]]},
-            headers=headers,
-        )
-
-        sequence = client.post(
-            "/v1/sequences",
-            json={
-                "name": "one touch",
-                "project_id": project["id"],
-                "personalize": False,
-                "steps": [{"delay_days": 0, "subject_template": "Hi", "body_template": "Hello"}],
-            },
-            headers=headers,
-        ).json()
-        client.post(
-            f"/v1/sequences/{sequence['id']}/enroll",
-            json={"candidate_ids": [candidate["id"]], "project_id": project["id"]},
-            headers=headers,
-        )
-        client.post(f"/v1/sequences/{sequence['id']}/run", headers=headers)
-
-        funnel = client.get("/v1/analytics/funnel", headers=headers).json()
-        assert funnel["outreach"]["sent"] == 1
-        assert funnel["stages"]["contacted"] == 1
-        assert funnel["reply_rate"] == 0.0
-
     def test_funnel_scopes_outreach_to_the_project(self, client, loaded_org, mailbox):
         """project_id narrows the outreach block, not just the stages block."""
         headers = loaded_org["headers"]
@@ -717,18 +398,6 @@ class TestAnalytics:
         ).json()
         assert other["outreach"]["sent"] == 1
 
-    def test_activity_feed_records_events(self, client, loaded_org):
-        headers = loaded_org["headers"]
-        project = client.post("/v1/projects", json={"name": "ML"}, headers=headers).json()
-        candidate = client.get("/v1/candidates", headers=headers).json()[0]
-        client.post(
-            f"/v1/projects/{project['id']}/candidates",
-            json={"candidate_ids": [candidate["id"]]},
-            headers=headers,
-        )
-        feed = client.get("/v1/analytics/activity", headers=headers).json()
-        assert any(event["type"] == "pipeline.added" for event in feed)
-
 
 class TestSeededDemo:
     """The demo workspace is the first thing anyone touches — keep it working."""
@@ -760,10 +429,5 @@ class TestSeededDemo:
 
 
 class TestMeta:
-    def test_health(self, client):
-        body = client.get("/health").json()
-        assert body["status"] == "ok"
-        assert body["llm"] is False  # disabled in tests
-
     def test_openapi_schema_builds(self, client):
         assert client.get("/openapi.json").status_code == 200

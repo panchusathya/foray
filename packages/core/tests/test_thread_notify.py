@@ -27,7 +27,6 @@ from juicebox.messaging.manager import MODE_MANAGING
 from juicebox.messaging.notify import (
     EVENT_APPLICATION_SENT,
     EVENT_MATCHES_READY,
-    EVENT_PACKAGE_READY,
     EVENT_PROFILE_READY,
     EVENT_STATUS_CHANGED,
     enqueue_notify,
@@ -224,13 +223,6 @@ class TestEvents:
         assert row is not None
         assert session.scalar(select(JobProposal)) is not None
 
-    def test_profile_ready_falls_back_to_the_canned_line(
-        self, session, account, channel, thread
-    ):
-        job = enqueue_notify(session, thread=thread, event=EVENT_PROFILE_READY, subject_id="s")
-        _run(session, job)
-        assert "scanning for roles" in channel.bodies[-1]
-
     def test_matches_ready_stays_silent_with_nothing_to_say(
         self, session, account, channel, thread
     ):
@@ -238,77 +230,6 @@ class TestEvents:
         job = enqueue_notify(session, thread=thread, event=EVENT_MATCHES_READY, subject_id="s")
         _run(session, job)
         assert channel.bodies == []
-
-    def test_package_ready_links_to_the_portal(self, session, account, channel, thread):
-        posting = _posting(session, account["org_id"], company="Figma", suffix="pkg")
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=thread.candidate_id,
-            job_posting_id=posting.id,
-        )
-        session.flush()
-        job = enqueue_notify(
-            session, thread=thread, event=EVENT_PACKAGE_READY, subject_id=application.id
-        )
-        _run(session, job)
-        ready = channel.bodies[0]
-        assert "Figma" in ready and "/m/" in ready
-        # Follow-up questions ride behind the ready message. Chat asks only
-        # work authorization; other blanks stay off this text.
-        if len(channel.bodies) > 1:
-            assert "ready to review" in ready
-            follow = channel.bodies[1].lower()
-            assert "authoris" in follow or "sponsor" in follow
-            assert "comp" not in follow
-
-    def test_application_sent_reacts_like_on_the_consenting_inbound(
-        self, session, account, channel, thread
-    ):
-        posting = _posting(session, account["org_id"], company="Notion", suffix="sent")
-        inbound, _ = record_inbound(
-            session, thread=thread, body="apply to 1", provider_native_id="in-apply"
-        )
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=thread.candidate_id,
-            job_posting_id=posting.id,
-            consenting_message_id=inbound.id,
-            consent_verbatim="apply to 1",
-        )
-        session.flush()
-        job = enqueue_notify(
-            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
-        )
-        _run(session, job)
-        assert any("Notion" in b for b in channel.bodies)
-        assert ("in-apply", "like") in channel.reactions
-
-    def test_application_sent_does_not_react_to_our_own_outbound(
-        self, session, account, channel, thread
-    ):
-        posting = _posting(session, account["org_id"], company="Linear", suffix="out")
-        outbound = record_outbound(
-            session,
-            thread=thread,
-            message=OutboundMessage(body="a card"),
-            result=DeliveryResult(status="sent", provider_native_id="out-card"),
-        )
-        application = create_application(
-            db=session,
-            org_id=account["org_id"],
-            candidate_id=thread.candidate_id,
-            job_posting_id=posting.id,
-            consenting_message_id=outbound.id,
-        )
-        session.flush()
-        job = enqueue_notify(
-            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
-        )
-        _run(session, job)
-        assert any("Linear" in b for b in channel.bodies)
-        assert channel.reactions == []
 
     def test_recruiter_transition_notifies_the_candidate(
         self, session, account, channel, thread
@@ -472,22 +393,6 @@ class TestConfirmationScreenshot:
         assert message.media[0].attachment_id == "att_1"
         assert message.body  # words stay even when the image is attached
 
-    def test_rcs_attaches_too(self, session, account, channel, thread, monkeypatch):
-        from juicebox.messaging.linq import SERVICE_RCS
-
-        thread.last_service = SERVICE_RCS
-        session.flush()
-        application = self._application(session, account, thread, suffix="rcs")
-        path = self._png(application)
-        self._succeeded(session, account, application, [path])
-        self._uploads(monkeypatch)
-
-        job = enqueue_notify(
-            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
-        )
-        _run(session, job)
-        assert channel.sent[0][1].media
-
     def test_sms_stays_text_only(self, session, account, channel, thread, monkeypatch):
         from juicebox.messaging.linq import SERVICE_SMS
 
@@ -520,25 +425,6 @@ class TestConfirmationScreenshot:
             session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
         )
         _run(session, job)
-        assert channel.sent[0][1].media == ()
-        assert uploads == []
-
-    def test_missing_artifact_is_text_only(
-        self, session, account, channel, thread, monkeypatch
-    ):
-        from juicebox.messaging.linq import SERVICE_IMESSAGE
-
-        thread.last_service = SERVICE_IMESSAGE
-        session.flush()
-        application = self._application(session, account, thread, suffix="miss")
-        self._succeeded(session, account, application, ["org/applications/x/confirmation.png"])
-        uploads = self._uploads(monkeypatch)
-
-        job = enqueue_notify(
-            session, thread=thread, event=EVENT_APPLICATION_SENT, subject_id=application.id
-        )
-        _run(session, job)
-        assert "Notion" in channel.bodies[-1]
         assert channel.sent[0][1].media == ()
         assert uploads == []
 

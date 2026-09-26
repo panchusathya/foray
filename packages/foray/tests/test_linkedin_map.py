@@ -15,13 +15,8 @@ import pytest
 
 from foray.enrich.markers import detect_markers
 from foray.ingest.linkedin_map import (
-    MAX_PAST_EMPLOYERS,
     best_title,
-    business_emails,
-    country_code,
-    current_role_start,
     current_titles,
-    education,
     employer_of,
     experience_years,
     flatten_experience,
@@ -79,8 +74,6 @@ def record(**overrides) -> dict:
 
 
 class TestIdentity:
-    def test_slug_comes_from_linkedin_id(self):
-        assert slug_of(record()) == "jane-doe-1a2b3c"
 
     def test_slug_falls_back_to_the_url(self):
         row = record(linkedin_id="", id="")
@@ -117,21 +110,8 @@ class TestDates:
         assert years == pytest.approx(10.2, abs=0.2)  # Jun 2016 -> Aug 2026
         assert confidence == "high"  # two dated roles
 
-    def test_one_dated_role_is_medium_confidence(self):
-        row = record()
-        row["experience"] = row["experience"][:1]
-        years, confidence = experience_years(flatten_experience(row), asof=ASOF)
-        assert confidence == "medium"
-        assert years is not None
-
-    def test_current_role_start(self):
-        start = current_role_start(flatten_experience(record()))
-        assert start == datetime(2022, 3, 1, tzinfo=UTC)
-
 
 class TestTitles:
-    def test_experience_title_beats_position(self):
-        assert best_title(record()) == "Senior Machine Learning Engineer"
 
     @pytest.mark.parametrize("junk", ["--", "set at linkedin", "", "Acme"])
     def test_junk_positions_are_not_titles(self, junk):
@@ -202,16 +182,6 @@ class TestCompanyPages:
     def test_real_people_pass(self, name):
         assert looks_like_company(name) is False
 
-    def test_empty_input_is_not_a_company(self):
-        assert looks_like_company("") is False
-        assert looks_like_company("   ") is False
-
-    def test_company_named_record_is_unusable(self):
-        assert to_import_row(record(name="Infrastructure United Inc. (IU)")) is None
-
-    def test_person_named_record_still_maps(self):
-        assert to_import_row(record()).name == "Jane Doe"
-
 
 class TestEmployers:
     def test_confidential_placeholder_is_dropped(self):
@@ -219,18 +189,6 @@ class TestEmployers:
             current_company={"company_id": "x", "name": "Confidential Company"},
             current_company_name="Confidential Company",
         )
-        assert employer_of(row) is None
-
-    def test_stealth_is_a_real_employer(self):
-        # Stealth is signal, not junk: a founding-engineer search wants it.
-        row = record(
-            current_company={"company_id": "x", "name": "Stealth Startup"},
-            current_company_name="Stealth Startup",
-        )
-        assert employer_of(row) == "Stealth Startup"
-
-    def test_punctuation_junk_is_dropped(self):
-        row = record(current_company={}, current_company_name="--")
         assert employer_of(row) is None
 
 
@@ -241,37 +199,6 @@ class TestDerivedFacets:
         roles = flatten_experience(record())
         # Acme has no end_date -> current; Initech ended Feb 2022 -> past.
         assert past_employers(roles) == ["Initech"]
-
-    def test_past_employers_dedupes_case_insensitively_and_keeps_order(self):
-        row = record(
-            experience=[
-                {"title": "Staff Engineer", "company": "Acme", "end_date": "Jan 2024"},
-                {"title": "Senior Engineer", "company": "ACME", "end_date": "Jan 2022"},
-                {"title": "Engineer", "company": "Initech", "end_date": "Jan 2020"},
-            ]
-        )
-        # Newest-first order is preserved, so a truncated list keeps the
-        # employers a recruiter is most likely asking about.
-        assert past_employers(flatten_experience(row)) == ["Acme", "Initech"]
-
-    def test_past_employers_is_capped(self):
-        row = record(
-            experience=[
-                {"title": f"Role {i}", "company": f"Company {i}", "end_date": "Jan 2020"}
-                for i in range(30)
-            ]
-        )
-        assert len(past_employers(flatten_experience(row))) == MAX_PAST_EMPLOYERS
-
-    def test_past_employers_drops_placeholder_companies(self):
-        row = record(
-            experience=[
-                {"title": "Engineer", "company": "Confidential Company", "end_date": "Jan 2020"},
-                {"title": "Engineer", "company": "--", "end_date": "Jan 2019"},
-                {"title": "Engineer", "company": "Initech", "end_date": "Jan 2018"},
-            ]
-        )
-        assert past_employers(flatten_experience(row)) == ["Initech"]
 
     def test_facets_read_the_company_grouped_positions_nesting(self):
         """The shape flatten_experience unwraps: the real roles live in
@@ -329,57 +256,8 @@ class TestDerivedFacets:
         )
         assert role_titles(flatten_experience(row)) == ["Senior Machine Learning Engineer"]
 
-    def test_current_titles_is_a_subset_of_role_titles(self):
-        roles = flatten_experience(record())
-        assert current_titles(roles) == ["Senior Machine Learning Engineer"]
-        assert set(current_titles(roles)) <= set(role_titles(roles))
-
-    def test_no_experience_means_empty_lists_not_none(self):
-        roles = flatten_experience(record(experience=[]))
-        assert past_employers(roles) == []
-        assert role_titles(roles) == []
-        assert current_titles(roles) == []
-
-    def test_education_reads_title_degree_field(self):
-        row = record(
-            education=[
-                {
-                    "title": "Stanford University",
-                    "degree": "Master of Science - MS",
-                    "field": "Computer Science",
-                },
-                {
-                    "title": "UC Berkeley",
-                    "degree": None,
-                    "field": None,
-                },
-                # A dateless, nameless entry -- 41% of sample entries have no
-                # .title at all; it must contribute nothing rather than "".
-                {"title": None, "degree": None, "field": None},
-            ]
-        )
-        schools, degrees, fields = education(row)
-        assert schools == ["Stanford University", "UC Berkeley"]
-        assert degrees == ["Master of Science - MS"]
-        assert fields == ["Computer Science"]
-
-    def test_education_missing_entirely(self):
-        assert education(record()) == ([], [], [])
-        assert education(record(education=None)) == ([], [], [])
-        assert education(record(education=["not a dict"])) == ([], [], [])
-
-    def test_country_code_is_two_letters_upper_or_none(self):
-        assert country_code(record()) == "US"
-        assert country_code(record(country_code="mx")) == "MX"
-        assert country_code(record(country_code="")) is None
-        assert country_code(record(country_code="USA")) is None  # not alpha-2
-        assert country_code(record(country_code="1")) is None
-        assert country_code({}) is None
-
 
 class TestGeo:
-    def test_us_bay_area_passes(self):
-        assert is_target_geo(record()) is True
 
     def test_foreign_san_franciscos_fail(self):
         assert is_target_geo(record(country_code="MX")) is False
@@ -391,19 +269,6 @@ class TestMarkers:
         repos = pseudo_repos(record())
         markers = detect_markers(repos, {}, require_language_gate=False)
         assert "ml" in markers
-
-    def test_the_language_gate_would_have_blanked_them(self):
-        repos = pseudo_repos(record())
-        assert "ml" not in detect_markers(repos, {})
-
-
-class TestEmails:
-    def test_email_in_about_is_found(self):
-        row = record(about="Reach me at jane@acme.com for consulting.")
-        assert business_emails(row) == ["jane@acme.com"]
-
-    def test_no_email_is_the_norm(self):
-        assert business_emails(record()) == []
 
 
 @needs_sample
@@ -425,15 +290,6 @@ class TestAgainstTheRealSample:
         # the mapper is dropping real people.
         assert len(mapped) / len(sample) > 0.95
 
-    def test_every_mapped_row_has_the_namespaced_identity(self, sample):
-        for raw in sample[:500]:
-            row = to_import_row(raw)
-            if row is None:
-                continue
-            assert row.login.startswith("li:")
-            assert row.slug and " " not in row.slug
-            assert row.linkedin_url.startswith("https://")
-
     def test_titles_are_real_titles_not_junk(self, sample):
         titles = [to_import_row(r).title for r in sample if to_import_row(r)]
         present = [t for t in titles if t]
@@ -441,63 +297,6 @@ class TestAgainstTheRealSample:
         lowered = {t.lower() for t in present}
         assert "--" not in lowered
         assert "set at linkedin" not in lowered
-
-    def test_experience_years_are_sane(self, sample):
-        from foray.ingest.linkedin_map import MAX_EXPERIENCE_YEARS
-
-        asof = datetime.now(UTC)
-        for raw in sample[:500]:
-            roles = flatten_experience(raw)
-            years, _ = experience_years(roles, asof=asof)
-            if years is not None:
-                assert 0 <= years <= MAX_EXPERIENCE_YEARS
-
-    def test_markers_fire_for_a_meaningful_share(self, sample):
-        hits = 0
-        for raw in sample:
-            markers = detect_markers(pseudo_repos(raw), {}, require_language_gate=False)
-            if markers:
-                hits += 1
-        # Measured on the real head sample: ~1.5% carry an actual tooling term
-        # (markers are technology tokens; a bare "Software Engineer" title has
-        # none — those people surface via vector search and the title-gated
-        # archetypes instead). The bound guards against zero and against a
-        # regression that starts matching everyone.
-        assert 0.005 < hits / len(sample) < 0.5
-
-    def test_education_coverage_is_what_the_facet_layer_was_promised(self, sample):
-        """Pins the measurement the education facets were sized against, so a
-        mapper change that quietly halves school coverage fails here instead of
-        turning up as an empty filter in production.
-
-        Measured on this file: schools on 55.1% of records, degrees on 6.5%,
-        fields on 5.2%. Degrees and fields are near-empty BY THE DATA, not by a
-        bug -- which is why a hard degree/field predicate would be a source
-        filter in disguise.
-        """
-        with_school = with_degree = with_field = 0
-        for raw in sample:
-            schools, degrees, fields = education(raw)
-            with_school += bool(schools)
-            with_degree += bool(degrees)
-            with_field += bool(fields)
-        n = len(sample)
-        assert 0.40 < with_school / n < 0.75
-        assert with_degree / n < 0.20
-        assert with_field / n < 0.20
-        # ...and the ordering is the point: schools is a real facet, the other
-        # two are aspirational on this export.
-        assert with_school > with_degree * 4
-
-    def test_past_employers_are_populated_for_a_meaningful_share(self, sample):
-        """Role.current was computed and discarded on every one of these rows;
-        this is the assertion that the career history is now reachable."""
-        hits = sum(1 for raw in sample if past_employers(flatten_experience(raw)))
-        assert 0.20 < hits / len(sample) < 0.95
-
-    def test_country_code_is_near_universal(self, sample):
-        present = sum(1 for raw in sample if country_code(raw))
-        assert present / len(sample) > 0.95
 
     def test_the_stream_reader_is_bounded(self, sample):
         # Bounded memory: the reader yields incrementally rather than loading

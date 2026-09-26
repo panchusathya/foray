@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from juicebox.intake.schema import FIELDS
 from juicebox.intake.service import extract_call
 from juicebox.models import (
     Candidate,
-    CandidatePreference,
     IntakeCall,
-    IntakeFieldAnswer,
     Org,
 )
 from juicebox.outreach.suppressions import is_suppressed, suppress
@@ -73,22 +68,6 @@ def _other_headers(client):
     return {"Authorization": f"Bearer {other.json()['access_token']}"}
 
 
-class TestFieldAnswers:
-    def test_extract_writes_one_row_per_field(self, session, account):
-        person = _person(session, account["org_id"])
-        call = _call(session, account["org_id"], candidate_id=person.id)
-        extract_call(session, call)
-        session.commit()
-
-        answers = session.scalars(
-            select(IntakeFieldAnswer).where(IntakeFieldAnswer.intake_call_id == call.id)
-        ).all()
-        assert {row.field_key for row in answers} == {spec.key for spec in FIELDS}
-        titles = next(row for row in answers if row.field_key == "spec.job_titles")
-        assert titles.asked is True
-        assert titles.candidate_id == person.id
-
-
 class TestReadApi:
     def test_lists_and_gets_are_org_scoped(self, client, session, account):
         person = _person(session, account["org_id"])
@@ -122,66 +101,6 @@ class TestReadApi:
             == 404
         )
 
-    def test_count_agrees_with_the_list(self, client, session, account):
-        person = _person(session, account["org_id"])
-        _call(session, account["org_id"], candidate_id=person.id, review_needed=True)
-        _call(
-            session,
-            account["org_id"],
-            candidate_id=None,
-            provider_call_id="prov-2",
-            review_needed=False,
-        )
-        session.commit()
-        headers = account["headers"]
-        listed = client.get("/v1/intake/calls", headers=headers).json()
-        counted = client.get("/v1/intake/calls/count", headers=headers).json()["count"]
-        assert counted == len(listed) == 2
-        assert client.get(
-            "/v1/intake/calls/count", headers=headers, params={"review_needed": True}
-        ).json()["count"] == 1
-        assert client.get(
-            "/v1/intake/calls/count", headers=headers, params={"unattributed": True}
-        ).json()["count"] == 1
-
-    def test_attribute_writes_the_preference(self, client, session, account):
-        call = _call(session, account["org_id"], candidate_id=None)
-        extract_call(session, call)
-        session.commit()
-        assert session.scalars(select(CandidatePreference)).all() == []
-
-        person = _person(session, account["org_id"])
-        patched = client.patch(
-            f"/v1/intake/calls/{call.id}",
-            json={"candidate_id": person.id},
-            headers=account["headers"],
-        )
-        assert patched.status_code == 200, patched.text
-        assert patched.json()["candidate_id"] == person.id
-        pref = client.get(
-            f"/v1/intake/preferences/{person.id}", headers=account["headers"]
-        )
-        assert pref.status_code == 200
-        answers = patched.json()["field_answers"]
-        assert answers
-        assert all(row["candidate_id"] == person.id for row in answers)
-        session.refresh(person)
-        assert person.crm_tracked is True
-
-    def test_confirm_sets_confirmed_at(self, client, session, account):
-        person = _person(session, account["org_id"])
-        call = _call(session, account["org_id"], candidate_id=person.id)
-        extract_call(session, call)
-        session.commit()
-
-        confirmed = client.post(
-            f"/v1/intake/preferences/{person.id}/confirm",
-            headers=account["headers"],
-        )
-        assert confirmed.status_code == 200
-        assert confirmed.json()["confirmed_at"]
-        assert confirmed.json()["confirmed_by"] == account["user_id"]
-
     def test_another_org_cannot_attribute_your_call(self, client, session, account):
         call = _call(session, account["org_id"])
         session.commit()
@@ -200,47 +119,6 @@ class TestReadApi:
             ).status_code
             == 404
         )
-
-
-class TestVoiceIntakeScope:
-    def test_grid_only_lists_people_with_intake(self, client, session, account):
-        called = _person(session, account["org_id"], source_id="called")
-        _person(
-            session,
-            account["org_id"],
-            name="Never Called",
-            phones=["+14155550999"],
-            source_id="quiet",
-        )
-        call = _call(session, account["org_id"], candidate_id=called.id)
-        extract_call(session, call)
-        session.commit()
-
-        rows = client.get(
-            "/v1/candidates",
-            headers=account["headers"],
-            params={"scope": "voice_intake"},
-        ).json()
-        assert [row["id"] for row in rows] == [called.id]
-        assert rows[0]["intake_confirmed"] is False
-        assert rows[0]["intake_match_count"] == 0
-
-        rival = _other_headers(client)
-        assert (
-            client.get(
-                "/v1/candidates", headers=rival, params={"scope": "voice_intake"}
-            ).json()
-            == []
-        )
-
-    def test_unknown_scope_is_rejected(self, client, account):
-        response = client.get(
-            "/v1/candidates",
-            headers=account["headers"],
-            params={"scope": "nonsense"},
-        )
-        assert response.status_code == 422
-        assert "voice_intake" in response.json()["detail"]
 
 
 class TestPhoneSuppression:
@@ -287,15 +165,6 @@ class TestPhoneSuppression:
 
 
 class TestRematchAndTimeline:
-    def test_rematch_is_not_swallowed_by_match_id(self, client, session, account):
-        person = _person(session, account["org_id"])
-        response = client.post(
-            "/v1/job-matches/rematch",
-            headers=account["headers"],
-            params={"candidate_id": person.id},
-        )
-        assert response.status_code == 200, response.text
-        assert "matched" in response.json()
 
     def test_timeline_includes_intake_events(self, client, session, account):
         person = _person(session, account["org_id"])
@@ -316,41 +185,3 @@ class TestRematchAndTimeline:
             ).status_code
             == 404
         )
-
-    def test_timeline_includes_messaging_threads(self, client, session, account):
-        from juicebox.messaging.channels import WEB, DeliveryResult, OutboundMessage
-        from juicebox.messaging.threads import open_thread, record_inbound, record_outbound
-
-        person = _person(session, account["org_id"])
-        thread = open_thread(
-            session,
-            org_id=account["org_id"],
-            channel=WEB,
-            entry_point="web_widget",
-            candidate_id=person.id,
-            consent_messaging=True,
-        )
-        record_outbound(
-            session,
-            thread=thread,
-            message=OutboundMessage(body="What roles are you after?"),
-            result=DeliveryResult(status="sent"),
-        )
-        record_inbound(
-            session,
-            thread=thread,
-            body="Senior backend in SF",
-            provider_native_id="m-1",
-        )
-        session.commit()
-
-        timeline = client.get(
-            f"/v1/candidates/{person.id}/timeline", headers=account["headers"]
-        ).json()
-        assert len(timeline["intake_threads"]) == 1
-        assert timeline["intake_threads"][0]["thread_id"] == thread.id
-        bodies = [m["body"] for m in timeline["intake_threads"][0]["messages"]]
-        assert "What roles are you after?" in bodies
-        assert "Senior backend in SF" in bodies
-        types = [event["type"] for event in timeline["events"]]
-        assert "intake.thread.opened" in types

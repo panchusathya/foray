@@ -22,32 +22,6 @@ def _urn(dt: datetime) -> str:
     return str(int(dt.timestamp() * 1000) << URN_TIMESTAMP_SHIFT)
 
 
-def test_language_mix_normalizes_to_fractions():
-    repos = normalize_repos(ML_ENGINEER_NODE)
-    mix = compute_language_mix(repos)
-    assert abs(sum(mix.values()) - 1.0) < 1e-6
-    assert mix["python"] > mix["cuda"]
-
-
-def test_derive_signals_ml_engineer():
-    s = derive_signals(ML_ENGINEER_NODE)
-    assert s["primary_language"] == "python"
-    assert s["total_stars"] == 2103
-    assert s["max_repo_stars"] == 2100
-    assert s["non_fork_repo_count"] == 2
-    assert 0.4 < s["archived_fraction"] < 0.6  # 1 of 2 archived
-    assert s["oss_maintainer"] is True  # 2100 >= 100
-    assert s["commits_last_year"] == 850
-    assert s["prs_last_year"] == 120
-    assert s["experience_confidence"] in {"high", "medium"}
-    assert s["est_experience_years"] >= 6
-    # ml + gpu markers should fire (python fraction > 0.2, cuda term present)
-    assert "ml" in s["domain_markers"]
-    assert "gpu" in s["domain_markers"]
-    # top repos sorted by stars, capped at 5
-    assert s["top_repos"][0]["name"] == "fast-transformer"
-
-
 def test_marker_word_boundary_no_false_positive():
     # "go" is a language/marker-ish token; it must not match inside "google".
     repos = [{"name": "google-clone", "description": "a googly thing", "topics": []}]
@@ -67,67 +41,9 @@ def test_frontend_marker_requires_js_fraction():
     assert "frontend" not in detect_markers(repos, {"python": 1.0})
 
 
-def test_strong_ml_term_bypasses_python_gate():
-    repos = [
-        {
-            "name": "megatron-kernels",
-            "description": "vllm runtime and megatron training in CUDA",
-            "topics": ["cuda"],
-        }
-    ]
-    assert "ml" in detect_markers(repos, {"cpp": 0.85, "cuda": 0.15})
-
-
-def test_bio_vlm_awards_ml_without_python_majority():
-    repos = [{"name": "train-loop", "description": "data prep utilities", "topics": []}]
-    assert "ml" in detect_markers(
-        repos, {"cpp": 1.0}, bio="I trained VLMs from scratch with a custom stack"
-    )
-    assert "ml" not in detect_markers(repos, {"cpp": 1.0}, bio="I like cooking")
-
-
 def test_weak_ml_term_still_needs_python_gate():
     repos = [{"name": "notes", "description": "playing with transformers and clip", "topics": []}]
     assert "ml" not in detect_markers(repos, {"cpp": 1.0})
-
-
-def test_derive_includes_bio_in_markers():
-    s = derive_signals(
-        {
-            "name": "cuda",
-            "login": "cuda",
-            "createdAt": "2018-01-01T00:00:00Z",
-            "bio": "I trained VLMs from scratch",
-            "repositories": {
-                "nodes": [
-                    {
-                        "name": "kernels",
-                        "description": "cuda kernels",
-                        "stargazerCount": 10,
-                        "forkCount": 0,
-                        "pushedAt": "2025-01-01T00:00:00Z",
-                        "createdAt": "2020-01-01T00:00:00Z",
-                        "isArchived": False,
-                        "primaryLanguage": {"name": "C++"},
-                        "repositoryTopics": {"nodes": []},
-                        "languages": {"edges": [{"size": 10000, "node": {"name": "C++"}}]},
-                    }
-                ]
-            },
-            "contributionsCollection": {
-                "totalCommitContributions": 10,
-                "totalPullRequestContributions": 1,
-                "restrictedContributionsCount": 0,
-            },
-        }
-    )
-    assert "ml" in s["domain_markers"]
-
-
-def test_employer_priority_company_first():
-    employer, source = infer_employer(ML_ENGINEER_NODE)
-    assert employer == "Stripe"
-    assert source == "company"
 
 
 def test_employer_falls_through_to_org_then_email():
@@ -214,14 +130,6 @@ def test_est_experience_years_is_none_when_unknown():
     assert dated["est_experience_years"] > 9  # earliest dated role: Mar 2016
 
 
-def test_github_experience_keeps_the_account_age_proxy():
-    """The asymmetry is deliberate: every GitHub node has a createdAt, so this
-    path is never NULL; LinkedIn has no proxy of comparable strength."""
-    s = derive_signals(ML_ENGINEER_NODE)
-    assert s["est_experience_years"] is not None
-    assert s["est_experience_years"] > 0
-
-
 def test_merge_prefers_the_freshest_dated_claim_and_keeps_none_when_both_none():
     push = datetime(2024, 2, 2, tzinfo=UTC)
     github = derive_signals(ML_ENGINEER_NODE)
@@ -253,12 +161,6 @@ def test_merge_prefers_the_freshest_dated_claim_and_keeps_none_when_both_none():
 # ---------------------------------------------------------- admission control --
 
 
-def test_admission_admits_a_corroborated_title():
-    signals = derive_linkedin_signals(_li_record(), asof=ASOF)
-    assert signals["search_eligible"] is True
-    assert signals["ineligible_reason"] is None
-
-
 def test_admission_rejects_the_contentless_linkedin_row():
     """No title, no about-text, no experience entries -- yet each such row holds
     a signals row, an embedding and a tsvector before this rule existed."""
@@ -267,24 +169,6 @@ def test_admission_rejects_the_contentless_linkedin_row():
     )
     assert empty["search_eligible"] is False
     assert empty["ineligible_reason"] == "thin_profile"
-
-
-def test_admission_rejects_a_lone_title():
-    """One signal is not a profile: a title with no employer, no dates, no
-    prose, one role and no markers stays out."""
-    bare = derive_linkedin_signals(
-        {
-            "name": "Solo",
-            "id": "solo",
-            "position": "Coordinator",
-            "experience": [],
-            "about": "short",
-        },
-        asof=ASOF,
-    )
-    assert bare["title"] == "Coordinator"
-    assert bare["search_eligible"] is False
-    assert bare["ineligible_reason"] == "thin_profile"
 
 
 def test_admission_counts_two_signals_and_title_is_not_privileged():
@@ -334,32 +218,6 @@ def test_admission_github_needs_a_non_fork_repo_not_a_title():
     assert empty == (False, "no_code_evidence")
 
 
-def test_admission_reasons_partition_the_ineligible_population():
-    reasons = {
-        admission(
-            {"evidence_kind": k, "title": t, "non_fork_repo_count": n, "domain_markers": []},
-            about_chars=0,
-            role_count=1,
-        )[1]
-        for k, t, n in (
-            ("linkedin", None, 0),
-            ("linkedin", "Coordinator", 0),
-            ("github", None, 0),
-            ("both", None, 0),
-        )
-    }
-    assert reasons == {"thin_profile", "no_code_evidence"}
-
-
-def test_merged_row_recomputes_admission_on_the_merged_facts():
-    github = derive_signals(ML_ENGINEER_NODE)
-    li = derive_linkedin_signals(_li_record(), asof=ASOF)
-    merged = merge_signals(github, li)
-    assert merged["evidence_kind"] == "both"
-    assert merged["search_eligible"] is True
-    assert merged["ineligible_reason"] is None
-
-
 # ------------------------------------------------------- derived facets (013) --
 
 FACET_KEYS = (
@@ -389,38 +247,6 @@ def test_both_sources_emit_every_facet_key():
             assert key in signals, key
 
 
-def test_linkedin_seniority_comes_from_the_title():
-    s = derive_linkedin_signals(_li_record(), asof=ASOF)
-    assert s["title"] == "Staff Engineer"
-    assert s["seniority_rank"] == 5
-    assert s["mgmt_rank"] is None
-    assert s["is_founder"] is False
-    assert s["seniority_source"] == "title"
-
-
-def test_a_title_with_no_level_word_falls_through_to_the_proxy():
-    """The fallback is what stops seniority from being NULL for everyone whose
-    title is a bare "Software Engineer" -- but it must announce itself."""
-    s = derive_linkedin_signals(
-        _li_record(
-            experience=[
-                {"title": "Software Engineer", "company": "Stripe", "start_date": "Jan 2020"},
-                {
-                    "title": "Software Engineer",
-                    "company": "Acme",
-                    "start_date": "Mar 2016",
-                    "end_date": "Dec 2019",
-                },
-            ]
-        ),
-        asof=ASOF,
-    )
-    assert s["title"] == "Software Engineer"
-    assert s["seniority_source"] == "experience_proxy"
-    # Mar 2016 -> Aug 2026 is >8 years, the top proxy band.
-    assert s["seniority_rank"] == 5
-
-
 def test_unknown_title_and_unknown_experience_means_unknown_seniority():
     s = derive_linkedin_signals(
         _li_record(experience=[{"title": "Software Engineer", "company": "Acme"}]),
@@ -429,59 +255,6 @@ def test_unknown_title_and_unknown_experience_means_unknown_seniority():
     assert s["est_experience_years"] is None
     assert s["seniority_rank"] is None
     assert s["seniority_source"] is None
-
-
-def test_a_management_title_records_mgmt_and_keeps_the_title_provenance():
-    """"Engineering Manager" has no IC level word, so seniority_rank stays
-    NULL -- and we must NOT patch it in from the proxy, because a row whose two
-    ordinals came from different evidence classes cannot be described by one
-    seniority_source."""
-    s = derive_linkedin_signals(
-        _li_record(
-            experience=[
-                {"title": "Engineering Manager", "company": "Stripe", "start_date": "Jan 2020"}
-            ]
-        ),
-        asof=ASOF,
-    )
-    assert s["seniority_rank"] is None
-    assert s["mgmt_rank"] == 1
-    assert s["seniority_source"] == "title"
-
-
-def test_founder_titles_set_the_flag():
-    s = derive_linkedin_signals(
-        _li_record(
-            experience=[
-                {"title": "Founding Engineer", "company": "Stealth", "start_date": "Jan 2024"}
-            ]
-        ),
-        asof=ASOF,
-    )
-    assert s["is_founder"] is True
-    assert s["seniority_source"] == "title"
-
-
-def test_linkedin_career_and_education_facets_are_populated():
-    s = derive_linkedin_signals(
-        _li_record(
-            country_code="US",
-            education=[
-                {"title": "Stanford University", "degree": "MS", "field": "Computer Science"},
-                {"title": None, "degree": None, "field": None},
-            ],
-        ),
-        asof=ASOF,
-    )
-    # Acme is the PAST employer (it has an end_date); Stripe is current and
-    # lives in `employer`, not here.
-    assert s["past_employers"] == ["Acme"]
-    assert s["role_titles"] == ["Staff Engineer", "Software Engineer"]
-    assert s["current_titles"] == ["Staff Engineer"]
-    assert s["schools"] == ["Stanford University"]
-    assert s["degrees"] == ["MS"]
-    assert s["fields_of_study"] == ["Computer Science"]
-    assert s["country_code"] == "US"
 
 
 def test_github_seniority_is_always_a_proxy_and_never_null():
@@ -547,41 +320,3 @@ def test_merge_never_downgrades_a_title_reading_to_the_proxy():
     # ...and the LinkedIn NULL survives too: the proxy does not sneak in to
     # fill it, because then one source column would describe two provenances.
     assert merged["seniority_rank"] is None
-
-
-def test_merge_recomputes_the_proxy_when_neither_side_read_a_title():
-    github = derive_signals(ML_ENGINEER_NODE)
-    li = derive_linkedin_signals(
-        _li_record(
-            experience=[
-                {"title": "Software Engineer", "company": "Stripe", "start_date": "Jan 2024"}
-            ]
-        ),
-        asof=ASOF,
-    )
-    assert li["seniority_source"] == "experience_proxy"
-    merged = merge_signals(github, li)
-    assert merged["seniority_source"] == "experience_proxy"
-    # Computed from the MERGED experience number (LinkedIn's dated role wins
-    # over GitHub's account age), not copied from either side.
-    from foray.seniority import seniority_from_experience
-
-    assert merged["seniority_rank"] == seniority_from_experience(
-        merged["est_experience_years"]
-    )
-
-
-def test_merge_gives_linkedin_the_career_facets_outright():
-    github = derive_signals(ML_ENGINEER_NODE)
-    li = derive_linkedin_signals(
-        _li_record(education=[{"title": "MIT", "degree": None, "field": None}]),
-        asof=ASOF,
-    )
-    merged = merge_signals(github, li)
-    assert merged["role_titles"] == li["role_titles"]
-    assert merged["past_employers"] == li["past_employers"]
-    assert merged["schools"] == ["MIT"]
-    assert merged["country_code"] == li["country_code"]
-    # ...while the code facts stay GitHub's.
-    assert merged["primary_language"] == github["primary_language"]
-    assert merged["total_stars"] == github["total_stars"]

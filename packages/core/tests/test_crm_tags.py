@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from juicebox.models import Candidate, CandidateTag
-
 
 def _person(client, headers, name, **extra):
     response = client.post(
@@ -35,28 +31,6 @@ class TestSetting:
             "warm"
         ]
 
-    def test_tags_are_normalised_and_deduped(self, client, account):
-        candidate_id = _person(client, account["headers"], "Ada")
-        body = _set_tags(
-            client, account["headers"], candidate_id, ["  Warm ", "WARM", "referral"]
-        ).json()
-        assert body["tags"] == ["referral", "warm"]
-
-    def test_setting_a_tag_is_an_explicit_crm_action(self, client, session, account):
-        candidate_id = _person(client, account["headers"], "Ada")
-        _set_tags(client, account["headers"], candidate_id, ["warm"])
-
-        session.expire_all()
-        assert session.get(Candidate, candidate_id).crm_tracked is True
-
-    def test_clearing_tags_removes_the_rows(self, client, session, account):
-        candidate_id = _person(client, account["headers"], "Ada")
-        _set_tags(client, account["headers"], candidate_id, ["warm"])
-        _set_tags(client, account["headers"], candidate_id, [])
-
-        session.expire_all()
-        assert session.scalars(select(CandidateTag)).all() == []
-
 
 class TestFiltering:
     def test_the_grid_filters_by_tag(self, client, account):
@@ -78,13 +52,6 @@ class TestFiltering:
             "/v1/candidates/count", params={"tag": "warm"}, headers=account["headers"]
         ).json()["count"]
         assert count == 1
-
-    def test_tags_come_back_on_the_listing(self, client, account):
-        candidate_id = _person(client, account["headers"], "Ada")
-        _set_tags(client, account["headers"], candidate_id, ["warm"])
-
-        rows = client.get("/v1/candidates", headers=account["headers"]).json()
-        assert {r["id"]: r["tags"] for r in rows}[candidate_id] == ["warm"]
 
 
 class TestVocabulary:

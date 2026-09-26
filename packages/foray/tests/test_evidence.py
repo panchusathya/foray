@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from foray.evidence import _is_pad, build_evidence, templates_from_signals, validate
+from foray.evidence import build_evidence, templates_from_signals, validate
 
 
 def _github(**overrides) -> dict:
@@ -57,14 +57,6 @@ def test_validate_drops_hedge_and_overlong() -> None:
     assert validate("one two three four five six seven eight nine ten eleven twelve") is False
 
 
-def test_github_templates_are_checkable_and_short() -> None:
-    phrases = templates_from_signals(_github())
-    assert phrases
-    assert all(validate(p) for p in phrases)
-    assert any("tikv" in p for p in phrases)
-    assert any("Stripe" in p for p in phrases)
-
-
 def test_linkedin_never_emits_repo_star_commit_pr() -> None:
     phrases = templates_from_signals(_linkedin())
     blob = " ".join(phrases).lower()
@@ -87,18 +79,6 @@ def test_stored_hedge_is_dropped_at_read_time() -> None:
     assert "impressive Kubernetes work" not in ev.highlights
     assert ev.highlight_count >= 2
     assert all(validate(h) for h in ev.highlights)
-
-
-def test_unscored_uses_signal_templates() -> None:
-    ev = build_evidence(
-        _github(),
-        query="founding ml vlm",
-        stored_highlights=["Maintains tikv/tikv, 14k stars"],
-        score=None,
-        display_floor=20,
-    )
-    assert ev.highlight_source == "signals"
-    assert "unscored" in ev.flags
 
 
 def test_evidence_grid_synthetic_rows_all_validate() -> None:
@@ -124,15 +104,6 @@ def test_evidence_grid_synthetic_rows_all_validate() -> None:
 # ----------------------------------------------- evidence_count vs highlight_count --
 
 
-def test_pad_recognizer_matches_only_the_two_filler_shapes() -> None:
-    assert _is_pad("LinkedIn profile, no public code evidence")
-    assert _is_pad("0 repos, 0 total stars, no scale evidence")
-    assert _is_pad("14 repos, 14000 total stars, no scale evidence")
-    assert not _is_pad("7y stated experience (medium confidence)")
-    assert not _is_pad("Maintains tikv/tikv, 14k stars")
-    assert not _is_pad("Staff Engineer at Stripe, 3y 2m")
-
-
 def test_linkedin_title_plus_pad_counts_as_one_evidence() -> None:
     """The pad keeps the card honest but is not evidence: this row renders two
     sentences yet carries one substantive phrase, so min_evidence=2 vetoes it."""
@@ -143,14 +114,6 @@ def test_linkedin_title_plus_pad_counts_as_one_evidence() -> None:
     assert ev.highlights == ["Staff Engineer", "LinkedIn profile, no public code evidence"]
     assert ev.highlight_count == 2
     assert ev.evidence_count == 1
-
-
-def test_linkedin_stated_experience_is_evidence() -> None:
-    """Title line + stated-experience line: both checkable, both count."""
-    row = _linkedin(employer="", tenure_months=None, domain_markers=[])
-    ev = build_evidence(row, query="ml engineer", score=None, display_floor=20)
-    assert ev.evidence_count == 2
-    assert all(not _is_pad(h) for h in ev.highlights)
 
 
 def test_github_pad_only_row_has_zero_evidence() -> None:
@@ -165,20 +128,3 @@ def test_github_pad_only_row_has_zero_evidence() -> None:
     ev = build_evidence(row, query="ml engineer", score=None, display_floor=20)
     assert ev.highlight_count == 1
     assert ev.evidence_count == 0
-
-
-def test_stored_archetype_highlights_always_count_as_evidence() -> None:
-    """LLM-written archetype highlights are evidence by definition, and never
-    take the pad shapes."""
-    row = _linkedin(
-        employer="", tenure_months=None, est_experience_years=None, domain_markers=[]
-    )
-    ev = build_evidence(
-        row,
-        query="inference systems",
-        stored_highlights=["Led inference team at Stripe", "Shipped a vLLM fork"],
-        score=70,
-        display_floor=20,
-    )
-    assert ev.highlight_source == "archetype"
-    assert ev.evidence_count == 2

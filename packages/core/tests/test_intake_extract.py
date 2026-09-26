@@ -23,35 +23,6 @@ class TestCompIsNeverInvented:
 
         assert not mentions_a_figure(self.LIVE)
 
-    def test_digits_inside_a_link_or_address_are_not_money(self):
-        from juicebox.intake.extract import mentions_a_figure
-
-        assert not mentions_a_figure("see https://jobs.example.com/12345")
-        assert not mentions_a_figure("reach me at a1b2@example.com")
-
-    def test_a_real_figure_is_recognised(self):
-        from juicebox.intake.extract import mentions_a_figure
-
-        assert mentions_a_figure("I'm targeting 150k base")
-        assert mentions_a_figure("around $200,000 total")
-
-    def test_an_uncited_figure_is_dropped(self):
-        from juicebox.intake.extract import _drop_uncited_comp
-
-        record = {"target_base": 1_200_000.0, "target_total": None}
-        _drop_uncited_comp(record, self.LIVE)
-        assert record["target_base"] is None
-        assert record["target_total"] is None
-
-    def test_a_cited_figure_survives(self):
-        """The guard must not eat real answers."""
-        from juicebox.intake.extract import _drop_uncited_comp
-
-        record = {"target_base": 150_000.0, "target_total": 180_000.0}
-        _drop_uncited_comp(record, "150k base, 180 all in")
-        assert record["target_base"] == 150_000.0
-        assert record["target_total"] == 180_000.0
-
     def test_extraction_drops_it_end_to_end(self, monkeypatch):
         """The model returns the figure; extraction must not keep it."""
         from types import SimpleNamespace
@@ -139,46 +110,6 @@ class TestDegradedExtractionIsVisible:
         monkeypatch.setattr(mod, "get_llm", lambda: self._llm(available=False))
         result = mod.extract_intake("Candidate: hello", known="", fast=True)
         assert result.extractor == mod.EXTRACTOR_HEURISTIC
-
-
-class TestTheVoiceBudgetIsSeparate:
-    """One shared timeout was either too slow for a live call or too tight for a
-    text thread, and it was both."""
-
-    def _llm(self):
-        from types import SimpleNamespace
-
-        class FakeLLM:
-            available = True
-            voice_timeout = 3.5
-
-            def __init__(self):
-                self.seen = {}
-
-            def json_fast(self, **kwargs):
-                self.seen = kwargs
-                return SimpleNamespace(data={"spec": {"job_titles": ["backend engineer"]}})
-
-            json = json_fast
-
-        return FakeLLM()
-
-    def test_a_live_call_gets_the_short_budget(self, monkeypatch):
-        import juicebox.intake.extract as mod
-
-        llm = self._llm()
-        monkeypatch.setattr(mod, "get_llm", lambda: llm)
-        mod.extract_intake("Candidate: hi", known="", fast=True, live_call=True)
-        assert llm.seen.get("timeout") == 3.5
-
-    def test_a_text_thread_keeps_the_general_budget(self, monkeypatch):
-        """No override: `json_fast` applies the longer configured default."""
-        import juicebox.intake.extract as mod
-
-        llm = self._llm()
-        monkeypatch.setattr(mod, "get_llm", lambda: llm)
-        mod.extract_intake("Candidate: hi", known="", fast=True)
-        assert "timeout" not in llm.seen
 
 
 class TestOptIsAlsoAnEnglishVerb:

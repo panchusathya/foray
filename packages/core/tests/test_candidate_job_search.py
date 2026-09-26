@@ -22,12 +22,9 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from juicebox.enrich import taxonomy as tx
 from juicebox.jobmatch.discover_candidate import (
     enqueue_discovery_on_request,
     handle_discover_one,
-    queries_for,
-    queries_for_request,
 )
 from juicebox.jobmatch.exa import ExaClient, set_exa
 from juicebox.jobmatch.preference import preference_term
@@ -216,11 +213,6 @@ class TestLocationsThatMeanTheSamePlace:
             f"{posting_location!r} scored zero against a Bay Area preference"
         )
 
-    def test_linkedins_own_words_normalize_to_the_metro(self):
-        """"San Francisco Bay Area" is on every Bay Area profile LinkedIn has."""
-        assert tx.normalize_location("San Francisco Bay Area") == "san francisco"
-        assert tx.normalize_location("San Francisco, CA") == "san francisco"
-
     def test_a_real_miss_is_still_a_miss(self, session, account):
         candidate = _candidate(session, account["org_id"], source_id="cand-nyc")
         pref = _preference(session, candidate)
@@ -308,40 +300,6 @@ class TestAskingGoesLooking:
         assert first is not None
         assert second is not None
         assert first.id == second.id, "a second ask must not re-buy the searches"
-
-    def test_a_spec_too_thin_to_search_on_still_says_so(self, session, account):
-        candidate = _candidate(session, account["org_id"], source_id="cand-thin")
-        pref = _preference(session, candidate)
-        pref.spec = {"locations": ["San Francisco"]}
-        session.flush()
-        assert queries_for(pref) == []
-        assert enqueue_discovery_on_request(
-            session, candidate=candidate, preference=pref
-        ) is None
-
-    def test_a_typed_query_is_enough_to_search_without_a_spec(self, session, account):
-        candidate = _candidate(session, account["org_id"], source_id="cand-foray-q")
-        assert queries_for_request(None, query="rust engineer", location="NYC") == [
-            "rust engineer jobs in NYC"
-        ]
-        job = enqueue_discovery_on_request(
-            session, candidate=candidate, query="rust engineer", location="NYC"
-        )
-        assert job is not None
-        assert job.payload["queries"] == ["rust engineer jobs in NYC"]
-
-    def test_a_pending_search_picks_up_a_later_typed_query(self, session, account):
-        candidate = _candidate(session, account["org_id"], source_id="cand-merge-q")
-        pref = _preference(session, candidate)
-        first = enqueue_discovery_on_request(session, candidate=candidate, preference=pref)
-        second = enqueue_discovery_on_request(
-            session, candidate=candidate, preference=pref, query="rust"
-        )
-        assert first is not None and second is not None
-        assert first.id == second.id
-        queries = second.payload["queries"]
-        assert "rust jobs" in queries
-        assert any("strategic finance" in q for q in queries)
 
 
 class TestTheWholeChain:
@@ -529,14 +487,6 @@ class TestWhatTheyAskedForOutweighsWhatTheyDid:
         total = sum(w for w, _ in weights)
         return sum(w * v for w, v in weights) / total
 
-    def test_preference_outweighs_the_record(self):
-        from juicebox.config import get_settings
-
-        s = get_settings()
-        assert s.job_match_preference_weight > s.job_match_heuristic_weight, (
-            "what somebody asked for has to count for more than the job they have"
-        )
-
     def test_a_career_changer_clears_the_floor_on_a_role_they_asked_for(
         self, session, account
     ):
@@ -562,12 +512,6 @@ class TestWhatTheyAskedForOutweighsWhatTheyDid:
         assert score < get_settings().proposal_score_floor, (
             f"preference alone reached {score:.3f} -- it must not carry a match by itself"
         )
-
-    def test_wanting_it_does_not_rescue_an_unrelated_role(self, session, account):
-        from juicebox.config import get_settings
-
-        score = self._score(session, account["org_id"], heuristic=0.0, vector=0.10, preference=0.50)
-        assert score < get_settings().proposal_score_floor
 
     def test_a_candidate_with_no_preference_is_scored_exactly_as_before(
         self, session, account

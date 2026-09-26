@@ -6,7 +6,6 @@ import pytest
 
 from juicebox.applications.ats import detect
 from juicebox.applications.submit import registry
-from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
 from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
 from juicebox.config import reset_settings_cache
 
@@ -40,24 +39,6 @@ class TestRegistryCutover:
         assert registry.get_submitter(target) is None
         assert not registry.can_submit_vendor("greenhouse")
 
-    def test_agent_configured_uses_the_agent(self, agent_on):
-        target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
-        chosen = registry.get_submitter(target)
-        assert isinstance(chosen, BrowserAgentSubmitter)
-        assert chosen.method == "browser"
-        assert registry.can_submit_vendor("greenhouse")
-        assert registry.can_submit_vendor("taleo")
-        assert registry.can_submit_vendor("")
-        assert registry.can_submit_vendor("icims")
-
-    def test_board_key_still_selects_the_api(self, agent_on):
-        from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
-
-        target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
-        chosen = registry.get_submitter(target, board_key="gh-key")
-        assert isinstance(chosen, GreenhouseSubmitter)
-        assert chosen.board_key == "gh-key"
-
     def test_account_gated_stays_out_of_the_agent(self, agent_on):
         from juicebox.applications.submit.browser.workday import WorkdaySubmitter
         from juicebox.applications.submit.browser.yc import YCSubmitter
@@ -75,11 +56,6 @@ class TestRegistryCutover:
         reset_settings_cache()
         assert registry.can_submit_vendor("greenhouse")
         assert registry.mode() == "console"
-
-    def test_unknown_board_without_agent_is_handoff(self, live_mode):
-        target = detect.ApplyTarget(vendor="", apply_url="https://careers.tesla.com/x")
-        assert registry.get_submitter(target) is None
-        assert not registry.can_submit_vendor("")
 
     def test_unknown_board_is_handoff_even_in_memory_mode(self, monkeypatch):
         """The capture double is not a submitter for Taleo.

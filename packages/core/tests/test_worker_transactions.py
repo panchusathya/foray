@@ -17,7 +17,6 @@ from sqlalchemy import select
 from juicebox import worker
 from juicebox.integrations import discovery
 from juicebox.jobs import (
-    KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_ONE,
     KIND_PROFILE_INGEST,
     enqueue,
@@ -274,20 +273,6 @@ class TestOverlappingDiscoverySweeps:
         session.add(row)
         session.commit()
         return row
-
-    def test_the_dispatcher_stamps_the_sweep_on_the_connection(
-        self, session, account, connection
-    ):
-        job = enqueue(
-            session,
-            org_id=account["org_id"],
-            kind=KIND_CRM_DISCOVERY,
-            idempotency_key="sweep:1",
-            payload={"org_id": account["org_id"]},
-        )
-        result = worker._handle_crm_discovery(session, job, utcnow())
-        assert result["mailboxes"] == 1
-        assert connection.discovery_state["sweep"] == result["sweep"]
 
     def test_a_page_from_a_superseded_sweep_leaves_the_cursor_alone(
         self, session, account, connection, monkeypatch

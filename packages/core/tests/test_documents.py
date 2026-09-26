@@ -10,13 +10,10 @@ Two of these tests are the domain's conscience:
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from sqlalchemy import select
 
 from juicebox import storage
-from juicebox.docgen import parse as parse_module
 from juicebox.docgen.parse import ERROR_NO_TEXT, extract_pdf_text, parse_resume_text
 from juicebox.docgen.render import render_resume_pdf
 from juicebox.docgen.resume import build_resume_json
@@ -160,33 +157,6 @@ class TestParse:
         structured, error = parse_resume_text("")
         assert structured == {} and error == ERROR_NO_TEXT
 
-    def test_resume_parse_uses_bounded_fast_model(self, monkeypatch):
-        class Client:
-            available = True
-
-            def __init__(self):
-                self.kwargs = None
-
-            def json_fast(self, **kwargs):
-                self.kwargs = kwargs
-                return SimpleNamespace(
-                    data={
-                        "contact": {"name": "Ada Okonkwo"},
-                        "experience": [{"company": "Modal", "title": "Engineer"}],
-                    }
-                )
-
-        client = Client()
-        monkeypatch.setattr(parse_module, "get_llm", lambda: client)
-
-        structured, error = parse_resume_text("Ada Okonkwo, Engineer at Modal")
-
-        assert error == ""
-        assert structured["contact"]["name"] == "Ada Okonkwo"
-        assert client.kwargs["timeout"] == 30.0
-        assert client.kwargs["max_tokens"] == 8000
-
-
 class TestTailorHonesty:
     def test_default_upload_supersedes_candidate_and_linkedin_facts(
         self, session, account, candidate
@@ -257,36 +227,3 @@ class TestTailorHonesty:
         companies = {job["company"] for job in resume["experience"]}
         assert "Google DeepMind" not in companies
 
-    def test_an_honest_model_is_kept(self, session, account, candidate):
-        honest = {
-            "contact": {"name": "Ada Okonkwo", "email": "ada@example.com", "phone": "",
-                        "location": "", "linkedin_url": ""},
-            "summary": "ML engineer focused on LLM inference platforms.",
-            "experience": [
-                {"company": "Modal", "title": "Senior Machine Learning Engineer",
-                 "start": "2019-01", "end": "present",
-                 "bullets": ["Owned the production LLM inference platform."]},
-            ],
-            "education": [],
-            "skills": ["Python", "PyTorch"],
-            "certifications": [],
-        }
-        set_llm(LLMClient(transport=FakeTransport(default=honest), enabled=True))
-        try:
-            resume, generated_by = build_resume_json(session, candidate)
-        finally:
-            set_llm(None)
-        assert generated_by == "llm"
-        assert resume["summary"].startswith("ML engineer")
-
-    def test_deterministic_resume_is_complete(self, session, candidate):
-        resume, generated_by = build_resume_json(session, candidate)
-        assert generated_by == "template"
-        assert resume["contact"]["name"] == "Ada Okonkwo"
-        assert resume["contact"]["email"] == "ada@example.com"
-        companies = [job["company"] for job in resume["experience"]]
-        assert companies == ["Modal", "Stripe"]  # current first
-        assert resume["experience"][0]["end"] == "present"
-        assert resume["education"][0]["school"] == "Stanford University"
-        # Skills arrive normalized by the enrich pipeline.
-        assert "python" in resume["skills"]

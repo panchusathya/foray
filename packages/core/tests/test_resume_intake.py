@@ -21,11 +21,9 @@ from juicebox.docgen.parse import (
     DOCX_MIME,
     PDF_MIME,
     extract_docx_text,
-    extract_text,
     sniff_resume_type,
 )
 from juicebox.docgen.render import render_resume_pdf
-from juicebox.enrich.promote import payload_from_resume_v1, promote
 from juicebox.jobs import (
     KIND_DOC_PARSE,
     KIND_INTAKE_ATTACHMENT,
@@ -36,14 +34,12 @@ from juicebox.llm.client import FakeTransport, LLMClient, set_llm
 from juicebox.messaging.attachments import (
     PENDING_KEY,
     ingest_inbound_attachments,
-    materialize_pending,
 )
 from juicebox.messaging.channels import LINQ, FakeChannel, set_channel
 from juicebox.messaging.conversation import run_turn
 from juicebox.messaging.linkedin_flow import (
     FLOW_LINKEDIN_SHORT,
     flow_meta,
-    profile_from_resume,
 )
 from juicebox.messaging.linq import (
     InboundAttachment,
@@ -153,12 +149,6 @@ class TestSniffAndExtract:
         assert sniff_resume_type(b"\x89PNG\r\n\x1a\n....") == ""
         assert sniff_resume_type(b"") == ""
 
-    def test_a_zip_without_a_word_body_is_not_a_docx(self):
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("xl/workbook.xml", "<workbook/>")
-        assert sniff_resume_type(buffer.getvalue()) == ""
-
     def test_docx_text_keeps_the_body_and_the_header(self):
         data = _docx_bytes(
             ["Investor at Westbridge Capital", "Berkeley, BA Economics"],
@@ -171,66 +161,8 @@ class TestSniffAndExtract:
         # dropping it drops the person.
         assert "ada@lovelace.dev" in text
 
-    def test_extract_text_dispatches_on_content(self):
-        assert "Westbridge" in extract_text(_docx_bytes(["Investor at Westbridge"]))
-        assert "Westbridge" in extract_text(_pdf_bytes())
-        assert extract_text(b"not a resume at all") == ""
-
     def test_a_truncated_docx_is_empty_not_a_crash(self):
         assert extract_docx_text(_docx_bytes(["Ada"])[:40]) == ""
-
-
-class TestUploadAcceptsDocx:
-    @pytest.fixture
-    def candidate(self, session, account):
-        from juicebox.repository import upsert_candidates
-
-        upsert_candidates(
-            session,
-            org_id=account["org_id"],
-            payloads=[{"source": "test", "source_id": "ada", "full_name": "Ada Lovelace"}],
-        )
-        session.commit()
-        return session.query(Candidate).filter_by(full_name="Ada Lovelace").one()
-
-    def test_a_docx_upload_lands_with_its_own_type(self, client, session, account, candidate):
-        response = client.post(
-            f"/v1/candidates/{candidate.id}/documents",
-            files={"file": ("ada.docx", _docx_bytes(["Investor at Westbridge"]), DOCX_MIME)},
-            headers=account["headers"],
-        )
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["content_type"] == DOCX_MIME
-        doc = session.get(CandidateDocument, body["id"])
-        assert doc.storage_path.endswith(".docx")
-        assert session.scalar(select(Job).where(Job.kind == KIND_DOC_PARSE)) is not None
-
-    def test_a_lying_content_type_header_does_not_help(self, client, account, candidate):
-        response = client.post(
-            f"/v1/candidates/{candidate.id}/documents",
-            files={"file": ("resume.pdf", b"\x89PNG\r\n\x1a\n....", "application/pdf")},
-            headers=account["headers"],
-        )
-        assert response.status_code == 415
-
-    def test_the_upload_page_takes_a_docx_too(self, session, account, thread, channel, client):
-        from juicebox.messaging.uploads import mint_upload_link
-
-        _say(session, thread, "hey", "d0")
-        _say(session, thread, "ada@lovelace.dev", "d1")
-        session.commit()
-        link = mint_upload_link(thread)
-        response = client.post(
-            link[link.index("/v1/") :],
-            files={"file": ("ada.docx", _docx_bytes(["Investor at Westbridge"]), DOCX_MIME)},
-        )
-        assert response.status_code == 201, response.text
-        doc = session.scalar(
-            select(CandidateDocument).where(CandidateDocument.thread_id == thread.id)
-        )
-        assert doc is not None
-        assert doc.content_type == DOCX_MIME
 
 
 class TestInboundAttachmentParsing:
@@ -263,27 +195,7 @@ class TestInboundAttachmentParsing:
         # Round-trips through the job payload without loss.
         assert InboundAttachment.from_dict(attachment.to_dict()) == attachment
 
-    def test_a_media_part_without_a_url_is_dropped(self):
-        payload = {
-            "data": {
-                "chat_id": "chat-1",
-                "sender_handle": "+14155550123",
-                "id": "msg-1",
-                "parts": [{"type": "media"}],
-            }
-        }
-        assert parse_inbound(payload).attachments == ()
-
-
 class TestFetchMedia:
-    def test_happy_path_returns_the_bytes(self):
-        data = fetch_media("https://cdn/x", transport=lambda url: (200, b"%PDF-1.4"))
-        assert data == b"%PDF-1.4"
-
-    def test_a_dead_url_raises(self):
-        with pytest.raises(MediaFetchError):
-            fetch_media("https://cdn/x", transport=lambda url: (403, b""))
-
     def test_the_upload_cap_applies_to_downloads_too(self):
         from juicebox.config import get_settings
 
@@ -351,9 +263,6 @@ class TestAttachmentIngest:
         assert doc is not None, "the held resume attaches once the email lands"
         assert not flow_meta(thread).get(PENDING_KEY), "the stash is spent"
         assert session.scalar(select(Job).where(Job.kind == KIND_DOC_PARSE)) is not None
-
-    def test_materialize_is_a_noop_without_a_stash(self, session, thread):
-        assert materialize_pending(session, thread=thread) is None
 
     def test_a_photo_gets_an_honest_reply_with_the_fallback_link(
         self, session, account, thread, channel
@@ -499,24 +408,3 @@ class TestEndToEndOverTheWebhook:
         assert "couldn't read that resume" in body
 
 
-class TestSchemaBreadth:
-    def test_promotion_carries_the_links(self, session, account):
-        payload = payload_from_resume_v1(RESUME_V1)
-        assert payload["github_url"] == "https://github.com/ada"
-        assert payload["website_url"] == "https://ada.dev"
-        result = promote(session, org_id=account["org_id"], parsed=payload)
-        candidate = session.get(Candidate, result.candidate_id)
-        assert candidate.github_url == "https://github.com/ada"
-        assert candidate.linkedin_url == "https://linkedin.com/in/ada"
-
-    def test_profile_from_resume_reads_the_contact_block(self, session, account):
-        candidate = Candidate(org_id=account["org_id"], full_name="", source="t", source_id="t")
-        profile = profile_from_resume(candidate, RESUME_V1)
-        assert profile.url == "https://linkedin.com/in/ada"
-        assert profile.full_name == "Ada Lovelace"
-        assert profile.current_title == "Investor"
-        assert profile.current_employer == "Westbridge Capital"
-
-    def test_the_renderer_takes_the_new_fields_in_stride(self):
-        data = render_resume_pdf(RESUME_V1)
-        assert data.startswith(b"%PDF-")

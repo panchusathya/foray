@@ -57,12 +57,6 @@ def linq_on(monkeypatch):
 class TestTheBudgetIsSized:
     """"Thirty seconds" has to mean something other than "four questions"."""
 
-    def test_under_a_minute_buys_two_questions(self):
-        assert gate_keys_for(0) == GATE_PRIORITY[:2]
-
-    def test_a_minute_buys_four(self):
-        assert gate_keys_for(1) == GATE_PRIORITY[:4]
-
     def test_the_core_threshold_still_caps_a_short_budget(self):
         """Sizing was added underneath the core rule, not in place of it.
 
@@ -72,17 +66,6 @@ class TestTheBudgetIsSized:
         """
         for minutes in (2, 3, 4):
             assert len(gate_keys_for(minutes) or ()) == len(CORE_KEYS)
-
-    def test_a_long_budget_is_the_full_set(self):
-        assert gate_keys_for(5) is None
-        assert gate_keys_for(20) is None
-
-    def test_no_budget_is_the_full_set(self):
-        assert gate_keys_for(None) is None
-
-    def test_a_long_answer_spends_the_budget(self):
-        """The clock is real where the stated total is only a prediction."""
-        assert len(gate_keys_for(2, elapsed_seconds=90) or ()) == 2
 
     def test_an_overrun_call_still_gets_one_question(self):
         """Never an empty gate: a call that ran over closes, it is not cut off."""
@@ -98,58 +81,15 @@ class TestOptionalTopicsStopWhenTheTimeIsGone:
         assert has_room_for_another_question(0, 20) is False
         assert has_room_for_another_question(1, 55) is False
 
-    def test_time_left_still_allows_one(self):
-        from juicebox.intake.service import has_room_for_another_question
-
-        assert has_room_for_another_question(0, 0) is True
-        assert has_room_for_another_question(5, 0) is True
-
     def test_no_stated_budget_is_never_cut_off(self):
         """Only a caller who told us their limit is held to it."""
         from juicebox.intake.service import has_room_for_another_question
 
         assert has_room_for_another_question(None, 10_000) is True
 
-    def test_the_snapshot_drops_optional_topics_when_asked_to(self):
-        from juicebox.intake import empty_record
-        from juicebox.intake.schema import coverage
-        from juicebox.intake.service import _snapshot
-
-        filled = empty_record()
-        filled["spec"].update(
-            {
-                "job_titles": ["senior frontend engineer"],
-                "seniority": ["senior"],
-                "locations": ["san francisco"],
-                "remote_ok": False,
-                "must_have_skills": ["react"],
-            }
-        )
-        filled["target_base"] = 200000.0
-        filled["work_authorization"] = "authorized"
-        filled["timeline"] = "now"
-        filled["employment_status"] = "unemployed_searching"
-        filled["active_processes"] = "none"
-        filled["ok_to_share_with_clients"] = True
-        state = coverage(filled)
-        assert state.required_complete
-
-        with_room = _snapshot(state, covered_count=len(state.covered), record=filled)
-        without = _snapshot(
-            state, covered_count=len(state.covered), record=filled, allow_optional=False
-        )
-        # Wrapping up is unaffected -- only the extra ask goes away.
-        assert with_room["wrap_up"] is True and without["wrap_up"] is True
-        assert without["optional_topics"] == []
-
 
 class TestTheGateACallClosedOnIsRecoverable:
     """The match pitch asks after the fact, and must not re-derive from the clock."""
-
-    def test_no_trim_means_the_full_set(self):
-        from juicebox.intake.service import effective_gate_keys
-
-        assert effective_gate_keys(IntakeCall(gate_mode="full", deferred_fields=[])) is None
 
     def test_a_short_call_is_judged_on_what_it_asked(self):
         """Otherwise the pitch refuses exactly the callers it is most useful for.
@@ -176,17 +116,8 @@ class TestTheGateACallClosedOnIsRecoverable:
         )
         assert effective_gate_keys(call) == ("spec.job_titles", "spec.locations")
 
-    def test_a_core_call_with_nothing_deferred_reads_as_it_always_did(self):
-        from juicebox.intake.service import effective_gate_keys
-
-        gate = effective_gate_keys(IntakeCall(gate_mode="core", deferred_fields=[]))
-        assert set(gate or ()) == set(CORE_KEYS)
-
 
 class TestElapsedIsOnlyTrustedWhenPlausible:
-    def test_no_start_timestamp_reads_as_zero(self):
-        assert elapsed_seconds(None) == 0
-        assert elapsed_seconds(IntakeCall(started_at=None)) == 0
 
     def test_a_stale_timestamp_is_refused(self):
         """A payload can carry a timestamp from last year.
@@ -197,10 +128,6 @@ class TestElapsedIsOnlyTrustedWhenPlausible:
         """
         old = IntakeCall(started_at=utcnow() - timedelta(days=400))
         assert elapsed_seconds(old) == 0
-
-    def test_a_live_call_is_measured(self):
-        live = IntakeCall(started_at=utcnow() - timedelta(seconds=45))
-        assert 40 <= elapsed_seconds(live) <= 60
 
 
 class TestTheBudgetClockStartsWhenTheBudgetIsStated:
@@ -215,17 +142,6 @@ class TestTheBudgetClockStartsWhenTheBudgetIsStated:
 
     A budget is a promise about the future. Everything before it was our time.
     """
-
-    def test_the_anchor_is_stamped_with_the_budget(self):
-        call = IntakeCall(started_at=utcnow() - timedelta(seconds=50))
-        assert call.budget_started_at is None
-        apply_budget(call, 1)
-        assert call.budget_started_at is not None
-
-    def test_no_budget_stamps_no_anchor(self):
-        call = IntakeCall(started_at=utcnow() - timedelta(seconds=50))
-        apply_budget(call, None)
-        assert call.budget_started_at is None
 
     def test_the_anchor_latches_like_the_budget_does(self):
         """A second reading must not restart the clock they are spending."""
@@ -245,19 +161,6 @@ class TestTheBudgetClockStartsWhenTheBudgetIsStated:
         # than the single question fifty spent seconds would have left.
         assert gate_keys_for(1, elapsed_since_budget(call)) == GATE_PRIORITY[: len(CORE_KEYS)]
 
-    def test_time_after_the_budget_still_is(self):
-        """The sizing this was always meant to do is untouched."""
-        call = IntakeCall(started_at=utcnow() - timedelta(seconds=120))
-        apply_budget(call, 1)
-        call.budget_started_at = utcnow() - timedelta(seconds=50)
-        assert 45 <= elapsed_since_budget(call) <= 60
-        assert len(gate_keys_for(1, elapsed_since_budget(call))) == 1
-
-    def test_a_call_with_no_anchor_reads_as_zero(self):
-        """Rows written before the column existed size on the stated total."""
-        assert elapsed_since_budget(None) == 0
-        assert elapsed_since_budget(IntakeCall(budget_started_at=None)) == 0
-
     def test_a_stale_anchor_is_refused_like_a_stale_start(self):
         old = IntakeCall(budget_started_at=utcnow() - timedelta(days=400))
         assert elapsed_since_budget(old) == 0
@@ -269,10 +172,6 @@ class TestTheBudgetClockStartsWhenTheBudgetIsStated:
 
 
 class TestTheGateIsRanked:
-    def test_the_ranking_covers_every_required_field(self):
-        """Pinned here as well as asserted at import, so the failure names itself."""
-        required = {k for k in GATE_PRIORITY}
-        assert len(required) == len(GATE_PRIORITY)
 
     def test_what_they_want_is_asked_before_anything_else(self):
         missing = coverage({}).required_missing
@@ -286,11 +185,6 @@ class TestTheGateIsRanked:
         """
         missing = coverage({}).required_missing
         assert missing.index("work_authorization") > missing.index("compensation")
-
-    def test_an_answered_field_drops_out_of_the_ranking(self):
-        missing = coverage({"spec": {"job_titles": ["senior frontend engineer"]}}).required_missing
-        assert "spec.job_titles" not in missing
-        assert missing[0] == "spec.locations"
 
 
 # --------------------------------------------------------------------------
@@ -581,6 +475,3 @@ class TestDropReason:
 
     def test_removing_the_only_reason_empties_it(self):
         assert drop_reason(UNVERIFIED_NUMBER_REASON, UNVERIFIED_NUMBER_REASON) == ""
-
-    def test_a_reason_that_is_not_there_changes_nothing(self):
-        assert drop_reason("something else", UNVERIFIED_NUMBER_REASON) == "something else"

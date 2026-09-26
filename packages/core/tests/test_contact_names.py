@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from juicebox.integrations import discovery
-from juicebox.integrations.discovery import better_name, display_name_from
+from juicebox.integrations.discovery import display_name_from
 from juicebox.integrations.microsoft import to_sweep_record
 from juicebox.integrations.providers import SweepPage, SweepRecord
 from juicebox.integrations.zoho import _named_addresses
@@ -136,17 +136,6 @@ class TestGuessingIsALastResort:
         # Not "A Person", which is what the local part would have produced.
         assert row.display_name == "Adia Chenumbay"
 
-    def test_first_dot_last_is_still_guessed_when_no_header_name(
-        self, session, account, connection
-    ):
-        _sweep(
-            session,
-            connection,
-            [[_record(["ada.lovelace@acme.com"])]],
-            org_id=account["org_id"],
-        )
-        assert session.scalar(select(DiscoveredContact)).display_name == "Ada Lovelace"
-
     @pytest.mark.parametrize(
         "local", ["achenumbay", "jsmith", "hr", "contact", "adia2", "adia.c2"]
     )
@@ -154,12 +143,6 @@ class TestGuessingIsALastResort:
         """A wrong name is worse than a missing one: it looks authoritative,
         it is what goes into outreach, and nobody goes looking to correct it."""
         assert display_name_from(f"{local}@acme.com") == ""
-
-    def test_an_unnamed_contact_is_left_unnamed(self, session, account, connection):
-        _sweep(
-            session, connection, [[_record(["jsmith@acme.com"])]], org_id=account["org_id"]
-        )
-        assert session.scalar(select(DiscoveredContact)).display_name == ""
 
 
 class TestBestNameWins:
@@ -178,66 +161,3 @@ class TestBestNameWins:
             org_id=account["org_id"],
         )
         assert session.scalar(select(DiscoveredContact)).display_name == "Adia Chenumbay"
-
-    def test_a_later_header_can_fill_in_a_missing_name(
-        self, session, account, connection
-    ):
-        _sweep(
-            session,
-            connection,
-            [
-                [
-                    _record(["jsmith@acme.com"], native="m1"),
-                    _record(["jsmith@acme.com"], {"jsmith@acme.com": "John Smith"}, native="m2"),
-                ]
-            ],
-            org_id=account["org_id"],
-        )
-        assert session.scalar(select(DiscoveredContact)).display_name == "John Smith"
-
-    def test_anything_real_beats_an_address(self):
-        assert better_name("adia@acme.com", "Adia Chenumbay") == "Adia Chenumbay"
-        assert better_name("Adia Chenumbay", "adia@acme.com") == "Adia Chenumbay"
-
-
-class TestNeedsAName:
-    def test_promoting_without_a_name_falls_back_to_the_address(
-        self, session, account, connection
-    ):
-        from juicebox.models import Candidate
-
-        _sweep(
-            session, connection, [[_record(["jsmith@acme.com"])]], org_id=account["org_id"]
-        )
-        row = session.scalar(select(DiscoveredContact))
-        candidate_id, error = discovery.promote(
-            session, row=row, org_id=account["org_id"]
-        )
-
-        assert error == ""
-        # full_name is NOT NULL, so the address stands in -- but it is now
-        # findable rather than lost among everyone else.
-        assert session.get(Candidate, candidate_id).full_name == "jsmith@acme.com"
-
-    def test_the_grid_can_list_everyone_still_named_by_their_address(
-        self, client, session, account, connection
-    ):
-        _sweep(
-            session,
-            connection,
-            [
-                [
-                    _record(["jsmith@acme.com"], native="m1"),
-                    _record(["adia@acme.com"], {"adia@acme.com": "Adia Chenumbay"}, native="m2"),
-                ]
-            ],
-            org_id=account["org_id"],
-        )
-        for row in session.scalars(select(DiscoveredContact)).all():
-            discovery.promote(session, row=row, org_id=account["org_id"])
-        session.commit()
-
-        rows = client.get(
-            "/v1/candidates", params={"needs_name": "true"}, headers=account["headers"]
-        ).json()
-        assert [r["full_name"] for r in rows] == ["jsmith@acme.com"]

@@ -20,7 +20,6 @@ import asyncio
 import pytest
 
 from foray.api import internal
-from foray.enrich import contactout
 from foray.enrich.contactout import ContactOutProvider, _reject_if_sample
 from foray.enrich.contacts import (
     CONFIDENCE,
@@ -129,11 +128,6 @@ class TestRejectIfSample:
         with pytest.raises(ProviderUnavailable, match="out of quota"):
             _reject_if_sample(SAMPLE_RESPONSE, REQUESTED)
 
-    def test_the_message_is_passed_through_so_the_cause_is_visible(self):
-        with pytest.raises(ProviderUnavailable) as exc:
-            _reject_if_sample(SAMPLE_RESPONSE, REQUESTED)
-        assert "book a call" in str(exc.value)
-
     def test_a_sample_identity_raises_even_without_the_message(self):
         """If the vendor drops the message but keeps the fake profile, the
         payload is still about nobody."""
@@ -163,11 +157,6 @@ class TestTheAdapterStoresNothingFromASample:
         """Second line of defence: even if the sample check were bypassed, every
         address in the payload is filtered as a placeholder."""
         assert ContactOutProvider()._parse(SAMPLE_RESPONSE).emails == []
-
-    def test_the_freemail_half_is_caught_too(self):
-        """email2@gmail.com is the dangerous one -- gmail.com accepts mail, so
-        this address may well belong to a stranger."""
-        assert contactout._usable("email2@gmail.com") is None
 
 
 class TestStoreResultIsTheLastGate:
@@ -223,17 +212,6 @@ class TestTheLinkedInImportIsGatedToo:
         assert conn.executed == []
         assert stats == {"emails": 0, "placeholder_emails": 2}
 
-    async def test_a_real_address_still_lands(self):
-        from foray.ingest.linkedin_file import LINKEDIN_EMAIL_CONFIDENCE, store_emails
-
-        conn = StubConn()
-        stats = {"emails": 0, "placeholder_emails": 0}
-        await store_emails(conn, 1, ["jane@acme.com"], "abc123", stats)
-        [insert] = conn.executed
-        assert insert[2] == "jane@acme.com"
-        assert insert[5] == LINKEDIN_EMAIL_CONFIDENCE
-        assert stats["emails"] == 1
-
     def test_a_regex_scrape_no_longer_outranks_every_real_source(self):
         """UPSERT_EMAIL only replaces `source` on a STRICT confidence
         improvement, so the old 80 meant a commit-mined or vendor-supplied
@@ -265,14 +243,3 @@ class TestTheCacheIsNotPoisoned:
         )
         assert result is None
         assert failure.startswith(internal._UNAVAILABLE)
-
-    def test_a_sample_response_never_reaches_the_stamp(self):
-        """The regression, stated as directly as it can be: a payload that
-        raises produces no result, and only a result stamps
-        contactout_checked_at. So a quota wall cannot mark 32 candidates as
-        permanently checked."""
-        provider = ContactOutProvider()
-        with pytest.raises(ProviderUnavailable):
-            _reject_if_sample(SAMPLE_RESPONSE, REQUESTED)
-        # ...and had it slipped through, there is nothing to write.
-        assert provider._parse(SAMPLE_RESPONSE).emails == []

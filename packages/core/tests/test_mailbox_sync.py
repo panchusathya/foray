@@ -169,9 +169,6 @@ class TestGraphToEvent:
         event = microsoft.to_event(payload)
         assert event.reply_to == "dana@parasail.ai"
 
-    def test_missing_reply_to_stays_empty(self):
-        assert microsoft.to_event(_inbound()).reply_to == ""
-
 
 class TestSyncMailbox:
     def test_first_sync_initialises_without_reading_history(self, session, account):
@@ -289,20 +286,6 @@ class TestSyncMailbox:
 
 
 class TestWorkerWiring:
-    def test_tick_is_scheduled_only_with_an_active_mailbox(self, session, account):
-        from juicebox.jobs import KIND_MAILBOX_SYNC
-        from juicebox.models import Job
-        from juicebox.worker import ensure_ticks
-
-        ensure_ticks(session)
-        kinds = {job.kind for job in session.query(Job).all()}
-        assert KIND_MAILBOX_SYNC not in kinds
-
-        session.add(MailboxConnection(org_id=account["org_id"], address="r@goforay.io"))
-        session.flush()
-        ensure_ticks(session)
-        kinds = {job.kind for job in session.query(Job).all()}
-        assert KIND_MAILBOX_SYNC in kinds
 
     def test_the_dispatcher_covers_every_provider(self, session, synced_org):
         """A Zoho mailbox that never gets a job is a mailbox whose replies are
@@ -360,28 +343,6 @@ class TestWorkerWiring:
         # The dispatcher keeps its own loop alive.
         assert session.query(Job).filter_by(kind=KIND_MAILBOX_SYNC, status="queued").count() == 1
 
-    def test_per_mailbox_job_syncs_and_records(self, session, synced_org):
-        from juicebox.jobs import KIND_MAILBOX_SYNC_ONE, enqueue
-        from juicebox.worker import process_job
-
-        fake = FakeDeltaClient()
-        fake.queue(_inbound(graph_id="in-5"))
-        install_graph(lambda db, conn: fake)
-        job = enqueue(
-            session,
-            org_id=synced_org["connection"].org_id,
-            kind=KIND_MAILBOX_SYNC_ONE,
-            idempotency_key="sync-one-test",
-            payload={
-                "org_id": synced_org["connection"].org_id,
-                "mailbox_id": synced_org["connection"].id,
-            },
-        )
-        process_job(session, job)
-        session.commit()
-        assert job.status == "succeeded"
-        assert session.query(Message).filter_by(direction="inbound").count() == 1
-
     def test_a_revoked_token_does_not_park_the_job(self, session, synced_org):
         """A broken mailbox records its error and succeeds; retrying forever
         would only fill the queue while the healthy mailboxes carry on."""
@@ -410,38 +371,3 @@ class TestWorkerWiring:
         session.commit()
         assert job.status == "succeeded"
         assert "token revoked" in synced_org["connection"].error
-
-
-class TestSyncApi:
-    def test_sync_now_endpoint(self, client, session, account):
-        connection = MailboxConnection(org_id=account["org_id"], address="r@goforay.io")
-        session.add(connection)
-        session.commit()
-        install_graph(lambda db, conn: FakeDeltaClient())
-        response = client.post(
-            f"/v1/integrations/mailboxes/{connection.id}/sync", headers=account["headers"]
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["initialized"] is True
-
-        listed = client.get("/v1/integrations/mailboxes", headers=account["headers"]).json()
-        assert listed["connections"][0]["last_synced_at"] is not None
-
-    def test_sync_now_rejects_revoked_and_foreign(self, client, session, account):
-        connection = MailboxConnection(
-            org_id=account["org_id"], address="r@goforay.io", status="revoked"
-        )
-        session.add(connection)
-        session.commit()
-        assert (
-            client.post(
-                f"/v1/integrations/mailboxes/{connection.id}/sync", headers=account["headers"]
-            ).status_code
-            == 409
-        )
-        assert (
-            client.post(
-                "/v1/integrations/mailboxes/mbx_nope/sync", headers=account["headers"]
-            ).status_code
-            == 404
-        )

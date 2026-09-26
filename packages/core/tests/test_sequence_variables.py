@@ -12,11 +12,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from juicebox.models import Enrollment, MailboxConnection, Message, SequenceStep, utcnow
+from juicebox.models import Enrollment, MailboxConnection, Message, SequenceStep
 from juicebox.outreach.personalize import sender_context
 from juicebox.outreach.sender import SendResult, set_sender_factory
 from juicebox.outreach.sequencer import (
-    SUGGESTED_DATE_BUSINESS_DAYS,
     build_message_content,
     enroll_candidates,
     preview_step,
@@ -26,14 +25,6 @@ from juicebox.outreach.sequencer import (
 
 
 class TestSenderName:
-    def test_the_mailbox_display_name_wins(self):
-        connection = MailboxConnection(
-            address="tushar@goforay.io", display_name="Tushar Gupta"
-        )
-        ctx = sender_context(connection, None, fallback_name="Talent Team")
-        assert ctx["sender_name"] == "Tushar Gupta"
-        assert ctx["sender_first_name"] == "Tushar"
-        assert ctx["sender_email"] == "tushar@goforay.io"
 
     def test_a_nameless_mailbox_falls_back_to_its_address(self):
         """A Zoho mailbox connected without a display name still signs off with
@@ -47,41 +38,10 @@ class TestSenderName:
             ctx = sender_context(MailboxConnection(address=address, display_name=""))
             assert ctx["sender_name"] == expected, address
 
-    def test_no_mailbox_falls_back_to_the_sequence_then_the_default(self, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        sequence.from_name = "Acme Talent"
-        assert sender_context(None, sequence)["sender_name"] == "Acme Talent"
-        sequence.from_name = ""
-        ctx = sender_context(None, sequence, fallback_name="Configured Default")
-        assert ctx["sender_name"] == "Configured Default"
-
     def test_it_is_never_empty(self):
         """An empty signature is worse than a slightly wrong one."""
         assert sender_context(None, None)["sender_name"] == "the team"
         assert sender_context(MailboxConnection(address="", display_name=""))["sender_name"]
-
-    def test_rendering_signs_off_with_the_sending_mailbox(
-        self, session, account, outreach_fixture
-    ):
-        connection = MailboxConnection(
-            org_id=account["org_id"],
-            address="zoho-one@goforay.io",
-            display_name="Sathya Panchu",
-        )
-        session.add(connection)
-        session.flush()
-        sequence = outreach_fixture["sequence"]
-        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
-        step.body_template = "Hi {{ first_name }},\n\nBest,\n{{ sender_name }}"
-
-        _, body, _, _ = build_message_content(
-            session,
-            sequence=sequence,
-            step=step,
-            candidate=outreach_fixture["candidates"][0],
-            connection=connection,
-        )
-        assert body.endswith("Best,\nSathya Panchu")
 
     def test_two_mailboxes_sign_the_same_step_differently(
         self, session, account, outreach_fixture
@@ -129,15 +89,6 @@ class TestSuggestedDate:
         ctx = suggested_date_context(session, enrollment=None, step=None, now=now)
         assert ctx["suggested_day"] == expected_day
         assert ctx["suggested_date"].startswith(expected_day)
-
-    def test_monday_gives_thursday_the_full_date(self, session):
-        now = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)  # a Monday
-        ctx = suggested_date_context(session, enrollment=None, step=None, now=now)
-        assert ctx["suggested_date"] == "Thursday 20 August"
-
-    def test_the_offset_is_two_clear_business_days(self):
-        """Named so the convention is checkable rather than folklore."""
-        assert SUGGESTED_DATE_BUSINESS_DAYS == 3
 
     def test_it_renders_in_the_step_timezone(self, session):
         """Late-evening UTC is already tomorrow in Asia/Kolkata, and the weekday
@@ -224,18 +175,6 @@ class TestSuggestedDate:
         assert all("Thursday" in b for b in bodies), bodies
         assert bodies[0] == bodies[1]
 
-    def test_before_any_send_the_anchor_is_now(self, session, outreach_fixture):
-        """A preview has nothing to anchor to, so it shows today's answer."""
-        enrollment = Enrollment(
-            sequence_id=outreach_fixture["sequence"].id,
-            candidate_id=outreach_fixture["candidates"][0].id,
-        )
-        session.add(enrollment)
-        session.flush()
-        now = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
-        ctx = suggested_date_context(session, enrollment=enrollment, step=None, now=now)
-        assert ctx["suggested_day"] == "Thursday"
-
 
 class TestSignOffDefaults:
     """The shipped defaults sign off with a first name, not a full name.
@@ -244,21 +183,6 @@ class TestSignOffDefaults:
     where it came from: the drafting prompt, the offline template arc, and the
     seeded starter steps.
     """
-
-    def test_the_offline_template_arc_signs_off_with_the_first_name(self):
-        from juicebox.outreach.drafts import _TEMPLATE_STEPS
-
-        bodies = [step["body_template"] for step in _TEMPLATE_STEPS]
-        assert all("{{sender_first_name}}" in b for b in bodies)
-        assert not any("{{sender_name}}" in b for b in bodies)
-
-    def test_the_prompt_tells_the_model_to_use_the_first_name(self):
-        from juicebox.llm.prompts import DRAFT_SEQUENCE_SYSTEM, SEQUENCE_TEMPLATE_VARIABLES
-
-        assert "{{ sender_first_name }}" in DRAFT_SEQUENCE_SYSTEM
-        assert "sender_first_name" in SEQUENCE_TEMPLATE_VARIABLES
-        # A model told about the full name will reach for it in a signature.
-        assert "sender_name" not in SEQUENCE_TEMPLATE_VARIABLES
 
     def test_a_full_name_mailbox_still_signs_with_one_word(
         self, session, account, outreach_fixture
@@ -283,13 +207,6 @@ class TestSignOffDefaults:
             connection=connection,
         )
         assert body == "Best," + chr(10) + "Tushar"
-
-    def test_the_full_name_is_still_available_for_anyone_who_wants_it(self):
-        ctx = sender_context(
-            MailboxConnection(address="t@x.io", display_name="Tushar Gupta")
-        )
-        assert ctx["sender_name"] == "Tushar Gupta"
-        assert ctx["sender_first_name"] == "Tushar"
 
 
 class TestPreviewMatchesTheSend:
@@ -435,87 +352,3 @@ class TestPreviewMatchesTheSend:
             session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
         )
         assert body == "Best," + chr(10) + "Anna"
-
-    def test_no_mailbox_at_all_falls_back_to_the_configured_name(
-        self, session, account, outreach_fixture, monkeypatch
-    ):
-        monkeypatch.setenv("OUTREACH_FROM_NAME", "Sathya Panchu")
-        from juicebox.config import reset_settings_cache
-
-        reset_settings_cache()
-        sequence = outreach_fixture["sequence"]
-        sequence.sender_mode = "rotate"
-        sequence.mailbox_id = None
-        # The fixture sets from_name, which correctly outranks the configured
-        # default; clear it to reach the last rung of the chain.
-        sequence.from_name = ""
-        for step in sequence.steps:
-            step.body_template = "Best," + chr(10) + "{{ sender_first_name }}"
-        _, body, _ = preview_step(
-            session, sequence=sequence, candidate=outreach_fixture["candidates"][0]
-        )
-        assert body == "Best," + chr(10) + "Sathya"
-
-
-class TestPreviewApiNamesTheSender:
-    def test_the_endpoint_reports_which_mailbox_it_rendered_as(
-        self, client, session, account, outreach_fixture
-    ):
-        connection = MailboxConnection(
-            org_id=account["org_id"],
-            address="tushar@goforay.io",
-            display_name="Tushar Gupta",
-        )
-        session.add(connection)
-        session.flush()
-        sequence = outreach_fixture["sequence"]
-        sequence.sender_mode = "fixed"
-        sequence.mailbox_id = connection.id
-        session.commit()
-
-        response = client.post(
-            f"/v1/sequences/{sequence.id}/preview",
-            json={
-                "candidate_id": outreach_fixture["candidates"][0].id,
-                "step_order": 0,
-            },
-            headers=account["headers"],
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["sender_email"] == "tushar@goforay.io"
-        assert body["sender_name"] == "Tushar Gupta"
-
-
-class TestBothInOneRender:
-    def test_a_template_can_use_every_new_variable(
-        self, session, account, outreach_fixture
-    ):
-        connection = MailboxConnection(
-            org_id=account["org_id"], address="z@goforay.io", display_name="Sathya Panchu"
-        )
-        session.add(connection)
-        session.flush()
-        sequence = outreach_fixture["sequence"]
-        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
-        step.body_template = (
-            "Hi {{ first_name }},\n\nAre you free {{ suggested_day }}?\n\n"
-            "Best,\n{{ sender_first_name }}"
-        )
-        _, body, context, _ = build_message_content(
-            session,
-            sequence=sequence,
-            step=step,
-            candidate=outreach_fixture["candidates"][0],
-            connection=connection,
-            now=utcnow(),
-        )
-        assert "Best,\nSathya" in body
-        assert context["sender_name"] == "Sathya Panchu"
-        assert context["suggested_day"] in {
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-        }

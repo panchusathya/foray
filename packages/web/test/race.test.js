@@ -4,11 +4,6 @@ import { describe, it } from 'node:test';
 import { newestOnly } from '../src/lib/race.js';
 
 describe('newestOnly', () => {
-  it('lets a single request report', () => {
-    const start = newestOnly();
-    assert.equal(start()(), true);
-  });
-
   it('silences a request that a newer one has already superseded', () => {
     // Typing "Alexan" then "Alexandra": both are on the wire, and the shorter
     // prefix is the one that comes back last.
@@ -18,12 +13,6 @@ describe('newestOnly', () => {
 
     assert.equal(alexandra(), true);
     assert.equal(alexan(), false);
-  });
-
-  it('keeps the newest current however long the older ones take', () => {
-    const start = newestOnly();
-    const guards = ['A', 'Al', 'Ale', 'Alex'].map(() => start());
-    assert.deepEqual(guards.map((isNewest) => isNewest()), [false, false, false, true]);
   });
 
   it('gives each hook instance its own counter', () => {

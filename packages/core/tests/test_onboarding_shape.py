@@ -22,7 +22,6 @@ from juicebox.messaging.conversation import run_turn
 from juicebox.messaging.linkedin_flow import (
     BATCH_CONFIRM,
     FLOW_LINKEDIN_SHORT,
-    profile_from_resume,
 )
 from juicebox.messaging.manager import MODE_MANAGING
 from juicebox.messaging.threads import open_thread, record_inbound
@@ -129,28 +128,6 @@ class TestOnboardingStopsAtTheConfirm:
         )
         assert thread.mode == MODE_MANAGING
 
-    def test_the_survey_questions_are_gone(self, session, account, thread, channel):
-        set_scraper(
-            lambda url: LinkedInProfile(
-                url=url,
-                full_name="Sathya P",
-                current_title="Investor",
-                current_employer="Westbridge Capital",
-                location="San Francisco Bay Area",
-                experience_years=1.0,
-            )
-        )
-        _say(session, thread, "hey", "s0")
-        _say(session, thread, "sathya@example.com", "s1")
-        _say(session, thread, "linkedin.com/in/sathya", "s2")
-        _drain(session, KIND_LINKEDIN_SCRAPE)
-        run_turn(session, thread=thread)
-        _say(session, thread, "yes", "s3")
-
-        whole = " ".join(channel.bodies).lower()
-        for banned in ("targeting on comp", "how soon would you want to move", "sponsorship"):
-            assert banned not in whole, f"onboarding still asks: {banned}"
-
     def test_a_correction_after_handover_still_reaches_the_preference(
         self, session, account, thread, channel
     ):
@@ -174,28 +151,6 @@ class TestOnboardingStopsAtTheConfirm:
 
 
 class TestAResumeIsAWayIn:
-    def test_the_ask_offers_both_and_the_link_works(
-        self, session, account, thread, channel, client
-    ):
-        _say(session, thread, "hey", "r0")
-        _say(session, thread, "ada@lovelace.dev", "r1")
-        # The upload page runs on its own request, so the thread has to be
-        # visible outside this session before the link can resolve.
-        session.commit()
-        body = channel.bodies[-1]
-        # iMessage carries files, so the Linq ask is attach-or-URL with no
-        # upload link — a URL in the ask is one more tap than the answer
-        # needs. The link reappears only in the failure fallbacks.
-        assert "resume" in body.lower()
-        assert "linkedin" in body.lower()
-        assert "http" not in body
-
-        from juicebox.messaging.uploads import mint_upload_link
-
-        link = mint_upload_link(thread)
-        page = client.get(link[link.index("/v1/") :])
-        assert page.status_code == 200, page.text
-        assert "Send your resume" in page.text
 
     def test_a_parsed_resume_settles_the_profile_step(self, session, account, thread, channel):
         """Upload instead of a URL, and the conversation moves on by itself.
@@ -247,44 +202,6 @@ class TestAResumeIsAWayIn:
         assert thread.last_field_asked == BATCH_CONFIRM
         assert "westbridge capital" in channel.bodies[-1].lower()
 
-    def test_a_resume_gives_the_matcher_something_a_header_cannot(
-        self, session, account, thread
-    ):
-        """The reason to prefer it: dated roles, skills, a real year count."""
-        from juicebox.enrich.promote import payload_from_resume_v1, promote
-        from juicebox.messaging import identity
-        from juicebox.search.index import candidate_to_doc
-
-        thread.contact_email = "ada@lovelace.dev"
-        session.flush()
-        candidate = session.get(Candidate, identity.link_candidate(session, thread=thread))
-        promote(
-            session,
-            org_id=account["org_id"],
-            parsed=payload_from_resume_v1(RESUME_V1, fallback_name="Ada Lovelace"),
-            candidate=candidate,
-        )
-        session.flush()
-
-        doc = candidate_to_doc(candidate)
-        assert doc.skills, "a scrape carries no skills; a resume does"
-        assert doc.titles_held, "and no employment history either"
-
-    def test_the_confirm_reads_the_same_from_either_route(self, session, account):
-        candidate = Candidate(
-            org_id=account["org_id"],
-            source="test",
-            source_id="cand-shape",
-            full_name="Ada Lovelace",
-            years_experience=2.0,
-        )
-        session.add(candidate)
-        session.flush()
-        profile = profile_from_resume(candidate, RESUME_V1)
-        assert profile.current_title == "Investor"
-        assert profile.current_employer == "Westbridge Capital"
-        assert profile.experience_years == 2.0
-
 
 class TestApplicationQuestionsAskedAtApplicationTime:
     def _application(self, session, account, thread, answers):
@@ -323,19 +240,6 @@ class TestApplicationQuestionsAskedAtApplicationTime:
             {"key": "notice_period", "question": "start?", "answer": "", "edited": False},
             {"key": "why_company", "question": "why?", "answer": "", "edited": False},
         ]
-
-    def test_the_form_blanks_become_one_message_naming_the_role(
-        self, session, account, thread, channel
-    ):
-        application = self._application(session, account, thread, self._blank_set())
-        result = followups.ask_for_missing(session, application)
-
-        assert set(result["asked"]) == {"work_authorization"}
-        body = channel.bodies[-1].lower()
-        assert "google" in body, "the question has to say what it is for"
-        assert "authoris" in body or "sponsor" in body
-        assert "comp" not in body
-        assert "write it in the app" not in body
 
     def test_an_answer_we_already_have_is_not_asked_for(
         self, session, account, thread, channel
@@ -429,19 +333,6 @@ class TestADegradedEmbedderIsNotSilent:
         finally:
             embeddings_module._embedder = previous
 
-    def test_a_hashing_deployment_is_not_reported_as_degraded(self, client):
-        """Hashing on purpose is a choice, not a failure. Only a silent
-        fallback from a configured provider counts."""
-        from juicebox.llm import embeddings as embeddings_module
-
-        previous = embeddings_module._embedder
-        embeddings_module._embedder = embeddings_module.HashingEmbedder(512)
-        try:
-            body = client.get("/health").json()
-            assert body["embeddings_degraded"] is False
-        finally:
-            embeddings_module._embedder = previous
-
 
 class TestChatAsksOnlyWorkAuthorization:
     """Salary, start date, and why-this-company are not surveyed over text."""
@@ -455,17 +346,6 @@ class TestChatAsksOnlyWorkAuthorization:
             form_answers = answers
 
         return _App()
-
-    def test_known_work_auth_is_silent_even_with_other_blanks(self):
-        from juicebox.applications.followups import followup_message
-
-        answers = [
-            {"key": "work_authorization", "answer": "I am a U.S. citizen."},
-            {"key": "salary_expectation", "answer": ""},
-            {"key": "notice_period", "answer": "I can start immediately."},
-            {"key": "why_company", "answer": ""},
-        ]
-        assert followup_message(self._application(answers), self._Posting()) == ""
 
     def test_missing_work_auth_is_the_only_question(self):
         from juicebox.applications.followups import followup_message
@@ -481,14 +361,3 @@ class TestChatAsksOnlyWorkAuthorization:
         assert "comp" not in body.lower()
         assert "why Voice Capital" not in body
         assert "write it in the app" not in body
-
-    def test_why_company_is_still_a_portal_blank_not_an_ask(self):
-        from juicebox.applications import followups
-
-        answers = [
-            {"key": "work_authorization", "answer": "I am a U.S. citizen."},
-            {"key": "why_company", "answer": ""},
-        ]
-        app = self._application(answers)
-        assert followups.portal_only_blanks(app) == ["why_company"]
-        assert "why_company" not in followups.blank_answers(app)

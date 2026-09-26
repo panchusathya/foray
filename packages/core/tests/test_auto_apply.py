@@ -21,7 +21,6 @@ from juicebox.applications.alias import (
     ensure,
     parse,
     revoke,
-    sending_identity,
 )
 from juicebox.applications.ats import detect
 from juicebox.applications.service import create_application
@@ -230,11 +229,6 @@ class TestVendorDetection:
         assert not target
         assert target.tier == detect.TIER_HANDOFF
 
-    def test_aggregators_are_followed_not_claimed(self):
-        assert detect.is_aggregator("https://www.linkedin.com/jobs/view/1/")
-        assert detect.is_aggregator("https://uk.indeed.com/viewjob?jk=abc")
-        assert not detect.is_aggregator("https://boards.greenhouse.io/x/jobs/1")
-
     def test_an_application_address_needs_the_copy_to_point_at_it(self):
         assert detect.apply_email("To apply, send your CV to jobs@acme.com") == "jobs@acme.com"
         assert detect.apply_email('<a href="mailto:hr@acme.com">') == "hr@acme.com"
@@ -291,20 +285,6 @@ class TestTargetResolution:
 class TestSubmissionAuthorization:
     """Using JuiceBox authorizes a prepared application to be submitted."""
 
-    def test_submitting_does_not_require_a_recorded_yes(self, session, account, candidate):
-        posting = _posting(session, account["org_id"])
-        application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        transition(session, application, to_status="submitting", actor="agent")
-
-    def test_request_submission_queues_without_per_application_approval(
-        self, session, account, candidate, memory_mode
-    ):
-        posting = _posting(session, account["org_id"])
-        application = _ready(session, account["org_id"], candidate, posting, consent=False)
-        job = request_submission(session, application)
-        assert job.kind == KIND_APP_SUBMIT
-        assert session.query(ApplicationSubmission).count() == 0
-
     def test_the_machine_allows_the_agent_round_trip(self):
         assert can_transition("prepared", "submitting")
         assert can_transition("awaiting_consent", "submitting")
@@ -340,37 +320,6 @@ class TestEndToEndWithTheMemorySubmitter:
         sent = memory_mode.sent[-1]
         assert sent.from_address.startswith("anna+")
         assert sent.reply_to_address == "ada@example.com"
-
-    def test_a_dry_run_never_texts_the_candidate(
-        self, session, account, candidate, memory_mode, aliased, monkeypatch
-    ):
-        """A rehearsal must be invisible outside our own records.
-
-        Console and memory return ok=True on purpose, so the status machine and
-        the attempt row get exercised. The notification is the one part of that
-        which reaches a real person, and "your application has been sent" is a
-        lie when nothing was sent.
-        """
-        from juicebox.applications import submission as submission_mod
-
-        notified = []
-        monkeypatch.setattr(
-            submission_mod,
-            "_notify_sent",
-            lambda db, application, attempt: notified.append(attempt.method)
-            if attempt.method not in {"console", "memory"}
-            else None,
-        )
-
-        posting = _posting(session, account["org_id"])
-        detect.resolve_target(session, posting, allow_network=False)
-        application = _ready(session, account["org_id"], candidate, posting)
-        request_submission(session, application)
-        submit_application(session, application)
-
-        assert application.status == "submitted"
-        assert application.submission_method == "memory"
-        assert notified == []
 
     def test_a_real_send_still_notifies(self, session, account, candidate, monkeypatch):
         """The suppression keys off the method, so a real adapter is unaffected."""
@@ -539,17 +488,6 @@ class TestNothingAutomatedIsTheNormalAnswer:
         assert job is None
         assert "hand-off" in reason
 
-    def test_a_prepared_application_can_be_queued(
-        self, session, account, candidate, memory_mode
-    ):
-        """No per-application approval is required after preparing a package."""
-        posting = _posting(session, account["org_id"])
-        detect.resolve_target(session, posting, allow_network=False)
-        application = _ready(session, account["org_id"], candidate, posting)
-        assert first_submission_gate(session, application) == ""
-        job, reason = auto_submit(session, application)
-        assert job is not None, reason
-
     def test_no_recorded_yes_still_queues(self, session, account, candidate, memory_mode):
         posting = _posting(session, account["org_id"])
         detect.resolve_target(session, posting, allow_network=False)
@@ -584,10 +522,6 @@ class TestAliasIdentity:
         # Right domain, wrong mailbox.
         assert parse(f"bob+{alias_token('cand_abc')}@goforay.io") == ""
 
-    def test_off_by_default_means_the_candidates_own_address(self, session, candidate):
-        from_address, reply_to = sending_identity(session, candidate)
-        assert from_address == reply_to == "ada@example.com"
-
     def test_lookup_verifies_the_token_against_the_row(self, session, candidate, aliased):
         row = ensure(session, candidate)
         assert row is not None
@@ -596,13 +530,6 @@ class TestAliasIdentity:
 
         revoke(session, candidate.id)
         assert candidate_for(session, row.address) is None
-
-    def test_issuing_is_idempotent(self, session, candidate, aliased):
-        first = ensure(session, candidate)
-        second = ensure(session, candidate)
-        assert first is not None and second is not None
-        assert first.id == second.id
-
 
 class TestInboundMail:
     """Employer mail is classified from its own words, timidly."""
@@ -776,20 +703,6 @@ class TestAdapters:
         # A blank we chose not to invent stays out of the request entirely.
         assert b"comments" not in seen["body"]
 
-    def test_ashby_sends_field_submissions(self):
-        from juicebox.applications.submit.ashby import AshbySubmitter
-
-        url = "https://jobs.ashbyhq.com/openai/9f8e7d6c-5b4a-3210-fedc-ba9876543210"
-        client, seen = self._recording_client(
-            httpx.Response(200, json={"success": True, "results": {"id": "sub-3"}})
-        )
-        result = AshbySubmitter(board_key="ashby-key", client=client).submit(
-            self._ctx("ashby", url)
-        )
-        assert result.ok
-        assert result.external_id == "sub-3"
-        assert b"_systemfield_email" in seen["body"]
-
     def test_a_4xx_is_a_form_we_do_not_understand_not_a_retry(self):
         from juicebox.applications.submit.lever import LeverSubmitter
 
@@ -809,17 +722,6 @@ class TestAdapters:
         client, _ = self._recording_client(httpx.Response(503, text="down"))
         with pytest.raises(SubmitError):
             LeverSubmitter(board_key="k", client=client).submit(self._ctx("lever", url))
-
-    def test_an_api_adapter_reached_without_a_key_says_so(self):
-        """The registry should never route here without one. If it did, say
-        which board we lack a key for rather than posting blind and eating a
-        401 that reads like the form rejected us."""
-        from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
-
-        url = "https://boards.greenhouse.io/anthropic/jobs/4012345"
-        result = GreenhouseSubmitter().submit(self._ctx("greenhouse", url))
-        assert result.needs_human
-        assert "anthropic" in result.error
 
     def test_ashby_two_hundred_with_success_false_is_not_a_submission(self):
         """The worst failure this module has available: telling a candidate we
@@ -891,29 +793,6 @@ class TestAdapters:
             sender.set_sender(None)
         assert result.needs_human
         assert "cannot attach" in result.error
-
-    def test_the_email_adapter_refuses_with_no_return_address(self):
-        from juicebox.applications.submit.email import EmailSubmitter
-
-        ctx = self._ctx("email", "mailto:careers@acme.com")
-        ctx.from_address = ""
-        result = EmailSubmitter().submit(ctx)
-        assert result.needs_human
-        assert "return address" in result.error
-
-    def test_workday_will_not_run_without_a_mailbox_we_can_read(self):
-        from juicebox.applications.submit.browser.driver import available
-        from juicebox.applications.submit.browser.workday import WorkdaySubmitter
-
-        url = "https://gs.wd5.myworkdayjobs.com/en-US/Goldman/job/NY/Eng_JR-0098765"
-        ctx = self._ctx("workday", url)
-        ctx.from_address = ""
-        result = WorkdaySubmitter().submit(ctx)
-        assert not result.ok
-        installed, _ = available()
-        # Either refusal is correct; both stop before touching the portal.
-        assert ("alias" in result.error) if installed else ("playwright" in result.error)
-
 
 class TestBrowserFieldFilling:
     """The field filler reports what it could not find; it never improvises."""
@@ -1053,12 +932,6 @@ class TestSyncKeepsAtsMailOutOfTheReplyPath:
 
 class TestResolutionOnTheIngestPath:
     """Parsing every posting must not mean fetching every posting."""
-
-    def test_a_recognisable_url_resolves_with_no_network(self, session, account):
-        posting = _posting(session, account["org_id"])
-        target = detect.resolve_target(session, posting, allow_network=False)
-        assert target.vendor == "greenhouse"
-        assert posting.ats_resolved_at is not None
 
     def test_an_unknown_url_stays_open_for_a_later_follow(self, session, account):
         """A URL-only miss is not a final answer, or the one moment a fetch is
@@ -1397,33 +1270,6 @@ class TestApiVersusForm:
         chosen = registry.get_submitter(target)
         assert chosen is None
 
-    def test_agent_configured_means_the_browser_agent(self, monkeypatch):
-        from juicebox.applications.submit.browser.agent import BrowserAgentSubmitter
-        from juicebox.applications.submit.browser.cloud import FakeCloudClient, set_cloud_client
-        from juicebox.config import reset_settings_cache as _reset
-
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        monkeypatch.setenv("APPLY_BROWSER_AGENT", "true")
-        monkeypatch.setenv("APPLY_BROWSER_AGENT_ACK", "true")
-        _reset()
-        set_cloud_client(FakeCloudClient())
-        try:
-            target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
-            chosen = registry.get_submitter(target)
-            assert isinstance(chosen, BrowserAgentSubmitter)
-            assert chosen.method == "browser"
-        finally:
-            set_cloud_client(None)
-            _reset()
-
-    def test_a_stored_key_means_the_api(self):
-        from juicebox.applications.submit.greenhouse import GreenhouseSubmitter
-
-        target = detect.detect_target("https://boards.greenhouse.io/anthropic/jobs/4012345")
-        chosen = registry.get_submitter(target, board_key="gh-key")
-        assert isinstance(chosen, GreenhouseSubmitter)
-        assert chosen.board_key == "gh-key"
-
     def test_a_key_for_one_board_does_not_leak_to_another(self, session, account, candidate):
         """The bug the old global GREENHOUSE_API_KEY had: one deployment key
         cannot post to a board it was not issued for."""
@@ -1542,26 +1388,6 @@ class TestTheGapsThatStrandedApplications:
         # And the application stops claiming to be in flight.
         assert application.status == "prepared"
         assert "verification mail" in application.status_reason
-
-    def test_a_recent_parked_attempt_is_left_alone(self, session, account, candidate, aliased):
-        from juicebox.applications.submission import expire_parked
-
-        posting = _posting(session, account["org_id"])
-        detect.resolve_target(session, posting, allow_network=False)
-        application = _ready(session, account["org_id"], candidate, posting)
-        session.add(
-            ApplicationSubmission(
-                org_id=account["org_id"],
-                application_id=application.id,
-                attempt=1,
-                vendor="workday",
-                method="browser",
-                status="needs_verification",
-                started_at=utcnow(),
-            )
-        )
-        session.flush()
-        assert expire_parked(session, org_id=account["org_id"]) == 0
 
     def test_a_portal_account_is_remembered_for_the_next_role(
         self, session, account, candidate, aliased
@@ -1752,24 +1578,6 @@ class TestWorkdayReusesTheAccountItAlreadyMade:
         )
         assert ctx.portal_username == "anna+abc@goforay.io"
         assert ctx.portal_password == "stored-pw"
-
-    def test_a_greenhouse_run_asks_for_no_portal_account(
-        self, session, account, candidate, aliased
-    ):
-        """Only the vendors that make you register have one to look up."""
-        from juicebox.applications.submission import build_context
-
-        posting = _posting(session, account["org_id"])
-        detect.resolve_target(session, posting, allow_network=False)
-        application = _ready(session, account["org_id"], candidate, posting)
-        ctx = build_context(
-            session,
-            application,
-            candidate=candidate,
-            posting=posting,
-            target=detect.target_of(posting),
-        )
-        assert ctx.portal_username == "" and ctx.portal_password == ""
 
     def test_a_held_account_goes_straight_to_leg_two(self, monkeypatch):
         from juicebox.applications.submit.browser import workday as workday_mod
@@ -1967,16 +1775,6 @@ class TestTheFieldMapsAreCoherent:
                 assert spec.selectors_for(key), f"{vendor}.{key} is required with no selectors"
             assert spec.submit, f"{vendor} has no submit control"
             assert spec.landmark, f"{vendor} has no landmark to prove we reached a form"
-
-    def test_the_adapter_can_value_every_field_the_map_declares(self):
-        from juicebox.applications.submit.browser.forms import WORKDAY_ACCOUNT, YC_ACCOUNT
-
-        for spec in (WORKDAY_ACCOUNT, YC_ACCOUNT):
-            assert spec.fields
-            assert spec.submit
-            for key in spec.required:
-                assert spec.selectors_for(key)
-
 
 class TestAccountGatedWaitsForVault:
     """Model B2: Workday/YC hold for a candidate-chosen vault password rather

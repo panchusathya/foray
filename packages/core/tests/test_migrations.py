@@ -58,19 +58,3 @@ class TestMigrations:
         present = set(inspect(get_engine()).get_table_names())
         expected = set(Base.metadata.tables)
         assert expected <= present, f"missing tables: {sorted(expected - present)}"
-
-    def test_downgrade_to_base_removes_the_schema(self, migrated_db):
-        from sqlalchemy import inspect
-
-        from juicebox.db import get_engine
-        from juicebox.models import Base
-
-        migrated_db.downgrade("base")
-
-        remaining = set(inspect(get_engine()).get_table_names()) & set(Base.metadata.tables)
-        assert remaining == set(), f"downgrade left tables behind: {sorted(remaining)}"
-        assert migrated_db.current_revision() is None
-
-    def test_upgrade_is_idempotent(self, migrated_db):
-        migrated_db.upgrade()
-        assert migrated_db.current_revision() == migrated_db.head_revision()

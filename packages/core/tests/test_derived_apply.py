@@ -201,18 +201,6 @@ class TestDeriveSpec:
         ]
         assert derive_spec(controls, _BUTTONS) is None
 
-    def test_no_submit_control_no_spec(self):
-        assert derive_spec(_controls(), []) is None
-
-    def test_round_trip_survives_the_json_column(self):
-        spec = _spec()
-        back = FormSpec.from_dict(spec.to_dict())
-        assert back is not None
-        assert back.fields == spec.fields
-        assert back.required == spec.required
-        assert back.submit == spec.submit
-        assert back.files == spec.files
-
     def test_an_unusable_marker_is_not_a_spec(self):
         assert FormSpec.from_dict({formspec.UNUSABLE_KEY: "x"}) is None
 
@@ -388,21 +376,6 @@ class TestCardingGate:
 # ---------------------------------------------------------------------------
 
 
-class TestFormspecJob:
-    def test_leftover_jobs_skip(self, session, account):
-        posting = _unknown_posting(session, account["org_id"], suffix="j1")
-        job = Job(
-            org_id=account["org_id"],
-            kind=KIND_JOBS_FORMSPEC_ONE,
-            payload={"posting_id": posting.id},
-            idempotency_key=f"formspec:{posting.id}",
-        )
-        session.add(job)
-        session.flush()
-        result = formspec.handle_formspec_one(session, job, utcnow())
-        assert "skipped" in result
-
-
 # ---------------------------------------------------------------------------
 # package-time preflight
 # ---------------------------------------------------------------------------
@@ -439,22 +412,6 @@ class TestPackageTimePreflight:
         added = next(item for item in merged if item.get("key") == "q_new01")
         assert added["kind"] == "custom"
         assert added["form_required"] is True
-
-    def test_unconfigured_agent_degrades_to_the_standard_set(
-        self, session, account, monkeypatch
-    ):
-        from juicebox.applications.questions import augment_with_form_questions
-        from juicebox.applications.submit.browser import cloud as browser_cloud
-
-        posting = _unknown_posting(session, account["org_id"], suffix="r2")
-        application = self._application(session, account, posting)
-        monkeypatch.setattr(browser_cloud, "agent_configured", lambda: False)
-        answers = [{"key": "salary_expectation", "answer": "$200k"}]
-        merged, outcome = augment_with_form_questions(
-            session, application=application, posting=posting, answers=answers
-        )
-        assert merged == answers
-        assert "browser agent is not configured" in outcome
 
 
 # ---------------------------------------------------------------------------

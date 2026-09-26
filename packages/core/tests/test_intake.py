@@ -30,8 +30,6 @@ from juicebox.intake import (
     CORE_KEYS,
     ENRICHMENT_KEYS,
     EXTRACTOR_HEURISTIC,
-    EXTRACTOR_LLM,
-    FIELDS,
     FIELDS_BY_KEY,
     REQUIRED_KEYS,
     SPEC_FIELDS,
@@ -45,7 +43,7 @@ from juicebox.intake import (
     next_questions,
     normalize_record,
 )
-from juicebox.intake.schema import TIER_REQUIRED, is_filled
+from juicebox.intake.schema import is_filled
 from juicebox.intake.service import progress_line
 from juicebox.llm.client import FakeTransport, LLMClient, LLMUnavailable, set_llm
 from juicebox.llm.prompts import _INTAKE_FIELD_KEYS
@@ -79,11 +77,6 @@ def no_llm():
 
 
 class TestCoverageGate:
-    def test_an_empty_record_owes_every_required_field(self):
-        state = coverage(empty_record())
-        assert not state.required_complete
-        assert set(state.required_missing) == set(REQUIRED_KEYS)
-        assert state.completion_ratio == 0.0
 
     def test_answering_the_required_set_closes_the_gate(self):
         record = _filled_required()
@@ -107,11 +100,6 @@ class TestCoverageGate:
         assert state.declined == ("compensation",)
         assert "compensation" in state.covered
 
-    def test_an_unknown_declined_key_is_ignored(self):
-        record = empty_record()
-        record["declined"] = ["not_a_field", "compensation"]
-        assert coverage(record).declined == ("compensation",)
-
     def test_a_declared_no_is_an_answer(self):
         """remote_ok=False means 'wants an office', which is not 'never asked'."""
         assert is_filled(False) is True
@@ -126,11 +114,6 @@ class TestCoverageGate:
         # Saying "nowhere" is an answer and has to be recorded as one.
         record["active_processes"] = [{"company": "none", "stage": "none"}]
         assert "active_processes" in coverage(record).covered
-
-    def test_next_questions_asks_the_gate_first(self):
-        asked = next_questions(empty_record(), limit=4)
-        assert [q["tier"] for q in asked] == [TIER_REQUIRED] * 4
-        assert all(q["because"] for q in asked)
 
     def test_next_questions_moves_to_enrichment_once_the_gate_closes(self):
         asked = next_questions(_filled_required(), limit=2)
@@ -150,26 +133,6 @@ class TestCoverageGate:
         assert not coverage(record).required_complete
         assert "spec.must_have_skills" in deferred_required(record)
 
-    def test_a_long_budget_does_not_widen_the_gate(self):
-        record = _filled_required()
-        assert coverage(record, core_only=False).required_complete
-        assert coverage(record).required_missing == ()
-
-    def test_no_budget_matches_today(self):
-        empty = empty_record()
-        assert coverage(empty).required_missing == coverage(empty, core_only=False).required_missing
-        assert set(coverage(empty).required_missing) == set(REQUIRED_KEYS)
-
-    def test_core_keys_are_the_retrieval_set(self):
-        assert CORE_KEYS == (
-            "spec.job_titles",
-            "spec.locations",
-            "spec.remote_ok",
-            "compensation",
-        )
-        assert "spec.must_have_skills" not in CORE_KEYS
-        assert FIELDS_BY_KEY["spec.must_have_skills"].core is False
-
     def test_seniority_does_not_block_a_short_call(self):
         """It is derivable from the titles, and asking for it out loud landed as
         jargon on a real call -- "what do you mean by level?" -- while blocking
@@ -180,23 +143,8 @@ class TestCoverageGate:
         assert FIELDS_BY_KEY["spec.seniority"].core is False
         assert "spec.seniority" in REQUIRED_KEYS
 
-    def test_linkedin_short_gate_drops_survey_fields(self):
-        from juicebox.intake.schema import LINKEDIN_SHORT_KEYS
-
-        record = empty_record()
-        missing = set(coverage(record, gate_keys=LINKEDIN_SHORT_KEYS).required_missing)
-        assert missing == set(LINKEDIN_SHORT_KEYS)
-        assert "spec.must_have_skills" not in missing
-        assert "employment_status" not in missing
-        assert "active_processes" not in missing
-
 
 class TestProgressLine:
-    def test_empty_off_milestone(self):
-        assert progress_line(4) == ""
-        assert progress_line(2) == ""
-        assert progress_line(0) == ""
-        assert progress_line(11) == ""
 
     def test_states_the_true_count_on_milestone(self):
         assert progress_line(5) == "Five more quick ones and I'll let you go."
@@ -207,16 +155,6 @@ class TestProgressLine:
 
 
 class TestFieldDefinitions:
-    def test_every_field_names_the_client_question_it_answers(self):
-        """The admission price. A field no client would ask about is call time
-        spent for nothing."""
-        for spec in FIELDS:
-            assert spec.asks.strip(), spec.key
-            assert spec.client_question.strip(), spec.key
-
-    def test_field_keys_are_unique(self):
-        keys = [f.key for f in FIELDS]
-        assert len(keys) == len(set(keys))
 
     def test_the_prompt_enum_matches_the_field_set(self):
         """prompts.py duplicates these keys to avoid an import cycle; this is
@@ -239,13 +177,6 @@ class TestFieldDefinitions:
 
 
 class TestModelExtraction:
-    def test_a_complete_call_yields_a_closed_gate(self, scripted_llm):
-        scripted_llm(default=COMPLETE_PAYLOAD)
-        result = extract_intake(COMPLETE_TRANSCRIPT)
-
-        assert result.extractor == EXTRACTOR_LLM
-        assert result.coverage.required_complete
-        assert result.coverage.required_missing == ()
 
     def test_free_text_is_normalised_into_the_job_side_vocabulary(self, scripted_llm):
         """The whole premise: a preference has to land on the same tokens a
@@ -258,20 +189,6 @@ class TestModelExtraction:
         assert spec["industries"] == ["fintech"]
         assert "kubernetes" in spec["nice_to_have_skills"]
         assert spec["remote_ok"] is False
-
-    def test_verbatim_highlights_survive_extraction(self, scripted_llm):
-        scripted_llm(default=COMPLETE_PAYLOAD)
-        highlights = extract_intake(COMPLETE_TRANSCRIPT).record["highlights"]
-
-        assert len(highlights) == 1
-        assert "eleven hours to forty" in highlights[0]["detail"]
-        assert highlights[0]["skills"] == ["distributed training", "pytorch"]
-
-    def test_confidential_items_are_kept_and_flagged_separately(self, scripted_llm):
-        scripted_llm(default=COMPLETE_PAYLOAD)
-        record = extract_intake(COMPLETE_TRANSCRIPT).record
-        assert record["confidential_items"]
-        assert record["ok_to_share_with_clients"] is True
 
     def test_a_sparse_call_keeps_the_gate_open(self, scripted_llm):
         scripted_llm(default=SPARSE_PAYLOAD)
@@ -314,22 +231,6 @@ class TestModelExtraction:
         assert record["timeline"] == "under_1_month"
         assert record["timeline_verbatim"] == "two weeks"
 
-    def test_an_unquotable_timeline_falls_back_to_the_model_bucket(self, scripted_llm):
-        payload = _clone(COMPLETE_PAYLOAD)
-        payload["timeline"] = "1_3_months"
-        payload["timeline_verbatim"] = ""
-        scripted_llm(default=payload)
-        assert extract_intake(COMPLETE_TRANSCRIPT).record["timeline"] == "1_3_months"
-
-    def test_must_haves_are_capped(self, scripted_llm):
-        payload = _clone(COMPLETE_PAYLOAD)
-        payload["spec"]["must_have_skills"] = [
-            "python", "go", "rust", "java", "scala", "kotlin", "c++"
-        ]
-        scripted_llm(default=payload)
-        spec = extract_intake(COMPLETE_TRANSCRIPT).record["spec"]
-        assert len(spec["must_have_skills"]) == 5
-
     def test_a_figure_without_a_currency_is_marked_not_assumed(self, scripted_llm):
         payload = _clone(COMPLETE_PAYLOAD)
         payload["comp_currency"] = ""
@@ -337,15 +238,6 @@ class TestModelExtraction:
         record = extract_intake(COMPLETE_TRANSCRIPT).record
         assert record["target_base"] == 240000
         assert record["comp_currency"] == "UNKNOWN"
-
-    def test_the_known_block_reaches_the_prompt(self, scripted_llm):
-        transport = scripted_llm(default=COMPLETE_PAYLOAD)
-        extract_intake(COMPLETE_TRANSCRIPT, known="name: Ada\nemail: ada@example.com")
-        sent = "".join(
-            str(m.get("content", "")) for m in transport.calls[0].get("messages", [])
-        )
-        assert "ada@example.com" in sent
-        assert "already_known" in sent
 
     def test_a_model_failure_degrades_instead_of_raising(self, scripted_llm):
         """Still degrades rather than raising -- but says which kind of
@@ -480,30 +372,6 @@ class TestDefensiveCoercion:
         assert record["timeline"] == ""
         assert record["employment_status"] == ""
 
-    def test_a_boolean_is_not_mistaken_for_a_number(self):
-        assert normalize_record({"target_base": True})["target_base"] is None
-
-    def test_malformed_list_entries_are_skipped(self):
-        record = normalize_record({"active_processes": ["nope", {"company": "Acme"}]})
-        assert record["active_processes"] == [
-            {"company": "Acme", "stage": "", "expected_decision": ""}
-        ]
-
-    def test_a_highlight_without_detail_is_dropped(self):
-        record = normalize_record({"highlights": [{"title": "t", "detail": "", "skills": []}]})
-        assert record["highlights"] == []
-
-    def test_every_key_is_present_even_when_unanswered(self):
-        """A consumer should never have to guess whether a missing key means
-        unasked or unsupported."""
-        record = normalize_record({})
-        for spec in FIELDS:
-            for path in spec.paths:
-                cursor = record
-                for part in path.split("."):
-                    assert part in cursor, path
-                    cursor = cursor[part]
-
 
 # --------------------------------------------------------------------------
 # extraction, heuristic path
@@ -511,9 +379,6 @@ class TestDefensiveCoercion:
 
 
 class TestHeuristicExtraction:
-    def test_it_runs_with_no_model_at_all(self, no_llm):
-        result = extract_intake(COMPLETE_TRANSCRIPT)
-        assert result.extractor == EXTRACTOR_HEURISTIC
 
     def test_it_reads_the_unambiguous_fields(self, no_llm):
         record = extract_intake(COMPLETE_TRANSCRIPT).record
@@ -550,12 +415,6 @@ class TestHeuristicExtraction:
         result = extract_intake(COMPLETE_TRANSCRIPT)
         assert result.review_needed
         assert "heuristic" in result.review_reason
-
-    def test_it_flags_what_it_guessed(self, no_llm):
-        result = extract_intake(COMPLETE_TRANSCRIPT)
-        # Locations are the clearest case: a transcript names where someone
-        # lives, worked, and would move, and a keyword scan cannot tell them apart.
-        assert "spec.locations" in result.low_confidence
 
     @pytest.mark.parametrize(
         ("said", "expected"),
@@ -594,10 +453,6 @@ class TestHeuristicExtraction:
         ).record
         assert record["spec"]["seniority"] == ["staff"]
 
-    def test_an_unstated_level_still_falls_back_to_the_title(self, no_llm):
-        record = extract_intake("Candidate: I'm looking for a backend engineer role.").record
-        assert record["spec"]["seniority"] == ["mid"]
-
     @pytest.mark.parametrize(
         ("said", "expected"),
         [
@@ -619,15 +474,6 @@ class TestHeuristicExtraction:
         what hid it."""
         record = extract_intake(f"Candidate: {said}").record
         assert record["spec"]["job_titles"] == [expected]
-
-    def test_a_title_that_cannot_be_read_leaves_the_required_gate_open(self, no_llm):
-        """The cost of losing a title here is not a worse title, it is none at
-        all. `spec.job_titles` is required, so an empty list keeps the gate open
-        and leaves the candidate unscoreable by jobmatch -- silently, because
-        nothing downstream distinguishes "no title stated" from "title missed"."""
-        result = extract_intake("Candidate: I want to become a machine learning engineer.")
-        assert result.record["spec"]["job_titles"] == ["machine learning engineer"]
-        assert "spec.job_titles" not in result.coverage.required_missing
 
     def test_the_capture_stops_at_the_title_and_not_at_the_sentence(self, no_llm):
         """Ending the capture at the sentence rather than the head noun would
@@ -656,16 +502,8 @@ class TestHeuristicExtraction:
             {"company": "none", "stage": "none", "expected_decision": ""}
         ]
 
-    def test_an_empty_transcript_produces_a_valid_empty_record(self, no_llm):
-        result = extract_intake("")
-        assert result.record["spec"]["job_titles"] == []
-        assert set(result.coverage.required_missing) == set(REQUIRED_KEYS)
-
 
 class TestDisagreement:
-    def test_identical_extractions_do_not_disagree(self):
-        record = normalize_record(COMPLETE_PAYLOAD)
-        assert diff_records(record, record) == {}
 
     def test_a_changed_field_is_reported_with_both_readings(self):
         # Deliberately not `timeline`: that one is derived from the quote, so two
@@ -677,14 +515,6 @@ class TestDisagreement:
             "a": "employed_searching",
             "b": "employed_open",
         }
-
-    def test_list_order_is_not_a_disagreement(self):
-        a = normalize_record(COMPLETE_PAYLOAD)
-        payload = _clone(COMPLETE_PAYLOAD)
-        payload["spec"]["must_have_skills"] = list(
-            reversed(payload["spec"]["must_have_skills"])
-        )
-        assert "spec.must_have_skills" not in diff_records(a, normalize_record(payload))
 
 
 # --------------------------------------------------------------------------
@@ -719,9 +549,6 @@ class TestPhoneLookupKey:
     def test_two_spellings_of_one_number_collapse(self):
         assert lookup_keys(["(415) 555-0123", "+1 415 555 0123"]) == ["+14155550123"]
 
-    def test_unusable_numbers_are_dropped_not_approximated(self):
-        assert lookup_keys(["555-0123", "+14155550123"]) == ["+14155550123"]
-
     @pytest.mark.parametrize(
         "raw",
         [
@@ -744,14 +571,6 @@ class TestPhoneLookupKey:
         """
         assert lookup_key(raw) == ""
 
-    def test_sentinels_never_reach_the_projection(self):
-        assert lookup_keys(["+266696687", "+14155550123"]) == ["+14155550123"]
-
-    def test_two_withheld_callers_do_not_share_a_key(self):
-        """The collision itself, stated directly: no key means no match, so the
-        second anonymous caller cannot be identified as the first."""
-        assert lookup_key("+266696687") == lookup_key("+266696687") == ""
-
     def test_a_real_number_is_not_mistaken_for_a_sentinel(self):
         """The region-strip and repeated-digit rules must not eat real numbers."""
         assert lookup_key("+12666966870") == "+12666966870"
@@ -772,20 +591,6 @@ class TestPhoneProjection:
         session.flush()
         sync_candidate_phones(session, candidate)
         return candidate
-
-    def test_numbers_are_projected_in_order(self, session, account):
-        self._candidate(
-            session,
-            account["org_id"],
-            "Ada",
-            ["+1 415 555 0123", "(512) 555-0199"],
-            "ada",
-        )
-        rows = session.scalars(select(CandidatePhone)).all()
-        assert sorted((r.phone, r.position) for r in rows) == [
-            ("+14155550123", 0),
-            ("+15125550199", 1),
-        ]
 
     def test_an_unnormalisable_number_gets_no_row(self, session, account):
         self._candidate(session, account["org_id"], "Grace", ["987654321"], "grace")

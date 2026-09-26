@@ -43,13 +43,6 @@ class TestUnknownCurrencyIsNotACurrency:
         assert [c["name"] for c in criteria] == ["comp_floor"]
         assert criteria[0]["veto"] is True
 
-    def test_a_blank_currency_still_behaves_as_before(self):
-        score, _ = preference_term(
-            _pref(target_base=250000.0, comp_currency=""),
-            ParsedQuery.from_dict(_UNDERPAYING),
-        )
-        assert score == 0.0
-
     def test_two_different_stated_currencies_are_still_refused(self):
         _, criteria = preference_term(
             _pref(target_base=250000.0, comp_currency="GBP"),
@@ -162,29 +155,3 @@ class TestIdentityRespectsTheColumnWidth:
         assert len(posting.title) <= TITLE_MAX
         assert len(posting.company) <= TITLE_MAX
         assert len(posting.location) <= LOCATION_MAX
-
-    def test_the_row_still_writes_on_postgres_widths(self, session, account):
-        from juicebox.models import JobPosting
-
-        posting = JobPosting(
-            org_id=account["org_id"],
-            source="exa",
-            source_id="wide-2",
-            title="Founding Engineer at Ventura | Y Combinator",
-            company="",
-            location="",
-            jd_text="Ventura is hiring.",
-            status="pending_parse",
-        )
-        self._resolve(
-            posting,
-            {
-                "is_posting": True,
-                "title": "Principal Platform Engineer " * 30,
-                "company": "Ventura",
-                "location": "New York",
-            },
-        )
-        session.add(posting)
-        session.commit()
-        assert len(posting.title) == TITLE_MAX

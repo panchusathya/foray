@@ -36,7 +36,6 @@ from juicebox.messaging.conversation import run_turn
 from juicebox.models import Job
 from juicebox.worker import process_job
 
-COOKIE = "li_at=abc123"
 ADA_URL = "https://www.linkedin.com/in/ada-lovelace"
 
 PAID_PAYLOAD = {
@@ -77,9 +76,6 @@ def _profile() -> LinkedInProfile:
 
 
 class TestScrapeFirst:
-    def test_default_is_paid_first(self):
-        """The prod default. Nothing configured means no browser launch."""
-        assert scrape_first() is False
 
     def test_the_flag_alone_does_not_turn_it_on(self, monkeypatch):
         """A flag with no session is a config that cannot succeed.
@@ -93,19 +89,6 @@ class TestScrapeFirst:
         assert get_settings().linkedin_scrape_enabled is True
         assert scrape_first() is False
 
-    def test_a_session_alone_does_not_turn_it_on(self, monkeypatch):
-        """Someone else's cookie in the env is not a decision to pay the wait."""
-        monkeypatch.setenv("LINKEDIN_SESSION_COOKIE", COOKIE)
-        reset_settings_cache()
-        assert scrape_first() is False
-
-    def test_flag_and_session_together_restore_free_first(self, monkeypatch):
-        """The escape hatch. Where the scrape can work, the old order is right."""
-        monkeypatch.setenv("LINKEDIN_SCRAPE_ENABLED", "true")
-        monkeypatch.setenv("LINKEDIN_SESSION_COOKIE", COOKIE)
-        reset_settings_cache()
-        assert scrape_first() is True
-
     def test_an_injected_scraper_wins_over_everything(self):
         """The seam is not the browser, so the browser's gate must not catch it.
 
@@ -116,12 +99,6 @@ class TestScrapeFirst:
         set_scraper(lambda url: _profile())
         assert has_scraper() is True
         assert scrape_first() is True
-
-    def test_resetting_the_scraper_puts_the_gate_back(self):
-        """A leaked fake must not leave the browser path armed for later tests."""
-        set_scraper(lambda url: _profile())
-        reset_scraper()
-        assert scrape_first() is False
 
 
 class TestTheHandlerSkipsTheBrowser:

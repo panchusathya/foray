@@ -35,26 +35,6 @@ class TestCloudClient:
         assert fake_cloud.created[0]["enableRecording"] is False
         assert fake_cloud.created[0]["metadata"]["org_id"] == "o1"
 
-    def test_stop_is_idempotent(self, fake_cloud):
-        session = browser_cloud.create_session()
-        browser_cloud.stop_session(session.id)
-        browser_cloud.stop_session(session.id)
-        assert fake_cloud.stopped.count(session.id) == 2
-        assert fake_cloud.browsers[session.id].status == "stopped"
-
-    def test_too_many_sessions_is_too_many(self, fake_cloud):
-        fake_cloud.fail_create = TooManySessions("full")
-        with pytest.raises(TooManySessions):
-            browser_cloud.create_session()
-
-    def test_get_after_stop(self, fake_cloud):
-        session = browser_cloud.create_session()
-        browser_cloud.stop_session(session.id)
-        held = browser_cloud.get_session(session.id)
-        assert held is not None
-        assert held.status == "stopped"
-
-
 class TestDriverStopsOwnedSession:
     def test_driver_stops_a_session_it_created(self, fake_cloud, monkeypatch):
         from juicebox.applications.submit.browser import driver

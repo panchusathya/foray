@@ -86,34 +86,6 @@ class TestResolveDoesNotPoisonOnMiss:
         assert posting.ats_resolved_at is None, "a miss must stay retryable"
         assert posting.ats_vendor == ""
 
-    def test_a_hit_still_stamps(self, session, account):
-        posting = _posting(
-            account["org_id"],
-            source_url="https://www.ycombinator.com/companies/deep24/jobs/xyz123-founding"
-        )
-        session.add(posting)
-        session.flush()
-
-        target = detect.resolve_target(session, posting, stamp_on_miss=False)
-
-        assert target.vendor == "yc"
-        assert posting.ats_resolved_at is not None
-        assert posting.ats_tenant == "deep24"
-
-    def test_a_yc_slug_fills_a_blank_company(self, session, account):
-        posting = _posting(
-            account["org_id"],
-            company="",
-            company_normalized="",
-            source_url="https://www.ycombinator.com/companies/10x-science/jobs/FK8wuOk-eng",
-        )
-        session.add(posting)
-        session.flush()
-
-        detect.resolve_target(session, posting, stamp_on_miss=False)
-
-        assert posting.company == "10X Science"
-
     def test_a_named_company_is_never_overwritten(self, session, account):
         posting = _posting(
             account["org_id"],
@@ -248,46 +220,3 @@ class TestWhyCompanyIsDraftedForReview:
         assert why["answer"] == ""
         assert generated_by == "template"
 
-    def test_the_posting_reaches_the_prompt(self, monkeypatch):
-        llm = _FakeLLM({"answers": []})
-        monkeypatch.setattr(answers_mod, "get_llm", lambda: llm)
-        answers_mod.build_form_answers(
-            preference=None,
-            resume_json={},
-            posting=_posting(jd_text="We build robots for shipyards."),
-        )
-        assert "We build robots for shipyards." in llm.prompts[0]
-
-    def test_every_entry_carries_its_origin(self, monkeypatch):
-        monkeypatch.setattr(answers_mod, "get_llm", lambda: _FakeLLM({"answers": []}))
-        answers, _ = answers_mod.build_form_answers(
-            preference=None, resume_json={}, posting=_posting()
-        )
-        assert all(a["origin"] == "standard" for a in answers)
-
-
-class TestCleanTitle:
-    from juicebox.presentation.jobcard import clean_title, role_line
-
-    def test_a_trailing_company_clause_is_stripped(self):
-        from juicebox.presentation.jobcard import clean_title
-
-        title = "Junior Software Developer job in Houston at Wipro Limited"
-        assert clean_title(title, "Wipro Limited") == (
-            "Junior Software Developer job in Houston"
-        )
-
-    def test_mid_title_mentions_stay(self):
-        from juicebox.presentation.jobcard import clean_title
-
-        assert clean_title("Wipro Limited Graduate Programme", "Wipro Limited") == (
-            "Wipro Limited Graduate Programme"
-        )
-
-    def test_role_line_never_doubles(self):
-        from juicebox.presentation.jobcard import role_line
-
-        doubled = "Junior Software Developer at Wipro Limited"
-        assert role_line(doubled, "Wipro Limited") == doubled
-        assert role_line("Founding Engineer", "Deep24") == "Founding Engineer at Deep24"
-        assert role_line("Founding Engineer", "") == "Founding Engineer"

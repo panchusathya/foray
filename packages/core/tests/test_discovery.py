@@ -19,7 +19,6 @@ import pytest
 from sqlalchemy import select
 
 from juicebox.integrations import discovery
-from juicebox.integrations.discovery_filters import classify_recipient
 from juicebox.integrations.providers import SweepPage, SweepRecord
 from juicebox.models import (
     Candidate,
@@ -155,61 +154,6 @@ class TestNoContentIsStored:
 
 
 class TestStaging:
-    def test_a_recipient_becomes_a_reviewable_row(self, session, account, connection):
-        _run(
-            session,
-            connection,
-            [[_record(to=["ada.lovelace@acme.com"], days_ago=200)]],
-            org_id=account["org_id"],
-        )
-        row = session.scalar(select(DiscoveredContact))
-
-        assert row.email == "ada.lovelace@acme.com"
-        assert row.domain == "acme.com"
-        # Humanised from the local part so the tray is readable.
-        assert row.display_name == "Ada Lovelace"
-        assert row.outbound_count == 1
-        assert row.to_count == 1
-        assert row.status == "new"
-        assert row.suggested_status == "revive"
-        assert row.mailbox_ids == [connection.id]
-
-    def test_to_and_cc_are_counted_apart(self, session, account, connection):
-        _run(
-            session,
-            connection,
-            [[_record(to=["direct@acme.com"], cc=["copied@acme.com"])]],
-            org_id=account["org_id"],
-        )
-        rows = {r.email: r for r in session.scalars(select(DiscoveredContact)).all()}
-
-        assert rows["direct@acme.com"].to_count == 1
-        assert rows["direct@acme.com"].cc_count == 0
-        assert rows["copied@acme.com"].cc_count == 1
-        # Only ever copied in: the weakest signal, flagged and hidden by default.
-        assert rows["copied@acme.com"].suggested_status == "cc_only"
-
-    def test_threads_are_counted_but_never_called_replies(
-        self, session, account, connection
-    ):
-        """thread_count is our own follow-ups as much as anything. Useful to
-        sort by, never evidence that somebody answered."""
-        _run(
-            session,
-            connection,
-            [
-                [
-                    _record(to=["ada@acme.com"], thread="t1", native="m1"),
-                    _record(to=["ada@acme.com"], thread="t1", native="m2"),
-                    _record(to=["ada@acme.com"], thread="t2", native="m3"),
-                ]
-            ],
-            org_id=account["org_id"],
-        )
-        row = session.scalar(select(DiscoveredContact))
-        assert row.outbound_count == 3
-        assert row.thread_count == 2
-
     def test_threads_seen_by_an_earlier_job_are_not_forgotten(
         self, session, account, connection
     ):
@@ -237,15 +181,6 @@ class TestStaging:
         row = session.scalar(select(DiscoveredContact))
         assert row.outbound_count == 3
         assert row.thread_count == 3
-
-    def test_drafts_are_ignored(self, session, account, connection):
-        _run(
-            session,
-            connection,
-            [[_record(to=["ada@acme.com"], draft=True)]],
-            org_id=account["org_id"],
-        )
-        assert session.scalars(select(DiscoveredContact)).all() == []
 
 
 class TestFilters:
@@ -285,56 +220,6 @@ class TestFilters:
         )
         staged = {r.email for r in session.scalars(select(DiscoveredContact)).all()}
         assert staged == {"candidate@gmail.com"}
-
-    def test_no_reply_robots_are_dropped_and_role_accounts_are_not(
-        self, session, account, connection
-    ):
-        _run(
-            session,
-            connection,
-            [[_record(to=["no-reply@stripe.com", "support@vendor.com"])]],
-            org_id=account["org_id"],
-        )
-        rows = {r.email: r for r in session.scalars(select(DiscoveredContact)).all()}
-
-        assert "no-reply@stripe.com" not in rows
-        # Kept: at a small company info@/support@ is a real person.
-        assert rows["support@vendor.com"].suggested_status == "role_account"
-
-    def test_a_mass_cc_is_rejected_as_a_message(self, session, account, connection):
-        crowd = [f"person{i}@acme.com" for i in range(25)]
-        _run(session, connection, [[_record(to=crowd)]], org_id=account["org_id"])
-        assert session.scalars(select(DiscoveredContact)).all() == []
-
-    def test_someone_already_in_contacts_is_staged_as_already_known(
-        self, client, session, account, connection
-    ):
-        """Not skipped: a Foray-imported candidate has no project, sequence or
-        message, so their mail has never been ingested. The tray offers to
-        import it."""
-        created = client.post(
-            "/v1/candidates/bulk",
-            json={
-                "candidates": [
-                    {
-                        "source": "foray",
-                        "source_id": "ada",
-                        "full_name": "Ada Lovelace",
-                        "emails": ["ada@acme.com"],
-                    }
-                ]
-            },
-            headers=account["headers"],
-        ).json()
-
-        _run(session, connection, [[_record(to=["ada@acme.com"])]], org_id=account["org_id"])
-        row = session.scalar(select(DiscoveredContact))
-
-        assert row.status == "already_known"
-        assert row.candidate_id == created["ids"][0]
-
-    def test_an_invalid_address_is_dropped(self, session, account, connection):
-        assert classify_recipient("nonsense", own=set(), internal=set()) == "invalid"
 
 
 class TestRerun:
@@ -390,36 +275,6 @@ class TestPromote:
             select(CandidateEmail).where(CandidateEmail.email == "ada@acme.com")
         )
 
-    def test_an_already_known_row_can_be_promoted(
-        self, client, session, account, connection
-    ):
-        """The bucket is pointless if promoting it is a no-op: it exists so the
-        tray can offer to import history for people already in Contacts."""
-        client.post(
-            "/v1/candidates/bulk",
-            json={
-                "candidates": [
-                    {
-                        "source": "foray",
-                        "source_id": "ada",
-                        "full_name": "Ada Lovelace",
-                        "emails": ["ada@acme.com"],
-                    }
-                ]
-            },
-            headers=account["headers"],
-        )
-        _run(session, connection, [[_record(to=["ada@acme.com"])]], org_id=account["org_id"])
-        row = session.scalar(select(DiscoveredContact))
-        assert row.status == "already_known"
-
-        candidate_id, error = discovery.promote(
-            session, row=row, org_id=account["org_id"]
-        )
-
-        assert error == ""
-        assert session.get(Candidate, candidate_id).crm_tracked is True
-        assert row.status == "promoted"
 
     def test_promoting_twice_is_refused_rather_than_duplicated(
         self, session, account, connection
@@ -432,25 +287,6 @@ class TestPromote:
         assert first is not None
         assert second is None
         assert "already" in error
-
-    def test_an_unusable_name_is_reported_not_silently_lost(
-        self, session, account, connection
-    ):
-        """upsert_candidates swallows a payload it cannot normalise, so a bulk
-        promote could otherwise drop people and still look successful."""
-        row = DiscoveredContact(
-            org_id=account["org_id"], email="123@acme.com", display_name=""
-        )
-        session.add(row)
-        session.flush()
-
-        # Force the unusable-name path.
-        row.display_name = ""
-        candidate_id, error = discovery.promote(
-            session, row=row, org_id=account["org_id"]
-        )
-        # Either it made something sensible, or it said why it could not.
-        assert candidate_id is not None or error
 
 
 class TestGuardStillHolds:

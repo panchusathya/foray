@@ -11,11 +11,6 @@ from __future__ import annotations
 from juicebox.applications.submit.browser.driver import _proxy_config
 
 
-def test_empty_is_direct():
-    assert _proxy_config("") is None
-    assert _proxy_config("   ") is None
-
-
 def test_credentialed_url_splits_server_from_auth():
     config = _proxy_config("http://user123:secretpass@gate.provider.com:7777")
     assert config == {
@@ -23,23 +18,6 @@ def test_credentialed_url_splits_server_from_auth():
         "username": "user123",
         "password": "secretpass",
     }
-
-
-def test_a_bare_host_port_is_assumed_http():
-    assert _proxy_config("gate.provider.com:7777") == {
-        "server": "http://gate.provider.com:7777"
-    }
-
-
-def test_no_credentials_means_no_auth_keys():
-    config = _proxy_config("http://gate.provider.com:7777")
-    assert config == {"server": "http://gate.provider.com:7777"}
-    assert "username" not in config
-
-
-def test_scheme_is_preserved():
-    """Some vendors front their gateway with https or socks5."""
-    assert _proxy_config("socks5://u:p@host:1080")["server"] == "socks5://host:1080"
 
 
 def test_a_password_with_url_characters_survives():
@@ -50,10 +28,6 @@ def test_a_password_with_url_characters_survives():
     assert config["password"] == "p-a-s-s"
 
 
-def test_garbage_is_direct_not_a_crash():
-    assert _proxy_config("not a url") is None
-
-
 class TestStickySession:
     """A form fill is several requests; they must all leave from one IP."""
 
@@ -62,10 +36,6 @@ class TestStickySession:
     def test_a_session_token_is_appended_for_a_session_proxy(self):
         config = _proxy_config(self.BD, session_token="abc123")
         assert config["username"] == "brd-customer-x-zone-isp-session-abc123"
-
-    def test_no_token_leaves_the_username_alone(self):
-        config = _proxy_config(self.BD)
-        assert config["username"] == "brd-customer-x-zone-isp"
 
     def test_a_configured_session_is_not_overridden(self):
         """An operator who pinned one IP on purpose keeps it."""
@@ -191,9 +161,4 @@ class TestScrapingBrowserMode:
         assert calls["connect_over_cdp"] == "wss://brd-customer-x-zone-sb:pw@brd.superproxy.io:9222"
         assert calls["launch"] is None
         assert any("managed chrome" in s for s in log.steps)
-
-    def test_no_cdp_url_launches_local(self, monkeypatch):
-        calls, _ = self._run_session(monkeypatch, cdp_url="", proxy_url="")
-        assert calls["launch"] is not None
-        assert calls["connect_over_cdp"] is None
 

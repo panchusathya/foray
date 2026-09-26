@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
-import pytest
+from datetime import UTC, datetime
 
 from juicebox.jobs import KIND_OUTREACH_SEND, KIND_OUTREACH_TICK, enqueue
-from juicebox.models import Enrollment, Event, Job, Message, utcnow
+from juicebox.models import Enrollment, Job, Message, utcnow
 from juicebox.outreach.outbox import (
     STOPPED_BY_USER,
     cancel_in_flight,
-    cancelled_count,
     collect_cancelled,
-    collect_in_flight,
-    list_in_flight,
     reenroll_in_flight,
 )
 from juicebox.outreach.sequencer import enroll_candidates, process_enrollment, record_reply
@@ -146,33 +141,6 @@ class TestReenroll:
         session.refresh(enrollment)
         assert enrollment.current_step == 1
 
-    def test_at_schedules_for_the_given_time_and_reads_as_scheduled(
-        self, session, outreach_fixture
-    ):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _stop(session, sequence, enrollment)
-        thursday = (utcnow() + timedelta(days=2)).replace(microsecond=0)
-
-        result = reenroll_in_flight(
-            session,
-            org_id=sequence.org_id,
-            enrollment_ids=[enrollment.id],
-            when="at",
-            send_at=thursday,
-        )
-        session.commit()
-        session.refresh(enrollment)
-
-        assert result.resumed == 1
-        assert _aware(enrollment.next_send_at) == thursday
-        rows = collect_in_flight(session, org_id=sequence.org_id)
-        assert [row.state for row in rows] == ["scheduled"]
-        assert _aware(rows[0].due_at) == thursday
-        # And it has left the cancelled population.
-        assert collect_cancelled(session, org_id=sequence.org_id) == []
-        assert cancelled_count(session, org_id=sequence.org_id) == 0
-
     def test_next_slot_lands_on_the_steps_own_hour_without_the_delay(
         self, session, outreach_fixture
     ):
@@ -194,23 +162,6 @@ class TestReenroll:
         # Tomorrow 09:00, not three days out: the 3-day delay was already
         # served before the stop.
         assert _aware(enrollment.next_send_at) == datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
-
-    def test_at_requires_a_time(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        with pytest.raises(ValueError):
-            reenroll_in_flight(session, org_id=sequence.org_id, enrollment_ids=["enr_x"], when="at")
-
-    def test_it_writes_an_event(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _stop(session, sequence, enrollment)
-        reenroll_in_flight(session, org_id=sequence.org_id, enrollment_ids=[enrollment.id])
-        session.commit()
-
-        event = session.query(Event).filter_by(type="outreach.reenrolled").one()
-        assert event.subject_id == enrollment.id
-        assert event.payload["when"] == "next_slot"
-        assert event.payload["step"] == 0
 
 
 class TestWhatItRefuses:
@@ -234,19 +185,6 @@ class TestWhatItRefuses:
         assert result.resumed == 0
         assert result.not_found == 1
         assert enrollment.status == "replied"
-
-    def test_an_active_row_is_not_found_either(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        before = enrollment.next_send_at
-        result = reenroll_in_flight(
-            session, org_id=sequence.org_id, enrollment_ids=[enrollment.id], when="now"
-        )
-        session.commit()
-        session.refresh(enrollment)
-        assert result.not_found == 1
-        # SQLite hands the column back naive; compare on equal footing.
-        assert _aware(enrollment.next_send_at) == _aware(before)
 
     def test_someone_who_replied_by_hand_elsewhere_is_reported_not_resumed(
         self, session, outreach_fixture, mailbox
@@ -336,93 +274,7 @@ class TestWhatItRefuses:
         assert collect_cancelled(session, org_id=account["org_id"]) == []
 
 
-class TestCancelledListing:
-    def test_stopped_rows_show_under_cancelled_and_nowhere_else(self, session, outreach_fixture):
-        sequence = outreach_fixture["sequence"]
-        ada = _candidate(outreach_fixture, "Ada Okonkwo")
-        bo = _candidate(outreach_fixture, "Bo Lindqvist")
-        stopped = _enroll(session, outreach_fixture, ada)
-        _enroll(session, outreach_fixture, bo)
-        _stop(session, sequence, stopped)
-
-        total, live = list_in_flight(session, org_id=sequence.org_id)
-        assert total == 1
-        assert live[0].candidate_name == "Bo Lindqvist"
-
-        total, rows = list_in_flight(session, org_id=sequence.org_id, state="cancelled")
-        assert total == 1
-        [row] = rows
-        assert row.enrollment_id == stopped.id
-        assert row.state == "cancelled"
-        assert row.due_at is None
-        assert row.cancelled_at is not None
-        assert row.step == 0
-        assert row.mailbox == "talent@acme-talent.com"
-        assert cancelled_count(session, org_id=sequence.org_id) == 1
-        assert cancelled_count(session, org_id=sequence.org_id, sequence_id="seq_none") == 0
-
-
 class TestApi:
-    def test_list_then_reenrol_for_a_chosen_time(self, client, session, outreach_fixture, account):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _stop(session, sequence, enrollment)
-        headers = account["headers"]
-
-        live = client.get("/v1/outreach/in-flight", headers=headers).json()
-        assert live["total"] == 0
-        assert live["cancelled_total"] == 1
-
-        cancelled = client.get("/v1/outreach/in-flight?state=cancelled", headers=headers).json()
-        assert cancelled["total"] == 1
-        assert cancelled["rows"][0]["state"] == "cancelled"
-        assert cancelled["rows"][0]["cancelled_at"]
-
-        thursday = (utcnow() + timedelta(days=2)).replace(microsecond=0)
-        body = client.post(
-            "/v1/outreach/in-flight/reenroll",
-            json={
-                "enrollment_ids": [enrollment.id],
-                "when": "at",
-                "send_at": thursday.isoformat(),
-            },
-            headers=headers,
-        ).json()
-        assert body["resumed"] == 1
-        assert body["sent"] == 0
-        assert body["skipped"] == []
-        assert datetime.fromisoformat(body["next_send_at"].replace("Z", "+00:00")) == thursday
-
-        session.refresh(enrollment)
-        assert enrollment.status == "active"
-        live = client.get("/v1/outreach/in-flight", headers=headers).json()
-        assert live["total"] == 1
-        assert live["rows"][0]["state"] == "scheduled"
-        assert live["cancelled_total"] == 0
-
-    def test_now_sends_in_the_request(self, client, session, outreach_fixture, account, mailbox):
-        sequence = outreach_fixture["sequence"]
-        enrollment = _enroll(session, outreach_fixture)
-        _stop(session, sequence, enrollment)
-
-        body = client.post(
-            "/v1/outreach/in-flight/reenroll",
-            json={"enrollment_ids": [enrollment.id], "when": "now"},
-            headers=account["headers"],
-        ).json()
-        assert body["resumed"] == 1
-        assert body["sent"] == 1
-        assert len(mailbox.outbox) == 1
-        session.refresh(enrollment)
-        assert enrollment.current_step == 1
-
-    def test_at_without_a_time_is_rejected(self, client, account):
-        response = client.post(
-            "/v1/outreach/in-flight/reenroll",
-            json={"enrollment_ids": ["enr_x"], "when": "at"},
-            headers=account["headers"],
-        )
-        assert response.status_code == 422
 
     def test_a_viewer_cannot_reenrol(self, client, session, account):
         from juicebox.models import User

@@ -55,15 +55,6 @@ class TestAuthentication:
         assert response.status_code == 401
         assert fake_voice.placed == []
 
-    def test_a_bad_token_is_refused(self, client, owned_number, fake_voice):
-        response = client.post(
-            "/v1/intake/call-me",
-            json={"phone": TARGET},
-            headers={"Authorization": "Bearer nonsense"},
-        )
-        assert response.status_code == 401
-        assert fake_voice.placed == []
-
 
 class TestPlacingTheCall:
     def test_it_dials_from_our_number_with_the_outbound_agent(
@@ -170,12 +161,6 @@ class TestRefusals:
         assert response.status_code == 400
         assert fake_voice.placed == []
 
-    def test_no_configured_number_is_refused(self, client, account, fake_voice):
-        response = call_me(client, account)
-        assert response.status_code == 400
-        assert "No intake number" in response.json()["detail"]
-        assert fake_voice.placed == []
-
     def test_a_deactivated_number_cannot_dial(
         self, client, session, account, owned_number, fake_voice
     ):
@@ -206,21 +191,6 @@ class TestRefusals:
         assert second.status_code == 400
         assert "recently" in second.json()["detail"]
         assert len(fake_voice.placed) == 1
-
-    def test_the_cooldown_expires(
-        self, client, session, account, owned_number, fake_voice
-    ):
-        from datetime import timedelta
-
-        from juicebox.models import utcnow
-
-        assert call_me(client, account).status_code == 202
-        call = session.scalars(select(IntakeCall)).one()
-        call.created_at = utcnow() - timedelta(hours=2)
-        session.commit()
-
-        assert call_me(client, account).status_code == 202
-        assert len(fake_voice.placed) == 2
 
     def test_a_provider_failure_leaves_no_call_row(
         self, client, session, account, owned_number

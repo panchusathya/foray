@@ -76,7 +76,7 @@ def upgrade() -> None:
         sa.Column("location", sa.String(length=240), nullable=False, server_default=""),
         sa.Column("linkedin_url", sa.String(length=400), nullable=False, server_default=""),
         sa.Column("role_title", sa.String(length=200), nullable=False, server_default=""),
-        sa.Column("stage", sa.String(length=32), nullable=False, server_default="awaiting"),
+        sa.Column("stage", sa.String(length=32), nullable=False, server_default="in_process"),
         sa.Column("stage_changed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
             "stage_changed_by_kind", sa.String(length=16), nullable=False, server_default=""

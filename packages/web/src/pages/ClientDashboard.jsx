@@ -38,7 +38,7 @@ export function ClientDashboardPage() {
   }, []);
 
   return (
-    <div className="client-shell">
+    <div className="client-shell cp-ui">
       <header className="client-header">
         <div className="brand brand-lockup">
           <BrandMark />

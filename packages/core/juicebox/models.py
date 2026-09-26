@@ -2803,17 +2803,15 @@ class Referral(Base, TimestampMixin):
 # these stages are the client's decision and are moved by the client. Sharing
 # one column would let either side silently overwrite the other.
 
-# Order is the funnel order the dashboard renders its piles in.
+# Order is the funnel order the dashboard renders its piles in. The client's
+# own process has exactly these; "in_process" is shared-and-under-review, the
+# state everybody starts in.
 CLIENT_STAGES = (
-    "awaiting",
+    "in_process",
     "first_round",
     "second_round",
-    "third_round",
-    "final_round",
     "offer",
-    "hired",
     "rejected",
-    "withdrawn",
 )
 
 
@@ -2891,7 +2889,7 @@ class ClientSubmission(Base, TimestampMixin):
     linkedin_url: Mapped[str] = mapped_column(String(400), default="")
     role_title: Mapped[str] = mapped_column(String(200), default="")
 
-    stage: Mapped[str] = mapped_column(String(32), default="awaiting")
+    stage: Mapped[str] = mapped_column(String(32), default="in_process")
     stage_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # "client" | "recruiter", and the display name at the time. A snapshot,
     # like CandidateNote.author_name, so the byline survives the user.

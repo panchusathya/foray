@@ -89,7 +89,7 @@ export function ClientsPage() {
   }, []);
 
   return (
-    <div className="stack">
+    <div className="stack cp-ui">
       <PageHeader
         title="Clients"
         subtitle="Companies with their own login onto the candidates we have shared with them."
@@ -230,7 +230,7 @@ function ShareForm({ accountId, onShared }) {
           onChange={(event) => setRole(event.target.value)}
         />
         <select value={stage} onChange={(event) => setStage(event.target.value)}>
-          <option value="">Stage: Awaiting review (or as pasted)</option>
+          <option value="">Stage: In process (or as pasted)</option>
           {STAGES.map((s) => (
             <option key={s.id} value={s.id}>
               Stage for all: {s.label}
@@ -426,7 +426,7 @@ export function ClientDetailPage() {
   );
 
   return (
-    <div className="stack">
+    <div className="stack cp-ui">
       <PageHeader
         title={account.name}
         subtitle={

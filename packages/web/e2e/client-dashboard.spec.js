@@ -116,11 +116,11 @@ test.describe('client dashboard', () => {
     await clientPage.getByRole('button', { name: 'Add note' }).click();
     await expect(clientPage.getByTestId('cp-note')).toContainText('Booked for Monday 10am.');
     await expect(clientPage.getByTestId('cp-drawer')).toContainText(
-      'moved Awaiting review → First round',
+      'moved In process → First round',
     );
     await clientPage.getByRole('button', { name: 'Close' }).click();
     await clientPage.screenshot({ path: path.join(ARTIFACT_DIR, 'client-side.png'), fullPage: true });
-    summary.client_moved = 'Waiting Person: awaiting → first_round, with a note';
+    summary.client_moved = 'Waiting Person: in_process → first_round, with a note';
 
     // --- back on our side, the move and the note are there ----------------------
     await page.getByRole('button', { name: 'Refresh' }).click();

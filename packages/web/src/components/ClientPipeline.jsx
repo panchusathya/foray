@@ -19,33 +19,35 @@ import {
   inPile,
   relativeTime,
   stageLabel,
-  stageTone,
+  visiblePiles,
 } from '../lib/clientStages.js';
 import { ErrorBox } from './common.jsx';
 
+/** A native select (keyboard, mobile pickers) dressed as a flat cell with a swatch. */
 function StageSelect({ value, onChange, disabled, testId }) {
   return (
-    <select
-      className={`cp-stage tone-${stageTone(value) || 'plain'}`}
-      value={value}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.value)}
-      onClick={(event) => event.stopPropagation()}
-      data-testid={testId}
-      aria-label="Stage"
-    >
-      {STAGES.map((s) => (
-        <option key={s.id} value={s.id}>
-          {s.label}
-        </option>
-      ))}
-    </select>
+    <span className="cp-stage" data-stage={value}>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        data-testid={testId}
+        aria-label="Stage"
+      >
+        {STAGES.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.label}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }
 
 function AuthorTag({ kind, clientName }) {
   return (
-    <span className={`badge ${kind === 'client' ? 'accent' : ''}`}>
+    <span className={`cp-tag${kind === 'client' ? ' is-client' : ''}`}>
       {kind === 'client' ? clientName : 'Foray'}
     </span>
   );
@@ -168,7 +170,7 @@ function Drawer({ rowId, side, api, clientName, onClose, onChanged, extras }) {
                   LinkedIn profile ↗
                 </a>
               ) : null}
-              {detail.role_title ? <span className="badge">For: {detail.role_title}</span> : null}
+              {detail.role_title ? <span className="cp-tag">For: {detail.role_title}</span> : null}
               {side === 'recruiter' && detail.candidate_id ? (
                 <Link to={`/contacts/${detail.candidate_id}`}>Contact record</Link>
               ) : null}
@@ -290,6 +292,8 @@ export function ClientPipeline({
   const [selected, setSelected] = useState(() => new Set());
   const [bulkStage, setBulkStage] = useState('rejected');
   const [error, setError] = useState(null);
+  // Name A-Z by default: what a person scanning a list of people expects.
+  const [sort, setSort] = useState({ key: 'name', dir: 1 });
   const selectable = side === 'recruiter' && Boolean(api.bulkStage);
 
   const roles = useMemo(
@@ -305,7 +309,13 @@ export function ClientPipeline({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return rows.filter(
+    const funnel = Object.fromEntries(STAGES.map((st, i) => [st.id, i]));
+    const keyOf = {
+      name: (r) => (r.full_name || '').toLowerCase(),
+      stage: (r) => funnel[r.stage] ?? 99,
+      updated: (r) => r.stage_changed_at || '',
+    }[sort.key];
+    const filtered = rows.filter(
       (r) =>
         inPile(r, pile) &&
         (!role || r.role_title === role) &&
@@ -315,7 +325,28 @@ export function ClientPipeline({
             .toLowerCase()
             .includes(needle)),
     );
-  }, [rows, pile, query, role]);
+    return filtered.sort((a, b) => {
+      const x = keyOf(a);
+      const y = keyOf(b);
+      return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+    });
+  }, [rows, pile, query, role, sort]);
+
+  function SortHeader({ id, children, firstDir = 1 }) {
+    const active = sort.key === id;
+    return (
+      <th aria-sort={active ? (sort.dir > 0 ? 'ascending' : 'descending') : undefined}>
+        <button
+          type="button"
+          className="sort"
+          onClick={() => setSort(active ? { key: id, dir: -sort.dir } : { key: id, dir: firstDir })}
+        >
+          {children}
+          {active ? (sort.dir > 0 ? ' ↑' : ' ↓') : ''}
+        </button>
+      </th>
+    );
+  }
 
   function replaceRow(updated) {
     onRowsChange(
@@ -371,20 +402,24 @@ export function ClientPipeline({
   }
 
   return (
-    <div className="stack">
+    <div className="stack cp-ui">
       <div className="cp-piles" role="tablist" data-testid="cp-piles">
-        {PILES.filter((p) => p.id === 'all' || p.id === pile || counts[p.id] > 0 || ['awaiting', 'in_process', 'first_round', 'rejected'].includes(p.id)).map((p) => (
+        {visiblePiles(counts, pile).map((p) => (
           <button
             key={p.id}
             type="button"
             role="tab"
             aria-selected={pile === p.id}
             className={`cp-pile${pile === p.id ? ' active' : ''}`}
+            data-stage={p.id}
             onClick={() => setPile(p.id)}
             data-testid={`cp-pile-${p.id}`}
           >
+            <span className="cp-pile-label">
+              {p.id === 'all' ? null : <i className="cp-swatch" aria-hidden="true" />}
+              {p.label}
+            </span>
             <span className="cp-pile-count">{counts[p.id]}</span>
-            <span className="cp-pile-label">{p.label}</span>
           </button>
         ))}
       </div>
@@ -449,8 +484,8 @@ export function ClientPipeline({
             <col style={{ width: '22%' }} />
             <col style={{ width: '24%' }} />
             {roles.length ? <col style={{ width: '12%' }} /> : null}
-            <col style={{ width: 150 }} />
-            <col style={{ width: 120 }} />
+            <col style={{ width: 170 }} />
+            <col style={{ width: 130 }} />
             <col />
           </colgroup>
           <thead>
@@ -465,11 +500,14 @@ export function ClientPipeline({
                   />
                 </th>
               ) : null}
-              <th>Candidate</th>
+              <SortHeader id="name">Candidate</SortHeader>
               <th>Current role</th>
               {roles.length ? <th>Applied for</th> : null}
-              <th>Stage</th>
-              <th>Updated</th>
+              <SortHeader id="stage">Stage</SortHeader>
+              {/* Newest first on the first click: "what moved" is the question. */}
+              <SortHeader id="updated" firstDir={-1}>
+                Updated
+              </SortHeader>
               <th>Latest note</th>
             </tr>
           </thead>
@@ -533,7 +571,7 @@ export function ClientPipeline({
                     {row.latest_note ? (
                       <>
                         {row.note_count > 1 ? (
-                          <span className="badge cp-note-count">{row.note_count}</span>
+                          <span className="cp-note-count">{row.note_count}</span>
                         ) : null}{' '}
                         <span className="muted">{row.latest_note.author_name}:</span>{' '}
                         {row.latest_note.body}

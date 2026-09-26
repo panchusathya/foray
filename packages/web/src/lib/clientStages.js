@@ -6,15 +6,11 @@
  */
 
 export const STAGES = [
-  { id: 'awaiting', label: 'Awaiting review', short: 'Awaiting', tone: '' },
-  { id: 'first_round', label: 'First round', short: '1st round', tone: 'accent' },
-  { id: 'second_round', label: 'Second round', short: '2nd round', tone: 'accent' },
-  { id: 'third_round', label: 'Third round', short: '3rd round', tone: 'accent' },
-  { id: 'final_round', label: 'Final round', short: 'Final', tone: 'accent' },
-  { id: 'offer', label: 'Offer', short: 'Offer', tone: 'partial' },
-  { id: 'hired', label: 'Hired', short: 'Hired', tone: 'strong' },
-  { id: 'rejected', label: 'Rejected', short: 'Rejected', tone: 'miss' },
-  { id: 'withdrawn', label: 'Withdrawn', short: 'Withdrawn', tone: '' },
+  { id: 'in_process', label: 'In process', short: 'In process' },
+  { id: 'first_round', label: 'First round', short: '1st round' },
+  { id: 'second_round', label: 'Second round', short: '2nd round' },
+  { id: 'offer', label: 'Offer', short: 'Offer' },
+  { id: 'rejected', label: 'Rejected', short: 'Rejected' },
 ];
 
 const BY_ID = Object.fromEntries(STAGES.map((s) => [s.id, s]));
@@ -23,30 +19,14 @@ export function stageLabel(id) {
   return BY_ID[id]?.label ?? id;
 }
 
-export function stageTone(id) {
-  return BY_ID[id]?.tone ?? '';
-}
-
 /**
- * The piles along the top. "In process" is every live interview stage, which
- * is the number a hiring manager actually asks for; the per-round piles are
- * still there for drilling in.
+ * The piles along the top: All, then one per stage. A pile with nobody in it
+ * is not shown (visiblePiles) -- an empty "Offer" box is noise, and it comes
+ * back the moment somebody lands there.
  */
 export const PILES = [
   { id: 'all', label: 'All', stages: null },
-  { id: 'awaiting', label: 'Awaiting review', stages: ['awaiting'] },
-  {
-    id: 'in_process',
-    label: 'In process',
-    stages: ['first_round', 'second_round', 'third_round', 'final_round', 'offer'],
-  },
-  { id: 'first_round', label: 'First round', stages: ['first_round'] },
-  { id: 'second_round', label: 'Second round', stages: ['second_round'] },
-  { id: 'third_round', label: 'Third round', stages: ['third_round'] },
-  { id: 'final_round', label: 'Final round', stages: ['final_round'] },
-  { id: 'offer', label: 'Offer', stages: ['offer'] },
-  { id: 'hired', label: 'Hired', stages: ['hired'] },
-  { id: 'rejected', label: 'Rejected', stages: ['rejected', 'withdrawn'] },
+  ...STAGES.map((s) => ({ id: s.id, label: s.label, stages: [s.id] })),
 ];
 
 export function inPile(row, pileId) {
@@ -54,17 +34,19 @@ export function inPile(row, pileId) {
   return !pile?.stages || pile.stages.includes(row.stage);
 }
 
-// Words people actually type in a tracking sheet, mapped onto a stage.
+/** All, the active pile, and every pile that has somebody in it. */
+export function visiblePiles(counts, activeId) {
+  return PILES.filter((p) => p.id === 'all' || p.id === activeId || counts[p.id] > 0);
+}
+
+// Words people actually type in a tracking sheet, mapped onto a stage. Later
+// rounds and "hired" fold into the nearest stage the client actually uses.
 const ALIASES = [
-  [/^(awaiting|pending|submitted|shared|sent|new|in review|under review|awaiting review|to review|no response)$/, 'awaiting'],
+  [/^(in process|in progress|awaiting|pending|submitted|shared|sent|new|in review|under review|awaiting review|to review|no response)$/, 'in_process'],
   [/^(1st|first|r1|round 1|first round|1st round|phone screen|screen|screening|intro)$/, 'first_round'],
-  [/^(2nd|second|r2|round 2|second round|2nd round|technical|tech)$/, 'second_round'],
-  [/^(3rd|third|r3|round 3|third round|3rd round)$/, 'third_round'],
-  [/^(final|final round|onsite|on site|last round)$/, 'final_round'],
-  [/^(offer|offered|offer extended|offer made)$/, 'offer'],
-  [/^(hired|placed|accepted|offer accepted|signed)$/, 'hired'],
-  [/^(rejected|reject|declined|no|not a fit|pass|passed|no hire|rejected by client)$/, 'rejected'],
-  [/^(withdrawn|withdrew|dropped|dropped out|candidate withdrew|not interested)$/, 'withdrawn'],
+  [/^(2nd|second|r2|round 2|second round|2nd round|technical|tech|3rd|third|third round|3rd round|final|final round|onsite|on site)$/, 'second_round'],
+  [/^(offer|offered|offer extended|offer made|hired|placed|accepted|offer accepted|signed)$/, 'offer'],
+  [/^(rejected|reject|declined|no|not a fit|pass|passed|no hire|rejected by client|withdrawn|withdrew|dropped|dropped out|candidate withdrew|not interested)$/, 'rejected'],
 ];
 
 /** A stage id for free text, or '' when it names no stage we know. */

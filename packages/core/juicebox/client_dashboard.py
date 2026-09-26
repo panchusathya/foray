@@ -245,7 +245,7 @@ def share_entries(
                 candidate_id=candidate.id if candidate else None,
                 dedupe_key=key,
                 role_title=role_title,
-                stage=stage or "awaiting",
+                stage=stage or "in_process",
                 stage_changed_by_kind=actor.kind,
                 stage_changed_by_name=actor.name,
                 **snap,

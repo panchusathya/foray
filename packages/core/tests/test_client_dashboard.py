@@ -110,7 +110,7 @@ def test_the_client_sees_the_snapshot_and_nothing_off_the_contact(client, recrui
     row = rows[0]
     assert row["full_name"] == "Priya Raman"
     assert row["current_company"] == "Initech"
-    assert row["stage"] == "awaiting"
+    assert row["stage"] == "in_process"
     raw = str(rows)
     for leaked in ("priya@example.com", "4155550123", "comp 400k", candidate_id):
         assert leaked not in raw
@@ -308,13 +308,13 @@ def test_a_client_stage_move_shows_on_our_side_with_its_author(client, recruiter
         headers=flowgen["headers"],
     )
     assert moved.status_code == 200
-    assert moved.json()["events"][-1]["from_stage"] == "awaiting"
+    assert moved.json()["events"][-1]["from_stage"] == "in_process"
 
     ours = client.get(f"/v1/clients/submissions/{row_id}", headers=recruiter).json()
     assert ours["stage"] == "second_round"
     assert ours["stage_changed_by_kind"] == "client"
     assert ours["stage_changed_by_name"] == "Flowgen"
-    assert [e["to_stage"] for e in ours["events"]] == ["awaiting", "second_round"]
+    assert [e["to_stage"] for e in ours["events"]] == ["in_process", "second_round"]
 
     summary = client.get(f"/v1/clients/{flowgen['account_id']}", headers=recruiter).json()
     assert summary["stage_counts"]["second_round"] == 1
@@ -325,7 +325,7 @@ def test_setting_the_same_stage_records_nothing(client, recruiter, flowgen):
     row_id = _share_one(client, recruiter, flowgen)
     for _ in range(2):
         client.patch(
-            f"/v1/client/submissions/{row_id}", json={"stage": "awaiting"}, headers=flowgen["headers"]
+            f"/v1/client/submissions/{row_id}", json={"stage": "in_process"}, headers=flowgen["headers"]
         )
     ours = client.get(f"/v1/clients/submissions/{row_id}", headers=recruiter).json()
     assert len(ours["events"]) == 1
@@ -383,7 +383,7 @@ def test_bulk_stage_moves_only_this_clients_rows(client, recruiter, flowgen):
     ).json()
     assert [r["id"] for r in moved] == [mine]
     acme_row = client.get(f"/v1/clients/submissions/{theirs}", headers=recruiter).json()
-    assert acme_row["stage"] == "awaiting"
+    assert acme_row["stage"] == "in_process"
 
 
 def test_unsharing_takes_the_row_off_the_client_dashboard(client, recruiter, flowgen):

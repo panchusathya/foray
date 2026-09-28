@@ -1,4 +1,5 @@
-import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { BrandMark, Loading, PageHeader } from './components/common.jsx';
 import { useAuth } from './lib/auth.jsx';
@@ -144,17 +145,38 @@ function NotFoundPage() {
 function Shell({ children }) {
   const { user, logout } = useAuth();
   const { sending } = useCurrentProject();
+  // Phone only: the sidebar collapses to a bar and this opens it. Any
+  // navigation closes it again, so a tapped link lands on its page.
+  const [navOpen, setNavOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => setNavOpen(false), [pathname]);
   return (
     <div className="shell">
       {/* One <nav>, and the sections are plain divs. ViewTabs is already a
           second navigation landmark, and auth.spec.js reaches the sidebar as
           `getByRole('navigation').…first()` -- more landmarks here would hand
           that `.first()` the wrong element. */}
-      <nav className="sidebar">
-        <div className="brand brand-lockup">
-          <BrandMark />
-          <span>Foray</span>
+      <nav className={`sidebar${navOpen ? ' open' : ''}`}>
+        {/* `display: contents` on desktop, so neither wrapper changes the
+            sidebar's own column layout; on a phone they become the bar and
+            the drop-down. */}
+        <div className="sidebar-top">
+          <div className="brand brand-lockup">
+            <BrandMark />
+            <span>Foray</span>
+          </div>
+          <button
+            type="button"
+            className="sidebar-menu tiny ghost"
+            aria-expanded={navOpen}
+            aria-controls="sidebar-links"
+            onClick={() => setNavOpen((open) => !open)}
+            data-testid="sidebar-menu"
+          >
+            {navOpen ? 'Close' : 'Menu'}
+          </button>
         </div>
+        <div className="sidebar-links" id="sidebar-links">
         <NavItem to="/" label="Home" end />
         <ProjectSection />
         {NAV_SECTIONS.map((section) => (
@@ -179,6 +201,7 @@ function Shell({ children }) {
               Log out
             </button>
           </div>
+        </div>
         </div>
       </nav>
       <main className="main">

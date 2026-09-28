@@ -1429,3 +1429,68 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
   .cp-drawer { width: 100vw; padding: 18px 16px 40px; }
   .cp-field { max-width: none; }
 }
+
+/* ---------- client grid: scroll across on a narrow window ----------
+ * Past its natural width the table holds its columns and the wrapper
+ * scrolls sideways (it already has overflow: auto). The shared grid pins
+ * its first two columns on the assumption that a 34px checkbox comes first;
+ * the client's grid has no checkbox, so there it pins the name alone --
+ * otherwise Role would stick 34px in and slide over the name.
+ */
+.cp-ui .cp-grid { min-width: 1260px; }
+.cp-ui .cp-grid.has-select { min-width: 1294px; }
+.cp-ui .cp-grid:not(.has-select) th:first-child,
+.cp-ui .cp-grid:not(.has-select) td:first-child { border-right: 1px solid var(--border-strong); }
+.cp-ui .cp-grid:not(.has-select) th:nth-child(2),
+.cp-ui .cp-grid:not(.has-select) td:nth-child(2) {
+  position: static;
+  border-right: none;
+}
+.cp-ui .cp-grid:not(.has-select) tbody td:nth-child(2) { background: transparent; }
+.cp-ui .cp-grid:not(.has-select) thead th:nth-child(2) { background: #fff; }
+
+/* ---------- recruiter shell on a phone ---------- */
+.sidebar-top, .sidebar-links { display: contents; }
+.sidebar-menu { display: none; }
+
+@media (max-width: 720px) {
+  .shell { flex-direction: column; }
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    width: auto;
+    flex: none;
+    padding: 10px 16px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-top { display: flex; align-items: center; justify-content: space-between; }
+  .sidebar-top .brand { padding: 0; }
+  button.sidebar-menu { display: inline-flex; }
+  .sidebar-links { display: none; }
+  .sidebar.open .sidebar-links {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding: 6px 0 12px;
+  }
+  .sidebar.open .sidebar-footer { margin-top: 16px; }
+  .main { padding: 18px 16px 48px; }
+
+  /* Recruiter-side client pages. */
+  .cp-ui .page-header.spread { flex-wrap: wrap; align-items: flex-start; }
+  .cp-ui .page-header .row { flex-wrap: wrap; gap: 8px; }
+  .cp-ui .page-header h1 { font-size: 22px; }
+  .cp-ui .cp-title { flex-wrap: wrap; }
+  .cp-ui .cp-inline-controls { flex-wrap: wrap; }
+  .cp-ui .cp-inline-controls > input,
+  .cp-ui .cp-inline-controls > select,
+  .cp-ui .cp-inline-controls > button { width: 100%; }
+  .cp-ui [data-testid='logins-panel'] .spread { flex-wrap: wrap; align-items: flex-start; }
+  .cp-client-cards { grid-template-columns: 1fr; }
+  /* Cards, not a table, below 720 -- so no sideways minimum either. */
+  .cp-ui .cp-grid, .cp-ui .cp-grid.has-select { min-width: 0; }
+}

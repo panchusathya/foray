@@ -532,15 +532,21 @@ export function ClientPipeline({
       <ErrorBox error={error} />
 
       <div className="card dgrid-wrap cp-grid-wrap">
-        <table className="dgrid cp-grid" data-testid="cp-grid">
+        <table
+          className={`dgrid cp-grid${selectable ? ' has-select' : ''}`}
+          data-testid="cp-grid"
+        >
           <colgroup>
-            {selectable ? <col style={{ width: 36 }} /> : null}
-            <col style={{ width: '18%' }} />
-            <col style={{ width: '20%' }} />
-            <col style={{ width: '18%' }} />
-            <col style={{ width: 160 }} />
-            <col style={{ width: 110 }} />
-            <col />
+            {selectable ? <col style={{ width: 34 }} /> : null}
+            {/* Pixel widths plus the table's min-width: below it the grid
+                scrolls sideways with the name pinned, instead of squeezing
+                every column into ellipses. */}
+            <col style={{ width: 220 }} />
+            <col style={{ width: 210 }} />
+            <col style={{ width: 240 }} />
+            <col style={{ width: 170 }} />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 300 }} />
           </colgroup>
           <thead>
             <tr>

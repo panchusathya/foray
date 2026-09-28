@@ -348,4 +348,137 @@ test.describe('client dashboard', () => {
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'phone-drawer.png') });
     await phone.close();
   });
+  async function sharedWorkspace(request, prefix) {
+    const org = await createOrg(request, prefix);
+    const tag = Date.now().toString(36);
+    const account = await (
+      await request.post('/v1/clients', { headers: org.headers, data: { name: `Flowgen ${tag}` } })
+    ).json();
+    const username = `${prefix.slice(0, 6)}-${tag}`;
+    await request.post(`/v1/clients/${account.id}/logins`, {
+      headers: org.headers,
+      data: { username, password: PASSWORD },
+    });
+    const shared = await request.post(`/v1/clients/${account.id}/submissions`, {
+      headers: org.headers,
+      data: {
+        role_title: 'Founding Engineer',
+        entries: [
+          { full_name: 'Ada Wide', current_title: 'Staff Engineer', current_company: 'Initech' },
+          { full_name: 'Grace Wide', stage: 'first_round' },
+        ],
+      },
+    });
+    const firstId = (await shared.json()).results[0].submission_id;
+    await request.post(`/v1/clients/submissions/${firstId}/notes`, {
+      headers: org.headers,
+      data: { body: 'The note that lives in the far-right column.' },
+    });
+    return { org, account, username };
+  }
+
+  /** Scroll the grid to its right edge; the name must stay put and uncovered. */
+  async function scrollAcross(page) {
+    const wrap = page.locator('.cp-grid-wrap');
+    const sizes = await wrap.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+    expect(sizes.scroll).toBeGreaterThan(sizes.client);
+    const row = page.getByTestId('cp-row').filter({ hasText: 'Ada Wide' });
+    const nameBefore = await row.locator('.cp-td-name').boundingBox();
+    await wrap.evaluate((el) => {
+      el.scrollLeft = el.scrollWidth;
+    });
+    const nameAfter = await row.locator('.cp-td-name').boundingBox();
+    expect(Math.abs(nameAfter.x - nameBefore.x)).toBeLessThan(1); // pinned
+    const note = await row.locator('.cp-td-note').boundingBox();
+    const wrapBox = await wrap.boundingBox();
+    expect(note.x + note.width).toBeLessThanOrEqual(wrapBox.x + wrapBox.width + 1); // reached
+    // Nothing scrolled underneath is drawn over the pinned name.
+    for (const cell of ['.cp-td-role', '.cp-td-current', '.cp-td-stage']) {
+      const box = await row.locator(cell).boundingBox();
+      const onTop = await page.evaluate(
+        ([x, y]) => document.elementFromPoint(x, y)?.closest('td')?.className ?? '',
+        [nameAfter.x + 8, nameAfter.y + nameAfter.height / 2],
+      );
+      expect(onTop).toContain('cp-td-name');
+      expect(box).toBeTruthy();
+    }
+  }
+
+  test('on a small laptop the grid scrolls across with the name pinned, on both sides', async ({
+    browser,
+    request,
+  }) => {
+    fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const { org, account, username } = await sharedWorkspace(request, 'clientwide');
+    const laptop = { viewport: { width: 1100, height: 760 } };
+
+    const client = await browser.newContext(laptop);
+    const clientPage = await client.newPage();
+    await clientPage.goto('/');
+    await clientPage.getByPlaceholder('Email or username').fill(username);
+    await clientPage.getByPlaceholder('Password').fill(PASSWORD);
+    await clientPage.locator('button[type="submit"]').click();
+    await expect(clientPage.getByTestId('cp-row')).toHaveCount(2);
+    await scrollAcross(clientPage);
+    await clientPage.screenshot({ path: path.join(ARTIFACT_DIR, 'laptop-client-scrolled.png') });
+    await client.close();
+
+    const ours = await browser.newContext(laptop);
+    const page = await ours.newPage();
+    await login(page, org.email);
+    await page.goto(`/clients/${account.id}`);
+    await expect(page.getByTestId('cp-row')).toHaveCount(2);
+    await scrollAcross(page);
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'laptop-recruiter-scrolled.png') });
+    await ours.close();
+  });
+
+  test('a recruiter on a phone gets a menu, and the client pages fit the screen', async ({
+    browser,
+    request,
+  }) => {
+    fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
+    const { org, account } = await sharedWorkspace(request, 'recphone');
+    const phone = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+    });
+    const page = await phone.newPage();
+    await login(page, org.email);
+
+    const noSidewaysScroll = async () =>
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        ),
+      ).toBeLessThanOrEqual(0);
+
+    // The sidebar is a bar: links hidden until the menu opens.
+    const clientsLink = page.getByRole('link', { name: 'Client dashboards' });
+    await expect(clientsLink).toBeHidden();
+    await page.getByTestId('sidebar-menu').click();
+    await expect(clientsLink).toBeVisible();
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'phone-recruiter-menu.png') });
+    await clientsLink.click();
+    // Navigating closes the menu.
+    await expect(clientsLink).toBeHidden();
+    await expect(page.getByTestId('client-card')).toBeVisible();
+    await noSidewaysScroll();
+
+    await page.getByTestId('client-card').click();
+    await expect(page.getByTestId('cp-row')).toHaveCount(2);
+    await noSidewaysScroll();
+    await expect(page.getByTestId('cp-grid').locator('thead')).toBeHidden();
+    await page.getByRole('button', { name: 'Share candidates' }).click();
+    await page.getByTestId('share-input').fill('Linus Phone, 2nd round');
+    await page.getByRole('button', { name: 'Share', exact: true }).click();
+    await expect(page.getByTestId('share-result')).toContainText('1 added');
+    await expect(page.getByTestId('cp-row')).toHaveCount(3);
+    await noSidewaysScroll();
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'phone-recruiter-client.png'), fullPage: true });
+    expect(account.id).toBeTruthy();
+    await phone.close();
+  });
 });

@@ -275,6 +275,12 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
+    # Sequence emails leave an org at most one per this many seconds, however
+    # many share a scheduled time: fifty people enrolled for 09:00 go out at
+    # 09:00, 09:01, 09:02 ... rather than in one burst. 0 sends as fast as due.
+    outreach_send_spacing_seconds: int = field(
+        default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_SECONDS", 60)
+    )
     # Nobody who answered us by hand in the last N days gets automated mail
     # from ANY sequence: the send path stops the enrollment and the enrol
     # endpoint skips them (with a force override). 0 disables both guards.

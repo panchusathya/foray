@@ -319,6 +319,7 @@ most:
 | `RERANK_TOP_K` | `20` | How many candidates get a model call per search; `0` disables |
 | `EMAIL_PROVIDER` | `console` | `smtp` to actually send |
 | `OUTREACH_DAILY_CAP` | `200` | Per-org send ceiling |
+| `OUTREACH_SEND_SPACING_SECONDS` | `60` | Gap between two sequence emails from one org; emails sharing a scheduled time go out one per gap |
 | `MS_CLIENT_ID` / `MS_CLIENT_SECRET` | *(empty)* | Azure app registration; enables Connect Outlook |
 | `MS_TENANT_ID` | `organizations` | Entra tenant for the OAuth flow |
 | `ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` | *(empty)* | Zoho api-console client; enables Connect Zoho Mail |

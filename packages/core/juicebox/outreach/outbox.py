@@ -9,7 +9,7 @@ about as often as it meant "not at all".
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import false, func, or_, select
@@ -31,8 +31,10 @@ from .sequencer import (
     _effective_daily_cap,
     _finish_enrollment,
     _sent_today,
+    next_send_slot,
     recent_human_replies,
     schedule_step_at,
+    send_spacing,
     sending_hold,
 )
 
@@ -188,6 +190,7 @@ def collect_in_flight(
     addresses = _mailbox_addresses(db, enrollments)
 
     items: list[InFlightItem] = []
+    unqueued: list[int] = []
     for enrollment in enrollments:
         sequence = enrollment.sequence
         candidate = enrollment.candidate
@@ -218,6 +221,22 @@ def collect_in_flight(
                 reason=reason,
             )
         )
+        if job is None and state in ("due", "scheduled") and due_at is not None:
+            unqueued.append(len(items) - 1)
+
+    # Nobody sharing a scheduled minute actually leaves in that minute: the
+    # tick deals them one slot apart, after whatever is already queued. Show
+    # the minute each one will really go, not fifty rows all reading 09:00.
+    spacing = send_spacing()
+    if spacing and unqueued:
+        cursor = next_send_slot(db, org_id, now)
+        for index in sorted(
+            unqueued, key=lambda i: (_aware(items[i].due_at), items[i].enrollment_id)
+        ):
+            slot = max(_aware(items[index].due_at), cursor)
+            items[index] = replace(items[index], due_at=slot)
+            cursor = slot + spacing
+
     items.sort(
         key=lambda row: (
             _aware(row.due_at) or datetime(9999, 12, 31, tzinfo=UTC),

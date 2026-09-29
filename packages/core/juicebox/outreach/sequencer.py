@@ -15,10 +15,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
 from ..crm import track_all
+from ..jobs import KIND_OUTREACH_SEND
 from ..llm.client import LLMUnavailable
 from ..models import (
     Candidate,
     Enrollment,
+    Job,
     Message,
     Org,
     Project,
@@ -424,6 +426,90 @@ def preview_step(
 # --------------------------------------------------------------------------
 # sending
 # --------------------------------------------------------------------------
+
+
+def send_spacing() -> timedelta:
+    """Minimum gap between two sequence emails from one org. Zero disables it."""
+    return timedelta(seconds=max(get_settings().outreach_send_spacing_seconds, 0))
+
+
+def _last_sequence_send_at(db: Session, org_id: str) -> datetime | None:
+    return _aware(
+        db.scalar(
+            select(func.max(Message.sent_at)).where(
+                Message.org_id == org_id,
+                Message.direction == "outbound",
+                Message.status == "sent",
+                Message.enrollment_id.is_not(None),
+            )
+        )
+    )
+
+
+def _open_send_run_ats(
+    db: Session, org_id: str, *, exclude_job_id: str | None = None
+) -> list[datetime]:
+    query = select(Job.run_at).where(
+        Job.org_id == org_id,
+        Job.kind == KIND_OUTREACH_SEND,
+        Job.status.in_(("queued", "running")),
+    )
+    if exclude_job_id:
+        query = query.where(Job.id != exclude_job_id)
+    return [value for value in (_aware(row) for row in db.scalars(query)) if value is not None]
+
+
+def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
+    """When this org may send its next sequence email, if that is later than now.
+
+    Enrolling fifty people at "09:00" used to hand the worker fifty send jobs
+    for the same instant, and one mailbox fired all fifty inside a second --
+    the burst pattern spam filters look for, and a Graph throttle waiting to
+    happen. This is the hard gate every send path goes through (the tick, the
+    worker, "Run now", enrol-and-send-now); the tick's slotting is what keeps
+    the gate from having to say no very often.
+    """
+    spacing = send_spacing()
+    if not spacing:
+        return None
+    last = _last_sequence_send_at(db, org_id)
+    if last is None or last + spacing <= now:
+        return None
+    return last + spacing
+
+
+def next_send_slot(db: Session, org_id: str, now: datetime) -> datetime:
+    """The first free minute after everything already sent or queued."""
+    spacing = send_spacing()
+    slot = now
+    if not spacing:
+        return slot
+    last = _last_sequence_send_at(db, org_id)
+    if last is not None:
+        slot = max(slot, last + spacing)
+    queued = _open_send_run_ats(db, org_id)
+    if queued:
+        slot = max(slot, max(queued) + spacing)
+    return slot
+
+
+def spacing_defer_until(db: Session, org_id: str, now: datetime, *, job_id: str) -> datetime:
+    """Where a send the spacing gate turned away should wait.
+
+    Normally that is the moment the gap closes: the job is only a few seconds
+    early (its slot came round a hair before the previous send's timestamp
+    plus a minute). But when other sends are contending for that same moment
+    -- a backlog released at once by the midnight cap reset, an unpause, or
+    jobs queued before spacing existed -- all of them waking on the same
+    second would just be told no again, one at a time, every minute. Sending
+    this one to the back of the queue instead sorts a herd into a line.
+    """
+    spacing = send_spacing()
+    earliest = spacing_wait(db, org_id, now) or now
+    others = _open_send_run_ats(db, org_id, exclude_job_id=job_id)
+    if any(run_at <= earliest for run_at in others):
+        return max(max(others) + spacing, earliest)
+    return earliest
 
 
 def _sent_today(db: Session, org_id: str, now: datetime) -> int:
@@ -1143,6 +1229,10 @@ def process_enrollment(
             0, _effective_daily_cap(db, sequence.org_id) - _sent_today(db, sequence.org_id, now)
         )
         if remaining_cap == 0:
+            return "deferred", None
+        if spacing_wait(db, sequence.org_id, now) is not None:
+            # Too soon after the last send. Deferred for the same reason a
+            # full cap is: the permanent key must survive to send later.
             return "deferred", None
         # Resolving here rather than inside send_step keeps a full mailbox from
         # touching the enrollment at all: "deferred" leaves next_send_at alone

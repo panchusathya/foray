@@ -623,9 +623,18 @@ export function SequenceEditorPage() {
       } else if (status !== 'active') {
         text = `Enrolled ${enrolled}. Activate the sequence to start sending.`;
       } else if (sendNow) {
+        // Sends leave one a minute, so "send now" to a batch sends the first
+        // and queues the rest behind it.
+        const waiting = enrolled - sentNow;
         text = sentNow
-          ? `Enrolled ${enrolled} — ${sentNow} email${sentNow === 1 ? '' : 's'} sent.`
-          : `Enrolled ${enrolled} — sending within a minute.`;
+          ? `Enrolled ${enrolled} — ${sentNow} email${sentNow === 1 ? '' : 's'} sent${
+              waiting === 1
+                ? ', the other goes out in a minute'
+                : waiting > 1
+                  ? `, the other ${waiting} go out one a minute`
+                  : ''
+            }.`
+          : `Enrolled ${enrolled} — sending within a minute, then one a minute.`;
       } else {
         text = `Enrolled ${enrolled} — first email goes out at the step's scheduled time.`;
       }

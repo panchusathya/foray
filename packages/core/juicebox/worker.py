@@ -44,6 +44,7 @@ from .jobs import (
     KIND_JOBS_SCRAPE_ONE,
     KIND_LINKEDIN_SCRAPE,
     KIND_MAILBOX_BACKFILL,
+    KIND_MAILBOX_NOTIFY,
     KIND_MAILBOX_SYNC,
     KIND_MAILBOX_SYNC_ONE,
     KIND_OUTREACH_FOLLOW_UP,
@@ -155,7 +156,7 @@ def _schedule_next_tick(db: Session, *, org_id: str, kind: str, now) -> None:
 
 
 def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
-    from .outreach.sequencer import due_enrollments, next_send_slot, send_spacing
+    from .outreach.sequencer import due_enrollments, next_send_slot, send_gap, send_spacing
 
     org_id = job.payload.get("org_id") or job.org_id
     due = []
@@ -185,7 +186,8 @@ def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
         run_at = now
         if key not in held:
             run_at = slot
-            slot += spacing
+            if spacing:
+                slot += send_gap(enrollment.id, enrollment.current_step)
         enqueue(
             db,
             org_id=org_id,
@@ -257,6 +259,7 @@ def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
 
     from .models import Message
     from .outreach.follow_ups import send_follow_up_reminder
+    from .outreach.sequencer import spacing_wait
 
     enrollment = db.scalar(
         select(Enrollment)
@@ -273,10 +276,41 @@ def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
             queued_for = date.fromisoformat(raw)
         except ValueError:
             queued_for = None
+    wait = spacing_wait(db, enrollment.sequence.org_id, now)
+    if wait is not None and enrollment.follow_up_reminder_sent_at is None:
+        return {"defer": True, "defer_until": wait}
     result = send_follow_up_reminder(
         db, enrollment=enrollment, inbound=inbound, follow_up_after=queued_for, now=now
     )
     return {"result": result, "enrollment_id": enrollment.id}
+
+
+def _handle_mailbox_notify(db: Session, job: Job, now) -> dict[str, Any]:
+    """A note from one mailbox to its own owner, sent once the gap allows."""
+    from .outreach.sender import OutboundEmail, sender_for_connection
+    from .outreach.sequencer import note_mail_sent, spacing_wait
+    from .outreach.templates import to_html
+
+    connection = db.get(MailboxConnection, job.payload.get("connection_id", ""))
+    if connection is None or connection.status != "active":
+        return {"skipped": "mailbox gone"}
+    wait = spacing_wait(db, connection.org_id, now)
+    if wait is not None:
+        return {"defer": True, "defer_until": wait}
+    text_body = job.payload.get("text_body", "")
+    result = sender_for_connection(db, connection).send(
+        OutboundEmail(
+            to=connection.address,
+            subject=job.payload.get("subject", ""),
+            text_body=text_body,
+            html_body=to_html(text_body),
+            from_email=connection.address,
+        )
+    )
+    if not getattr(result, "ok", True):
+        raise RuntimeError(f"mailbox notify failed: {getattr(result, 'error', '') or 'unknown'}")
+    note_mail_sent(db, connection.org_id, now)
+    return {"sent": connection.address}
 
 
 def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1639,6 +1673,7 @@ HANDLERS = {
     KIND_OUTREACH_TICK: _handle_outreach_tick,
     KIND_OUTREACH_SEND: _handle_outreach_send,
     KIND_OUTREACH_FOLLOW_UP: _handle_outreach_follow_up,
+    KIND_MAILBOX_NOTIFY: _handle_mailbox_notify,
     KIND_AGENT_TICK: _handle_agent_tick,
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
     KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,

@@ -133,6 +133,9 @@ def send_follow_up_reminder(
             f"follow-up reminder send failed: {getattr(result, 'error', '') or 'unknown error'}"
         )
     enrollment.follow_up_reminder_sent_at = now
+    from .sequencer import note_mail_sent
+
+    note_mail_sent(db, enrollment.sequence.org_id, now)
     record_event(
         db,
         org_id=enrollment.sequence.org_id,

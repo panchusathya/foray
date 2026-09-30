@@ -216,10 +216,11 @@ def _send_notification(
 ) -> None:
     """'Your draft is ready' email, sent from the user's mailbox to themselves.
 
-    Goes out through the same EmailSender the outreach uses, so it works for
-    any provider and honours the test seam.
+    Goes out through the same EmailSender the outreach uses (the
+    ``mailbox.notify`` worker handler), so it works for any provider and
+    honours the test seam.
     """
-    from ..outreach.sender import OutboundEmail, sender_for_connection
+    from ..jobs import KIND_MAILBOX_NOTIFY, enqueue
 
     name = candidate.full_name if candidate else inbound.to_address
     subject = f"{name} replied ({inbound.reply_intent.replace('_', ' ')}) — your draft is ready"
@@ -241,18 +242,20 @@ def _send_notification(
         text_lines.append(draft.web_link)
     text_lines += ["", f"Candidate in Foray: {app_url}/contacts"]
     body_text = "\n".join(text_lines)
-    try:
-        sender_for_connection(db, connection).send(
-            OutboundEmail(
-                to=connection.address,
-                subject=subject,
-                text_body=body_text,
-                html_body=to_html(body_text),
-                from_email=connection.address,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - the draft matters more than the ping
-        logger.warning("draft-ready notification failed for %s: %s", connection.address, exc)
+    # Queued rather than sent inline: it leaves when the org's gap between
+    # emails allows, like everything else this mailbox sends. A failure there
+    # retries on its own and never touches the draft.
+    enqueue(
+        db,
+        org_id=connection.org_id,
+        kind=KIND_MAILBOX_NOTIFY,
+        idempotency_key=f"{KIND_MAILBOX_NOTIFY}:draft:{draft.id}",
+        payload={
+            "connection_id": connection.id,
+            "subject": subject,
+            "text_body": body_text,
+        },
+    )
 
 
 def create_reply_draft(

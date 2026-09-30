@@ -429,12 +429,36 @@ def preview_step(
 
 
 def send_spacing() -> timedelta:
-    """Minimum gap between two sequence emails from one org. Zero disables it."""
+    """Shortest gap allowed between two emails from one org. Zero disables it."""
     return timedelta(seconds=max(get_settings().outreach_send_spacing_seconds, 0))
 
 
-def _last_sequence_send_at(db: Session, org_id: str) -> datetime | None:
-    return _aware(
+def send_gap(*parts: object) -> timedelta:
+    """The gap in front of one particular send: somewhere in [min, max].
+
+    A fixed sixty seconds is itself a machine signature, so each send gets its
+    own gap. It is a hash of what is being sent rather than ``random``, so a
+    tick and the Outbox that previews it deal the same minute.
+    """
+    settings = get_settings()
+    low = max(settings.outreach_send_spacing_seconds, 0)
+    high = max(settings.outreach_send_spacing_max_seconds, low)
+    if high == low:
+        return timedelta(seconds=low)
+    digest = hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()
+    return timedelta(seconds=low + int(digest[:8], 16) % (high - low + 1))
+
+
+def last_mail_sent_at(db: Session, org_id: str) -> datetime | None:
+    """The org's most recent automated email, from any path.
+
+    ``orgs.last_mail_sent_at`` is written by every mailbox send we make
+    (``note_mail_sent``); the message table is read as well because sequence
+    sends made before that column existed only live there.
+    """
+    org = db.get(Org, org_id)
+    stamped = _aware(org.last_mail_sent_at) if org is not None else None
+    sequenced = _aware(
         db.scalar(
             select(func.max(Message.sent_at)).where(
                 Message.org_id == org_id,
@@ -444,6 +468,18 @@ def _last_sequence_send_at(db: Session, org_id: str) -> datetime | None:
             )
         )
     )
+    return max((v for v in (stamped, sequenced) if v is not None), default=None)
+
+
+def note_mail_sent(db: Session, org_id: str, at: datetime) -> None:
+    """Start the gap clock. Call it after every successful mailbox send."""
+    org = db.get(Org, org_id)
+    if org is None:
+        return
+    at = _aware(at)
+    current = _aware(org.last_mail_sent_at)
+    if current is None or at > current:
+        org.last_mail_sent_at = at
 
 
 def _open_send_run_ats(
@@ -460,7 +496,7 @@ def _open_send_run_ats(
 
 
 def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
-    """When this org may send its next sequence email, if that is later than now.
+    """When this org may send its next email, if that is later than now.
 
     Enrolling fifty people at "09:00" used to hand the worker fifty send jobs
     for the same instant, and one mailbox fired all fifty inside a second --
@@ -472,7 +508,7 @@ def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
     spacing = send_spacing()
     if not spacing:
         return None
-    last = _last_sequence_send_at(db, org_id)
+    last = last_mail_sent_at(db, org_id)
     if last is None or last + spacing <= now:
         return None
     return last + spacing
@@ -484,7 +520,7 @@ def next_send_slot(db: Session, org_id: str, now: datetime) -> datetime:
     slot = now
     if not spacing:
         return slot
-    last = _last_sequence_send_at(db, org_id)
+    last = last_mail_sent_at(db, org_id)
     if last is not None:
         slot = max(slot, last + spacing)
     queued = _open_send_run_ats(db, org_id)
@@ -1066,6 +1102,7 @@ def send_step(
     if result.ok:
         message.status = "sent"
         message.sent_at = now
+        note_mail_sent(db, sequence.org_id, now)
         message.provider_message_id = result.provider_message_id
         # The mailbox that actually sent it, not the sequence's preference --
         # under rotation those differ, and the cap query reads this column.

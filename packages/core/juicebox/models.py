@@ -75,6 +75,12 @@ class Org(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     outreach_paused_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # When the org's mailboxes last sent anything automated. Every mailbox
+    # send stamps it and waits OUTREACH_SEND_SPACING_SECONDS after it, so no
+    # two emails leave back to back whichever path sent them.
+    last_mail_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 

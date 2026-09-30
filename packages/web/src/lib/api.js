@@ -294,6 +294,7 @@ export const api = {
   generateSequence: (payload) => request('/v1/sequences/generate', { method: 'POST', body: payload }),
   setSequenceStatus: (id, value) =>
     request(`/v1/sequences/${id}/status?value=${encodeURIComponent(value)}`, { method: 'PATCH' }),
+  spamCheck: (payload) => request('/v1/sequences/spam-check', { method: 'POST', body: payload }),
   previewSequence: (sequenceId, payload) =>
     request(`/v1/sequences/${sequenceId}/preview`, { method: 'POST', body: payload }),
   enroll: (sequenceId, payload) =>

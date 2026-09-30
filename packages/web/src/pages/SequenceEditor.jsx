@@ -13,6 +13,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
 import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
+import { SpamBadge, SpamPanel, useSpamCheck } from '../components/SpamScore.jsx';
 import { api, providerLabel } from '../lib/api.js';
 import { useCurrentProject } from '../lib/project.jsx';
 import { malformedInStep } from '../lib/templates.js';
@@ -497,6 +498,7 @@ export function SequenceEditorPage() {
   const lastFocused = useRef('body');
   // Read inside the reload effect, which must not see a stale `dirty`.
   const dirtyRef = useRef(false);
+  const spam = useSpamCheck(steps);
 
   useEffect(() => {
     if (!sequence.data) return;
@@ -840,6 +842,11 @@ export function SequenceEditorPage() {
                 ) : null}
               </div>
               <div className="muted small">sends {schedule[index]}</div>
+              {spam[index] ? (
+                <div className="small" style={{ marginTop: 4 }}>
+                  <SpamBadge report={spam[index]} />
+                </div>
+              ) : null}
             </button>
           ))}
           <button
@@ -904,6 +911,7 @@ export function SequenceEditorPage() {
                 }}
                 onChange={(html) => updateStep(selected, { body_template: html })}
               />
+              <SpamPanel report={spam[selected]} />
               <div className="row wrap small">
                 <label className="muted">
                   Wait{' '}
@@ -1013,6 +1021,7 @@ export function SequenceEditorPage() {
                   {preview.ai_status === 'resolved' ? (
                     <Badge tone="strong">AI fragments resolved</Badge>
                   ) : null}
+                  {preview.spam ? <SpamBadge report={preview.spam} /> : null}
                 </div>
               </>
             ) : null}

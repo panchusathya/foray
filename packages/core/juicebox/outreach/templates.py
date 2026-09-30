@@ -419,8 +419,13 @@ def add_tracking(
     message_id: str,
     token: str,
     sign_click=None,
+    opens: bool = True,
+    clicks: bool = True,
 ) -> str:
     """Rewrite links through the click endpoint and append an open pixel.
+
+    ``opens`` / ``clicks`` are the sequence's tracking switches; with both off
+    the HTML goes out exactly as written.
 
     ``sign_click(target)`` signs one link's destination into its own token, so
     the click endpoint can refuse a ``u`` it did not mint. Without it the link
@@ -444,7 +449,9 @@ def add_tracking(
             f'href="{base_url}/t/c/{message_id}?k={k}&u={quote(target, safe="")}"'
         )
 
-    tracked = _LINK_RE.sub(rewrite, html_body)
+    tracked = _LINK_RE.sub(rewrite, html_body) if clicks else html_body
+    if not opens:
+        return tracked
     pixel = (
         f'<img src="{base_url}/t/o/{message_id}.png?k={token}" width="1" height="1" '
         'alt="" style="display:none">'

@@ -184,6 +184,8 @@ def create_sequence(
         name=payload.name,
         personalize=payload.personalize,
         stop_on_reply=payload.stop_on_reply,
+        track_opens=payload.track_opens,
+        track_clicks=payload.track_clicks,
         from_email=payload.from_email,
         from_name=payload.from_name,
         sender_mode=_resolve_sender_mode(payload.sender_mode, payload.mailbox_id),
@@ -231,7 +233,11 @@ def spam_check(
         results=[
             SpamReportOut.model_validate(
                 score_template(
-                    step.subject_template, step.body_template, is_follow_up=index > 0
+                    step.subject_template,
+                    step.body_template,
+                    is_follow_up=index > 0,
+                    open_tracking=payload.track_opens,
+                    click_tracking=payload.track_clicks,
                 ).to_dict()
             )
             for index, step in enumerate(payload.steps)
@@ -382,6 +388,8 @@ def clone_sequence(
         status="paused",
         personalize=source.personalize,
         stop_on_reply=source.stop_on_reply,
+        track_opens=source.track_opens,
+        track_clicks=source.track_clicks,
         from_email=source.from_email,
         from_name=source.from_name,
         # Without these the copy falls back to the pool, so a cloned sequence
@@ -520,6 +528,8 @@ def preview(
                 subject=subject,
                 body=body,
                 is_follow_up=bool(step and step.step_order > 0),
+                open_tracking=sequence.track_opens,
+                click_tracking=sequence.track_clicks,
                 personalization=personalization_depth(
                     f"{step.subject_template or ''}\n{step.body_template or ''}"
                 )

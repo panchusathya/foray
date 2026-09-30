@@ -11,8 +11,9 @@ and what to write instead. Two families are kept apart on purpose:
 
 * ``content`` -- the copy. The recruiter can fix these in the editor.
 * ``delivery`` -- how the email is sent (the open-tracking pixel, rewritten
-  links). Nothing in the editor changes them, so they are reported separately
-  rather than folded into a score the copy can never improve.
+  links). The sequence's Track opens / Track clicks switches control them,
+  not the copy, so they are reported separately rather than folded into a
+  score that rewording can never improve.
 
 Recruiting mail legitimately talks about pay, equity and deadlines, so money
 and urgency are weighted as nudges, not verdicts: one mention costs little,
@@ -552,7 +553,8 @@ def score_email(
                 "Every email carries a hidden 1x1 image for open tracking. Gmail and Outlook "
                 "treat hidden remote images as a bulk-mail signal, most of all in short, "
                 "plain emails like cold outreach.",
-                "Not editable here: it is added to every send.",
+                "Turn off Track opens in this sequence's settings. You lose open counts; "
+                "replies are still detected.",
             )
         )
     if click_tracking and links:
@@ -564,7 +566,7 @@ def score_email(
                 "Links go through a tracking redirect",
                 "Each link is rewritten to pass through our click tracker, so the address a "
                 "filter sees is not the one you wrote.",
-                "Fewer links means fewer redirects; none is safest.",
+                "Turn off Track clicks in this sequence's settings, or use fewer links.",
             )
         )
 
@@ -583,12 +585,19 @@ def score_email(
 
 
 def score_template(
-    subject_template: str, body_template: str, *, is_follow_up: bool = False
+    subject_template: str,
+    body_template: str,
+    *,
+    is_follow_up: bool = False,
+    open_tracking: bool = True,
+    click_tracking: bool = True,
 ) -> SpamReport:
     """Score a step as written, with sample values in place of variables."""
     return score_email(
         subject=fill_template(subject_template),
         body=fill_template(body_template),
         is_follow_up=is_follow_up,
+        open_tracking=open_tracking,
+        click_tracking=click_tracking,
         personalization=personalization_depth(f"{subject_template}\n{body_template}"),
     )

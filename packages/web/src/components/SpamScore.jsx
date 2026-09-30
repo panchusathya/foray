@@ -3,8 +3,8 @@
 // The editor scores unsaved copy, so the check runs on the steps as typed,
 // debounced, against POST /v1/sequences/spam-check -- a pure endpoint that
 // reads nothing from the database. Delivery findings (the tracking pixel,
-// redirected links) are shown apart from the copy's own, because nothing
-// typed into the editor can change them.
+// redirected links) are shown apart from the copy's own: the sequence's
+// Track opens / Track clicks switches control them, not the wording.
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '../lib/api.js';
@@ -13,21 +13,23 @@ import { Badge } from './common.jsx';
 const TONE = { low: 'strong', medium: 'partial', high: 'miss' };
 const LABEL = { low: 'Low', medium: 'Medium', high: 'High' };
 
-export function useSpamCheck(steps, { delay = 500 } = {}) {
+export function useSpamCheck(steps, { delay = 500, trackOpens = true, trackClicks = true } = {}) {
   const [results, setResults] = useState([]);
   const request = useRef(0);
-  const payload = JSON.stringify(
-    (steps ?? []).map((step) => ({
+  const payload = JSON.stringify({
+    steps: (steps ?? []).map((step) => ({
       subject_template: step.subject_template ?? '',
       body_template: step.body_template ?? '',
     })),
-  );
+    track_opens: trackOpens,
+    track_clicks: trackClicks,
+  });
 
   useEffect(() => {
     const id = ++request.current;
     const timer = setTimeout(async () => {
       try {
-        const { results: next = [] } = await api.spamCheck({ steps: JSON.parse(payload) });
+        const { results: next = [] } = await api.spamCheck(JSON.parse(payload));
         if (id === request.current) setResults(next);
       } catch {
         // Advice, not a gate: a failed check just leaves the last score up.
@@ -105,7 +107,7 @@ export function SpamPanel({ report }) {
           )}
           {delivery.length ? (
             <>
-              <div className="small muted">How every email is sent (not fixable in the copy):</div>
+              <div className="small muted">How it is sent (the Track opens / Track clicks switches, not the wording):</div>
               <ul style={{ margin: 0, paddingLeft: 18 }}>
                 {delivery.map((f) => (
                   <Finding key={f.code} finding={f} />

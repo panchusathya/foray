@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, timedelta
+from itertools import pairwise
 
 import pytest
 from sqlalchemy import select
@@ -206,7 +207,7 @@ class TestTheGapVaries:
         _tick(session, org_id, now)
 
         run_ats = [_aware(job.run_at) for job in _send_jobs(session, org_id)]
-        gaps = [(b - a).total_seconds() for a, b in zip(run_ats, run_ats[1:], strict=False)]
+        gaps = [(b - a).total_seconds() for a, b in pairwise(run_ats)]
         assert gaps and all(45 <= gap <= 60 for gap in gaps)
 
 

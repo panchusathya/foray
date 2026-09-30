@@ -1064,6 +1064,8 @@ def send_step(
         message_id=message.id,
         token=token,
         sign_click=lambda target: signed_intake_token(f"click:{message.id}", target),
+        opens=sequence.track_opens,
+        clicks=sequence.track_clicks,
     )
 
     # Follow-ups thread off the previous send. Providers that cannot express

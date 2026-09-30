@@ -603,6 +603,11 @@ class Sequence(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="active")  # active|paused|archived
     personalize: Mapped[bool] = mapped_column(Boolean, default=True)
     stop_on_reply: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Open tracking is a hidden 1x1 image; click tracking rewrites every link
+    # through /t/c. Both are bulk-mail signals to Gmail and Outlook, so a
+    # sequence can send without them at the cost of its open/click stats.
+    track_opens: Mapped[bool] = mapped_column(Boolean, default=True)
+    track_clicks: Mapped[bool] = mapped_column(Boolean, default=True)
     from_email: Mapped[str] = mapped_column(String(255), default="")
     from_name: Mapped[str] = mapped_column(String(200), default="")
     # rotate: spread sends across every eligible mailbox in the org, honouring

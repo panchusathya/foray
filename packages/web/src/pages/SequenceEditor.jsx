@@ -498,7 +498,10 @@ export function SequenceEditorPage() {
   const lastFocused = useRef('body');
   // Read inside the reload effect, which must not see a stale `dirty`.
   const dirtyRef = useRef(false);
-  const spam = useSpamCheck(steps);
+  const spam = useSpamCheck(steps, {
+    trackOpens: meta?.track_opens ?? true,
+    trackClicks: meta?.track_clicks ?? true,
+  });
 
   useEffect(() => {
     if (!sequence.data) return;
@@ -511,6 +514,8 @@ export function SequenceEditorPage() {
       name: sequence.data.name,
       personalize: sequence.data.personalize,
       stop_on_reply: sequence.data.stop_on_reply,
+      track_opens: sequence.data.track_opens ?? true,
+      track_clicks: sequence.data.track_clicks ?? true,
       from_email: sequence.data.from_email,
       from_name: sequence.data.from_name,
       sender_mode: sequence.data.sender_mode,
@@ -533,6 +538,8 @@ export function SequenceEditorPage() {
           'name',
           'personalize',
           'stop_on_reply',
+          'track_opens',
+          'track_clicks',
           'from_email',
           'from_name',
           'sender_mode',
@@ -1055,6 +1062,27 @@ export function SequenceEditorPage() {
                     onChange={(event) => setMeta({ ...meta, stop_on_reply: event.target.checked })}
                   />{' '}
                   Stop on reply
+                </label>
+                {/* Off sends the email exactly as written: no hidden pixel,
+                    links untouched. Both are bulk-mail signals to spam
+                    filters; the cost is open / click counts in Analytics. */}
+                <label title="Adds a hidden 1x1 image to count opens. Filters treat it as a bulk-mail signal.">
+                  <input
+                    type="checkbox"
+                    data-testid="track-opens"
+                    checked={meta.track_opens}
+                    onChange={(event) => setMeta({ ...meta, track_opens: event.target.checked })}
+                  />{' '}
+                  Track opens
+                </label>
+                <label title="Routes links through a click tracker. Filters see a redirect instead of your link.">
+                  <input
+                    type="checkbox"
+                    data-testid="track-clicks"
+                    checked={meta.track_clicks}
+                    onChange={(event) => setMeta({ ...meta, track_clicks: event.target.checked })}
+                  />{' '}
+                  Track clicks
                 </label>
               </div>
             </div>

@@ -19,8 +19,10 @@ from test_mailbox_sync import (
 from juicebox.integrations.crypto import encrypt_json
 from juicebox.integrations.reply_drafting import create_reply_draft, generate_reply_body
 from juicebox.integrations.sync import sync_mailbox
-from juicebox.models import MailboxConnection, Message, ReplyDraft
+from juicebox.jobs import KIND_MAILBOX_NOTIFY
+from juicebox.models import Job, MailboxConnection, Message, ReplyDraft
 from juicebox.outreach.sequencer import enroll_candidates, run_due
+from juicebox.worker import process_job
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +124,11 @@ class TestCreateReplyDraft:
         assert draft.provider_draft_id == "draft-1"
         assert draft.web_link.endswith("draft-1")
 
-        # The user got a "draft ready" email from their own mailbox to themselves.
+        # The user got a "draft ready" email from their own mailbox to
+        # themselves -- queued, so it waits out the gap between emails.
+        assert notifier.outbox == []
+        [job] = session.query(Job).filter(Job.kind == KIND_MAILBOX_NOTIFY).all()
+        process_job(session, job)
         [notification] = notifier.outbox
         assert notification.to == "recruiter@goforay.io"
         assert notification.from_email == "recruiter@goforay.io"

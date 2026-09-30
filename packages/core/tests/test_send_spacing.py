@@ -1,4 +1,4 @@
-"""Sequence emails leave one a minute, however many share a scheduled time."""
+"""Emails leave an org about a minute apart, whatever sent them."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ def spacing(monkeypatch):
     from juicebox.config import reset_settings_cache
 
     monkeypatch.setenv("OUTREACH_SEND_SPACING_SECONDS", "60")
+    # Pinned so slots are exact; TestTheGapVaries covers the 45-60s range.
+    monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "60")
     reset_settings_cache()
     yield
     reset_settings_cache()
@@ -186,3 +188,71 @@ class TestTheOutboxShowsTheRealMinute:
         assert [_aware(item.due_at) for item in items] == [
             nine + MINUTE * i for i in range(len(rows))
         ]
+
+
+class TestTheGapVaries:
+    def test_each_gap_lands_between_the_minimum_and_the_maximum(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("OUTREACH_SEND_SPACING_SECONDS", "45")
+        monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "60")
+        reset_settings_cache()
+        org_id = outreach_fixture["sequence"].org_id
+        now = utcnow().replace(microsecond=0)
+        _enrol_all(session, outreach_fixture, due=now)
+
+        _tick(session, org_id, now)
+
+        run_ats = [_aware(job.run_at) for job in _send_jobs(session, org_id)]
+        gaps = [(b - a).total_seconds() for a, b in zip(run_ats, run_ats[1:], strict=False)]
+        assert gaps and all(45 <= gap <= 60 for gap in gaps)
+
+
+class TestEverySendSharesTheGap:
+    def test_a_draft_ready_note_waits_for_the_gap_after_a_sequence_send(
+        self, session, outreach_fixture, mailbox
+    ):
+        from juicebox.jobs import KIND_MAILBOX_NOTIFY
+        from juicebox.models import MailboxConnection
+
+        org_id = outreach_fixture["sequence"].org_id
+        now = utcnow()
+        _enrol_all(session, outreach_fixture, due=now)
+        run_due(session, org_id=org_id, now=now)
+        connection = MailboxConnection(
+            org_id=org_id, provider="microsoft", address="me@acme-talent.com", status="active"
+        )
+        session.add(connection)
+        session.flush()
+        job = enqueue(
+            session,
+            org_id=org_id,
+            kind=KIND_MAILBOX_NOTIFY,
+            idempotency_key="notify-1",
+            payload={"connection_id": connection.id, "subject": "ready", "text_body": "hi"},
+            run_at=now,
+        )
+        session.commit()
+
+        process_job(session, job, now=now + timedelta(seconds=5))
+
+        assert job.status == "queued"
+        assert _aware(job.run_at) == _aware(now) + MINUTE
+
+    def test_a_sequence_send_waits_for_the_gap_after_any_other_mail(
+        self, session, outreach_fixture, mailbox
+    ):
+        from juicebox.models import Org
+        from juicebox.outreach.sequencer import note_mail_sent
+
+        org_id = outreach_fixture["sequence"].org_id
+        now = utcnow()
+        _enrol_all(session, outreach_fixture, due=now)
+        note_mail_sent(session, org_id, now)
+        session.commit()
+        assert session.get(Org, org_id).last_mail_sent_at is not None
+
+        assert run_due(session, org_id=org_id, now=now + timedelta(seconds=20)).sent == 0
+        assert run_due(session, org_id=org_id, now=now + MINUTE).sent == 1

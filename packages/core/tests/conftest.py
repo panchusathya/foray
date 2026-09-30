@@ -112,6 +112,7 @@ def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     # Most outreach tests send several steps in one run and assert on all of
     # them; tests/test_send_spacing.py switches the one-a-minute gap back on.
     monkeypatch.setenv("OUTREACH_SEND_SPACING_SECONDS", "0")
+    monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "0")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "hashing")
     monkeypatch.setenv("EXA_API_KEY", "")
     monkeypatch.setenv("SCRAPIN_API_KEY", "")

@@ -134,6 +134,11 @@ KIND_PROFILE_RESUME = "profile.resume"
 # they announce.
 KIND_THREAD_NOTIFY = "thread.notify"
 
+# A note from one of the org's own mailboxes to its owner ("your draft is
+# ready"). A job rather than an inline send so it can wait out the org-wide
+# gap between emails like everything else a mailbox sends.
+KIND_MAILBOX_NOTIFY = "mailbox.notify"
+
 # Building one application package: tailored resume PDF, cover letter, form
 # answers. User-initiated ("apply to 2", a swipe, a recruiter click); never on
 # ensure_ticks. Idempotency keys carry a timestamp because a rebuild is a

@@ -34,6 +34,7 @@ from .sequencer import (
     next_send_slot,
     recent_human_replies,
     schedule_step_at,
+    send_gap,
     send_spacing,
     sending_hold,
 )
@@ -235,7 +236,7 @@ def collect_in_flight(
         ):
             slot = max(_aware(items[index].due_at), cursor)
             items[index] = replace(items[index], due_at=slot)
-            cursor = slot + spacing
+            cursor = slot + send_gap(items[index].enrollment_id, items[index].step)
 
     items.sort(
         key=lambda row: (

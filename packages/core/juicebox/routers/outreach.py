@@ -41,6 +41,7 @@ from ..outreach.sequencer import (
     run_due,
     suggested_date_context,
 )
+from ..outreach.spamcheck import personalization_depth, score_email, score_template
 from ..schemas import (
     CloneSequenceRequest,
     EnrollmentOut,
@@ -65,6 +66,9 @@ from ..schemas import (
     SequenceOut,
     SequenceStepIn,
     SequenceUpdate,
+    SpamCheckRequest,
+    SpamCheckResponse,
+    SpamReportOut,
 )
 
 router = APIRouter(route_class=CommittingRoute, prefix="/v1/sequences", tags=["outreach"])
@@ -209,6 +213,29 @@ def generate_sequence(
     draft["project_id"] = payload.project_id
     return GenerateSequenceResponse(
         draft=SequenceIn.model_validate(draft), generated_by=generated_by
+    )
+
+
+@router.post("/spam-check", response_model=SpamCheckResponse)
+def spam_check(
+    payload: SpamCheckRequest,
+    principal: Principal = Depends(get_principal),
+) -> SpamCheckResponse:
+    """Spam-risk of each step as written, so the editor can score unsaved copy.
+
+    Pure: no sequence, candidate or database is read, so it runs on every
+    keystroke pause. Variables are filled with sample values.
+    """
+    del principal  # authentication only
+    return SpamCheckResponse(
+        results=[
+            SpamReportOut.model_validate(
+                score_template(
+                    step.subject_template, step.body_template, is_follow_up=index > 0
+                ).to_dict()
+            )
+            for index, step in enumerate(payload.steps)
+        ]
     )
 
 
@@ -488,6 +515,18 @@ def preview(
         sender_email=context.get("sender_email", ""),
         sender_name=context.get("sender_name", ""),
         warnings=list(dict.fromkeys(warnings)),
+        spam=SpamReportOut.model_validate(
+            score_email(
+                subject=subject,
+                body=body,
+                is_follow_up=bool(step and step.step_order > 0),
+                personalization=personalization_depth(
+                    f"{step.subject_template or ''}\n{step.body_template or ''}"
+                )
+                if step
+                else None,
+            ).to_dict()
+        ),
     )
 
 

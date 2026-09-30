@@ -1028,6 +1028,44 @@ class PreviewResponse(BaseModel):
     # — so the warning is what tells the recruiter that is a bug, not a choice.
     # Non-empty means this step will refuse to send until it is fixed.
     warnings: list[str] = Field(default_factory=list)
+    # Spam-risk of this rendered email (outreach/spamcheck.py).
+    spam: SpamReportOut | None = None
+
+
+class SpamFindingOut(BaseModel):
+    code: str
+    # subject | body | delivery. Delivery findings come from how every email
+    # is sent (tracking), so the copy cannot fix them.
+    area: str
+    points: int
+    title: str
+    detail: str
+    fix: str = ""
+    matches: list[str] = Field(default_factory=list)
+
+
+class SpamReportOut(BaseModel):
+    score: int
+    level: Literal["low", "medium", "high"]
+    content_score: int
+    delivery_score: int
+    word_count: int
+    findings: list[SpamFindingOut] = Field(default_factory=list)
+
+
+class SpamCheckStep(BaseModel):
+    subject_template: str = Field(default="", max_length=2000)
+    body_template: str = Field(default="", max_length=100_000)
+
+
+class SpamCheckRequest(BaseModel):
+    # In step order. Step 1's subject is the thread's; later steps are
+    # replies and their own subject is ignored.
+    steps: list[SpamCheckStep] = Field(default_factory=list, max_length=20)
+
+
+class SpamCheckResponse(BaseModel):
+    results: list[SpamReportOut]
 
 
 # --------------------------------------------------------------------------

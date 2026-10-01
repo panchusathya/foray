@@ -33,6 +33,7 @@ from ..outreach.sender import preview_connection
 from ..outreach.sequencer import (
     enroll_candidates,
     find_message_for_reply,
+    move_in_line,
     preview_step,
     process_enrollment,
     recent_human_replies,
@@ -54,6 +55,8 @@ from ..schemas import (
     InFlightCancelIn,
     InFlightCancelOut,
     InFlightList,
+    InFlightMoveIn,
+    InFlightMoveOut,
     InFlightReenrollIn,
     InFlightReenrollOut,
     InFlightRow,
@@ -688,6 +691,24 @@ def list_in_flight_rows(
         rows=[InFlightRow.model_validate(row) for row in rows],
         cancelled_total=cancelled_count(db, org_id=principal.org_id, sequence_id=sequence_id),
     )
+
+
+@in_flight_router.post("/in-flight/move", response_model=InFlightMoveOut)
+def move_in_flight_rows(
+    payload: InFlightMoveIn,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> InFlightMoveOut:
+    """Change who goes out next: move rows up, down, to the top or bottom."""
+    moved = move_in_line(
+        db,
+        principal.org_id,
+        enrollment_ids=payload.enrollment_ids,
+        to=payload.to,
+        position=payload.position,
+        now=utcnow(),
+    )
+    return InFlightMoveOut(moved=moved)
 
 
 @in_flight_router.post("/in-flight/cancel", response_model=InFlightCancelOut)

@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { IN_FLIGHT_STATE_LABELS, api } from '../lib/api.js';
-import { countOnPage, toggleOne, togglePage } from '../lib/selection.js';
+import { countOnPage, toggleOne, togglePage, toggleRange } from '../lib/selection.js';
 import { useAsync } from '../lib/useAsync.js';
 
 const byId = (row) => row.enrollment_id;
@@ -35,6 +35,7 @@ const REASON_LABELS = {
   org_paused: 'org paused',
   sequence_paused: 'sequence paused',
   daily_cap: 'daily cap',
+  mailbox_full: 'waiting for mailbox room',
 };
 
 function formatDue(value) {
@@ -70,12 +71,17 @@ export function OutboxPage() {
   const [gaveUp, setGaveUp] = useState(false);
   // The rows a ReenrolPanel is open for; null when it is closed.
   const [reenrolling, setReenrolling] = useState(null);
+  const [page, setPage] = useState(0);
+  const [position, setPosition] = useState('');
+  // Anchor for shift-click: the row index last clicked on this page.
+  const lastIndex = useRef(null);
 
   const sequences = useAsync(() => api.listSequences(), []);
   const params = {
     state: state || undefined,
     sequence_id: sequenceId || undefined,
     limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
   };
   const key = JSON.stringify(params);
   const list = useAsync(() => api.listInFlight(params), [key]);
@@ -88,7 +94,42 @@ export function OutboxPage() {
   useEffect(() => {
     setSelected(new Map());
     setReenrolling(null);
+    lastIndex.current = null;
   }, [key]);
+
+  // A filter change starts again at the first page.
+  useEffect(() => setPage(0), [state, sequenceId]);
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  function onPick(row, index, event) {
+    if (event.shiftKey && lastIndex.current != null) {
+      setSelected(toggleRange(selected, data, lastIndex.current, index, byId));
+    } else {
+      setSelected(toggleOne(selected, row, byId));
+    }
+    lastIndex.current = index;
+  }
+
+  async function move(to, ids, at) {
+    if (!ids.length) return;
+    setBusy(`move-${to}`);
+    setError(null);
+    try {
+      const body = { enrollment_ids: ids, to };
+      if (to === 'position') body.position = at;
+      const result = await api.moveInFlight(body);
+      setNote(
+        result.moved
+          ? `Moved ${result.moved} ${result.moved === 1 ? 'email' : 'emails'}.`
+          : 'Nothing to move — only queued emails have a place in line.',
+      );
+      await reload();
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy('');
+    }
+  }
 
   const startedAt = useRef(Date.now());
   const reload = list.reload;
@@ -160,12 +201,14 @@ export function OutboxPage() {
     (row) => row.state !== 'sending' && row.state !== 'cancelled',
   );
   const resumable = [...selected.values()].filter((row) => row.state === 'cancelled');
+  // Only queued rows have a rank; the rest go at their scheduled time.
+  const movable = [...selected.values()].filter((row) => row.rank != null).map(byId);
 
   return (
     <div className="stack" data-testid="outbox-page">
       <PageHeader
         title="Outbox"
-        subtitle="Every sequence email in flight. Pause sending in Settings; skip or stop a row here, and re-enrol a stopped one from the Cancelled view."
+        subtitle="Every sequence email in flight, in the order it will go (#1 is next). Select rows to move them up or down the line; shift-click selects a range. Pause sending in Settings; skip or stop a row here, and re-enrol a stopped one from the Cancelled view."
       />
 
       <div className="row wrap" style={{ gap: 12 }}>
@@ -234,6 +277,45 @@ export function OutboxPage() {
                 Re-enrol {resumable.length}
               </button>
             ) : null}
+            {movable.length ? (
+              <span className="row" style={{ gap: 6 }} data-testid="outbox-move">
+                <span className="muted small">Move {movable.length}:</span>
+                <button type="button" className="tiny ghost" disabled={!!busy} onClick={() => move('top', movable)}>
+                  To top
+                </button>
+                <button type="button" className="tiny ghost" disabled={!!busy} onClick={() => move('up', movable)}>
+                  Up
+                </button>
+                <button type="button" className="tiny ghost" disabled={!!busy} onClick={() => move('down', movable)}>
+                  Down
+                </button>
+                <button type="button" className="tiny ghost" disabled={!!busy} onClick={() => move('bottom', movable)}>
+                  To bottom
+                </button>
+                <form
+                  className="row"
+                  style={{ gap: 4 }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const at = Number.parseInt(position, 10);
+                    if (at >= 1) move('position', movable, at);
+                  }}
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="#"
+                    aria-label="Move to position"
+                    value={position}
+                    onChange={(event) => setPosition(event.target.value)}
+                    style={{ width: 70 }}
+                  />
+                  <button type="submit" className="tiny ghost" disabled={!!busy || !position}>
+                    Move to #
+                  </button>
+                </form>
+              </span>
+            ) : null}
             {cancellable.length ? (
               <>
                 <button
@@ -288,7 +370,10 @@ export function OutboxPage() {
         <Loading label="Loading outbox…" />
       ) : data.length ? (
         <div className="card dgrid-wrap">
-          <table className="dgrid" data-testid="outbox-grid">
+          {/* min-width makes the grid wider than a narrow window instead of
+              squeezing every column to an ellipsis, so the wrap scrolls
+              sideways. Shift-click a checkbox to select a range. */}
+          <table className="dgrid outbox-grid" data-testid="outbox-grid">
             <thead>
               <tr>
                 <th className="pick">
@@ -300,18 +385,19 @@ export function OutboxPage() {
                     onChange={() => setSelected(togglePage(selected, data, byId))}
                   />
                 </th>
+                <th className="num" title="Place in line — 1 goes next">#</th>
                 <th>Name</th>
                 <th>Email</th>
                 <th>Sequence</th>
                 <th>Step</th>
                 <th>Mailbox</th>
-                <th>{viewingCancelled ? 'Stopped' : 'Due'}</th>
+                <th>{viewingCancelled ? 'Stopped' : 'Goes out'}</th>
                 <th>State</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {data.map((row) => (
+              {data.map((row, index) => (
                 <tr
                   key={row.enrollment_id}
                   className={selected.has(row.enrollment_id) ? 'selected' : undefined}
@@ -321,8 +407,14 @@ export function OutboxPage() {
                       type="checkbox"
                       aria-label={`Select ${row.candidate_name}`}
                       checked={selected.has(row.enrollment_id)}
-                      onChange={() => setSelected(toggleOne(selected, row, byId))}
+                      // Handled on click so shift-click reaches us; onChange
+                      // stays a noop to keep React's controlled input happy.
+                      onClick={(event) => onPick(row, index, event)}
+                      onChange={() => {}}
                     />
+                  </td>
+                  <td className="num" data-testid="outbox-rank">
+                    {row.rank ?? '—'}
                   </td>
                   <td>
                     <Link to={`/contacts/${row.candidate_id}`}>{row.candidate_name}</Link>
@@ -336,7 +428,7 @@ export function OutboxPage() {
                   <td>
                     {row.state === 'cancelled'
                       ? formatDue(row.cancelled_at)
-                      : formatDue(row.due_at)}
+                      : `${row.state === 'due' && row.rank != null ? '≈ ' : ''}${formatDue(row.due_at)}`}
                   </td>
                   <td>
                     <Badge tone={STATE_TONE[row.state] || ''}>
@@ -359,6 +451,30 @@ export function OutboxPage() {
                       </button>
                     ) : (
                       <span className="row" style={{ gap: 6 }}>
+                        {row.rank != null ? (
+                          <>
+                            <button
+                              type="button"
+                              className="tiny ghost"
+                              title="Move up one"
+                              aria-label={`Move ${row.candidate_name} up`}
+                              disabled={!!busy || row.rank === 1}
+                              onClick={() => move('up', [row.enrollment_id])}
+                            >
+                              ▲
+                            </button>
+                            <button
+                              type="button"
+                              className="tiny ghost"
+                              title="Move down one"
+                              aria-label={`Move ${row.candidate_name} down`}
+                              disabled={!!busy}
+                              onClick={() => move('down', [row.enrollment_id])}
+                            >
+                              ▼
+                            </button>
+                          </>
+                        ) : null}
                         <button
                           type="button"
                           className="tiny ghost"
@@ -382,6 +498,24 @@ export function OutboxPage() {
               ))}
             </tbody>
           </table>
+          {pageCount > 1 ? (
+            <div className="row spread small" style={{ padding: '8px 12px' }} data-testid="outbox-pager">
+              <button type="button" className="tiny ghost" disabled={page === 0} onClick={() => setPage(page - 1)}>
+                ← Previous
+              </button>
+              <span className="muted">
+                Page {page + 1} of {pageCount}
+              </span>
+              <button
+                type="button"
+                className="tiny ghost"
+                disabled={page + 1 >= pageCount}
+                onClick={() => setPage(page + 1)}
+              >
+                Next →
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : viewingCancelled ? (
         <Empty>Nothing cancelled — rows you stop from the outbox land here, ready to re-enrol.</Empty>

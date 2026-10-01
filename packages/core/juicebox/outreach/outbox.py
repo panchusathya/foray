@@ -9,8 +9,8 @@ about as often as it meant "not at all".
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import false, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -28,15 +28,15 @@ from ..models import (
 )
 from .sequencer import (
     _aware,
+    _blocked_until,
     _effective_daily_cap,
     _finish_enrollment,
     _sent_today,
-    next_send_slot,
+    open_send_jobs,
     recent_human_replies,
     schedule_step_at,
-    send_gap,
-    send_spacing,
     sending_hold,
+    spacing_wait,
 )
 
 HELD_STATES = frozenset({"sending", "due", "held"})
@@ -74,6 +74,9 @@ class InFlightItem:
     # about a cancelled row differs from a live one, so the same shape serves
     # both listings and the page can render them in one grid.
     cancelled_at: datetime | None = None
+    # Place in the org's send line (1 goes next), counting rows waiting on a
+    # full mailbox. None for anything not yet queued.
+    rank: int | None = None
 
 
 @dataclass
@@ -190,8 +193,27 @@ def collect_in_flight(
     enrollments = list(db.scalars(query).all())
     addresses = _mailbox_addresses(db, enrollments)
 
+    # The whole org's line, whatever this view filters to, so a rank means
+    # the same thing on every page. The estimate counts only rows that can
+    # send: one waiting on a full mailbox does not use up a gap.
+    line = open_send_jobs(db, org_id)
+    ranks = {job.id: index for index, job in enumerate(line, start=1)}
+    settings = get_settings()
+    gap = timedelta(
+        seconds=(
+            max(settings.outreach_send_spacing_seconds, 0)
+            + max(settings.outreach_send_spacing_max_seconds, settings.outreach_send_spacing_seconds)
+        )
+        / 2
+    )
+    head = spacing_wait(db, org_id, now) or now
+    estimates: dict[str, datetime] = {}
+    for job in line:
+        until = _blocked_until(job)
+        if until is None or until <= now:
+            estimates[job.id] = head + gap * len(estimates)
+
     items: list[InFlightItem] = []
-    unqueued: list[int] = []
     for enrollment in enrollments:
         sequence = enrollment.sequence
         candidate = enrollment.candidate
@@ -204,7 +226,17 @@ def collect_in_flight(
             remaining_cap=remaining_cap,
             now=now,
         )
-        due_at = _aware(job.run_at) if job is not None else _aware(enrollment.next_send_at)
+        due_at = _aware(enrollment.next_send_at)
+        if job is not None and job.status == "queued":
+            until = _blocked_until(job)
+            if state == "due" and until is not None and until > now:
+                state, reason, due_at = "held", "mailbox_full", until
+            elif state == "due":
+                due_at = estimates.get(job.id, _aware(job.run_at))
+            else:
+                due_at = _aware(job.run_at)
+        elif job is not None:
+            due_at = _aware(job.run_at)
         items.append(
             InFlightItem(
                 enrollment_id=enrollment.id,
@@ -220,26 +252,16 @@ def collect_in_flight(
                 due_at=due_at,
                 state=state,
                 reason=reason,
+                rank=ranks.get(job.id) if job is not None else None,
             )
         )
-        if job is None and state in ("due", "scheduled") and due_at is not None:
-            unqueued.append(len(items) - 1)
 
-    # Nobody sharing a scheduled minute actually leaves in that minute: the
-    # tick deals them one slot apart, after whatever is already queued. Show
-    # the minute each one will really go, not fifty rows all reading 09:00.
-    spacing = send_spacing()
-    if spacing and unqueued:
-        cursor = next_send_slot(db, org_id, now)
-        for index in sorted(
-            unqueued, key=lambda i: (_aware(items[i].due_at), items[i].enrollment_id)
-        ):
-            slot = max(_aware(items[index].due_at), cursor)
-            items[index] = replace(items[index], due_at=slot)
-            cursor = slot + send_gap(items[index].enrollment_id, items[index].step)
-
+    # The line first, in rank order -- that is the order they will go, and
+    # the order a move up or down acts on. Everything else by its time.
     items.sort(
         key=lambda row: (
+            row.rank is None,
+            row.rank or 0,
             _aware(row.due_at) or datetime(9999, 12, 31, tzinfo=UTC),
             row.candidate_name.lower(),
             row.enrollment_id,

@@ -1,18 +1,26 @@
-"""Emails leave an org about a minute apart, whatever sent them."""
+"""Emails leave an org about a minute apart, in line order, whatever sent them."""
 
 from __future__ import annotations
 
 from datetime import UTC, timedelta
-from itertools import pairwise
 
 import pytest
-from sqlalchemy import select
 
 from juicebox.jobs import KIND_OUTREACH_SEND, KIND_OUTREACH_TICK, enqueue
 from juicebox.models import Enrollment, Job, utcnow
 from juicebox.outreach.outbox import collect_in_flight
-from juicebox.outreach.sequencer import enroll_candidates, run_due
-from juicebox.worker import _handle_outreach_tick, process_job
+from juicebox.outreach.sequencer import (
+    BLOCKED_KEY,
+    WAKE_WINDOW,
+    dispatch_line,
+    enroll_candidates,
+    move_in_line,
+    note_mail_sent,
+    open_send_jobs,
+    run_due,
+    spacing_wait,
+)
+from juicebox.worker import _handle_outreach_tick, process_batch, process_job
 
 MINUTE = timedelta(minutes=1)
 
@@ -22,7 +30,7 @@ def spacing(monkeypatch):
     from juicebox.config import reset_settings_cache
 
     monkeypatch.setenv("OUTREACH_SEND_SPACING_SECONDS", "60")
-    # Pinned so slots are exact; TestTheGapVaries covers the 45-60s range.
+    # Pinned so gaps are exact; TestTheGapVaries covers the 45-60s range.
     monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "60")
     reset_settings_cache()
     yield
@@ -54,97 +62,124 @@ def _tick(session, org_id, now):
     return result
 
 
-def _send_jobs(session, org_id):
-    return list(
-        session.scalars(
-            select(Job)
-            .where(Job.org_id == org_id, Job.kind == KIND_OUTREACH_SEND)
-            .order_by(Job.run_at)
+def _line_enrollments(session, org_id):
+    return [job.payload["enrollment_id"] for job in open_send_jobs(session, org_id)]
+
+
+def _queue(session, sequence, rows, *, now, ranks):
+    step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+    jobs = []
+    for row, rank in zip(rows, ranks, strict=True):
+        job = enqueue(
+            session,
+            org_id=sequence.org_id,
+            kind=KIND_OUTREACH_SEND,
+            idempotency_key=f"{KIND_OUTREACH_SEND}:{row.id}:{step.id}",
+            payload={"org_id": sequence.org_id, "enrollment_id": row.id, "step_id": step.id},
+            run_at=now,
         )
-    )
+        job.rank = rank
+        jobs.append(job)
+    session.commit()
+    return jobs
 
 
-def _job_for(sequence, enrollment):
-    step = sorted(sequence.steps, key=lambda s: s.step_order)[enrollment.current_step]
-    return f"{KIND_OUTREACH_SEND}:{enrollment.id}:{step.id}"
-
-
-class TestTheTickDealsSlots:
-    def test_people_due_together_are_queued_a_minute_apart(
+class TestTheTickBuildsALine:
+    def test_new_arrivals_are_ranked_in_the_order_they_fell_due(
         self, session, outreach_fixture, mailbox
     ):
         org_id = outreach_fixture["sequence"].org_id
-        now = utcnow().replace(microsecond=0)
+        now = utcnow()
         rows = _enrol_all(session, outreach_fixture, due=now)
-        assert len(rows) >= 3
+        for index, row in enumerate(rows):
+            row.next_send_at = now - timedelta(minutes=len(rows) - index)
+        session.commit()
 
         _tick(session, org_id, now)
 
-        run_ats = [_aware(job.run_at) for job in _send_jobs(session, org_id)]
-        assert run_ats == [now + MINUTE * i for i in range(len(rows))]
+        assert _line_enrollments(session, org_id) == [row.id for row in rows]
+        ranks = [job.rank for job in open_send_jobs(session, org_id)]
+        assert ranks == sorted(ranks) and None not in ranks
 
-    def test_a_later_tick_keeps_the_line_and_appends_to_it(
-        self, session, outreach_fixture, mailbox
-    ):
-        sequence = outreach_fixture["sequence"]
-        org_id = sequence.org_id
-        now = utcnow().replace(microsecond=0)
+    def test_a_later_tick_keeps_ranks_and_appends(self, session, outreach_fixture, mailbox):
+        org_id = outreach_fixture["sequence"].org_id
+        now = utcnow()
         first, *rest = _enrol_all(session, outreach_fixture, due=now)
-        # Only the first is due on the first tick.
         for row in rest:
             row.next_send_at = now + timedelta(hours=1)
         session.commit()
         _tick(session, org_id, now)
-
-        later = now + timedelta(seconds=10)
         for row in rest:
-            row.next_send_at = later
+            row.next_send_at = now
         session.commit()
-        _tick(session, org_id, later)
 
-        by_key = {job.idempotency_key: _aware(job.run_at) for job in _send_jobs(session, org_id)}
-        assert by_key[_job_for(sequence, first)] == now
-        assert sorted(by_key[_job_for(sequence, row)] for row in rest) == [
-            now + MINUTE * (i + 1) for i in range(len(rest))
-        ]
+        _tick(session, org_id, now + timedelta(seconds=10))
+
+        assert _line_enrollments(session, org_id)[0] == first.id
+
+    def test_only_the_head_of_the_line_is_awake(self, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        now = utcnow()
+        rows = _enrol_all(session, outreach_fixture, due=now)
+        # More queued than the wake window: repeat the people across ranks.
+        jobs = _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
+        extra = WAKE_WINDOW - len(jobs) + 2
+        for index in range(extra):
+            job = Job(
+                org_id=sequence.org_id,
+                kind=KIND_OUTREACH_SEND,
+                idempotency_key=f"extra-{index}",
+                payload={"enrollment_id": f"none-{index}"},
+                run_at=now,
+                rank=100.0 + index,
+            )
+            session.add(job)
+        session.commit()
+
+        counts = dispatch_line(session, sequence.org_id, now)
+
+        assert counts["awake"] == WAKE_WINDOW
+        assert counts["asleep"] == len(jobs) + extra - WAKE_WINDOW
+
+    def test_a_send_waiting_on_a_full_mailbox_does_not_hold_the_line(
+        self, session, outreach_fixture, mailbox
+    ):
+        """The 2026-10-01 stall: blocked follow-ups sat at the front while
+        first emails a free mailbox could carry waited hours behind them."""
+        sequence = outreach_fixture["sequence"]
+        now = utcnow()
+        rows = _enrol_all(session, outreach_fixture, due=now)
+        jobs = _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
+        blocked = jobs[0]
+        blocked.payload = {**blocked.payload, BLOCKED_KEY: (now + timedelta(hours=3)).isoformat()}
+        session.commit()
+
+        dispatch_line(session, sequence.org_id, now)
+        session.commit()
+        process_batch(session, now=now)
+
+        assert len(mailbox.outbox) == 1
+        assert mailbox.outbox[0].to != rows[0].candidate.primary_email
+        assert _aware(session.get(Job, blocked.id).run_at) == now + timedelta(hours=3)
 
 
 class TestTheSendGate:
-    def test_a_herd_queued_for_one_instant_sends_one_and_lines_up_the_rest(
+    def test_a_herd_sends_the_best_ranked_and_waits_out_the_gap(
         self, session, outreach_fixture, mailbox
     ):
-        """Jobs queued before spacing existed, or released together by the
-        midnight cap reset, all wake on the same second."""
         sequence = outreach_fixture["sequence"]
-        org_id = sequence.org_id
         now = utcnow().replace(microsecond=0)
         rows = _enrol_all(session, outreach_fixture, due=now)
-        jobs = [
-            enqueue(
-                session,
-                org_id=org_id,
-                kind=KIND_OUTREACH_SEND,
-                idempotency_key=_job_for(sequence, row),
-                payload={
-                    "org_id": org_id,
-                    "enrollment_id": row.id,
-                    "step_id": sorted(sequence.steps, key=lambda s: s.step_order)[0].id,
-                },
-                run_at=now,
-            )
-            for row in rows
-        ]
-        session.commit()
-        for job in jobs:
-            job.status = "running"  # one claimed batch, as process_batch does
-        session.commit()
+        # Ranked against creation order, so only rank can explain who wins.
+        ranks = list(range(len(rows), 0, -1))
+        jobs = _queue(session, sequence, rows, now=now, ranks=ranks)
 
-        for job in jobs:
-            process_job(session, job, now=now)
+        process_batch(session, now=now)
 
-        assert len(mailbox.outbox) == 1
-        waiting = sorted(_aware(job.run_at) for job in jobs if job.status == "queued")
-        assert waiting == [now + MINUTE * (i + 1) for i in range(len(rows) - 1)]
+        [sent] = mailbox.outbox
+        assert sent.to == rows[-1].candidate.primary_email
+        waiting = [session.get(Job, job.id) for job in jobs if job.id != jobs[-1].id]
+        assert {_aware(job.run_at) for job in waiting} == {now + MINUTE}
 
     def test_run_now_sends_one_and_leaves_the_rest_for_the_worker(
         self, session, outreach_fixture, mailbox
@@ -175,25 +210,95 @@ class TestTheSendGate:
         assert len(mailbox.outbox) == 2
 
 
-class TestTheOutboxShowsTheRealMinute:
-    def test_rows_sharing_a_scheduled_time_read_one_minute_apart(
+class TestMovingRows:
+    def _line(self, session, outreach_fixture):
+        sequence = outreach_fixture["sequence"]
+        now = utcnow()
+        rows = _enrol_all(session, outreach_fixture, due=now)
+        _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
+        return sequence.org_id, [row.id for row in rows], now
+
+    def test_top_keeps_the_picked_rows_in_their_own_order(self, session, outreach_fixture):
+        org_id, ids, now = self._line(session, outreach_fixture)
+        picked = [ids[2], ids[1]]
+
+        move_in_line(session, org_id, enrollment_ids=picked, to="top", now=now)
+
+        assert _line_enrollments(session, org_id) == [ids[1], ids[2], ids[0]]
+
+    def test_bottom(self, session, outreach_fixture):
+        org_id, ids, now = self._line(session, outreach_fixture)
+        move_in_line(session, org_id, enrollment_ids=[ids[0]], to="bottom", now=now)
+        assert _line_enrollments(session, org_id)[-1] == ids[0]
+
+    def test_up_and_down_move_one_place(self, session, outreach_fixture):
+        org_id, ids, now = self._line(session, outreach_fixture)
+        move_in_line(session, org_id, enrollment_ids=[ids[2]], to="up", now=now)
+        assert _line_enrollments(session, org_id)[:3] == [ids[0], ids[2], ids[1]]
+        move_in_line(session, org_id, enrollment_ids=[ids[2]], to="down", now=now)
+        assert _line_enrollments(session, org_id)[:3] == ids[:3]
+
+    def test_up_at_the_top_stays_put(self, session, outreach_fixture):
+        org_id, ids, now = self._line(session, outreach_fixture)
+        move_in_line(session, org_id, enrollment_ids=[ids[0], ids[1]], to="up", now=now)
+        assert _line_enrollments(session, org_id) == ids
+
+    def test_to_a_position(self, session, outreach_fixture):
+        org_id, ids, now = self._line(session, outreach_fixture)
+        move_in_line(session, org_id, enrollment_ids=[ids[-1]], to="position", position=2, now=now)
+        assert _line_enrollments(session, org_id)[1] == ids[-1]
+
+    def test_the_endpoint(self, client, account, session, outreach_fixture):
+        org_id, ids, _now = self._line(session, outreach_fixture)
+        response = client.post(
+            "/v1/outreach/in-flight/move",
+            json={"enrollment_ids": [ids[-1]], "to": "top"},
+            headers=account["headers"],
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["moved"] == 1
+        session.expire_all()
+        assert _line_enrollments(session, org_id)[0] == ids[-1]
+
+
+class TestTheOutboxShowsTheLine:
+    def test_rows_read_in_rank_order_with_rising_estimates(
         self, session, outreach_fixture, mailbox
     ):
-        org_id = outreach_fixture["sequence"].org_id
+        sequence = outreach_fixture["sequence"]
         now = utcnow().replace(microsecond=0)
-        nine = now + timedelta(hours=2)
-        rows = _enrol_all(session, outreach_fixture, due=nine)
+        rows = _enrol_all(session, outreach_fixture, due=now)
+        _queue(session, sequence, rows, now=now, ranks=range(len(rows), 0, -1))
 
-        items = collect_in_flight(session, org_id=org_id, now=now)
+        items = collect_in_flight(session, org_id=sequence.org_id, now=now)
 
-        assert [_aware(item.due_at) for item in items] == [
-            nine + MINUTE * i for i in range(len(rows))
-        ]
+        assert [item.rank for item in items] == list(range(1, len(rows) + 1))
+        assert [item.enrollment_id for item in items] == [row.id for row in reversed(rows)]
+        times = [_aware(item.due_at) for item in items]
+        assert times == sorted(times) and times[0] == now
+
+    def test_a_row_waiting_on_a_full_mailbox_says_so(self, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        now = utcnow()
+        rows = _enrol_all(session, outreach_fixture, due=now)
+        [job, *_] = _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
+        frees = now + timedelta(hours=2)
+        job.payload = {**job.payload, BLOCKED_KEY: frees.isoformat()}
+        session.commit()
+
+        row = next(
+            item
+            for item in collect_in_flight(session, org_id=sequence.org_id, now=now)
+            if item.enrollment_id == rows[0].id
+        )
+
+        assert (row.state, row.reason, row.rank) == ("held", "mailbox_full", 1)
+        assert _aware(row.due_at) == frees
 
 
 class TestTheGapVaries:
     def test_each_gap_lands_between_the_minimum_and_the_maximum(
-        self, session, outreach_fixture, mailbox, monkeypatch
+        self, session, outreach_fixture, monkeypatch
     ):
         from juicebox.config import reset_settings_cache
 
@@ -201,14 +306,15 @@ class TestTheGapVaries:
         monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "60")
         reset_settings_cache()
         org_id = outreach_fixture["sequence"].org_id
-        now = utcnow().replace(microsecond=0)
-        _enrol_all(session, outreach_fixture, due=now)
+        start = utcnow().replace(microsecond=0)
+        gaps = set()
+        for offset in range(12):
+            sent = start + timedelta(minutes=offset)
+            note_mail_sent(session, org_id, sent)
+            gaps.add((spacing_wait(session, org_id, sent) - sent).total_seconds())
 
-        _tick(session, org_id, now)
-
-        run_ats = [_aware(job.run_at) for job in _send_jobs(session, org_id)]
-        gaps = [(b - a).total_seconds() for a, b in pairwise(run_ats)]
-        assert gaps and all(45 <= gap <= 60 for gap in gaps)
+        assert all(45 <= gap <= 60 for gap in gaps)
+        assert len(gaps) > 1
 
 
 class TestEverySendSharesTheGap:
@@ -246,7 +352,6 @@ class TestEverySendSharesTheGap:
         self, session, outreach_fixture, mailbox
     ):
         from juicebox.models import Org
-        from juicebox.outreach.sequencer import note_mail_sent
 
         org_id = outreach_fixture["sequence"].org_id
         now = utcnow()

@@ -393,6 +393,10 @@ class ResolvedSender:
     connection: object | None = None  # MailboxConnection; None = global provider
     deferred: bool = False
     reason: str = ""
+    # When a deferred send is worth trying again: the moment the blocking
+    # mailbox (or, under rotation, the first of the pool) has room. None when
+    # the hold has no knowable end (a chosen mailbox is disconnected).
+    retry_at: object | None = None  # datetime
 
 
 def sender_for_connection(db, connection) -> EmailSender:
@@ -484,7 +488,7 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
             connection=connection,
         )
 
-    from .rotation import is_over_cap
+    from .rotation import frees_at, is_over_cap
 
     if is_over_cap(db, connection=connection, now=now):
         return ResolvedSender(
@@ -492,6 +496,7 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
             connection=connection,
             deferred=True,
             reason="mailbox_cap",
+            retry_at=frees_at(db, connection=connection, now=now),
         )
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)
 
@@ -607,9 +612,13 @@ def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender
         # Mailboxes exist but none has room (or they are all switched off).
         # Deferring holds the send until one does; falling back to the global
         # provider would quietly send from the wrong address instead.
+        from .rotation import eligible_mailboxes, frees_at
+
+        pool = eligible_mailboxes(db, org_id=org_id, only=only)
         return ResolvedSender(
             FailingSender("no connected mailbox has capacity right now"),
             deferred=True,
             reason="mailbox_cap",
+            retry_at=min((frees_at(db, connection=c, now=now) for c in pool), default=None),
         )
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)

@@ -334,7 +334,7 @@ def claim(
     stmt = (
         select(Job)
         .where(Job.status == "queued", Job.run_at <= now)
-        .order_by(priority, Job.run_at, Job.created_at)
+        .order_by(priority, Job.run_at, Job.rank.is_(None), Job.rank, Job.created_at)
         .limit(max(batch, 1))
     )
     if kinds is not None:

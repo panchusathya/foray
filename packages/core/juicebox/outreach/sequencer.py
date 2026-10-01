@@ -482,70 +482,172 @@ def note_mail_sent(db: Session, org_id: str, at: datetime) -> None:
         org.last_mail_sent_at = at
 
 
-def _open_send_run_ats(
-    db: Session, org_id: str, *, exclude_job_id: str | None = None
-) -> list[datetime]:
-    query = select(Job.run_at).where(
-        Job.org_id == org_id,
-        Job.kind == KIND_OUTREACH_SEND,
-        Job.status.in_(("queued", "running")),
-    )
-    if exclude_job_id:
-        query = query.where(Job.id != exclude_job_id)
-    return [value for value in (_aware(row) for row in db.scalars(query)) if value is not None]
-
-
 def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
     """When this org may send its next email, if that is later than now.
 
     Enrolling fifty people at "09:00" used to hand the worker fifty send jobs
     for the same instant, and one mailbox fired all fifty inside a second --
-    the burst pattern spam filters look for, and a Graph throttle waiting to
-    happen. This is the hard gate every send path goes through (the tick, the
-    worker, "Run now", enrol-and-send-now); the tick's slotting is what keeps
-    the gate from having to say no very often.
+    the burst pattern spam filters look for. This is the hard gate every send
+    path goes through (the worker, "Run now", enrol-and-send-now). The gap after
+    each send is its own, somewhere in [min, max], keyed on that send's time.
     """
-    spacing = send_spacing()
-    if not spacing:
+    if not send_spacing():
         return None
     last = last_mail_sent_at(db, org_id)
-    if last is None or last + spacing <= now:
+    if last is None:
         return None
-    return last + spacing
+    opens = last + send_gap(org_id, int(last.timestamp()))
+    return opens if opens > now else None
 
 
-def next_send_slot(db: Session, org_id: str, now: datetime) -> datetime:
-    """The first free minute after everything already sent or queued."""
-    spacing = send_spacing()
-    slot = now
-    if not spacing:
-        return slot
-    last = last_mail_sent_at(db, org_id)
-    if last is not None:
-        slot = max(slot, last + spacing)
-    queued = _open_send_run_ats(db, org_id)
-    if queued:
-        slot = max(slot, max(queued) + spacing)
-    return slot
+# -- the line ---------------------------------------------------------------
+#
+# Every due outreach.send job carries a rank (Job.rank, lower goes first).
+# The outreach tick is the dispatcher: each minute it wakes the best-ranked
+# few that are not waiting on a full mailbox and leaves the rest asleep.
+# Pre-dealing every job its own future minute was the first design, and it
+# stalled: a slot that came up for a follow-up pinned to a full mailbox sent
+# nothing, while first emails that any free mailbox could carry sat hours
+# down the line. Ranks survive any number of retries; run_at does not.
+
+WAKE_WINDOW = 5
+SLEEP = timedelta(minutes=10)
+BLOCKED_KEY = "blocked_until"
 
 
-def spacing_defer_until(db: Session, org_id: str, now: datetime, *, job_id: str) -> datetime:
-    """Where a send the spacing gate turned away should wait.
+def _blocked_until(job: Job) -> datetime | None:
+    raw = (job.payload or {}).get(BLOCKED_KEY)
+    if not raw:
+        return None
+    try:
+        return _aware(datetime.fromisoformat(raw))
+    except ValueError:
+        return None
 
-    Normally that is the moment the gap closes: the job is only a few seconds
-    early (its slot came round a hair before the previous send's timestamp
-    plus a minute). But when other sends are contending for that same moment
-    -- a backlog released at once by the midnight cap reset, an unpause, or
-    jobs queued before spacing existed -- all of them waking on the same
-    second would just be told no again, one at a time, every minute. Sending
-    this one to the back of the queue instead sorts a herd into a line.
+
+def open_send_jobs(db: Session, org_id: str) -> list[Job]:
+    """The org's queued send jobs in line order: rank, then age."""
+    rows = db.scalars(
+        select(Job).where(
+            Job.org_id == org_id,
+            Job.kind == KIND_OUTREACH_SEND,
+            Job.status == "queued",
+        )
+    ).all()
+    return sorted(
+        rows,
+        key=lambda j: (
+            j.rank is None,
+            j.rank if j.rank is not None else 0.0,
+            _aware(j.created_at) or datetime.min.replace(tzinfo=UTC),
+        ),
+    )
+
+
+def next_rank(db: Session, org_id: str) -> float:
+    """One past the back of the line."""
+    top = db.scalar(
+        select(func.max(Job.rank)).where(
+            Job.org_id == org_id,
+            Job.kind == KIND_OUTREACH_SEND,
+            Job.status.in_(("queued", "running")),
+        )
+    )
+    return float(top or 0) + 1.0
+
+
+def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
+    """Wake the head of the line; let everyone else sleep.
+
+    A job blocked on a full mailbox sleeps until that mailbox has room and is
+    skipped here until then, so one stuck follow-up never holds the gap.
     """
-    spacing = send_spacing()
-    earliest = spacing_wait(db, org_id, now) or now
-    others = _open_send_run_ats(db, org_id, exclude_job_id=job_id)
-    if any(run_at <= earliest for run_at in others):
-        return max(max(others) + spacing, earliest)
-    return earliest
+    wake_at = spacing_wait(db, org_id, now) or now
+    awake = asleep = blocked = 0
+    for job in open_send_jobs(db, org_id):
+        until = _blocked_until(job)
+        if until is not None and until > now:
+            blocked += 1
+            if _aware(job.run_at) < until:
+                job.run_at = until
+            continue
+        if awake < WAKE_WINDOW:
+            awake += 1
+            if _aware(job.run_at) > wake_at:
+                job.run_at = wake_at
+            continue
+        asleep += 1
+        # Only push a sleeper further out; never pull it in, which would
+        # rewrite every row of a long line every minute.
+        if _aware(job.run_at) < now + SLEEP / 2:
+            job.run_at = now + SLEEP
+    return {"awake": awake, "asleep": asleep, "blocked": blocked}
+
+
+def mark_blocked(job: Job, until: datetime | None, now: datetime) -> datetime:
+    """Record that this send waits on a full mailbox; returns its next run."""
+    until = _aware(until) or (now + HOLD_DEFER)
+    job.payload = {**(job.payload or {}), BLOCKED_KEY: until.isoformat()}
+    return until
+
+
+def clear_blocked(job: Job) -> None:
+    if (job.payload or {}).get(BLOCKED_KEY):
+        job.payload = {k: v for k, v in job.payload.items() if k != BLOCKED_KEY}
+
+
+MOVES = ("top", "up", "down", "bottom", "position")
+
+
+def move_in_line(
+    db: Session,
+    org_id: str,
+    *,
+    enrollment_ids: list[str],
+    to: str,
+    position: int | None = None,
+    now: datetime,
+) -> int:
+    """Move the named rows within the line; returns how many moved.
+
+    Acts on the whole org's line, not on one page of it, and keeps the moved
+    rows in their existing relative order -- selecting #4 and #9 and pressing
+    "top" makes them #1 and #2, never #2 and #1. Ids not in line (already
+    sent, or not yet queued) are ignored rather than refused: the Outbox may
+    be a few seconds stale by the time the button is pressed.
+    """
+    if to not in MOVES:
+        raise ValueError(f"unknown move {to!r}")
+    line = open_send_jobs(db, org_id)
+    wanted = set(enrollment_ids)
+    picked = [j for j in line if (j.payload or {}).get("enrollment_id") in wanted]
+    if not picked:
+        return 0
+    ids = {j.id for j in picked}
+    rest = [j for j in line if j.id not in ids]
+
+    if to == "top":
+        order = picked + rest
+    elif to == "bottom":
+        order = rest + picked
+    elif to == "position":
+        index = max(0, min((position or 1) - 1, len(rest)))
+        order = rest[:index] + picked + rest[index:]
+    else:
+        # One step, as a block: each picked row swaps with the nearest
+        # unpicked neighbour on that side; rows already at the edge stay.
+        order = list(line)
+        indexes = range(len(order)) if to == "up" else range(len(order) - 1, -1, -1)
+        step = -1 if to == "up" else 1
+        for i in indexes:
+            j = i + step
+            if order[i].id in ids and 0 <= j < len(order) and order[j].id not in ids:
+                order[i], order[j] = order[j], order[i]
+
+    for index, job in enumerate(order, start=1):
+        job.rank = float(index)
+    dispatch_line(db, org_id, now)
+    return len(picked)
 
 
 def _sent_today(db: Session, org_id: str, now: datetime) -> int:
@@ -1281,6 +1383,9 @@ def process_enrollment(
         # job succeeded and loses the step just as permanently.
         resolved = resolve_sender(db, sequence, enrollment, now=now)
         if resolved.deferred:
+            # Not mapped; read by the worker to sleep the job until the
+            # blocking mailbox has room instead of retrying every minute.
+            enrollment.mailbox_retry_at = resolved.retry_at or now + HOLD_DEFER
             return "deferred", None
 
     candidate = db.get(Candidate, enrollment.candidate_id)

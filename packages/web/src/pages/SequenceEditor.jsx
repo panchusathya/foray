@@ -12,6 +12,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Badge, Empty, ErrorBox, Loading } from '../components/common.jsx';
 import { EmailBodyEditor, looksLikeHtml } from '../components/EmailBodyEditor.jsx';
+import { EnrollmentList } from '../components/EnrollmentList.jsx';
 import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
 import { SpamBadge, SpamPanel, useSpamCheck } from '../components/SpamScore.jsx';
 import { api, providerLabel } from '../lib/api.js';
@@ -871,6 +872,14 @@ export function SequenceEditorPage() {
         <div className="stack">
           {step ? (
             <div className="card stack">
+              {/* Up top, not only under the body: the score should be the
+                  first thing seen on a step, not something scrolled to. */}
+              {spam[selected] ? (
+                <div className="row spread wrap" style={{ gap: 8 }}>
+                  <strong className="small">Step {selected + 1}</strong>
+                  <SpamBadge report={spam[selected]} large />
+                </div>
+              ) : null}
               <div className="row wrap small muted">
                 <span>Variables:</span>
                 {VARIABLES.map(([label, snippet]) => (
@@ -1035,7 +1044,7 @@ export function SequenceEditorPage() {
           </div>
 
           <div className="card stack">
-            <div className="spread">
+            <div className="spread wrap" style={{ flexWrap: 'wrap' }}>
               <div className="row">
                 <strong className="small">Enrollments</strong>
                 <button
@@ -1046,7 +1055,7 @@ export function SequenceEditorPage() {
                   {picking ? 'Close' : '+ Add people'}
                 </button>
               </div>
-              <div className="row small muted">
+              <div className="row wrap small muted sequence-switches">
                 <label>
                   <input
                     type="checkbox"
@@ -1134,43 +1143,13 @@ export function SequenceEditorPage() {
             {enrollments.loading ? (
               <Loading label="Loading enrollments…" />
             ) : (enrollments.data ?? []).length ? (
-              <div className="stack" style={{ gap: 6 }}>
-                {enrollments.data.map((enrollment) => (
-                  <div key={enrollment.id} className="row small spread" data-testid="enrollment-row">
-                    <span className="row" style={{ gap: 6 }}>
-                      <Badge tone={enrollment.status === 'active' ? 'strong' : ''}>
-                        {enrollment.status}
-                      </Badge>
-                      <span>{enrollment.candidate?.full_name ?? enrollment.candidate_id}</span>
-                      {!(enrollment.candidate?.emails ?? []).length ? (
-                        <span className="muted" title="No email on file — this step can't send yet">
-                          no email
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="row muted" style={{ gap: 6 }}>
-                      {/* "✓2 sent · next: step 3 …" — without the sent count,
-                          a follow-up's schedule reads like the FIRST email is
-                          still waiting (a real support incident). */}
-                      {enrollment.current_step > 0 ? (
-                        <span className="mono">✓{enrollment.current_step} sent</span>
-                      ) : null}
-                      <span>{enrollmentTrailer(enrollment)}</span>
-                      {canReenrol(enrollment) ? (
-                        <button
-                          type="button"
-                          className="tiny"
-                          disabled={reenrolling?.id === enrollment.id}
-                          onClick={() => setReenrolling(enrollment)}
-                          data-testid="enrollment-reenrol"
-                        >
-                          Re-enrol
-                        </button>
-                      ) : null}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              <EnrollmentList
+                enrollments={enrollments.data}
+                trailer={enrollmentTrailer}
+                canReenrol={canReenrol}
+                onReenrol={setReenrolling}
+                reenrollingId={reenrolling?.id}
+              />
             ) : (
               <Empty>Nobody enrolled yet — use “Add people” to enrol candidates.</Empty>
             )}

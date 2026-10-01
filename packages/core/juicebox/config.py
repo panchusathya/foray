@@ -275,10 +275,10 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
-    # No two automated emails leave an org closer together than MIN seconds;
-    # each gap is picked in [MIN, MAX] so the rhythm is not a fixed metronome.
-    # Fifty people enrolled for 09:00 go out about a minute apart rather than
-    # in one burst. MIN=0 sends as fast as due. Sign-in codes are exempt.
+    # No two automated emails leave one MAILBOX closer together than MIN
+    # seconds; each gap is picked in [MIN, MAX] so the rhythm is not a fixed
+    # metronome. Mailboxes keep separate clocks and send side by side. A send
+    # with no mailbox (global provider) uses one org clock. Sign-in codes exempt.
     outreach_send_spacing_seconds: int = field(
         default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_SECONDS", 45)
     )

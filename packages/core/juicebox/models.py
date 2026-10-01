@@ -823,6 +823,12 @@ class MailboxConnection(Base, TimestampMixin):
     )
     provider: Mapped[str] = mapped_column(String(40), default="microsoft")
     address: Mapped[str] = mapped_column(String(255))
+    # This mailbox's own gap clock: every automated send from it stamps
+    # this, and the next waits OUTREACH_SEND_SPACING_SECONDS after it.
+    # Per mailbox, so twenty mailboxes send side by side.
+    last_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     display_name: Mapped[str] = mapped_column(String(200), default="")
     # The provider's own id for this mailbox: Graph user id, Zoho accountId.
     provider_account_id: Mapped[str] = mapped_column(String(120), default="")

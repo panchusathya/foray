@@ -202,7 +202,6 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
         mark_blocked,
         process_enrollment,
         sending_hold,
-        spacing_wait,
     )
 
     enrollment_id = job.payload.get("enrollment_id")
@@ -223,16 +222,18 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     if status == "deferred":
         result: dict[str, Any] = {"defer": True, "status": status}
         retry_at = getattr(enrollment, "mailbox_retry_at", None)
+        gap_at = getattr(enrollment, "gap_retry_at", None)
         if sending_hold(db, enrollment.sequence, now=now):
             result["defer_until"] = now + HOLD_DEFER
+        elif gap_at is not None:
+            # Its mailbox (or every mailbox with room in its pool) sent moments
+            # ago. The tick keeps only the head of each lane awake, so this
+            # wakes with a few others and rank picks.
+            clear_blocked(job)
+            result["defer_until"] = gap_at
         elif retry_at is not None:
             # A full mailbox: sleep until it has room, out of the tick's way.
             result["defer_until"] = mark_blocked(job, retry_at, now)
-        elif (opens := spacing_wait(db, enrollment.sequence.org_id, now)) is not None:
-            # Inside the gap. The tick keeps only the head of the line awake,
-            # so this wakes with a handful of others and rank picks.
-            clear_blocked(job)
-            result["defer_until"] = opens
         else:
             result["defer_until"] = now + HOLD_DEFER
         return result
@@ -254,8 +255,8 @@ def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
     from sqlalchemy.orm import selectinload
 
     from .models import Message
-    from .outreach.follow_ups import send_follow_up_reminder
-    from .outreach.sequencer import spacing_wait
+    from .outreach.follow_ups import _mailbox_for, send_follow_up_reminder
+    from .outreach.rotation import mailbox_gap_wait
 
     enrollment = db.scalar(
         select(Enrollment)
@@ -272,7 +273,8 @@ def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
             queued_for = date.fromisoformat(raw)
         except ValueError:
             queued_for = None
-    wait = spacing_wait(db, enrollment.sequence.org_id, now)
+    connection = _mailbox_for(db, enrollment, inbound)
+    wait = mailbox_gap_wait(db, connection, now) if connection is not None else None
     if wait is not None and enrollment.follow_up_reminder_sent_at is None:
         return {"defer": True, "defer_until": wait}
     result = send_follow_up_reminder(
@@ -283,14 +285,15 @@ def _handle_outreach_follow_up(db: Session, job: Job, now) -> dict[str, Any]:
 
 def _handle_mailbox_notify(db: Session, job: Job, now) -> dict[str, Any]:
     """A note from one mailbox to its own owner, sent once the gap allows."""
+    from .outreach.rotation import mailbox_gap_wait
     from .outreach.sender import OutboundEmail, sender_for_connection
-    from .outreach.sequencer import note_mail_sent, spacing_wait
+    from .outreach.sequencer import note_mail_sent
     from .outreach.templates import to_html
 
     connection = db.get(MailboxConnection, job.payload.get("connection_id", ""))
     if connection is None or connection.status != "active":
         return {"skipped": "mailbox gone"}
-    wait = spacing_wait(db, connection.org_id, now)
+    wait = mailbox_gap_wait(db, connection, now)
     if wait is not None:
         return {"defer": True, "defer_until": wait}
     text_body = job.payload.get("text_body", "")
@@ -305,7 +308,7 @@ def _handle_mailbox_notify(db: Session, job: Job, now) -> dict[str, Any]:
     )
     if not getattr(result, "ok", True):
         raise RuntimeError(f"mailbox notify failed: {getattr(result, 'error', '') or 'unknown'}")
-    note_mail_sent(db, connection.org_id, now)
+    note_mail_sent(db, connection.org_id, now, connection=connection)
     return {"sent": connection.address}
 
 

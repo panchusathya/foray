@@ -30,7 +30,7 @@ from juicebox.outreach.rotation import (
 )
 from juicebox.outreach.sender import SendResult, resolve_sender, set_sender_factory
 from juicebox.outreach.sequencer import (
-    WAKE_WINDOW,
+    LANE_SLACK,
     dispatch_line,
     enroll_candidates,
     process_enrollment,
@@ -267,7 +267,83 @@ class TestTheLineKnowsWhichPoolsAreFull:
         counts = dispatch_line(session, pool["sequence"].org_id, now)
 
         assert counts["blocked"] == 0
-        assert counts["awake"] == min(len(rows), WAKE_WINDOW)
+        # One mailbox (alpha) has room: its lane keeps one send ready plus a
+        # spare.
+        assert counts["awake"] == min(len(rows), 1 + LANE_SLACK)
+
+
+class TestTheGapIsPerMailbox:
+    @pytest.fixture(autouse=True)
+    def gap(self, monkeypatch):
+        from juicebox.config import reset_settings_cache
+
+        monkeypatch.setenv("OUTREACH_SEND_SPACING_SECONDS", "60")
+        monkeypatch.setenv("OUTREACH_SEND_SPACING_MAX_SECONDS", "60")
+        reset_settings_cache()
+        yield
+        reset_settings_cache()
+
+    def test_mailboxes_send_side_by_side(self, session, pool):
+        sequence = pool["sequence"]
+        now = utcnow()
+        rows = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[c.id for c in pool["candidates"][:3]]
+        )
+        for row in rows:
+            row.next_send_at = now
+        session.commit()
+
+        summary = run_due(session, org_id=sequence.org_id, now=now)
+
+        # Three due, three mailboxes out of their gap: all three go at once,
+        # one from each mailbox -- never two from the same one.
+        assert summary.sent == 3
+        assert sorted(pool["log"]) == ["alpha@goforay.io", "bravo@goforay.io", "charlie@goforay.io"]
+
+    def test_one_mailbox_still_waits_its_own_gap(self, session, pool):
+        sequence = pool["sequence"]
+        alpha = pool["connections"][0]
+        now = utcnow()
+        [row] = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[pool["candidates"][0].id]
+        )
+        row.next_send_at = now
+        row.mailbox_id = alpha.id  # a follow-up pinned to alpha
+        alpha.last_sent_at = now - timedelta(seconds=20)
+        session.commit()
+
+        status, _ = process_enrollment(session, row, now=now)
+        assert status == "deferred"
+        assert row.gap_retry_at.replace(tzinfo=None) == (
+            now + timedelta(seconds=40)
+        ).replace(tzinfo=None)
+
+        status, _ = process_enrollment(session, row, now=now + timedelta(seconds=41))
+        assert status == "sent"
+        assert pool["log"] == ["alpha@goforay.io"]
+
+    def test_rotation_skips_a_mailbox_inside_its_gap(self, session, pool):
+        sequence = pool["sequence"]
+        alpha, bravo, charlie = pool["connections"]
+        now = utcnow()
+        alpha.last_sent_at = bravo.last_sent_at = now - timedelta(seconds=10)
+        session.commit()
+
+        resolved = resolve_sender(session, sequence, now=now)
+
+        assert not resolved.deferred
+        assert resolved.connection.id == charlie.id
+
+    def test_every_mailbox_resting_is_a_short_wait_not_a_full_pool(self, session, pool):
+        sequence = pool["sequence"]
+        now = utcnow()
+        for connection in pool["connections"]:
+            connection.last_sent_at = now - timedelta(seconds=30)
+        session.commit()
+
+        resolved = resolve_sender(session, sequence, now=now)
+
+        assert resolved.deferred and resolved.reason == "spacing"
 
 
 class TestSpread:

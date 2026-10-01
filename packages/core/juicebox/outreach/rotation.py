@@ -22,14 +22,78 @@ requeues the same permanent idempotency key rather than failing the step.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..models import MailboxConnection, Message
 
 WINDOW_HOURS = 24
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def send_spacing() -> timedelta:
+    """Shortest gap between two automated emails from one mailbox. Zero disables it."""
+    return timedelta(seconds=max(get_settings().outreach_send_spacing_seconds, 0))
+
+
+def send_gap(*parts: object) -> timedelta:
+    """The gap in front of one particular send: somewhere in [min, max].
+
+    A fixed sixty seconds is itself a machine signature, so each send gets its
+    own gap. It is a hash rather than ``random`` so the worker and the Outbox
+    preview agree on it.
+    """
+    settings = get_settings()
+    low = max(settings.outreach_send_spacing_seconds, 0)
+    high = max(settings.outreach_send_spacing_max_seconds, low)
+    if high == low:
+        return timedelta(seconds=low)
+    digest = hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()
+    return timedelta(seconds=low + int(digest[:8], 16) % (high - low + 1))
+
+
+def mailbox_last_sent_at(db: Session, connection: MailboxConnection) -> datetime | None:
+    """This mailbox's latest automated send: its own stamp, or the newest sent
+    message carrying its id (sends made before the stamp existed)."""
+    stamped = _aware(connection.last_sent_at)
+    recorded = _aware(
+        db.scalar(
+            select(func.max(Message.sent_at)).where(
+                Message.mailbox_id == connection.id,
+                Message.direction == "outbound",
+                Message.status == "sent",
+            )
+        )
+    )
+    return max((v for v in (stamped, recorded) if v is not None), default=None)
+
+
+def mailbox_gap_wait(
+    db: Session, connection: MailboxConnection, now: datetime
+) -> datetime | None:
+    """When this mailbox may send again, if that is later than now.
+
+    The gap is per mailbox: twenty mailboxes each send about once a minute,
+    side by side. One shared clock for the whole org made two sequences on
+    different mailboxes take turns, so a pool with room sat idle behind a
+    backlog it could not help with.
+    """
+    if not send_spacing():
+        return None
+    last = mailbox_last_sent_at(db, connection)
+    if last is None:
+        return None
+    opens = last + send_gap(connection.id, int(last.timestamp()))
+    return opens if opens > now else None
 
 
 def _can_send_via(provider_name: str) -> bool:
@@ -171,7 +235,12 @@ def pool_capacity(db: Session, *, org_id: str) -> int:
 
 
 def pick_mailbox(
-    db: Session, *, org_id: str, now: datetime, only: list[str] | None = None
+    db: Session,
+    *,
+    org_id: str,
+    now: datetime,
+    only: list[str] | None = None,
+    exclude: set[str] | None = None,
 ) -> MailboxConnection | None:
     """The least-utilised mailbox with room left, or None when all are full.
 
@@ -183,6 +252,8 @@ def pick_mailbox(
     best: MailboxConnection | None = None
     best_load = 1.0
     for connection in eligible_mailboxes(db, org_id=org_id, only=only):
+        if exclude and connection.id in exclude:
+            continue
         used = sent_in_window(db, mailbox_id=connection.id, now=now)
         if used >= connection.daily_send_cap:
             continue

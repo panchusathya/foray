@@ -672,7 +672,8 @@ in_flight_router = APIRouter(
 @in_flight_router.get("/in-flight", response_model=InFlightList)
 def list_in_flight_rows(
     state: str | None = Query(default=None, pattern="^(sending|due|held|scheduled|cancelled)$"),
-    sequence_id: str | None = None,
+    # Repeat it to view several sequences at once; omit it for all of them.
+    sequence_id: list[str] | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     principal: Principal = Depends(get_principal),

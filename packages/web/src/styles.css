@@ -637,6 +637,26 @@ a.todo-row:hover { background: var(--tint); }
 .dgrid tbody tr:last-child td { border-bottom: none; }
 /* Wider than most windows on purpose: the wrap scrolls sideways rather than
    ellipsing every column. */
+/* components/MultiSelect.jsx */
+.multiselect { position: relative; display: inline-block; }
+.multiselect-button {
+  display: inline-flex; align-items: center; gap: 8px;
+  min-width: 200px; max-width: 320px; justify-content: space-between;
+  background: var(--surface); color: inherit; border: 1px solid var(--border);
+  font-weight: 400; text-transform: none; letter-spacing: normal;
+}
+.multiselect-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multiselect-panel {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0;
+  width: 320px; padding: 8px; box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.multiselect-options { max-height: 320px; overflow: auto; }
+.multiselect-option {
+  display: flex; align-items: center; gap: 8px; padding: 5px 4px;
+  border-radius: 6px; cursor: pointer; text-transform: none;
+}
+.multiselect-option:hover { background: var(--tint3); }
 /* Widths come from a <colgroup> (components/ResizableColumns.jsx). */
 .dgrid th .col-resizer {
   position: absolute;

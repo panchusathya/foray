@@ -57,6 +57,18 @@ WHEN_NEXT_SLOT = "next_slot"
 WHEN_AT = "at"
 
 
+SequenceFilter = str | list[str] | tuple[str, ...] | None
+
+
+def _by_sequences(query, sequence_id: SequenceFilter):
+    """Narrow to one sequence or several; empty means every sequence."""
+    ids = [sequence_id] if isinstance(sequence_id, str) else list(sequence_id or [])
+    ids = [i for i in ids if i]
+    if not ids:
+        return query
+    return query.where(Enrollment.sequence_id.in_(ids))
+
+
 @dataclass(frozen=True)
 class InFlightItem:
     enrollment_id: str
@@ -150,7 +162,7 @@ def collect_in_flight(
     *,
     org_id: str,
     now: datetime | None = None,
-    sequence_id: str | None = None,
+    sequence_id: SequenceFilter = None,
 ) -> list[InFlightItem]:
     now = now or utcnow()
     org = db.get(Org, org_id)
@@ -188,8 +200,7 @@ def collect_in_flight(
             selectinload(Enrollment.sequence).selectinload(Sequence.steps),
         )
     )
-    if sequence_id:
-        query = query.where(Enrollment.sequence_id == sequence_id)
+    query = _by_sequences(query, sequence_id)
     enrollments = list(db.scalars(query).all())
     addresses = _mailbox_addresses(db, enrollments)
 
@@ -270,7 +281,7 @@ def collect_in_flight(
     return items
 
 
-def _cancelled_query(org_id: str, sequence_id: str | None):
+def _cancelled_query(org_id: str, sequence_id: SequenceFilter):
     query = (
         select(Enrollment)
         .join(Sequence, Sequence.id == Enrollment.sequence_id)
@@ -280,13 +291,12 @@ def _cancelled_query(org_id: str, sequence_id: str | None):
             Enrollment.stopped_reason == STOPPED_BY_USER,
         )
     )
-    if sequence_id:
-        query = query.where(Enrollment.sequence_id == sequence_id)
+    query = _by_sequences(query, sequence_id)
     return query
 
 
 def collect_cancelled(
-    db: Session, *, org_id: str, sequence_id: str | None = None
+    db: Session, *, org_id: str, sequence_id: SequenceFilter = None
 ) -> list[InFlightItem]:
     """Enrolments the operator stopped from the outbox, newest stop first.
 
@@ -336,7 +346,7 @@ def collect_cancelled(
     return items
 
 
-def cancelled_count(db: Session, *, org_id: str, sequence_id: str | None = None) -> int:
+def cancelled_count(db: Session, *, org_id: str, sequence_id: SequenceFilter = None) -> int:
     """How many stopped rows a re-enrol could bring back. For the page's hint."""
     subquery = _cancelled_query(org_id, sequence_id).subquery()
     return int(db.scalar(select(func.count()).select_from(subquery)) or 0)
@@ -348,7 +358,7 @@ def list_in_flight(
     org_id: str,
     now: datetime | None = None,
     state: str | None = None,
-    sequence_id: str | None = None,
+    sequence_id: SequenceFilter = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, list[InFlightItem]]:

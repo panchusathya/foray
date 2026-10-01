@@ -60,6 +60,7 @@ const REASON_LABELS = {
   sequence_paused: 'sequence paused',
   daily_cap: 'daily cap',
   mailbox_full: 'waiting for mailbox room',
+  outside_hours: 'outside sending hours',
 };
 
 function formatDue(value) {

@@ -78,6 +78,19 @@ class Org(Base, TimestampMixin):
     # Which steps go first when the line is backed up (outreach/sequencer.py
     # SEND_PRIORITIES): first emails ahead of follow-ups by default.
     send_priority: Mapped[str] = mapped_column(String(32), default="first_emails")
+    # Gap between two automated emails from one sending domain. Null means
+    # the deployment default (OUTREACH_SEND_SPACING_SECONDS); off means none.
+    send_gap_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    send_gap_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sending hours (outreach/window.py): when on, candidate email only goes
+    # out between start and end on these weekdays (0 = Monday) in this zone.
+    send_window_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    send_window_start: Mapped[str] = mapped_column(String(5), default="09:00")
+    send_window_end: Mapped[str] = mapped_column(String(5), default="17:00")
+    send_window_tz: Mapped[str] = mapped_column(String(64), default="America/Los_Angeles")
+    send_window_days: Mapped[list] = mapped_column(JSON, default=lambda: [0, 1, 2, 3, 4])
+    # Breaks inside those hours, [{"start": "12:00", "end": "13:00"}, ...].
+    send_window_breaks: Mapped[list] = mapped_column(JSON, default=list)
     # When the org's mailboxes last sent anything automated. Every mailbox
     # send stamps it and waits OUTREACH_SEND_SPACING_SECONDS after it, so no
     # two emails leave back to back whichever path sent them.

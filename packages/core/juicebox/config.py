@@ -275,15 +275,16 @@ class Settings:
         default_factory=lambda: _env("OUTREACH_FROM_NAME", "Talent Team")
     )
     outreach_daily_cap: int = field(default_factory=lambda: _env_int("OUTREACH_DAILY_CAP", 200))
-    # No two automated emails leave one MAILBOX closer together than MIN
-    # seconds; each gap is picked in [MIN, MAX] so the rhythm is not a fixed
-    # metronome. Mailboxes keep separate clocks and send side by side. A send
-    # with no mailbox (global provider) uses one org clock. Sign-in codes exempt.
+    # Default gap between two automated emails from the same sending DOMAIN
+    # (every mailbox @goforay.io shares one clock -- providers judge a domain,
+    # not a mailbox). An org overrides it from Settings (orgs.send_gap_seconds)
+    # or switches it off; MIN=MAX=0 here switches it off for the whole
+    # deployment. Each gap is picked in [MIN, MAX]. Sign-in codes are exempt.
     outreach_send_spacing_seconds: int = field(
-        default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_SECONDS", 45)
+        default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_SECONDS", 40)
     )
     outreach_send_spacing_max_seconds: int = field(
-        default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_MAX_SECONDS", 60)
+        default_factory=lambda: _env_int("OUTREACH_SEND_SPACING_MAX_SECONDS", 40)
     )
     # Nobody who answered us by hand in the last N days gets automated mail
     # from ANY sequence: the send path stops the enrollment and the enrol

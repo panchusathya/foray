@@ -26,6 +26,7 @@ from ..models import (
     record_event,
     utcnow,
 )
+from .rotation import gap_seconds
 from .sequencer import (
     _aware,
     _blocked_until,
@@ -39,6 +40,7 @@ from .sequencer import (
     schedule_step_at,
     sending_hold,
 )
+from .window import next_open, org_window
 
 HELD_STATES = frozenset({"sending", "due", "held"})
 
@@ -212,17 +214,16 @@ def collect_in_flight(
     # Rows waiting on a full mailbox use up no gap at all.
     line = open_send_jobs(db, org_id)
     ranks = {job.id: index for index, job in enumerate(line, start=1)}
-    settings = get_settings()
-    gap = timedelta(
-        seconds=(
-            max(settings.outreach_send_spacing_seconds, 0)
-            + max(settings.outreach_send_spacing_max_seconds, settings.outreach_send_spacing_seconds)
-        )
-        / 2
-    )
+    low, high = gap_seconds(db, org_id)
+    gap = timedelta(seconds=(low + high) / 2)
+    window = org_window(org) if org is not None else None
+    window_closed = window is not None and next_open(window, now) > now
     live = live_sends(db, org_id)
     room = _LaneRoom(db, org_id, now)
-    served: dict[tuple, int] = {}
+    # One clock per sending domain, so rows on one domain go one gap apart
+    # whichever of its mailboxes carries them; a slot outside sending hours
+    # moves to the next opening.
+    cursor: dict[str, datetime] = {}
     estimates: dict[str, datetime] = {}
     for job in line:
         until = _blocked_until(job)
@@ -232,16 +233,20 @@ def collect_in_flight(
         lane = room.lane(*pair)
         if lane.frees is not None and lane.frees > now:
             continue
-        place = served.get(lane.key, 0)
-        served[lane.key] = place + 1
-        estimates[job.id] = lane.opens + gap * (place // max(lane.servers, 1))
+        slot = max(cursor.get(lane.domain, lane.opens), lane.opens)
+        if window is not None:
+            slot = next_open(window, slot)
+        estimates[job.id] = slot
+        cursor[lane.domain] = slot + gap
 
     items: list[InFlightItem] = []
     for enrollment in enrollments:
         sequence = enrollment.sequence
         candidate = enrollment.candidate
         job = job_by_enrollment.get(enrollment.id)
-        hold = sending_hold(db, sequence, now=now, org=org)
+        # The window is applied below, to rows that would otherwise go now:
+        # a step scheduled for tomorrow is scheduled, not held.
+        hold = sending_hold(db, sequence, now=now, org=org, include_window=False)
         state, reason = _row_state(
             job=job,
             enrollment=enrollment,
@@ -256,6 +261,8 @@ def collect_in_flight(
                 state, reason, due_at = "held", "mailbox_full", until
             elif state == "due":
                 due_at = estimates.get(job.id, _aware(job.run_at))
+                if window_closed:
+                    state, reason = "held", "outside_hours"
             else:
                 due_at = _aware(job.run_at)
         elif job is not None:

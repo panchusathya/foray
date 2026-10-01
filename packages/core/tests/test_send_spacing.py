@@ -164,27 +164,6 @@ class TestTheTickBuildsALine:
         [sent] = mailbox.outbox
         assert sent.to == candidates[1].primary_email
 
-    def test_a_send_waiting_on_a_full_mailbox_does_not_hold_the_line(
-        self, session, outreach_fixture, mailbox
-    ):
-        """The 2026-10-01 stall: blocked follow-ups sat at the front while
-        first emails a free mailbox could carry waited hours behind them."""
-        sequence = outreach_fixture["sequence"]
-        now = utcnow()
-        rows = _enrol_all(session, outreach_fixture, due=now)
-        jobs = _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
-        blocked = jobs[0]
-        blocked.payload = {**blocked.payload, BLOCKED_KEY: (now + timedelta(hours=3)).isoformat()}
-        session.commit()
-
-        dispatch_line(session, sequence.org_id, now)
-        session.commit()
-        process_batch(session, now=now)
-
-        assert len(mailbox.outbox) == 1
-        assert mailbox.outbox[0].to != rows[0].candidate.primary_email
-        assert _aware(session.get(Job, blocked.id).run_at) == now + timedelta(hours=3)
-
 
 class TestTheSendGate:
     def test_a_herd_sends_the_best_ranked_and_waits_out_the_gap(

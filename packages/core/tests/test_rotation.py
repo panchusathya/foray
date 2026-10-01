@@ -29,7 +29,13 @@ from juicebox.outreach.rotation import (
     sent_in_window,
 )
 from juicebox.outreach.sender import SendResult, resolve_sender, set_sender_factory
-from juicebox.outreach.sequencer import enroll_candidates, process_enrollment, run_due
+from juicebox.outreach.sequencer import (
+    WAKE_WINDOW,
+    dispatch_line,
+    enroll_candidates,
+    process_enrollment,
+    run_due,
+)
 
 
 class PoolSender:
@@ -180,6 +186,88 @@ class TestFreesAt:
         assert resolved.retry_at.replace(tzinfo=None) == (now + timedelta(hours=14)).replace(
             tzinfo=None
         )
+
+
+class TestTheLineKnowsWhichPoolsAreFull:
+    def _fill(self, session, connection, candidate, now):
+        for hours in (3, 2):
+            session.add(
+                Message(
+                    org_id=connection.org_id,
+                    candidate_id=candidate.id,
+                    direction="outbound",
+                    status="sent",
+                    mailbox_id=connection.id,
+                    sent_at=now - timedelta(hours=hours),
+                )
+            )
+        session.flush()
+
+    def _line(self, session, pool, now):
+        sequence = pool["sequence"]
+        step = sorted(sequence.steps, key=lambda s: s.step_order)[0]
+        rows = enroll_candidates(
+            session, sequence=sequence, candidate_ids=[c.id for c in pool["candidates"]]
+        )
+        for rank, row in enumerate(rows, start=1):
+            row.next_send_at = now
+            job = enqueue(
+                session,
+                org_id=sequence.org_id,
+                kind=KIND_OUTREACH_SEND,
+                idempotency_key=f"{KIND_OUTREACH_SEND}:{row.id}:{step.id}",
+                payload={"org_id": sequence.org_id, "enrollment_id": row.id, "step_id": step.id},
+                run_at=now,
+            )
+            job.rank = float(rank)
+        session.commit()
+        return rows
+
+    def test_a_full_pool_blocks_its_sends_without_trying_them(self, session, pool):
+        now = utcnow()
+        for connection in pool["connections"]:
+            self._fill(session, connection, pool["candidates"][0], now)
+        rows = self._line(session, pool, now)
+
+        counts = dispatch_line(session, pool["sequence"].org_id, now)
+
+        assert counts["blocked"] == len(rows) and counts["awake"] == 0
+        assert pool["log"] == []
+
+    def test_a_follow_up_on_a_full_mailbox_does_not_hold_the_line(self, session, pool):
+        """The 2026-10-01 stall: sends waiting on full mailboxes sat at the
+        front while first emails a free mailbox could carry waited behind."""
+        from juicebox.worker import process_batch
+
+        now = utcnow()
+        alpha = pool["connections"][0]
+        self._fill(session, alpha, pool["candidates"][0], now)
+        first, second, *_ = self._line(session, pool, now)
+        first.mailbox_id = alpha.id  # pinned to the full one, ranked first
+        session.commit()
+
+        counts = dispatch_line(session, pool["sequence"].org_id, now)
+        session.commit()
+        process_batch(session, now=now)
+
+        assert counts["blocked"] == 1
+        assert pool["log"] and "alpha@goforay.io" not in pool["log"]
+        session.refresh(second)
+        assert second.current_step == 1
+
+    def test_raising_a_cap_wakes_them_on_the_next_tick(self, session, pool):
+        now = utcnow()
+        for connection in pool["connections"]:
+            self._fill(session, connection, pool["candidates"][0], now)
+        rows = self._line(session, pool, now)
+        dispatch_line(session, pool["sequence"].org_id, now)
+
+        pool["connections"][0].daily_send_cap = 3
+        session.flush()
+        counts = dispatch_line(session, pool["sequence"].org_id, now)
+
+        assert counts["blocked"] == 0
+        assert counts["awake"] == min(len(rows), WAKE_WINDOW)
 
 
 class TestSpread:

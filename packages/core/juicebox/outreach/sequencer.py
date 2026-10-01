@@ -556,6 +556,57 @@ def next_rank(db: Session, org_id: str) -> float:
     return float(top or 0) + 1.0
 
 
+class _LaneRoom:
+    """When each mailbox group next has room, worked out once per tick.
+
+    ``frees`` returns None when a send could go now (or when the answer is
+    the sender's to give: a revoked mailbox fails loudly there, which is the
+    behaviour that matters), else when its lane next has room. It mirrors
+    ``resolve_sender``'s order -- pinned, then fixed, then the pool -- so it
+    never calls a lane full that the sender would have used.
+    """
+
+    def __init__(self, db: Session, org_id: str, now: datetime) -> None:
+        self.db, self.org_id, self.now = db, org_id, now
+        self._cache: dict[tuple, datetime | None] = {}
+
+    def _single(self, mailbox_id: str) -> datetime | None:
+        from ..models import MailboxConnection
+        from .rotation import frees_at, remaining_capacity
+
+        connection = self.db.get(MailboxConnection, mailbox_id)
+        if connection is None or connection.status != "active" or not connection.send_enabled:
+            return None
+        if remaining_capacity(self.db, connection=connection, now=self.now) > 0:
+            return None
+        return frees_at(self.db, connection=connection, now=self.now)
+
+    def _pool(self, only: tuple[str, ...]) -> datetime | None:
+        from .rotation import active_mailboxes, eligible_mailboxes, frees_at, remaining_capacity
+
+        if not active_mailboxes(self.db, org_id=self.org_id):
+            return None  # no mailbox at all: the global provider sends
+        pool = eligible_mailboxes(self.db, org_id=self.org_id, only=list(only) or None)
+        if not pool:
+            return self.now + HOLD_DEFER
+        if any(remaining_capacity(self.db, connection=c, now=self.now) > 0 for c in pool):
+            return None
+        return min(frees_at(self.db, connection=c, now=self.now) for c in pool)
+
+    def frees(self, enrollment: Enrollment, sequence: Sequence) -> datetime | None:
+        from .sender import _rotation_subset
+
+        if enrollment.mailbox_id:
+            key: tuple = ("one", enrollment.mailbox_id)
+        elif getattr(sequence, "sender_mode", "rotate") == "fixed" and sequence.mailbox_id:
+            key = ("one", sequence.mailbox_id)
+        else:
+            key = ("pool", tuple(sorted(_rotation_subset(sequence))))
+        if key not in self._cache:
+            self._cache[key] = self._single(key[1]) if key[0] == "one" else self._pool(key[1])
+        return self._cache[key]
+
+
 def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
     """Wake the head of the line; let everyone else sleep.
 
@@ -565,30 +616,48 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
     ago hold the best ranks, and waking them only to hear "held" again filled
     the whole wake window with sends that could not go -- the first deploy of
     this sent nothing at all.
+
+    Room is checked here too, once per mailbox group ("lane": the mailbox a
+    follow-up is pinned to, a fixed sequence's mailbox, or a rotating
+    sequence's pool). Finding out by trying cost a minute per five sends, and
+    with six hundred sends queued on a full pool ahead of two pools with room,
+    the free mailboxes sat idle for two hours while the line learned that.
     """
     wake_at = spacing_wait(db, org_id, now) or now
     line = open_send_jobs(db, org_id)
     org = db.get(Org, org_id)
     org_paused = org is not None and org.outreach_paused_at is not None
-    live = set(
-        db.scalars(
-            select(Enrollment.id)
+    live: dict[str, tuple[Enrollment, Sequence]] = {
+        enrollment.id: (enrollment, sequence)
+        for enrollment, sequence in db.execute(
+            select(Enrollment, Sequence)
             .join(Sequence, Sequence.id == Enrollment.sequence_id)
             .where(
                 Sequence.org_id == org_id,
                 Sequence.status == "active",
                 Enrollment.status == "active",
             )
-        )
-    )
+        ).all()
+    }
+    room = _LaneRoom(db, org_id, now)
     awake = asleep = blocked = held = 0
     for job in line:
-        if org_paused or (job.payload or {}).get("enrollment_id") not in live:
+        pair = live.get((job.payload or {}).get("enrollment_id"))
+        if org_paused or pair is None:
             held += 1
             if _aware(job.run_at) < now + HOLD_DEFER / 2:
                 job.run_at = now + HOLD_DEFER
             continue
-        until = _blocked_until(job)
+        # Re-asked every tick, blocked or not: raising a full mailbox's cap
+        # must wake its sends now, not when the old window would have freed.
+        frees = room.frees(*pair)
+        if frees is not None and frees > now:
+            until = frees
+            if _blocked_until(job) != frees:
+                mark_blocked(job, frees, now)
+        else:
+            until = None
+            clear_blocked(job)
         if until is not None and until > now:
             blocked += 1
             if _aware(job.run_at) < until:

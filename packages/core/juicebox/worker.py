@@ -156,14 +156,14 @@ def _schedule_next_tick(db: Session, *, org_id: str, kind: str, now) -> None:
 
 
 def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
-    from .outreach.sequencer import dispatch_line, due_enrollments, next_rank
+    from .outreach.sequencer import dispatch_line, due_enrollments, place_new_sends
 
     org_id = job.payload.get("org_id") or job.org_id
     queued = 0
-    rank = None
-    # due_enrollments is oldest-due first, so a new arrival joins the back of
-    # the line in the order it fell due. A job already in line keeps its rank;
-    # enqueue hands the existing row back untouched.
+    arrivals = []
+    # due_enrollments is oldest-due first, so arrivals of one step keep the
+    # order they fell due in. A job already in line keeps its rank; enqueue
+    # hands the existing row back untouched.
     for enrollment in due_enrollments(db, org_id=org_id, now=now):
         steps = sorted(enrollment.sequence.steps, key=lambda s: s.step_order)
         if enrollment.current_step >= len(steps):
@@ -182,10 +182,12 @@ def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
             run_at=now,
         )
         if sent.rank is None and sent.status == "queued":
-            rank = next_rank(db, org_id) if rank is None else rank + 1
-            sent.rank = rank
+            arrivals.append(sent)
         queued += 1
     db.flush()
+    # Ranked by the org's step priority (first emails ahead of follow-ups by
+    # default), oldest-due first within a step.
+    place_new_sends(db, org_id, arrivals)
     line = dispatch_line(db, org_id, now)
     _schedule_next_tick(db, org_id=org_id, kind=KIND_OUTREACH_TICK, now=now)
     return {"queued_sends": queued, **line}

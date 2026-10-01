@@ -544,18 +544,6 @@ def open_send_jobs(db: Session, org_id: str) -> list[Job]:
     )
 
 
-def next_rank(db: Session, org_id: str) -> float:
-    """One past the back of the line."""
-    top = db.scalar(
-        select(func.max(Job.rank)).where(
-            Job.org_id == org_id,
-            Job.kind == KIND_OUTREACH_SEND,
-            Job.status.in_(("queued", "running")),
-        )
-    )
-    return float(top or 0) + 1.0
-
-
 class _LaneRoom:
     """When each mailbox group next has room, worked out once per tick.
 
@@ -690,6 +678,100 @@ def clear_blocked(job: Job) -> None:
 
 MOVES = ("top", "up", "down", "bottom", "position")
 
+# How the line orders steps when it is backed up. A new arrival joins behind
+# everything of its own priority and ahead of everything lower, so with
+# "first_emails" a new step-1 email lands behind the step-1 emails already
+# waiting but in front of every follow-up. "queue" is plain arrival order.
+SEND_PRIORITIES = ("first_emails", "follow_ups", "queue")
+MANUAL_KEY = "moved"
+
+
+def _priority_key(priority: str, step_order: int) -> int:
+    if priority == "follow_ups":
+        return -step_order
+    if priority == "queue":
+        return 0
+    return step_order
+
+
+def _step_orders(db: Session, jobs: list[Job]) -> dict[str, int]:
+    """job id -> the step_order of the step it sends."""
+    step_ids = {(j.payload or {}).get("step_id") for j in jobs} - {None}
+    if not step_ids:
+        return {}
+    orders = dict(
+        db.execute(
+            select(SequenceStep.id, SequenceStep.step_order).where(
+                SequenceStep.id.in_(step_ids)
+            )
+        ).all()
+    )
+    return {j.id: orders.get((j.payload or {}).get("step_id"), 0) for j in jobs}
+
+
+def _org_priority(db: Session, org_id: str) -> str:
+    org = db.get(Org, org_id)
+    value = getattr(org, "send_priority", "") or "first_emails"
+    return value if value in SEND_PRIORITIES else "first_emails"
+
+
+def place_new_sends(db: Session, org_id: str, new_jobs: list[Job]) -> None:
+    """Give unranked sends a rank by the org's step priority.
+
+    Each goes straight after the last send of equal or higher priority that
+    nobody moved by hand. Ignoring hand-moved rows is what keeps a manual
+    "to bottom" at the bottom and a manual "to top" on top as the line grows
+    around them. Ranks are fractional, so an insert touches one row; the line
+    is renumbered only when two neighbours get too close to split.
+    """
+    if not new_jobs:
+        return
+    priority = _org_priority(db, org_id)
+    new_ids = {j.id for j in new_jobs}
+    line = [j for j in open_send_jobs(db, org_id) if j.id not in new_ids and j.rank is not None]
+    steps = _step_orders(db, line + new_jobs)
+    for job in new_jobs:
+        mine = _priority_key(priority, steps.get(job.id, 0))
+        index = 0
+        for i, other in enumerate(line):
+            if (other.payload or {}).get(MANUAL_KEY):
+                continue
+            if _priority_key(priority, steps.get(other.id, 0)) <= mine:
+                index = i + 1
+        before = line[index - 1].rank if index > 0 else None
+        after = line[index].rank if index < len(line) else None
+        if before is None and after is None:
+            job.rank = 1.0
+        elif before is None:
+            job.rank = after - 1.0
+        elif after is None:
+            job.rank = before + 1.0
+        elif after - before > 1e-6:
+            job.rank = (before + after) / 2
+        else:
+            for n, other in enumerate(line, start=1):
+                other.rank = float(n)
+            job.rank = index + 0.5
+        line.insert(index, job)
+
+
+def resort_line(db: Session, org_id: str, now: datetime) -> int:
+    """Re-order the whole line by the org's step priority, keeping each
+    step's current order. Clears hand moves: changing the setting is asking
+    for the line in that order."""
+    priority = _org_priority(db, org_id)
+    line = open_send_jobs(db, org_id)
+    steps = _step_orders(db, line)
+    ordered = sorted(
+        enumerate(line), key=lambda pair: (_priority_key(priority, steps.get(pair[1].id, 0)), pair[0])
+    )
+    for n, (_old, job) in enumerate(ordered, start=1):
+        job.rank = float(n)
+        if (job.payload or {}).get(MANUAL_KEY):
+            job.payload = {k: v for k, v in job.payload.items() if k != MANUAL_KEY}
+    dispatch_line(db, org_id, now)
+    return len(ordered)
+
 
 def move_in_line(
     db: Session,
@@ -738,6 +820,10 @@ def move_in_line(
 
     for index, job in enumerate(order, start=1):
         job.rank = float(index)
+    # Remembered so new arrivals file in around a hand-placed row rather than
+    # beside it (see place_new_sends).
+    for job in picked:
+        job.payload = {**(job.payload or {}), MANUAL_KEY: True}
     dispatch_line(db, org_id, now)
     return len(picked)
 

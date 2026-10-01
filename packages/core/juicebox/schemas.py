@@ -66,10 +66,13 @@ class OrgSendingOut(BaseModel):
     paused_at: datetime | None
     paused_by_email: str | None
     held_count: int
+    send_priority: str = "first_emails"
 
 
 class OrgSendingPatch(BaseModel):
-    paused: bool
+    paused: bool | None = None
+    # first_emails | follow_ups | queue. Changing it re-sorts the whole line.
+    send_priority: Literal["first_emails", "follow_ups", "queue"] | None = None
 
 
 class InFlightRow(BaseModel):

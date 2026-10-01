@@ -60,7 +60,34 @@ def _sending_out(db, org: Org) -> OrgSendingOut:
         paused_by_email=paused_by_email,
         held_count=held_count(db, org_id=org.id),
         send_priority=org.send_priority or "first_emails",
+        **_pacing_out(db, org),
     )
+
+
+def _pacing_out(db, org: Org) -> dict:
+    from ..outreach.rotation import gap_seconds
+    from ..outreach.window import closes_at, next_open, org_window
+
+    now = utcnow()
+    window = org_window(org)
+    opens = next_open(window, now)
+    low, _high = gap_seconds(db, org.id)
+    return {
+        "send_gap_enabled": org.send_gap_enabled is not False,
+        # The number in force, so the field shows what is actually used.
+        "send_gap_seconds": org.send_gap_seconds if org.send_gap_seconds is not None else low or 40,
+        "send_gap_is_default": org.send_gap_seconds is None,
+        "send_window_enabled": bool(org.send_window_enabled),
+        "send_window_start": org.send_window_start or "09:00",
+        "send_window_end": org.send_window_end or "17:00",
+        "send_window_tz": org.send_window_tz or "America/Los_Angeles",
+        "send_window_days": sorted(org.send_window_days or []),
+        "send_window_breaks": list(org.send_window_breaks or []),
+        "send_window_open_now": opens <= now,
+        "send_window_next_change": (closes_at(window, now) if opens <= now else opens)
+        if window.enabled
+        else None,
+    }
 
 
 @router.get("/sending", response_model=OrgSendingOut)
@@ -84,6 +111,42 @@ def patch_sending(
     elif payload.paused is False:
         org.outreach_paused_at = None
         org.outreach_paused_by = None
+    if payload.send_gap_enabled is not None:
+        org.send_gap_enabled = payload.send_gap_enabled
+    if payload.send_gap_seconds is not None:
+        org.send_gap_seconds = payload.send_gap_seconds
+    if payload.send_window_enabled is not None:
+        org.send_window_enabled = payload.send_window_enabled
+    if payload.send_window_start is not None:
+        org.send_window_start = payload.send_window_start
+    if payload.send_window_end is not None:
+        org.send_window_end = payload.send_window_end
+    if payload.send_window_tz is not None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(payload.send_window_tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise HTTPException(status_code=422, detail="Unknown timezone") from None
+        org.send_window_tz = payload.send_window_tz
+    if payload.send_window_days is not None:
+        days = sorted({d for d in payload.send_window_days if 0 <= d <= 6})
+        if not days:
+            raise HTTPException(status_code=422, detail="Pick at least one sending day")
+        org.send_window_days = days
+    if payload.send_window_breaks is not None:
+        breaks = sorted(
+            ({"start": b.start, "end": b.end} for b in payload.send_window_breaks),
+            key=lambda b: b["start"],
+        )
+        for b in breaks:
+            if b["start"] >= b["end"]:
+                raise HTTPException(status_code=422, detail="A break must end after it starts")
+        org.send_window_breaks = breaks
+    if (payload.send_window_start or payload.send_window_end) and (
+        (org.send_window_start or "09:00") == (org.send_window_end or "17:00")
+    ):
+        raise HTTPException(status_code=422, detail="Start and end must differ")
     if payload.send_priority is not None and payload.send_priority != org.send_priority:
         from ..outreach.sequencer import resort_line
 

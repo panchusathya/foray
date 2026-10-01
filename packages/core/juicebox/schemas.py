@@ -61,18 +61,53 @@ class OrgPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+_HHMM = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
+
+
+class SendBreak(BaseModel):
+    # A pause inside sending hours, e.g. lunch: 12:00 to 13:00.
+    start: str = Field(pattern=_HHMM)
+    end: str = Field(pattern=_HHMM)
+
+
 class OrgSendingOut(BaseModel):
     paused: bool
     paused_at: datetime | None
     paused_by_email: str | None
     held_count: int
     send_priority: str = "first_emails"
+    # Gap between two automated emails from one sending domain.
+    send_gap_enabled: bool = True
+    send_gap_seconds: int = 40
+    # Whether the gap is the org's own number or the deployment default.
+    send_gap_is_default: bool = True
+    # Sending hours: candidate email only between start and end (24h "HH:MM")
+    # on these weekdays (0 = Monday) in this timezone.
+    send_window_enabled: bool = False
+    send_window_start: str = "09:00"
+    send_window_end: str = "17:00"
+    send_window_tz: str = "America/Los_Angeles"
+    send_window_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
+    send_window_breaks: list[SendBreak] = Field(default_factory=list)
+    # Derived, for the banner: is it open right now, and when does it open/close.
+    send_window_open_now: bool = True
+    send_window_next_change: datetime | None = None
+
+
 
 
 class OrgSendingPatch(BaseModel):
     paused: bool | None = None
     # first_emails | follow_ups | queue. Changing it re-sorts the whole line.
     send_priority: Literal["first_emails", "follow_ups", "queue"] | None = None
+    send_gap_enabled: bool | None = None
+    send_gap_seconds: int | None = Field(default=None, ge=1, le=3600)
+    send_window_enabled: bool | None = None
+    send_window_start: str | None = Field(default=None, pattern=_HHMM)
+    send_window_end: str | None = Field(default=None, pattern=_HHMM)
+    send_window_tz: str | None = Field(default=None, max_length=64)
+    send_window_days: list[int] | None = Field(default=None, max_length=7)
+    send_window_breaks: list[SendBreak] | None = Field(default=None, max_length=8)
 
 
 class InFlightRow(BaseModel):

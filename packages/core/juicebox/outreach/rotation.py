@@ -40,35 +40,61 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-def send_spacing() -> timedelta:
-    """Shortest gap between two automated emails from one mailbox. Zero disables it."""
-    return timedelta(seconds=max(get_settings().outreach_send_spacing_seconds, 0))
+def gap_seconds(db: Session, org_id: str | None) -> tuple[int, int]:
+    """(min, max) seconds between two automated emails on one domain.
 
-
-def send_gap(*parts: object) -> timedelta:
-    """The gap in front of one particular send: somewhere in [min, max].
-
-    A fixed sixty seconds is itself a machine signature, so each send gets its
-    own gap. It is a hash rather than ``random`` so the worker and the Outbox
-    preview agree on it.
+    The org's own setting wins (a fixed number, or off); otherwise the
+    deployment default. A deployment default of 0 switches spacing off
+    everywhere, which is what the test suite runs with.
     """
+    from ..models import Org
+
     settings = get_settings()
     low = max(settings.outreach_send_spacing_seconds, 0)
     high = max(settings.outreach_send_spacing_max_seconds, low)
-    if high == low:
-        return timedelta(seconds=low)
+    if high == 0:
+        return 0, 0
+    org = db.get(Org, org_id) if org_id else None
+    if org is not None and getattr(org, "send_gap_enabled", True) is False:
+        return 0, 0
+    own = getattr(org, "send_gap_seconds", None) if org is not None else None
+    if own is not None:
+        own = max(int(own), 0)
+        return own, own
+    return low, high
+
+
+def send_gap(*parts: object, low: int, high: int) -> timedelta:
+    """The gap in front of one particular send: somewhere in [low, high].
+
+    A hash rather than ``random`` so the worker and the Outbox preview agree.
+    """
+    if high <= low:
+        return timedelta(seconds=max(low, 0))
     digest = hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()
     return timedelta(seconds=low + int(digest[:8], 16) % (high - low + 1))
 
 
-def mailbox_last_sent_at(db: Session, connection: MailboxConnection) -> datetime | None:
-    """This mailbox's latest automated send: its own stamp, or the newest sent
-    message carrying its id (sends made before the stamp existed)."""
-    stamped = _aware(connection.last_sent_at)
+def domain_of(address: str | None) -> str:
+    address = (address or "").strip().lower()
+    return address.rsplit("@", 1)[-1] if "@" in address else ""
+
+
+def domain_mailboxes(db: Session, org_id: str, domain: str) -> list[MailboxConnection]:
+    rows = db.scalars(select(MailboxConnection).where(MailboxConnection.org_id == org_id)).all()
+    return [row for row in rows if domain_of(row.address) == domain]
+
+
+def domain_last_sent_at(db: Session, org_id: str, domain: str) -> datetime | None:
+    """The newest automated send from any mailbox on this domain."""
+    boxes = domain_mailboxes(db, org_id, domain)
+    if not boxes:
+        return None
+    stamped = max((v for v in (_aware(b.last_sent_at) for b in boxes) if v is not None), default=None)
     recorded = _aware(
         db.scalar(
             select(func.max(Message.sent_at)).where(
-                Message.mailbox_id == connection.id,
+                Message.mailbox_id.in_([b.id for b in boxes]),
                 Message.direction == "outbound",
                 Message.status == "sent",
             )
@@ -82,17 +108,18 @@ def mailbox_gap_wait(
 ) -> datetime | None:
     """When this mailbox may send again, if that is later than now.
 
-    The gap is per mailbox: twenty mailboxes each send about once a minute,
-    side by side. One shared clock for the whole org made two sequences on
-    different mailboxes take turns, so a pool with room sat idle behind a
-    backlog it could not help with.
+    The clock is the sending DOMAIN's, shared by every mailbox on it: mail
+    providers rate a domain, not a mailbox, and twenty mailboxes each sending
+    once a minute read to them as one domain sending twenty a minute.
     """
-    if not send_spacing():
+    low, high = gap_seconds(db, connection.org_id)
+    if high <= 0:
         return None
-    last = mailbox_last_sent_at(db, connection)
+    domain = domain_of(connection.address)
+    last = domain_last_sent_at(db, connection.org_id, domain)
     if last is None:
         return None
-    opens = last + send_gap(connection.id, int(last.timestamp()))
+    opens = last + send_gap(domain, int(last.timestamp()), low=low, high=high)
     return opens if opens > now else None
 
 

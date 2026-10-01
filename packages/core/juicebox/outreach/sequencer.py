@@ -36,10 +36,11 @@ from . import templates
 from .ai_directives import resolve_directives
 from .personalize import personalize, sender_context
 from .replies import HUMAN_INTENTS, ReplyVerdict, _stop_for, classify_reply
+from .rotation import gap_seconds
 from .rotation import send_gap as _rotation_send_gap
-from .rotation import send_spacing as _rotation_send_spacing
 from .sender import OutboundEmail, preview_connection, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
+from .window import next_open, org_window
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +433,6 @@ def preview_step(
 
 # The gap helpers live in rotation (no import cycle there); re-exported
 # here because this is where the send path and its callers look for them.
-send_spacing = _rotation_send_spacing
 send_gap = _rotation_send_gap
 
 
@@ -484,12 +484,13 @@ def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
     org-wide clock covers only the globally configured provider, which has no
     mailbox to hang a clock on.
     """
-    if not send_spacing():
+    low, high = gap_seconds(db, org_id)
+    if high <= 0:
         return None
     last = last_mail_sent_at(db, org_id)
     if last is None:
         return None
-    opens = last + send_gap(org_id, int(last.timestamp()))
+    opens = last + send_gap(org_id, int(last.timestamp()), low=low, high=high)
     return opens if opens > now else None
 
 
@@ -550,8 +551,11 @@ class Lane:
     frees: datetime | None
     # How many mailboxes in it can send (have room); sends go side by side.
     servers: int
-    # The earliest moment one of them is out of its gap.
+    # The earliest moment one of them is out of its gap (and inside the
+    # org's sending hours).
     opens: datetime
+    # The sending domain whose clock it waits on ("" for the global provider).
+    domain: str = ""
 
 
 class _LaneRoom:
@@ -567,12 +571,14 @@ class _LaneRoom:
     def __init__(self, db: Session, org_id: str, now: datetime) -> None:
         self.db, self.org_id, self.now = db, org_id, now
         self._cache: dict[tuple, Lane] = {}
+        org = db.get(Org, org_id)
+        self.window_opens = next_open(org_window(org), now) if org is not None else now
 
     def _opens(self, connections) -> datetime:
         from .rotation import mailbox_gap_wait
 
         waits = [mailbox_gap_wait(self.db, c, self.now) or self.now for c in connections]
-        return min(waits, default=self.now)
+        return max(min(waits, default=self.now), self.window_opens)
 
     def _single(self, key: tuple) -> Lane:
         from ..models import MailboxConnection
@@ -581,16 +587,19 @@ class _LaneRoom:
         connection = self.db.get(MailboxConnection, key[1])
         if connection is None or connection.status != "active" or not connection.send_enabled:
             return Lane(key, None, 1, self.now)
+        from .rotation import domain_of
+
         if remaining_capacity(self.db, connection=connection, now=self.now) <= 0:
             return Lane(key, frees_at(self.db, connection=connection, now=self.now), 0, self.now)
-        return Lane(key, None, 1, self._opens([connection]))
+        return Lane(key, None, 1, self._opens([connection]), domain_of(connection.address))
 
     def _pool(self, key: tuple) -> Lane:
         from .rotation import active_mailboxes, eligible_mailboxes, frees_at, remaining_capacity
 
         if not active_mailboxes(self.db, org_id=self.org_id):
             # No mailbox at all: the global provider sends, on the org clock.
-            return Lane(key, None, 1, spacing_wait(self.db, self.org_id, self.now) or self.now)
+            opens = spacing_wait(self.db, self.org_id, self.now) or self.now
+            return Lane(key, None, 1, max(opens, self.window_opens))
         pool = eligible_mailboxes(self.db, org_id=self.org_id, only=list(key[1]) or None)
         if not pool:
             return Lane(key, self.now + HOLD_DEFER, 0, self.now)
@@ -599,7 +608,9 @@ class _LaneRoom:
             return Lane(
                 key, min(frees_at(self.db, connection=c, now=self.now) for c in pool), 0, self.now
             )
-        return Lane(key, None, len(roomy), self._opens(roomy))
+        from .rotation import domain_of
+
+        return Lane(key, None, len(roomy), self._opens(roomy), domain_of(roomy[0].address))
 
     def lane(self, enrollment: Enrollment, sequence: Sequence) -> Lane:
         from .sender import _rotation_subset
@@ -1458,21 +1469,28 @@ def send_step(
 
 
 def sending_hold(
-    db: Session, sequence: Sequence, *, now: datetime, org: Org | None = None
+    db: Session,
+    sequence: Sequence,
+    *,
+    now: datetime,
+    org: Org | None = None,
+    include_window: bool = True,
 ) -> str | None:
     """Why outbound is held for this sequence right now, or None.
 
-    Org kill switch first, then sequence pause. The daily cap is a different
-    deferral — it is checked later in ``process_enrollment`` so the outbox can
-    name the reason separately.
+    Org kill switch first, then sequence pause, then the org's sending hours
+    ("outside_hours"). The daily cap is a different deferral -- it is checked
+    later in ``process_enrollment`` so the outbox can name the reason
+    separately.
     """
-    del now  # holds are not time-windowed; the signature matches every other gate
     if org is None:
         org = db.get(Org, sequence.org_id)
     if org is not None and org.outreach_paused_at is not None:
         return "org_paused"
     if sequence.status != "active":
         return "sequence_paused"
+    if include_window and org is not None and next_open(org_window(org), now) > now:
+        return "outside_hours"
     return None
 
 
@@ -1593,7 +1611,9 @@ def process_enrollment(
         # long the job sleeps. Deferred, never failed: the permanent send key
         # must survive to send later.
         if resolved.deferred and resolved.reason == "spacing":
-            enrollment.gap_retry_at = resolved.retry_at or now + send_spacing()
+            enrollment.gap_retry_at = resolved.retry_at or now + timedelta(
+                seconds=max(gap_seconds(db, sequence.org_id)[0], 1)
+            )
             return "deferred", None
         if resolved.deferred:
             enrollment.mailbox_retry_at = resolved.retry_at or now + HOLD_DEFER

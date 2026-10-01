@@ -272,7 +272,7 @@ class TestTheLineKnowsWhichPoolsAreFull:
         assert counts["awake"] == min(len(rows), 1 + LANE_SLACK)
 
 
-class TestTheGapIsPerMailbox:
+class TestTheGapIsPerDomain:
     @pytest.fixture(autouse=True)
     def gap(self, monkeypatch):
         from juicebox.config import reset_settings_cache
@@ -283,33 +283,44 @@ class TestTheGapIsPerMailbox:
         yield
         reset_settings_cache()
 
-    def test_mailboxes_send_side_by_side(self, session, pool):
+    def _due(self, session, pool, n):
         sequence = pool["sequence"]
         now = utcnow()
         rows = enroll_candidates(
-            session, sequence=sequence, candidate_ids=[c.id for c in pool["candidates"][:3]]
+            session, sequence=sequence, candidate_ids=[c.id for c in pool["candidates"][:n]]
         )
         for row in rows:
             row.next_send_at = now
         session.commit()
+        return rows, now
 
-        summary = run_due(session, org_id=sequence.org_id, now=now)
+    def test_mailboxes_on_one_domain_share_one_clock(self, session, pool):
+        """Providers judge goforay.io, not alpha@ -- three mailboxes on one
+        domain sending at once read as one domain sending three at once."""
+        _rows, now = self._due(session, pool, 3)
 
-        # Three due, three mailboxes out of their gap: all three go at once,
-        # one from each mailbox -- never two from the same one.
+        summary = run_due(session, org_id=pool["sequence"].org_id, now=now)
+
+        assert summary.sent == 1
+
+    def test_different_domains_send_side_by_side(self, session, pool):
+        _alpha, bravo, charlie = pool["connections"]
+        bravo.address, charlie.address = "bravo@other.io", "charlie@third.io"
+        session.commit()
+        _rows, now = self._due(session, pool, 3)
+
+        summary = run_due(session, org_id=pool["sequence"].org_id, now=now)
+
         assert summary.sent == 3
-        assert sorted(pool["log"]) == ["alpha@goforay.io", "bravo@goforay.io", "charlie@goforay.io"]
+        assert sorted(pool["log"]) == ["alpha@goforay.io", "bravo@other.io", "charlie@third.io"]
 
-    def test_one_mailbox_still_waits_its_own_gap(self, session, pool):
-        sequence = pool["sequence"]
-        alpha = pool["connections"][0]
-        now = utcnow()
-        [row] = enroll_candidates(
-            session, sequence=sequence, candidate_ids=[pool["candidates"][0].id]
-        )
-        row.next_send_at = now
-        row.mailbox_id = alpha.id  # a follow-up pinned to alpha
-        alpha.last_sent_at = now - timedelta(seconds=20)
+    def test_a_follow_up_waits_out_its_domains_gap(self, session, pool):
+        alpha, bravo, _charlie = pool["connections"]
+        rows, now = self._due(session, pool, 1)
+        [row] = rows
+        row.mailbox_id = alpha.id  # pinned to alpha
+        # A *different* mailbox on the same domain sent 20 seconds ago.
+        bravo.last_sent_at = now - timedelta(seconds=20)
         session.commit()
 
         status, _ = process_enrollment(session, row, now=now)
@@ -320,30 +331,45 @@ class TestTheGapIsPerMailbox:
 
         status, _ = process_enrollment(session, row, now=now + timedelta(seconds=41))
         assert status == "sent"
-        assert pool["log"] == ["alpha@goforay.io"]
 
-    def test_rotation_skips_a_mailbox_inside_its_gap(self, session, pool):
-        sequence = pool["sequence"]
-        alpha, bravo, charlie = pool["connections"]
+    def test_rotation_picks_a_mailbox_on_a_domain_that_is_free(self, session, pool):
+        alpha, bravo, _charlie = pool["connections"]
+        bravo.address = "bravo@other.io"
         now = utcnow()
-        alpha.last_sent_at = bravo.last_sent_at = now - timedelta(seconds=10)
+        alpha.last_sent_at = now - timedelta(seconds=10)  # goforay.io is resting
         session.commit()
 
-        resolved = resolve_sender(session, sequence, now=now)
+        resolved = resolve_sender(session, pool["sequence"], now=now)
 
         assert not resolved.deferred
-        assert resolved.connection.id == charlie.id
+        assert resolved.connection.id == bravo.id
 
-    def test_every_mailbox_resting_is_a_short_wait_not_a_full_pool(self, session, pool):
-        sequence = pool["sequence"]
+    def test_a_resting_domain_is_a_short_wait_not_a_full_pool(self, session, pool):
         now = utcnow()
-        for connection in pool["connections"]:
-            connection.last_sent_at = now - timedelta(seconds=30)
+        pool["connections"][0].last_sent_at = now - timedelta(seconds=30)
         session.commit()
 
-        resolved = resolve_sender(session, sequence, now=now)
+        resolved = resolve_sender(session, pool["sequence"], now=now)
 
         assert resolved.deferred and resolved.reason == "spacing"
+
+    def test_the_orgs_own_gap_wins_and_off_means_off(self, session, pool):
+        from juicebox.models import Org
+        from juicebox.outreach.rotation import mailbox_gap_wait
+
+        alpha = pool["connections"][0]
+        org = session.get(Org, alpha.org_id)
+        now = utcnow()
+        alpha.last_sent_at = now - timedelta(seconds=5)
+        org.send_gap_seconds = 40
+        session.commit()
+        assert mailbox_gap_wait(session, alpha, now).replace(tzinfo=None) == (
+            now + timedelta(seconds=35)
+        ).replace(tzinfo=None)
+
+        org.send_gap_enabled = False
+        session.commit()
+        assert mailbox_gap_wait(session, alpha, now) is None
 
 
 class TestSpread:

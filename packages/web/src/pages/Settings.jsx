@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
+import { SendingPace } from '../components/SendingPace.jsx';
 import { MAIL_PROVIDERS, api, providerLabel } from '../lib/api.js';
 import { activityVisible, rowVisible } from '../lib/mailboxActivity.js';
 import { useCurrentProject } from '../lib/project.jsx';
@@ -281,6 +282,8 @@ export function SettingsPage() {
           {sending?.paused ? 'Sending: off' : 'Sending: on'}
         </button>
       </div>
+
+      {sending ? <SendingPace sending={sending} onSaved={reloadSending} /> : null}
 
       {/* A finished run keeps its "done" status forever, so filtering on
           "not idle" left August's sweep on screen in late September. See

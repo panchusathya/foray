@@ -193,6 +193,10 @@ def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
     return {"queued_sends": queued, **line}
 
 
+def org_of(db: Session, enrollment: Enrollment) -> Org | None:
+    return db.get(Org, enrollment.sequence.org_id)
+
+
 def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     from sqlalchemy.orm import selectinload
 
@@ -223,7 +227,13 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
         result: dict[str, Any] = {"defer": True, "status": status}
         retry_at = getattr(enrollment, "mailbox_retry_at", None)
         gap_at = getattr(enrollment, "gap_retry_at", None)
-        if sending_hold(db, enrollment.sequence, now=now):
+        hold = sending_hold(db, enrollment.sequence, now=now)
+        if hold == "outside_hours":
+            # Wait for the window to open, keeping its place in line.
+            from .outreach.window import next_open, org_window
+
+            result["defer_until"] = next_open(org_window(org_of(db, enrollment)), now)
+        elif hold:
             result["defer_until"] = now + HOLD_DEFER
         elif gap_at is not None:
             # Its mailbox (or every mailbox with room in its pool) sent moments

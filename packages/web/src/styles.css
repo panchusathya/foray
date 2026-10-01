@@ -1610,3 +1610,14 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
 /* Sequence switches beside Enrollments: whole labels wrap, never words. */
 .sequence-switches { gap: 6px 14px; }
 .sequence-switches label { white-space: nowrap; }
+
+/* ---- sending pace & hours (components/SendingPace.jsx) ----------------- */
+.pace-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.switch-label { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; min-width: 260px; }
+.day-chip {
+  padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+  text-transform: none; letter-spacing: normal;
+}
+.day-chip.on { color: var(--accent); background: var(--tint); border-color: var(--accent); }
+.day-chip:disabled { opacity: 0.5; }

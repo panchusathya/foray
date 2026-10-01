@@ -307,7 +307,10 @@ export const api = {
   listInFlight: (params = {}) => {
     const query = new URLSearchParams();
     if (params.state) query.set('state', params.state);
-    if (params.sequence_id) query.set('sequence_id', params.sequence_id);
+    // One id or several: the endpoint takes the parameter repeated.
+    for (const id of [].concat(params.sequence_id ?? [])) {
+      if (id) query.append('sequence_id', id);
+    }
     if (params.limit != null) query.set('limit', String(params.limit));
     if (params.offset != null) query.set('offset', String(params.offset));
     const suffix = query.toString();

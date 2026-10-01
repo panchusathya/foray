@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ColGroup, ResizeHandle, useColumnWidths } from '../components/ResizableColumns.jsx';
+import { MultiSelect } from '../components/MultiSelect.jsx';
 import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { IN_FLIGHT_STATE_LABELS, api } from '../lib/api.js';
@@ -86,7 +87,8 @@ function confirmCancel(action, count) {
 
 export function OutboxPage() {
   const [state, setState] = useState('');
-  const [sequenceId, setSequenceId] = useState('');
+  // Empty means every sequence; otherwise only these.
+  const [sequenceIds, setSequenceIds] = useState([]);
   const [selected, setSelected] = useState(new Map());
   const [busy, setBusy] = useState('');
   const [note, setNote] = useState('');
@@ -104,7 +106,7 @@ export function OutboxPage() {
   const columns = useColumnWidths('outbox.columns', COLUMN_WIDTHS);
   const params = {
     state: state || undefined,
-    sequence_id: sequenceId || undefined,
+    sequence_id: sequenceIds.length ? sequenceIds : undefined,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   };
@@ -123,7 +125,7 @@ export function OutboxPage() {
   }, [key]);
 
   // A filter change starts again at the first page.
-  useEffect(() => setPage(0), [state, sequenceId]);
+  useEffect(() => setPage(0), [state, sequenceIds]);
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   function onPick(row, index, event) {
@@ -266,21 +268,20 @@ export function OutboxPage() {
             ))}
           </select>
         </label>
-        <label className="row small" style={{ gap: 6 }}>
-          Sequence
-          <select
-            value={sequenceId}
-            data-testid="outbox-sequence"
-            onChange={(event) => setSequenceId(event.target.value)}
-          >
-            <option value="">All sequences</option>
-            {(sequences.data ?? []).map((sequence) => (
-              <option key={sequence.id} value={sequence.id}>
-                {sequence.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="row small" style={{ gap: 6 }}>
+          Sequences
+          <MultiSelect
+            testId="outbox-sequence"
+            allLabel="All sequences"
+            noun="sequences"
+            value={sequenceIds}
+            onChange={setSequenceIds}
+            options={(sequences.data ?? []).map((sequence) => ({
+              value: sequence.id,
+              label: sequence.name,
+            }))}
+          />
+        </div>
         <label
           className="row small"
           style={{ gap: 6 }}

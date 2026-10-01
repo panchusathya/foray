@@ -497,12 +497,12 @@ a.todo-row:hover { background: var(--tint); }
 
 .editor-grid {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
 @media (max-width: 900px) {
-  .editor-grid { grid-template-columns: 1fr; }
+  .editor-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 .step-item {
@@ -1530,3 +1530,83 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
   /* Cards, not a table, below 720 -- so no sideways minimum either. */
   .cp-ui .cp-grid, .cp-ui .cp-grid.has-select { min-width: 0; }
 }
+
+/* ---- spam score (components/SpamScore.jsx) ------------------------------ */
+.spam-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border);
+}
+.spam-chip.large { font-size: 13px; padding: 4px 12px; }
+.spam-chip .spam-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.spam-chip.low { color: var(--strong); background: var(--strong-soft); border-color: var(--strong-border); }
+.spam-chip.medium { color: var(--partial); background: var(--partial-soft); border-color: var(--partial-border); }
+.spam-chip.high { color: var(--miss); background: var(--miss-soft); border-color: var(--miss-border); }
+
+.spam-card {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px; border-radius: var(--radius);
+  border: 1px solid var(--border); border-left-width: 5px;
+  background: var(--surface);
+}
+.spam-card.low { border-left-color: var(--strong); background: var(--strong-soft); }
+.spam-card.medium { border-left-color: var(--partial); background: var(--partial-soft); }
+.spam-card.high { border-left-color: var(--miss); background: var(--miss-soft); }
+.spam-head { display: flex; gap: 14px; align-items: center; }
+.spam-score { display: flex; align-items: baseline; gap: 2px; min-width: 76px; }
+.spam-number { font-size: 34px; font-weight: 700; line-height: 1; }
+.spam-card.low .spam-number { color: var(--strong); }
+.spam-card.medium .spam-number { color: var(--partial); }
+.spam-card.high .spam-number { color: var(--miss); }
+.spam-outof { color: var(--muted); font-size: 13px; }
+.spam-title { font-size: 14px; }
+.spam-meter { height: 6px; border-radius: 999px; background: var(--tint2); overflow: hidden; }
+.spam-meter > div { height: 100%; border-radius: 999px; }
+.spam-card.low .spam-meter > div { background: var(--strong); }
+.spam-card.medium .spam-meter > div { background: var(--partial); }
+.spam-card.high .spam-meter > div { background: var(--miss); }
+.spam-findings { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.spam-finding { padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+.spam-fix { margin-top: 2px; }
+.spam-group { padding-top: 2px; }
+
+/* ---- enrollments (components/EnrollmentList.jsx) ------------------------ */
+.enrol-list { display: flex; flex-direction: column; gap: 10px; }
+.enrol-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 10px 12px; border-radius: var(--radius);
+  background: var(--tint3); border: 1px solid var(--border);
+}
+.enrol-total { font-size: 13px; }
+.enrol-toggle { font-weight: 600; }
+.enrol-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px;
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+  text-transform: capitalize; letter-spacing: normal; font-weight: 500;
+}
+.enrol-chip strong { color: var(--text, inherit); }
+.enrol-chip.strong { color: var(--strong); border-color: var(--strong-border); }
+.enrol-chip.partial { color: var(--partial); border-color: var(--partial-border); }
+.enrol-chip.miss { color: var(--miss); border-color: var(--miss-border); }
+.enrol-chip.accent { color: var(--accent); }
+.enrol-chip.on { background: var(--tint); box-shadow: inset 0 0 0 1px currentColor; }
+.enrol-scroll {
+  max-height: 440px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+/* As wide as its longest row (never narrower than the box), so a long line
+   scrolls sideways instead of being cut off or wrapped. */
+.enrol-rows { margin: 0; padding: 0; list-style: none; width: max-content; min-width: 100%; }
+.enrol-row { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.enrol-row:last-child { border-bottom: none; }
+.enrol-row:hover { background: var(--tint3); }
+.enrol-line { display: flex; align-items: center; gap: 8px; }
+.enrol-line + .enrol-line { margin-top: 2px; }
+.enrol-right { margin-left: auto; padding-left: 16px; display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.enrol-next { flex: 1; }
+.enrol-name { font-weight: 500; }
+
+/* Sequence switches beside Enrollments: whole labels wrap, never words. */
+.sequence-switches { gap: 6px 14px; }
+.sequence-switches label { white-space: nowrap; }

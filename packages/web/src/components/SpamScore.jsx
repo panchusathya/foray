@@ -8,9 +8,6 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { api } from '../lib/api.js';
-import { Badge } from './common.jsx';
-
-const TONE = { low: 'strong', medium: 'partial', high: 'miss' };
 const LABEL = { low: 'Low', medium: 'Medium', high: 'High' };
 
 export function useSpamCheck(steps, { delay = 500, trackOpens = true, trackClicks = true } = {}) {
@@ -41,86 +38,106 @@ export function useSpamCheck(steps, { delay = 500, trackOpens = true, trackClick
   return results;
 }
 
-export function SpamBadge({ report }) {
+export function SpamBadge({ report, large = false }) {
   if (!report) return null;
   return (
-    <Badge tone={TONE[report.level]}>
-      <span data-testid="spam-badge">
-        Spam risk: {LABEL[report.level]} · {report.score}
-      </span>
-    </Badge>
+    <span className={`spam-chip ${report.level}${large ? ' large' : ''}`} data-testid="spam-badge">
+      <span className="spam-dot" aria-hidden="true" />
+      Spam risk: {LABEL[report.level]} · {report.score}
+    </span>
   );
 }
 
 function Finding({ finding }) {
   return (
-    <li className="small" style={{ marginBottom: 6 }}>
-      <strong>{finding.title}</strong>{' '}
-      <span className="muted">+{finding.points}</span>
+    <li className="spam-finding">
+      <div className="row" style={{ gap: 6, alignItems: 'baseline' }}>
+        <strong>{finding.title}</strong>
+        <span className="muted small">+{finding.points}</span>
+      </div>
       {finding.matches?.length ? (
-        <>
-          {' — '}
+        <div className="small">
           {finding.matches.map((text, i) => (
             <span key={text}>
               {i ? ', ' : ''}
               <code>{text}</code>
             </span>
           ))}
-        </>
+        </div>
       ) : null}
-      <div className="muted">{finding.detail}</div>
-      {finding.fix ? <div>{finding.fix}</div> : null}
+      <div className="muted small">{finding.detail}</div>
+      {finding.fix ? <div className="small spam-fix">→ {finding.fix}</div> : null}
     </li>
   );
 }
 
+const HEADLINE = {
+  low: 'Looks clean',
+  medium: 'Some spam signals',
+  high: 'Likely to be filtered',
+};
+
+/** The editor's spam card: big, coloured by risk, with the top issues shown. */
 export function SpamPanel({ report }) {
   const [open, setOpen] = useState(false);
   if (!report) return null;
   const copy = report.findings.filter((f) => f.area !== 'delivery');
   const delivery = report.findings.filter((f) => f.area === 'delivery');
+  const top = report.findings.slice(0, 2);
+  const rest = report.findings.length - top.length;
   return (
-    <div className="card stack" data-testid="spam-panel" style={{ gap: 6 }}>
-      <div className="spread">
-        <div className="row">
-          <SpamBadge report={report} />
-          <span className="muted small">
-            copy {report.content_score} · sending setup {report.delivery_score} (lower is better)
-          </span>
+    <section
+      className={`spam-card ${report.level}`}
+      data-testid="spam-panel"
+      aria-label={`Spam risk ${LABEL[report.level]}, ${report.score} out of 100`}
+    >
+      <div className="spam-head">
+        <div className="spam-score">
+          <span className="spam-number">{report.score}</span>
+          <span className="spam-outof">/100</span>
         </div>
-        {report.findings.length ? (
-          <button type="button" className="tiny ghost" onClick={() => setOpen((v) => !v)}>
-            {open ? 'Hide details' : `Why? (${report.findings.length})`}
-          </button>
-        ) : null}
-      </div>
-      {open ? (
-        <>
-          {copy.length ? (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {copy.map((f) => (
-                <Finding key={f.code} finding={f} />
-              ))}
-            </ul>
-          ) : (
-            <div className="small muted">Nothing in the copy itself looks risky.</div>
-          )}
-          {delivery.length ? (
-            <>
-              <div className="small muted">How it is sent (the Track opens / Track clicks switches, not the wording):</div>
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
-                {delivery.map((f) => (
-                  <Finding key={f.code} finding={f} />
-                ))}
-              </ul>
-            </>
-          ) : null}
-          <div className="small muted">
-            A checklist of common filter signals with sample values in place of
-            variables — a guide, not a guarantee of where the email lands.
+        <div className="stack" style={{ gap: 4, flex: 1, minWidth: 0 }}>
+          <div className="row spread" style={{ gap: 8 }}>
+            <strong className="spam-title">
+              Spam risk: {LABEL[report.level]} — {HEADLINE[report.level]}
+            </strong>
+            <span className="muted small">lower is better</span>
           </div>
-        </>
+          <div className="spam-meter" aria-hidden="true">
+            <div style={{ width: `${Math.max(2, Math.min(100, report.score))}%` }} />
+          </div>
+          <div className="muted small">
+            Copy {report.content_score} · Sending setup {report.delivery_score}
+            {report.word_count ? ` · ${report.word_count} words` : ''}
+          </div>
+        </div>
+      </div>
+      {top.length ? (
+        <ul className="spam-findings">
+          {(open ? copy : top.filter((f) => f.area !== 'delivery')).map((f) => (
+            <Finding key={f.code} finding={f} />
+          ))}
+          {(open ? delivery : top.filter((f) => f.area === 'delivery')).length ? (
+            <li className="muted small spam-group">
+              How it is sent (the Track opens / Track clicks switches, not the wording):
+            </li>
+          ) : null}
+          {(open ? delivery : top.filter((f) => f.area === 'delivery')).map((f) => (
+            <Finding key={f.code} finding={f} />
+          ))}
+        </ul>
+      ) : (
+        <div className="small">Nothing here looks like spam to a filter.</div>
+      )}
+      {rest > 0 || open ? (
+        <button type="button" className="tiny ghost" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Show fewer' : `Show all ${report.findings.length} signals`}
+        </button>
       ) : null}
-    </div>
+      <div className="muted small">
+        A checklist of common filter signals with sample values in place of variables — a
+        guide, not a guarantee of where the email lands.
+      </div>
+    </section>
   );
 }

@@ -1030,6 +1030,9 @@ class Job(Base, TimestampMixin):
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     locked_by: Mapped[str] = mapped_column(String(80), default="")
     idempotency_key: Mapped[str] = mapped_column(String(200))
+    # Place in line among jobs that share a run_at; lower goes first. Only
+    # outreach.send sets it (the Outbox's priority order); null sorts last.
+    rank: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

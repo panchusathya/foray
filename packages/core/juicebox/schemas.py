@@ -88,6 +88,19 @@ class InFlightRow(BaseModel):
     reason: str | None = None
     # Only on state == "cancelled": when the operator stopped it.
     cancelled_at: datetime | None = None
+    # Place in the send line, 1 = next. None when not queued yet.
+    rank: int | None = None
+
+
+class InFlightMoveIn(BaseModel):
+    enrollment_ids: list[str] = Field(min_length=1, max_length=2000)
+    to: Literal["top", "up", "down", "bottom", "position"]
+    # 1-based, for to == "position".
+    position: int | None = Field(default=None, ge=1)
+
+
+class InFlightMoveOut(BaseModel):
+    moved: int
 
 
 class InFlightList(BaseModel):

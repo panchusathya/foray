@@ -156,53 +156,39 @@ def _schedule_next_tick(db: Session, *, org_id: str, kind: str, now) -> None:
 
 
 def _handle_outreach_tick(db: Session, job: Job, now) -> dict[str, Any]:
-    from .outreach.sequencer import due_enrollments, next_send_slot, send_gap, send_spacing
+    from .outreach.sequencer import dispatch_line, due_enrollments, next_rank
 
     org_id = job.payload.get("org_id") or job.org_id
-    due = []
+    queued = 0
+    rank = None
+    # due_enrollments is oldest-due first, so a new arrival joins the back of
+    # the line in the order it fell due. A job already in line keeps its rank;
+    # enqueue hands the existing row back untouched.
     for enrollment in due_enrollments(db, org_id=org_id, now=now):
         steps = sorted(enrollment.sequence.steps, key=lambda s: s.step_order)
-        if enrollment.current_step < len(steps):
-            due.append((enrollment, steps[enrollment.current_step]))
-    keys = {f"{KIND_OUTREACH_SEND}:{e.id}:{step.id}": (e, step) for e, step in due}
-    # A key with a live row keeps its slot; enqueue hands it back untouched.
-    # Only new (or failed, which enqueue revives) keys take the next minute,
-    # so every tick appends to the line rather than re-dealing it.
-    held = set(
-        db.scalars(
-            select(Job.idempotency_key).where(
-                Job.org_id == org_id,
-                Job.idempotency_key.in_(list(keys)),
-                Job.status != "failed",
-            )
-        )
-    ) if keys else set()
-    spacing = send_spacing()
-    slot = next_send_slot(db, org_id, now)
-    queued = 0
-    # due_enrollments is oldest-due first, so whoever was scheduled earliest
-    # goes out first.
-    for key, (enrollment, step) in keys.items():
-        run_at = now
-        if key not in held:
-            run_at = slot
-            if spacing:
-                slot += send_gap(enrollment.id, enrollment.current_step)
-        enqueue(
+        if enrollment.current_step >= len(steps):
+            continue
+        step = steps[enrollment.current_step]
+        sent = enqueue(
             db,
             org_id=org_id,
             kind=KIND_OUTREACH_SEND,
-            idempotency_key=key,
+            idempotency_key=f"{KIND_OUTREACH_SEND}:{enrollment.id}:{step.id}",
             payload={
                 "org_id": org_id,
                 "enrollment_id": enrollment.id,
                 "step_id": step.id,
             },
-            run_at=run_at,
+            run_at=now,
         )
+        if sent.rank is None and sent.status == "queued":
+            rank = next_rank(db, org_id) if rank is None else rank + 1
+            sent.rank = rank
         queued += 1
+    db.flush()
+    line = dispatch_line(db, org_id, now)
     _schedule_next_tick(db, org_id=org_id, kind=KIND_OUTREACH_TICK, now=now)
-    return {"queued_sends": queued}
+    return {"queued_sends": queued, **line}
 
 
 def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
@@ -210,9 +196,10 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
 
     from .outreach.sequencer import (
         HOLD_DEFER,
+        clear_blocked,
+        mark_blocked,
         process_enrollment,
         sending_hold,
-        spacing_defer_until,
         spacing_wait,
     )
 
@@ -233,12 +220,19 @@ def _handle_outreach_send(db: Session, job: Job, now) -> dict[str, Any]:
     )
     if status == "deferred":
         result: dict[str, Any] = {"defer": True, "status": status}
+        retry_at = getattr(enrollment, "mailbox_retry_at", None)
         if sending_hold(db, enrollment.sequence, now=now):
             result["defer_until"] = now + HOLD_DEFER
-        elif spacing_wait(db, enrollment.sequence.org_id, now) is not None:
-            result["defer_until"] = spacing_defer_until(
-                db, enrollment.sequence.org_id, now, job_id=job.id
-            )
+        elif retry_at is not None:
+            # A full mailbox: sleep until it has room, out of the tick's way.
+            result["defer_until"] = mark_blocked(job, retry_at, now)
+        elif (opens := spacing_wait(db, enrollment.sequence.org_id, now)) is not None:
+            # Inside the gap. The tick keeps only the head of the line awake,
+            # so this wakes with a handful of others and rank picks.
+            clear_blocked(job)
+            result["defer_until"] = opens
+        else:
+            result["defer_until"] = now + HOLD_DEFER
         return result
     if status == "failed" and enrollment.status == "active":
         # The step is still due. Marking the job succeeded spends the

@@ -635,6 +635,12 @@ a.todo-row:hover { background: var(--tint); }
   font-weight: 500;
 }
 .dgrid tbody tr:last-child td { border-bottom: none; }
+/* Wider than most windows on purpose: the wrap scrolls sideways rather than
+   ellipsing every column. */
+.dgrid.outbox-grid { min-width: 1280px; }
+.dgrid.outbox-grid th.pick, .dgrid.outbox-grid td.pick { width: 40px; }
+.dgrid.outbox-grid th.num, .dgrid.outbox-grid td.num { width: 56px; }
+.dgrid.outbox-grid th:last-child, .dgrid.outbox-grid td:last-child { width: 260px; }
 .dgrid tbody tr:hover { background: var(--tint3); }
 .dgrid td.num, .dgrid th.num { text-align: right; font-family: var(--mono); }
 .dgrid a { text-decoration: none; }

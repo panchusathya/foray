@@ -315,6 +315,8 @@ export const api = {
   },
   cancelInFlight: (payload) =>
     request('/v1/outreach/in-flight/cancel', { method: 'POST', body: payload }),
+  moveInFlight: (payload) =>
+    request('/v1/outreach/in-flight/move', { method: 'POST', body: payload }),
   reenrollInFlight: (payload) =>
     request('/v1/outreach/in-flight/reenroll', { method: 'POST', body: payload }),
 

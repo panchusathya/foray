@@ -22,7 +22,7 @@ requeues the same permanent idempotency key rather than failing the step.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -118,6 +118,38 @@ def sent_in_window(db: Session, *, mailbox_id: str, now: datetime) -> int:
         )
         or 0
     )
+
+
+def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> datetime:
+    """When this mailbox next has room: its oldest in-window send ages out.
+
+    ``now`` when it already has room. A send that waits on a full mailbox
+    sleeps until this moment rather than retrying every minute -- a thousand
+    blocked sends polling once a minute starves the worker and, worse, sat at
+    the front of the line while sends that could go waited behind them.
+    """
+    cap = max(connection.daily_send_cap, 0)
+    since = now - timedelta(hours=WINDOW_HOURS)
+    rows = list(
+        db.scalars(
+            select(Message.sent_at)
+            .where(
+                Message.mailbox_id == connection.id,
+                Message.direction == "outbound",
+                Message.status == "sent",
+                Message.sent_at >= since,
+            )
+            .order_by(Message.sent_at.asc())
+        )
+    )
+    if len(rows) < cap or not rows:
+        return now
+    # Room opens when enough of the oldest sends have left the window that
+    # fewer than ``cap`` remain.
+    oldest = rows[len(rows) - cap]
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=UTC)
+    return max(now, oldest + timedelta(hours=WINDOW_HOURS))
 
 
 def remaining_capacity(db: Session, *, connection: MailboxConnection, now: datetime) -> int:

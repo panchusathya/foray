@@ -24,6 +24,7 @@ from juicebox.models import (
 )
 from juicebox.outreach.rotation import (
     eligible_mailboxes,
+    frees_at,
     pick_mailbox,
     sent_in_window,
 )
@@ -130,6 +131,55 @@ class TestEligibility:
         )
         session.flush()
         assert sent_in_window(session, mailbox_id=connection.id, now=now) == 0
+
+
+class TestFreesAt:
+    def _sent(self, session, connection, candidate, at):
+        session.add(
+            Message(
+                org_id=connection.org_id,
+                candidate_id=candidate.id,
+                direction="outbound",
+                status="sent",
+                mailbox_id=connection.id,
+                sent_at=at,
+            )
+        )
+        session.flush()
+
+    def test_a_mailbox_with_room_frees_now(self, session, pool):
+        now = utcnow()
+        assert frees_at(session, connection=pool["connections"][0], now=now) == now
+
+    def test_a_full_mailbox_frees_when_its_oldest_send_leaves_the_window(
+        self, session, pool, outreach_fixture
+    ):
+        connection = pool["connections"][0]  # cap 2
+        candidate = outreach_fixture["candidates"][0]
+        now = utcnow()
+        oldest = now - timedelta(hours=20)
+        self._sent(session, connection, candidate, oldest)
+        self._sent(session, connection, candidate, now - timedelta(hours=1))
+
+        freed = frees_at(session, connection=connection, now=now)
+
+        assert freed.replace(tzinfo=None) == (oldest + timedelta(hours=24)).replace(tzinfo=None)
+
+    def test_a_deferred_send_knows_when_to_come_back(self, session, pool, outreach_fixture):
+        candidate = outreach_fixture["candidates"][0]
+        now = utcnow()
+        for connection in pool["connections"]:
+            self._sent(session, connection, candidate, now - timedelta(hours=10))
+            self._sent(session, connection, candidate, now - timedelta(hours=2))
+        pool["connections"][1].daily_send_cap = 2
+        session.flush()
+
+        resolved = resolve_sender(session, pool["sequence"], now=now)
+
+        assert resolved.deferred
+        assert resolved.retry_at.replace(tzinfo=None) == (now + timedelta(hours=14)).replace(
+            tzinfo=None
+        )
 
 
 class TestSpread:

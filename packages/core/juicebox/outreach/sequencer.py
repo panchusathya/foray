@@ -560,11 +560,34 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
     """Wake the head of the line; let everyone else sleep.
 
     A job blocked on a full mailbox sleeps until that mailbox has room and is
-    skipped here until then, so one stuck follow-up never holds the gap.
+    skipped here until then, so one stuck follow-up never holds the gap. A job
+    whose sequence (or org) is paused is skipped too: paused sends queued long
+    ago hold the best ranks, and waking them only to hear "held" again filled
+    the whole wake window with sends that could not go -- the first deploy of
+    this sent nothing at all.
     """
     wake_at = spacing_wait(db, org_id, now) or now
-    awake = asleep = blocked = 0
-    for job in open_send_jobs(db, org_id):
+    line = open_send_jobs(db, org_id)
+    org = db.get(Org, org_id)
+    org_paused = org is not None and org.outreach_paused_at is not None
+    live = set(
+        db.scalars(
+            select(Enrollment.id)
+            .join(Sequence, Sequence.id == Enrollment.sequence_id)
+            .where(
+                Sequence.org_id == org_id,
+                Sequence.status == "active",
+                Enrollment.status == "active",
+            )
+        )
+    )
+    awake = asleep = blocked = held = 0
+    for job in line:
+        if org_paused or (job.payload or {}).get("enrollment_id") not in live:
+            held += 1
+            if _aware(job.run_at) < now + HOLD_DEFER / 2:
+                job.run_at = now + HOLD_DEFER
+            continue
         until = _blocked_until(job)
         if until is not None and until > now:
             blocked += 1
@@ -581,7 +604,7 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
         # rewrite every row of a long line every minute.
         if _aware(job.run_at) < now + SLEEP / 2:
             job.run_at = now + SLEEP
-    return {"awake": awake, "asleep": asleep, "blocked": blocked}
+    return {"awake": awake, "asleep": asleep, "blocked": blocked, "held": held}
 
 
 def mark_blocked(job: Job, until: datetime | None, now: datetime) -> datetime:

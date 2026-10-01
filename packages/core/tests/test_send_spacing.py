@@ -11,7 +11,6 @@ from juicebox.models import Enrollment, Job, utcnow
 from juicebox.outreach.outbox import collect_in_flight
 from juicebox.outreach.sequencer import (
     BLOCKED_KEY,
-    WAKE_WINDOW,
     dispatch_line,
     enroll_candidates,
     move_in_line,
@@ -117,29 +116,53 @@ class TestTheTickBuildsALine:
 
         assert _line_enrollments(session, org_id)[0] == first.id
 
-    def test_only_the_head_of_the_line_is_awake(self, session, outreach_fixture, mailbox):
+    def test_only_the_head_of_the_line_is_awake(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        import juicebox.outreach.sequencer as sequencer
+
+        monkeypatch.setattr(sequencer, "WAKE_WINDOW", 2)
         sequence = outreach_fixture["sequence"]
         now = utcnow()
         rows = _enrol_all(session, outreach_fixture, due=now)
-        # More queued than the wake window: repeat the people across ranks.
-        jobs = _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
-        extra = WAKE_WINDOW - len(jobs) + 2
-        for index in range(extra):
-            job = Job(
-                org_id=sequence.org_id,
-                kind=KIND_OUTREACH_SEND,
-                idempotency_key=f"extra-{index}",
-                payload={"enrollment_id": f"none-{index}"},
-                run_at=now,
-                rank=100.0 + index,
-            )
-            session.add(job)
-        session.commit()
+        _queue(session, sequence, rows, now=now, ranks=range(1, len(rows) + 1))
 
         counts = dispatch_line(session, sequence.org_id, now)
 
-        assert counts["awake"] == WAKE_WINDOW
-        assert counts["asleep"] == len(jobs) + extra - WAKE_WINDOW
+        assert counts["awake"] == 2
+        assert counts["asleep"] == len(rows) - 2
+
+    def test_a_paused_sequence_never_takes_a_wake_slot(
+        self, session, outreach_fixture, mailbox, monkeypatch
+    ):
+        """The first deploy of the line sent nothing: paused sequences' sends,
+        queued long ago, held ranks 1-5 and were woken every minute only to be
+        held again, so nothing behind them ever got a turn."""
+        import juicebox.outreach.sequencer as sequencer
+        from juicebox.models import Sequence, SequenceStep
+
+        monkeypatch.setattr(sequencer, "WAKE_WINDOW", 1)
+        live = outreach_fixture["sequence"]
+        now = utcnow()
+        paused = Sequence(org_id=live.org_id, name="old", status="paused")
+        session.add(paused)
+        session.add(SequenceStep(sequence=paused, step_order=0, body_template="hi"))
+        session.commit()
+        candidates = outreach_fixture["candidates"]
+        [old] = enroll_candidates(session, sequence=paused, candidate_ids=[candidates[0].id])
+        [new] = enroll_candidates(session, sequence=live, candidate_ids=[candidates[1].id])
+        old.next_send_at = new.next_send_at = now
+        session.commit()
+        _queue(session, paused, [old], now=now, ranks=[1])
+        _queue(session, live, [new], now=now, ranks=[2])
+
+        counts = dispatch_line(session, live.org_id, now)
+        session.commit()
+        process_batch(session, now=now)
+
+        assert (counts["held"], counts["awake"]) == (1, 1)
+        [sent] = mailbox.outbox
+        assert sent.to == candidates[1].primary_email
 
     def test_a_send_waiting_on_a_full_mailbox_does_not_hold_the_line(
         self, session, outreach_fixture, mailbox

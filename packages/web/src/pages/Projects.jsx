@@ -163,20 +163,21 @@ export function ProjectDetailPage() {
       {funnel.data ? (
         <div className="grid four">
           <div className="card stat">
-            <div className="value">{funnel.data.outreach.sent}</div>
-            <div className="label">emails sent</div>
+            <div className="value">{funnel.data.people?.contacted ?? 0}</div>
+            <div className="label">people contacted</div>
+            <div className="note">{(funnel.data.outreach.sent ?? 0).toLocaleString()} emails sent</div>
           </div>
           <div className="card stat">
-            <div className="value">{(funnel.data.open_rate * 100).toFixed(0)}%</div>
-            <div className="label">open rate</div>
+            <div className="value">{((funnel.data.people_open_rate ?? 0) * 100).toFixed(0)}%</div>
+            <div className="label">opened (people)</div>
           </div>
           <div className="card stat">
-            <div className="value">{(funnel.data.reply_rate * 100).toFixed(0)}%</div>
-            <div className="label">reply rate</div>
+            <div className="value">{((funnel.data.people_reply_rate ?? 0) * 100).toFixed(0)}%</div>
+            <div className="label">replied (people)</div>
           </div>
           <div className="card stat">
-            <div className="value">{(funnel.data.positive_reply_rate * 100).toFixed(0)}%</div>
-            <div className="label">positive replies</div>
+            <div className="value">{((funnel.data.people_interested_rate ?? 0) * 100).toFixed(0)}%</div>
+            <div className="label">interested (people)</div>
           </div>
         </div>
       ) : null}

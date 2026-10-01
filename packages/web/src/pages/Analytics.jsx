@@ -13,6 +13,7 @@ export function AnalyticsPage() {
 
   const stages = funnel.data?.stages ?? {};
   const outreach = funnel.data?.outreach ?? {};
+  const people = funnel.data?.people ?? {};
 
   return (
     <div className="stack">
@@ -20,9 +21,13 @@ export function AnalyticsPage() {
 
       <div className="grid four">
         <Stat value={index.data?.documents ?? '—'} label="people indexed" />
-        <Stat value={outreach.sent ?? 0} label="emails sent" />
-        <Stat value={percent(funnel.data?.open_rate)} label="open rate" />
-        <Stat value={percent(funnel.data?.reply_rate)} label="reply rate" />
+        <Stat
+          value={people.contacted ?? 0}
+          label="people contacted"
+          note={`${(outreach.sent ?? 0).toLocaleString()} emails sent`}
+        />
+        <Stat value={percent(funnel.data?.people_open_rate)} label="opened (people)" />
+        <Stat value={percent(funnel.data?.people_reply_rate)} label="replied (people)" />
       </div>
 
       <div className="card">

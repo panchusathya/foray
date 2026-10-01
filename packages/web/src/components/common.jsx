@@ -69,11 +69,12 @@ export function Loading({ label = 'Loading…' }) {
   return <div className="card empty">{label}</div>;
 }
 
-export function Stat({ value, label }) {
+export function Stat({ value, label, note }) {
   return (
     <div className="card stat">
       <div className="value">{value}</div>
       <div className="label">{label}</div>
+      {note ? <div className="note">{note}</div> : null}
     </div>
   );
 }
@@ -85,11 +86,12 @@ export function Stat({ value, label }) {
  * can click and one you cannot should not look like different components,
  * they should look like the same tile with a cursor.
  */
-export function StatLink({ value, label, to }) {
+export function StatLink({ value, label, to, note }) {
   return (
     <Link className="card stat is-link" to={to} data-testid="stat-link">
       <div className="value">{value}</div>
       <div className="label">{label}</div>
+      {note ? <div className="note">{note}</div> : null}
     </Link>
   );
 }

@@ -320,7 +320,7 @@ class TestTheGapVaries:
 
 
 class TestEverySendSharesTheGap:
-    def test_a_draft_ready_note_waits_for_the_gap_after_a_sequence_send(
+    def test_a_draft_ready_note_waits_for_its_mailboxs_gap(
         self, session, outreach_fixture, mailbox
     ):
         from juicebox.jobs import KIND_MAILBOX_NOTIFY
@@ -328,13 +328,13 @@ class TestEverySendSharesTheGap:
 
         org_id = outreach_fixture["sequence"].org_id
         now = utcnow()
-        _enrol_all(session, outreach_fixture, due=now)
-        run_due(session, org_id=org_id, now=now)
         connection = MailboxConnection(
             org_id=org_id, provider="microsoft", address="me@acme-talent.com", status="active"
         )
         session.add(connection)
         session.flush()
+        # The same mailbox sent moments ago (a sequence step, say).
+        note_mail_sent(session, org_id, now, connection=connection)
         job = enqueue(
             session,
             org_id=org_id,

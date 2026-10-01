@@ -31,12 +31,13 @@ from .sequencer import (
     _blocked_until,
     _effective_daily_cap,
     _finish_enrollment,
+    _LaneRoom,
     _sent_today,
+    live_sends,
     open_send_jobs,
     recent_human_replies,
     schedule_step_at,
     sending_hold,
-    spacing_wait,
 )
 
 HELD_STATES = frozenset({"sending", "due", "held"})
@@ -205,8 +206,10 @@ def collect_in_flight(
     addresses = _mailbox_addresses(db, enrollments)
 
     # The whole org's line, whatever this view filters to, so a rank means
-    # the same thing on every page. The estimate counts only rows that can
-    # send: one waiting on a full mailbox does not use up a gap.
+    # the same thing on every page. The estimate runs per lane: each mailbox
+    # keeps its own gap, so a pool of five with room clears five rows a gap
+    # while a follow-up pinned to one mailbox waits for that mailbox alone.
+    # Rows waiting on a full mailbox use up no gap at all.
     line = open_send_jobs(db, org_id)
     ranks = {job.id: index for index, job in enumerate(line, start=1)}
     settings = get_settings()
@@ -217,12 +220,21 @@ def collect_in_flight(
         )
         / 2
     )
-    head = spacing_wait(db, org_id, now) or now
+    live = live_sends(db, org_id)
+    room = _LaneRoom(db, org_id, now)
+    served: dict[tuple, int] = {}
     estimates: dict[str, datetime] = {}
     for job in line:
         until = _blocked_until(job)
-        if until is None or until <= now:
-            estimates[job.id] = head + gap * len(estimates)
+        pair = live.get((job.payload or {}).get("enrollment_id"))
+        if (until is not None and until > now) or pair is None:
+            continue
+        lane = room.lane(*pair)
+        if lane.frees is not None and lane.frees > now:
+            continue
+        place = served.get(lane.key, 0)
+        served[lane.key] = place + 1
+        estimates[job.id] = lane.opens + gap * (place // max(lane.servers, 1))
 
     items: list[InFlightItem] = []
     for enrollment in enrollments:

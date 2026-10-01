@@ -135,7 +135,7 @@ def send_follow_up_reminder(
     enrollment.follow_up_reminder_sent_at = now
     from .sequencer import note_mail_sent
 
-    note_mail_sent(db, enrollment.sequence.org_id, now)
+    note_mail_sent(db, enrollment.sequence.org_id, now, connection=connection)
     record_event(
         db,
         org_id=enrollment.sequence.org_id,

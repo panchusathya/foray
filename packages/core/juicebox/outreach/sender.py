@@ -488,7 +488,7 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
             connection=connection,
         )
 
-    from .rotation import frees_at, is_over_cap
+    from .rotation import frees_at, is_over_cap, mailbox_gap_wait
 
     if is_over_cap(db, connection=connection, now=now):
         return ResolvedSender(
@@ -497,6 +497,16 @@ def _bind(db, org_id: str, mailbox_id: str, *, now) -> ResolvedSender:
             deferred=True,
             reason="mailbox_cap",
             retry_at=frees_at(db, connection=connection, now=now),
+        )
+    opens = mailbox_gap_wait(db, connection, now)
+    if opens is not None:
+        # Its own gap since its last send; a short wait, not a full mailbox.
+        return ResolvedSender(
+            FailingSender(f"mailbox {connection.address} sent moments ago"),
+            connection=connection,
+            deferred=True,
+            reason="spacing",
+            retry_at=opens,
         )
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)
 
@@ -607,18 +617,35 @@ def resolve_sender(db, sequence, enrollment=None, *, now=None) -> ResolvedSender
             reason="mailbox_unavailable",
         )
 
-    connection = pick_mailbox(db, org_id=org_id, now=now, only=only)
-    if connection is None:
+    from .rotation import eligible_mailboxes, frees_at, mailbox_gap_wait, remaining_capacity
+
+    pool = eligible_mailboxes(db, org_id=org_id, only=only)
+    roomy = [c for c in pool if remaining_capacity(db, connection=c, now=now) > 0]
+    if not roomy:
         # Mailboxes exist but none has room (or they are all switched off).
         # Deferring holds the send until one does; falling back to the global
         # provider would quietly send from the wrong address instead.
-        from .rotation import eligible_mailboxes, frees_at
-
-        pool = eligible_mailboxes(db, org_id=org_id, only=only)
         return ResolvedSender(
             FailingSender("no connected mailbox has capacity right now"),
             deferred=True,
             reason="mailbox_cap",
             retry_at=min((frees_at(db, connection=c, now=now) for c in pool), default=None),
+        )
+    # Of the mailboxes with room, skip any still inside its own gap.
+    waits = {c.id: mailbox_gap_wait(db, c, now) for c in roomy}
+    resting = {mailbox_id for mailbox_id, opens in waits.items() if opens is not None}
+    if len(resting) == len(roomy):
+        return ResolvedSender(
+            FailingSender("every mailbox with room sent moments ago"),
+            deferred=True,
+            reason="spacing",
+            retry_at=min(waits.values()),
+        )
+    connection = pick_mailbox(db, org_id=org_id, now=now, only=only, exclude=resting)
+    if connection is None:  # pragma: no cover - roomy minus resting is non-empty
+        return ResolvedSender(
+            FailingSender("no connected mailbox has capacity right now"),
+            deferred=True,
+            reason="mailbox_cap",
         )
     return ResolvedSender(sender_for_connection(db, connection), connection=connection)

@@ -36,6 +36,8 @@ from . import templates
 from .ai_directives import resolve_directives
 from .personalize import personalize, sender_context
 from .replies import HUMAN_INTENTS, ReplyVerdict, _stop_for, classify_reply
+from .rotation import send_gap as _rotation_send_gap
+from .rotation import send_spacing as _rotation_send_spacing
 from .sender import OutboundEmail, preview_connection, resolve_sender
 from .suppressions import is_suppressed, normalize_email, suppress
 
@@ -428,25 +430,10 @@ def preview_step(
 # --------------------------------------------------------------------------
 
 
-def send_spacing() -> timedelta:
-    """Shortest gap allowed between two emails from one org. Zero disables it."""
-    return timedelta(seconds=max(get_settings().outreach_send_spacing_seconds, 0))
-
-
-def send_gap(*parts: object) -> timedelta:
-    """The gap in front of one particular send: somewhere in [min, max].
-
-    A fixed sixty seconds is itself a machine signature, so each send gets its
-    own gap. It is a hash of what is being sent rather than ``random``, so a
-    tick and the Outbox that previews it deal the same minute.
-    """
-    settings = get_settings()
-    low = max(settings.outreach_send_spacing_seconds, 0)
-    high = max(settings.outreach_send_spacing_max_seconds, low)
-    if high == low:
-        return timedelta(seconds=low)
-    digest = hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()
-    return timedelta(seconds=low + int(digest[:8], 16) % (high - low + 1))
+# The gap helpers live in rotation (no import cycle there); re-exported
+# here because this is where the send path and its callers look for them.
+send_spacing = _rotation_send_spacing
+send_gap = _rotation_send_gap
 
 
 def last_mail_sent_at(db: Session, org_id: str) -> datetime | None:
@@ -471,25 +458,31 @@ def last_mail_sent_at(db: Session, org_id: str) -> datetime | None:
     return max((v for v in (stamped, sequenced) if v is not None), default=None)
 
 
-def note_mail_sent(db: Session, org_id: str, at: datetime) -> None:
-    """Start the gap clock. Call it after every successful mailbox send."""
-    org = db.get(Org, org_id)
-    if org is None:
-        return
+def note_mail_sent(db: Session, org_id: str, at: datetime, *, connection=None) -> None:
+    """Start the gap clock. Call it after every successful send.
+
+    A mailbox send stamps that mailbox: the gap is per mailbox, so the others
+    keep sending. Only a send with no mailbox behind it (the globally
+    configured provider) stamps the org's clock.
+    """
     at = _aware(at)
-    current = _aware(org.last_mail_sent_at)
+    target = connection if connection is not None else db.get(Org, org_id)
+    if target is None:
+        return
+    field = "last_sent_at" if connection is not None else "last_mail_sent_at"
+    current = _aware(getattr(target, field))
     if current is None or at > current:
-        org.last_mail_sent_at = at
+        setattr(target, field, at)
 
 
 def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
-    """When this org may send its next email, if that is later than now.
+    """When a send with no mailbox behind it may go, if later than now.
 
-    Enrolling fifty people at "09:00" used to hand the worker fifty send jobs
-    for the same instant, and one mailbox fired all fifty inside a second --
-    the burst pattern spam filters look for. This is the hard gate every send
-    path goes through (the worker, "Run now", enrol-and-send-now). The gap after
-    each send is its own, somewhere in [min, max], keyed on that send's time.
+    Enrolling fifty people at "09:00" used to fire all fifty inside a second --
+    the burst pattern spam filters look for. Mailbox sends wait on their own
+    mailbox's gap (rotation.mailbox_gap_wait, applied in resolve_sender); this
+    org-wide clock covers only the globally configured provider, which has no
+    mailbox to hang a clock on.
     """
     if not send_spacing():
         return None
@@ -510,7 +503,11 @@ def spacing_wait(db: Session, org_id: str, now: datetime) -> datetime | None:
 # nothing, while first emails that any free mailbox could carry sat hours
 # down the line. Ranks survive any number of retries; run_at does not.
 
-WAKE_WINDOW = 5
+# Most sends awake at once across the whole org. Each lane keeps its own
+# head awake -- one per mailbox that can send, plus LANE_SLACK spare -- so
+# twenty mailboxes sending side by side each have something ready.
+WAKE_WINDOW = 60
+LANE_SLACK = 1
 SLEEP = timedelta(minutes=10)
 BLOCKED_KEY = "blocked_until"
 
@@ -544,44 +541,67 @@ def open_send_jobs(db: Session, org_id: str) -> list[Job]:
     )
 
 
-class _LaneRoom:
-    """When each mailbox group next has room, worked out once per tick.
+@dataclass
+class Lane:
+    """One mailbox group as the line sees it this tick."""
 
-    ``frees`` returns None when a send could go now (or when the answer is
-    the sender's to give: a revoked mailbox fails loudly there, which is the
-    behaviour that matters), else when its lane next has room. It mirrors
-    ``resolve_sender``'s order -- pinned, then fixed, then the pool -- so it
-    never calls a lane full that the sender would have used.
+    key: tuple
+    # When it next has room, if it has none now.
+    frees: datetime | None
+    # How many mailboxes in it can send (have room); sends go side by side.
+    servers: int
+    # The earliest moment one of them is out of its gap.
+    opens: datetime
+
+
+class _LaneRoom:
+    """Each mailbox group's room and gap, worked out once per tick.
+
+    A lane is the mailbox a follow-up is pinned to, a fixed sequence's
+    mailbox, or a rotating sequence's pool -- the same order resolve_sender
+    uses, so it never calls a lane full that the sender would have used. A
+    mailbox that cannot send at all (revoked, switched off) is reported as
+    having room: the sender's loud failure is the behaviour that matters.
     """
 
     def __init__(self, db: Session, org_id: str, now: datetime) -> None:
         self.db, self.org_id, self.now = db, org_id, now
-        self._cache: dict[tuple, datetime | None] = {}
+        self._cache: dict[tuple, Lane] = {}
 
-    def _single(self, mailbox_id: str) -> datetime | None:
+    def _opens(self, connections) -> datetime:
+        from .rotation import mailbox_gap_wait
+
+        waits = [mailbox_gap_wait(self.db, c, self.now) or self.now for c in connections]
+        return min(waits, default=self.now)
+
+    def _single(self, key: tuple) -> Lane:
         from ..models import MailboxConnection
         from .rotation import frees_at, remaining_capacity
 
-        connection = self.db.get(MailboxConnection, mailbox_id)
+        connection = self.db.get(MailboxConnection, key[1])
         if connection is None or connection.status != "active" or not connection.send_enabled:
-            return None
-        if remaining_capacity(self.db, connection=connection, now=self.now) > 0:
-            return None
-        return frees_at(self.db, connection=connection, now=self.now)
+            return Lane(key, None, 1, self.now)
+        if remaining_capacity(self.db, connection=connection, now=self.now) <= 0:
+            return Lane(key, frees_at(self.db, connection=connection, now=self.now), 0, self.now)
+        return Lane(key, None, 1, self._opens([connection]))
 
-    def _pool(self, only: tuple[str, ...]) -> datetime | None:
+    def _pool(self, key: tuple) -> Lane:
         from .rotation import active_mailboxes, eligible_mailboxes, frees_at, remaining_capacity
 
         if not active_mailboxes(self.db, org_id=self.org_id):
-            return None  # no mailbox at all: the global provider sends
-        pool = eligible_mailboxes(self.db, org_id=self.org_id, only=list(only) or None)
+            # No mailbox at all: the global provider sends, on the org clock.
+            return Lane(key, None, 1, spacing_wait(self.db, self.org_id, self.now) or self.now)
+        pool = eligible_mailboxes(self.db, org_id=self.org_id, only=list(key[1]) or None)
         if not pool:
-            return self.now + HOLD_DEFER
-        if any(remaining_capacity(self.db, connection=c, now=self.now) > 0 for c in pool):
-            return None
-        return min(frees_at(self.db, connection=c, now=self.now) for c in pool)
+            return Lane(key, self.now + HOLD_DEFER, 0, self.now)
+        roomy = [c for c in pool if remaining_capacity(self.db, connection=c, now=self.now) > 0]
+        if not roomy:
+            return Lane(
+                key, min(frees_at(self.db, connection=c, now=self.now) for c in pool), 0, self.now
+            )
+        return Lane(key, None, len(roomy), self._opens(roomy))
 
-    def frees(self, enrollment: Enrollment, sequence: Sequence) -> datetime | None:
+    def lane(self, enrollment: Enrollment, sequence: Sequence) -> Lane:
         from .sender import _rotation_subset
 
         if enrollment.mailbox_id:
@@ -591,12 +611,31 @@ class _LaneRoom:
         else:
             key = ("pool", tuple(sorted(_rotation_subset(sequence))))
         if key not in self._cache:
-            self._cache[key] = self._single(key[1]) if key[0] == "one" else self._pool(key[1])
+            self._cache[key] = self._single(key) if key[0] == "one" else self._pool(key)
         return self._cache[key]
+
+    def frees(self, enrollment: Enrollment, sequence: Sequence) -> datetime | None:
+        return self.lane(enrollment, sequence).frees
+
+
+def live_sends(db: Session, org_id: str) -> dict[str, tuple[Enrollment, Sequence]]:
+    """Active enrolments on active sequences, by id: the sends that may go."""
+    return {
+        enrollment.id: (enrollment, sequence)
+        for enrollment, sequence in db.execute(
+            select(Enrollment, Sequence)
+            .join(Sequence, Sequence.id == Enrollment.sequence_id)
+            .where(
+                Sequence.org_id == org_id,
+                Sequence.status == "active",
+                Enrollment.status == "active",
+            )
+        ).all()
+    }
 
 
 def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
-    """Wake the head of the line; let everyone else sleep.
+    """Wake the head of each lane; let everyone else sleep.
 
     A job blocked on a full mailbox sleeps until that mailbox has room and is
     skipped here until then, so one stuck follow-up never holds the gap. A job
@@ -611,23 +650,12 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
     with six hundred sends queued on a full pool ahead of two pools with room,
     the free mailboxes sat idle for two hours while the line learned that.
     """
-    wake_at = spacing_wait(db, org_id, now) or now
     line = open_send_jobs(db, org_id)
     org = db.get(Org, org_id)
     org_paused = org is not None and org.outreach_paused_at is not None
-    live: dict[str, tuple[Enrollment, Sequence]] = {
-        enrollment.id: (enrollment, sequence)
-        for enrollment, sequence in db.execute(
-            select(Enrollment, Sequence)
-            .join(Sequence, Sequence.id == Enrollment.sequence_id)
-            .where(
-                Sequence.org_id == org_id,
-                Sequence.status == "active",
-                Enrollment.status == "active",
-            )
-        ).all()
-    }
+    live = live_sends(db, org_id)
     room = _LaneRoom(db, org_id, now)
+    lane_awake: dict[tuple, int] = {}
     awake = asleep = blocked = held = 0
     for job in line:
         pair = live.get((job.payload or {}).get("enrollment_id"))
@@ -638,7 +666,8 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
             continue
         # Re-asked every tick, blocked or not: raising a full mailbox's cap
         # must wake its sends now, not when the old window would have freed.
-        frees = room.frees(*pair)
+        lane = room.lane(*pair)
+        frees = lane.frees
         if frees is not None and frees > now:
             until = frees
             if _blocked_until(job) != frees:
@@ -651,10 +680,14 @@ def dispatch_line(db: Session, org_id: str, now: datetime) -> dict[str, int]:
             if _aware(job.run_at) < until:
                 job.run_at = until
             continue
-        if awake < WAKE_WINDOW:
+        # Each lane keeps its own head awake, one per mailbox that can send
+        # (plus a spare), so mailboxes send side by side and a lane's best
+        # rank is always the one ready when its gap opens.
+        if awake < WAKE_WINDOW and lane_awake.get(lane.key, 0) < lane.servers + LANE_SLACK:
             awake += 1
-            if _aware(job.run_at) > wake_at:
-                job.run_at = wake_at
+            lane_awake[lane.key] = lane_awake.get(lane.key, 0) + 1
+            if _aware(job.run_at) > lane.opens:
+                job.run_at = lane.opens
             continue
         asleep += 1
         # Only push a sleeper further out; never pull it in, which would
@@ -1384,7 +1417,7 @@ def send_step(
     if result.ok:
         message.status = "sent"
         message.sent_at = now
-        note_mail_sent(db, sequence.org_id, now)
+        note_mail_sent(db, sequence.org_id, now, connection=getattr(resolved, "connection", None))
         message.provider_message_id = result.provider_message_id
         # The mailbox that actually sent it, not the sequence's preference --
         # under rotation those differ, and the cap query reads this column.
@@ -1549,10 +1582,6 @@ def process_enrollment(
         )
         if remaining_cap == 0:
             return "deferred", None
-        if spacing_wait(db, sequence.org_id, now) is not None:
-            # Too soon after the last send. Deferred for the same reason a
-            # full cap is: the permanent key must survive to send later.
-            return "deferred", None
         # Resolving here rather than inside send_step keeps a full mailbox from
         # touching the enrollment at all: "deferred" leaves next_send_at alone
         # so the worker requeues this same permanent idempotency key. Raising
@@ -1560,11 +1589,20 @@ def process_enrollment(
         # next_send_at would make the requeue return "skipped", which marks the
         # job succeeded and loses the step just as permanently.
         resolved = resolve_sender(db, sequence, enrollment, now=now)
+        # Neither attribute is mapped; the worker reads them to decide how
+        # long the job sleeps. Deferred, never failed: the permanent send key
+        # must survive to send later.
+        if resolved.deferred and resolved.reason == "spacing":
+            enrollment.gap_retry_at = resolved.retry_at or now + send_spacing()
+            return "deferred", None
         if resolved.deferred:
-            # Not mapped; read by the worker to sleep the job until the
-            # blocking mailbox has room instead of retrying every minute.
             enrollment.mailbox_retry_at = resolved.retry_at or now + HOLD_DEFER
             return "deferred", None
+        if resolved.connection is None:
+            opens = spacing_wait(db, sequence.org_id, now)
+            if opens is not None:
+                enrollment.gap_retry_at = opens
+                return "deferred", None
 
     candidate = db.get(Candidate, enrollment.candidate_id)
     if candidate is None:

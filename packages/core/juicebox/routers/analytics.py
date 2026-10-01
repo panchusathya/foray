@@ -51,29 +51,68 @@ def funnel(
     for stage, count in db.execute(stage_stmt):
         stages[stage] = int(count)
 
-    message_stmt = select(Message).where(
-        Message.org_id == principal.org_id, Message.direction == "outbound"
-    )
+    # Sequence sends only. Mail the mailbox sync pulled out of somebody's sent
+    # folder (enrollment_id is NULL) was written by a person, not sent by a
+    # sequence, and counting it inflated "sent" by every manual email.
+    scope = [
+        Message.org_id == principal.org_id,
+        Message.direction == "outbound",
+        Message.enrollment_id.is_not(None),
+    ]
+    joins = select(Message)
     if project_id:
         # Attribute a send to the project its *sequence* belongs to, so these
         # counts describe exactly the sequences the page lists. Going through
         # Enrollment.project_id instead would read a snapshot taken at enroll
-        # time, which drifts the moment a sequence is reassigned. The inner
-        # join also drops mailbox-synced mail (enrollment_id is NULL), which
-        # no sequence -- and therefore no project -- is responsible for.
-        message_stmt = (
-            message_stmt.join(Enrollment, Enrollment.id == Message.enrollment_id)
-            .join(Sequence, Sequence.id == Enrollment.sequence_id)
-            .where(Sequence.project_id == project_id)
+        # time, which drifts the moment a sequence is reassigned.
+        joins = joins.join(Enrollment, Enrollment.id == Message.enrollment_id).join(
+            Sequence, Sequence.id == Enrollment.sequence_id
         )
-    messages = db.scalars(message_stmt).all()
+        scope.append(Sequence.project_id == project_id)
 
-    sent = sum(1 for m in messages if m.status == "sent")
-    opened = sum(1 for m in messages if m.opened_at is not None)
-    clicked = sum(1 for m in messages if m.clicked_at is not None)
-    replied = sum(1 for m in messages if m.replied_at is not None)
-    bounced = sum(1 for m in messages if m.status == "bounced")
-    positive = sum(1 for m in messages if m.reply_intent in POSITIVE_INTENTS)
+    delivered = Message.status == "sent"
+    # A bounce is stamped replied_at by the reply path (it stops the
+    # enrolment the same way), but nobody answered; it is not a reply.
+    answered = (Message.replied_at.is_not(None)) & (Message.status != "bounced")
+    positive = answered & Message.reply_intent.in_(sorted(POSITIVE_INTENTS))
+    person = func.distinct(Message.candidate_id)
+
+    def emails(condition):
+        return func.count(Message.id).filter(condition)
+
+    def people(condition):
+        return func.count(person).filter(condition)
+
+    row = db.execute(
+        joins.with_only_columns(
+            emails(delivered),
+            emails(delivered & Message.opened_at.is_not(None)),
+            emails(delivered & Message.clicked_at.is_not(None)),
+            emails(answered),
+            emails(Message.status == "bounced"),
+            emails(positive),
+            people(delivered),
+            people(delivered & Message.opened_at.is_not(None)),
+            people(delivered & Message.clicked_at.is_not(None)),
+            people(answered),
+            people(Message.status == "bounced"),
+            people(positive),
+        ).where(*scope)
+    ).one()
+    (
+        sent,
+        opened,
+        clicked,
+        replied,
+        bounced,
+        positive_emails,
+        contacted,
+        people_opened,
+        people_clicked,
+        people_replied,
+        people_bounced,
+        people_positive,
+    ) = (int(value or 0) for value in row)
 
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -81,21 +120,34 @@ def funnel(
     return {
         "project_id": project_id,
         "stages": stages,
+        # Per email: what the mailboxes actually sent.
         "outreach": {
             "sent": sent,
             "opened": opened,
             "clicked": clicked,
             "replied": replied,
             "bounced": bounced,
-            "positive_replies": positive,
+            "positive_replies": positive_emails,
         },
+        # Per person: who was reached, and of them who opened, answered or
+        # was interested. Three steps to one person is one person contacted,
+        # and a rate over emails sank by every follow-up sent.
+        "people": {
+            "contacted": contacted,
+            "opened": people_opened,
+            "clicked": people_clicked,
+            "replied": people_replied,
+            "bounced": people_bounced,
+            "interested": people_positive,
+        },
+        "people_open_rate": rate(people_opened, contacted),
+        "people_reply_rate": rate(people_replied, contacted),
+        "people_interested_rate": rate(people_positive, contacted),
         "reply_rate": rate(replied, sent),
         "open_rate": rate(opened, sent),
         "click_rate": rate(clicked, sent),
-        "positive_reply_rate": rate(positive, sent),
+        "positive_reply_rate": rate(positive_emails, sent),
     }
-
-
 
 
 @router.get("/activity")

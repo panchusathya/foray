@@ -96,6 +96,7 @@ export function HomePage() {
 
   const stages = funnel.data?.stages ?? {};
   const outreach = funnel.data?.outreach ?? {};
+  const people = funnel.data?.people ?? {};
   const shortlisted = Object.values(stages).reduce((sum, n) => sum + (n || 0), 0);
 
   return (
@@ -125,17 +126,22 @@ export function HomePage() {
               label="Shortlisted"
               to={project ? `/projects/${project.id}` : '/'}
             />
-            <StatLink value={outreach.sent ?? 0} label="Contacted" to="/contacts?view=crm" />
             <StatLink
-              value={outreach.replied ?? 0}
-              label={`Replied · ${percent(funnel.data?.reply_rate)}`}
+              value={people.contacted ?? 0}
+              label="Contacted"
+              note={`${(outreach.sent ?? 0).toLocaleString()} emails`}
+              to="/contacts?view=crm"
+            />
+            <StatLink
+              value={people.replied ?? 0}
+              label={`Replied · ${percent(funnel.data?.people_reply_rate)}`}
               to="/contacts?view=replied"
             />
             {/* Positive-reply intent has no Contacts filter behind it, so this
                 one goes to the page that actually breaks it down. */}
             <StatLink
-              value={outreach.positive_replies ?? 0}
-              label={`Interested · ${percent(funnel.data?.positive_reply_rate)}`}
+              value={people.interested ?? 0}
+              label={`Interested · ${percent(funnel.data?.people_interested_rate)}`}
               to="/analytics"
             />
           </div>

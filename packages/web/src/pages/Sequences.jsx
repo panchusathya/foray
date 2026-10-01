@@ -314,6 +314,7 @@ export function SequencesPage() {
   // project we have already switched away from.
   const scoped = funnel.data && funnel.data.project_id === projectId ? funnel.data : null;
   const outreach = scoped?.outreach ?? {};
+  const people = scoped?.people ?? {};
   const stat = (value) => (scoped ? value ?? 0 : '—');
   const rate = (value) => (scoped ? percent(value) : '—');
 
@@ -366,12 +367,18 @@ export function SequencesPage() {
       <ErrorBox error={error} />
 
       <div className="grid four">
-        <Stat value={stat(outreach.sent)} label="Sent" />
-        <Stat value={stat(outreach.opened)} label={`Opened · ${rate(scoped?.open_rate)}`} />
-        <Stat value={stat(outreach.replied)} label={`Replied · ${rate(scoped?.reply_rate)}`} />
+        {/* People, not emails: three steps to one person is one person
+            reached, and each rate is a share of the people contacted. */}
         <Stat
-          value={stat(outreach.positive_replies)}
-          label={`Interested · ${rate(scoped?.positive_reply_rate)}`}
+          value={stat(people.contacted)}
+          label="People contacted"
+          note={scoped ? `${(outreach.sent ?? 0).toLocaleString()} emails sent` : null}
+        />
+        <Stat value={stat(people.opened)} label={`Opened · ${rate(scoped?.people_open_rate)}`} />
+        <Stat value={stat(people.replied)} label={`Replied · ${rate(scoped?.people_reply_rate)}`} />
+        <Stat
+          value={stat(people.interested)}
+          label={`Interested · ${rate(scoped?.people_interested_rate)}`}
         />
       </div>
 

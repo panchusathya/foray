@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { ColGroup, ResizeHandle, useColumnWidths } from '../components/ResizableColumns.jsx';
 import { ReenrolPanel } from '../components/ReenrolPanel.jsx';
 import { Badge, Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { IN_FLIGHT_STATE_LABELS, api } from '../lib/api.js';
@@ -23,6 +24,28 @@ import { useAsync } from '../lib/useAsync.js';
 
 const byId = (row) => row.enrollment_id;
 const PAGE_SIZE = 100;
+
+// Starting widths in px; each column can be dragged wider or narrower.
+const COLUMN_WIDTHS = {
+  pick: 40,
+  rank: 56,
+  name: 180,
+  email: 230,
+  sequence: 230,
+  step: 64,
+  mailbox: 200,
+  due: 170,
+  state: 230,
+  actions: 330,
+};
+const COLUMNS = Object.keys(COLUMN_WIDTHS);
+
+// What goes first when the line is backed up (org setting, editable here).
+const PRIORITY_LABELS = {
+  first_emails: 'First emails before follow-ups',
+  follow_ups: 'Follow-ups before first emails',
+  queue: 'Queue order (no step priority)',
+};
 
 const STATE_TONE = {
   sending: 'strong',
@@ -77,6 +100,8 @@ export function OutboxPage() {
   const lastIndex = useRef(null);
 
   const sequences = useAsync(() => api.listSequences(), []);
+  const sending = useAsync(() => api.orgSending(), []);
+  const columns = useColumnWidths('outbox.columns', COLUMN_WIDTHS);
   const params = {
     state: state || undefined,
     sequence_id: sequenceId || undefined,
@@ -108,6 +133,20 @@ export function OutboxPage() {
       setSelected(toggleOne(selected, row, byId));
     }
     lastIndex.current = index;
+  }
+
+  async function changePriority(value) {
+    setBusy('priority');
+    setError(null);
+    try {
+      await api.patchOrgSending({ send_priority: value });
+      setNote(`Line re-sorted: ${PRIORITY_LABELS[value].toLowerCase()}.`);
+      await Promise.all([sending.reload(), reload()]);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy('');
+    }
   }
 
   async function move(to, ids, at) {
@@ -238,6 +277,25 @@ export function OutboxPage() {
             {(sequences.data ?? []).map((sequence) => (
               <option key={sequence.id} value={sequence.id}>
                 {sequence.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label
+          className="row small"
+          style={{ gap: 6 }}
+          title="When the line is backed up, which emails go first. New arrivals join behind their own step and ahead of the steps after it; rows you move by hand stay where you put them."
+        >
+          Priority
+          <select
+            value={sending.data?.send_priority ?? 'first_emails'}
+            data-testid="outbox-priority"
+            disabled={!sending.data || busy === 'priority'}
+            onChange={(event) => changePriority(event.target.value)}
+          >
+            {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
               </option>
             ))}
           </select>
@@ -373,7 +431,12 @@ export function OutboxPage() {
           {/* min-width makes the grid wider than a narrow window instead of
               squeezing every column to an ellipsis, so the wrap scrolls
               sideways. Shift-click a checkbox to select a range. */}
-          <table className="dgrid outbox-grid" data-testid="outbox-grid">
+          <table
+            className="dgrid outbox-grid"
+            data-testid="outbox-grid"
+            style={{ width: columns.total }}
+          >
+            <ColGroup columns={COLUMNS} widths={columns.widths} />
             <thead>
               <tr>
                 <th className="pick">
@@ -385,15 +448,41 @@ export function OutboxPage() {
                     onChange={() => setSelected(togglePage(selected, data, byId))}
                   />
                 </th>
-                <th className="num" title="Place in line — 1 goes next">#</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Sequence</th>
-                <th>Step</th>
-                <th>Mailbox</th>
-                <th>{viewingCancelled ? 'Stopped' : 'Goes out'}</th>
-                <th>State</th>
-                <th></th>
+                <th className="num" title="Place in line — 1 goes next">
+                  #
+                  <ResizeHandle column="rank" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  Name
+                  <ResizeHandle column="name" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  Email
+                  <ResizeHandle column="email" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  Sequence
+                  <ResizeHandle column="sequence" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  Step
+                  <ResizeHandle column="step" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  Mailbox
+                  <ResizeHandle column="mailbox" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  {viewingCancelled ? 'Stopped' : 'Goes out'}
+                  <ResizeHandle column="due" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  State
+                  <ResizeHandle column="state" startResize={columns.startResize} reset={columns.reset} />
+                </th>
+                <th>
+                  <ResizeHandle column="actions" startResize={columns.startResize} reset={columns.reset} />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -456,6 +545,16 @@ export function OutboxPage() {
                             <button
                               type="button"
                               className="tiny ghost"
+                              title="Move to the top"
+                              aria-label={`Move ${row.candidate_name} to the top`}
+                              disabled={!!busy || row.rank === 1}
+                              onClick={() => move('top', [row.enrollment_id])}
+                            >
+                              ⤒
+                            </button>
+                            <button
+                              type="button"
+                              className="tiny ghost"
                               title="Move up one"
                               aria-label={`Move ${row.candidate_name} up`}
                               disabled={!!busy || row.rank === 1}
@@ -472,6 +571,16 @@ export function OutboxPage() {
                               onClick={() => move('down', [row.enrollment_id])}
                             >
                               ▼
+                            </button>
+                            <button
+                              type="button"
+                              className="tiny ghost"
+                              title="Move to the bottom"
+                              aria-label={`Move ${row.candidate_name} to the bottom`}
+                              disabled={!!busy}
+                              onClick={() => move('bottom', [row.enrollment_id])}
+                            >
+                              ⤓
                             </button>
                           </>
                         ) : null}

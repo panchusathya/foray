@@ -637,10 +637,19 @@ a.todo-row:hover { background: var(--tint); }
 .dgrid tbody tr:last-child td { border-bottom: none; }
 /* Wider than most windows on purpose: the wrap scrolls sideways rather than
    ellipsing every column. */
-.dgrid.outbox-grid { min-width: 1280px; }
-.dgrid.outbox-grid th.pick, .dgrid.outbox-grid td.pick { width: 40px; }
-.dgrid.outbox-grid th.num, .dgrid.outbox-grid td.num { width: 56px; }
-.dgrid.outbox-grid th:last-child, .dgrid.outbox-grid td:last-child { width: 260px; }
+/* Widths come from a <colgroup> (components/ResizableColumns.jsx). */
+.dgrid th .col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 2;
+}
+.dgrid th .col-resizer:hover,
+.col-resizing .dgrid th .col-resizer { background: var(--accent-light); opacity: 0.35; }
+.col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none; }
 .dgrid tbody tr:hover { background: var(--tint3); }
 .dgrid td.num, .dgrid th.num { text-align: right; font-family: var(--mono); }
 .dgrid a { text-decoration: none; }

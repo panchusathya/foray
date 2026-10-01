@@ -59,6 +59,7 @@ def _sending_out(db, org: Org) -> OrgSendingOut:
         paused_at=org.outreach_paused_at,
         paused_by_email=paused_by_email,
         held_count=held_count(db, org_id=org.id),
+        send_priority=org.send_priority or "first_emails",
     )
 
 
@@ -76,13 +77,19 @@ def patch_sending(
     db: Session = Depends(get_db),
 ) -> OrgSendingOut:
     org = _org(db, principal.org_id)
-    if payload.paused:
+    if payload.paused is True:
         if org.outreach_paused_at is None:
             org.outreach_paused_at = utcnow()
             org.outreach_paused_by = principal.user_id
-    else:
+    elif payload.paused is False:
         org.outreach_paused_at = None
         org.outreach_paused_by = None
+    if payload.send_priority is not None and payload.send_priority != org.send_priority:
+        from ..outreach.sequencer import resort_line
+
+        org.send_priority = payload.send_priority
+        db.flush()
+        resort_line(db, org.id, utcnow())
     db.flush()
     return _sending_out(db, org)
 

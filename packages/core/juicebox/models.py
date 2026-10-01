@@ -75,6 +75,9 @@ class Org(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
     outreach_paused_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Which steps go first when the line is backed up (outreach/sequencer.py
+    # SEND_PRIORITIES): first emails ahead of follow-ups by default.
+    send_priority: Mapped[str] = mapped_column(String(32), default="first_emails")
     # When the org's mailboxes last sent anything automated. Every mailbox
     # send stamps it and waits OUTREACH_SEND_SPACING_SECONDS after it, so no
     # two emails leave back to back whichever path sent them.

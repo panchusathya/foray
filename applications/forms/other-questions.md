@@ -14,24 +14,37 @@ isn't in `evidence.md`, same attribution guardrails, same compressed register.
 
 ## Tushar — the conference we couldn't afford to attend
 
-At Nova Intelligence we needed to be in front of Fortune 100 CIOs, and the one place they all are
-in the same week is SAP Sapphire. We were pre-revenue. A booth was out of reach, and so was
-outspending anyone on marketing.
+> Rewritten 4 Oct with the actual sequence. **The research step is what makes this answer work**:
+> he didn't reframe the problem in his head, he went and asked people what had gone wrong in prior
+> years and found the gap empirically. That also sets up the closing parallel, which is true and
+> is the best thing in the answer.
 
-The conventional move is to buy presence: booth, sponsorship, dinners. We couldn't, so I looked at
-what was actually scarce at a conference, and it isn't floor space. It's attendee attention, and
-specifically the fact that nobody can navigate hundreds of overlapping sessions across several
-days. Every attendee arrives with the same unsolved problem, and the organiser doesn't solve it for
-them.
+I was employee #1 at Nova Intelligence. We'd raised a fraction of what the company has now, and we
+were pre-revenue, so there was effectively no budget. My job was to get us in front of Fortune 100
+CIOs at SAP Sapphire, one of the biggest events in the SAP world and the one week all of those
+people are in the same place.
 
-So instead of buying our way onto the floor, I built a personalised scheduling app for Sapphire
-attendees and gave it away. It took off during the conference, and it put us in front of exactly
-the CIOs we had no other route to reach.
+My first instinct was the obvious one: negotiate. Find the cheapest way onto the floor, push for a
+rate on the smallest sponsorship package we could get. I spent time on that before accepting it
+wasn't going to work. Even at the best rate I could argue for, we'd have been the smallest booth at
+a conference where the companies we were competing with were buying stages. Being present and being
+noticed are different things, and we could only afford the first one.
 
-What I'd point at isn't the app, it's the substitution. We had no budget, so we spent the thing we
-did have, which was the ability to build something useful in a week. That trade has repeated:
-Walmart still ran procurement by hand, so a colleague and I built a working tool in under a week
-rather than writing a deck about it, and it's now being showcased to their head of procurement.
+So I went and asked instead. I spoke to people who'd attended in previous years about how the event
+actually runs and what had gone wrong for them. Almost all of them said the same thing: scheduling.
+Hundreds of overlapping sessions across several days, no good way to work out where to be, and the
+organisers didn't solve it for you.
+
+That's where the app came from. I built a personalised scheduling tool for Sapphire attendees and
+gave it away. I had no affiliation with the organising team, which turned out not to matter, because
+my job wasn't to run the conference, it was to get Nova in front of the right people at it. People
+used it, told us nothing like it existed, and it put us in front of exactly the CIOs we had no
+other route to reach.
+
+What I'd point at isn't the app. It's that I stopped trying to buy a worse version of what everyone
+else had, and went and found out what was actually broken. That's the same method behind the
+company I'm building now: we interviewed 25 recruiters expecting to hear that sourcing was the
+bottleneck, and heard something else entirely.
 
 ## Sathya — four tracking wheels when everyone ran three
 

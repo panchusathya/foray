@@ -240,7 +240,8 @@ export function BulkBar({
             disabled={selectionIsIdsOnly}
             title={
               selectionIsIdsOnly
-                ? 'Select-all fetches ids only — there are no columns to export.'
+                ? 'Select-all fetches ids only — use “Export to CSV” at the top of the page '
+                  + 'to download everyone in this view.'
                 : 'Download the selected rows as CSV'
             }
             onClick={exportCsv}

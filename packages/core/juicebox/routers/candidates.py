@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import re
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -618,6 +621,193 @@ def candidate_ids(
     ).all()
     ids = [row.id for row in rows[:limit]]
     return {"ids": ids, "truncated": len(rows) > limit}
+
+
+# The columns a full export writes, in order. Wider than the grid on purpose:
+# the grid is a screen and has to fit one, while an export is usually headed
+# for a spreadsheet or another tool, where a missing phone or LinkedIn column
+# is the thing somebody has to come back for.
+EXPORT_COLUMNS = (
+    "Name",
+    "First name",
+    "Last name",
+    "Title",
+    "Company",
+    "Location",
+    "Email",
+    "Other emails",
+    "Phones",
+    "LinkedIn",
+    "GitHub",
+    "Status",
+    "Tags",
+    "Source",
+    "Added",
+    "First contacted",
+    "Last contacted",
+    "Last reply",
+    "Sent",
+    "Replies",
+    "Contact ID",
+)
+# Rows are loaded this many at a time, so the history and tag lookups stay one
+# grouped query per batch instead of one per person -- and an IN list stays
+# well under SQLite's bound-parameter ceiling.
+EXPORT_BATCH = 500
+# A cell that opens with one of these is evaluated as a formula by Excel and
+# Sheets. Contact data arrives from scrapes and other people's spreadsheets,
+# so a "name" of =HYPERLINK(...) is not hypothetical.
+_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r")
+# ...except that a phone number legitimately starts with "+", and quoting it
+# would turn every international number into text with a stray apostrophe.
+_NUMBER_LIKE = re.compile(r"^[+-][\d\s().-]*$")
+
+
+def _export_cell(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value)
+    if text.startswith(_FORMULA_LEADS) and not _NUMBER_LIKE.match(text):
+        return "'" + text
+    return text
+
+
+@router.get("/export")
+def export_candidates(
+    q: str | None = Query(default=None),
+    seniority: list[str] | None = Query(default=None),
+    scope: str = Query(default="all"),
+    project_id: str | None = Query(
+        default=None,
+        description="Only people this project has touched: its pipeline or its outreach",
+    ),
+    sort: str = Query(default="name"),
+    dir: str = Query(default="asc", description="asc | desc"),
+    relationship: str | None = Query(default=None),
+    stale_days: int = Query(default=DEFAULT_STALE_DAYS, ge=1, le=3650),
+    contacted_before: datetime | None = Query(default=None),
+    contacted_after: datetime | None = Query(default=None),
+    created_after: datetime | None = Query(default=None),
+    crm_status: list[str] | None = Query(default=None),
+    tag: list[str] | None = Query(default=None),
+    needs_name: bool = Query(
+        default=False, description="Only people still named by their email address"
+    ),
+    exclude_in_sequence: bool = Query(
+        default=False, description="Drop people with an active enrollment"
+    ),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Every contact matching the grid's filters, as one CSV. No row cap.
+
+    The grid pages at 100 and select-all stops at ``MAX_SELECT_ALL``, both for
+    reasons that do not apply to a download: nobody has to render these rows
+    or act on them one by one. Same ``_candidate_query`` as ``/count``, so the
+    file holds exactly the number the page header shows.
+
+    Built in memory and returned whole rather than streamed. A streamed body
+    would read from the request's session after the handler has returned, and
+    whether that session is still open at that point has changed between
+    FastAPI releases. Even a large workspace is a few megabytes of text.
+    """
+    _validate_grid_params(scope, sort, dir, relationship)
+    rollup = contact_rollup_subquery(principal.org_id)
+    stmt = _candidate_query(
+        org_id=principal.org_id,
+        rollup=rollup,
+        q=q,
+        seniority=seniority,
+        scope=scope,
+        project_id=project_id,
+        relationship=relationship,
+        stale_days=stale_days,
+        contacted_before=contacted_before,
+        contacted_after=contacted_after,
+        created_after=created_after,
+        crm_status=crm_status,
+        tag=tag,
+        exclude_in_sequence=exclude_in_sequence,
+        needs_name=needs_name,
+    )
+    # Ids first, in the grid's order, then the rows a batch at a time: the
+    # ordering needs the rollup join, the row bodies do not.
+    ordered_ids = list(
+        db.scalars(
+            stmt.with_only_columns(Candidate.id).order_by(*_ordering(rollup, sort, dir))
+        ).all()
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(EXPORT_COLUMNS)
+    for start in range(0, len(ordered_ids), EXPORT_BATCH):
+        batch = ordered_ids[start : start + EXPORT_BATCH]
+        by_id = {
+            row.id: row
+            for row in db.scalars(
+                select(Candidate).where(
+                    Candidate.org_id == principal.org_id, Candidate.id.in_(batch)
+                )
+            ).all()
+        }
+        tags = tags_for(db, candidate_ids=batch)
+        stats = candidate_history_stats(db, org_id=principal.org_id, candidate_ids=batch)
+        for candidate_id in batch:
+            row = by_id.get(candidate_id)
+            if row is None:
+                continue
+            emails = list(row.emails or [])
+            history = stats.get(candidate_id)
+            location = ", ".join(
+                part
+                for part in (row.location_city, row.location_region, row.location_country)
+                if part
+            )
+            writer.writerow(
+                _export_cell(value)
+                for value in (
+                    row.full_name,
+                    row.first_name,
+                    row.last_name,
+                    row.current_title,
+                    row.current_company,
+                    location,
+                    # emails[0] is the address the sequencer mails, so it gets
+                    # its own column; the rest are for recognising the person.
+                    emails[0] if emails else "",
+                    "; ".join(emails[1:]),
+                    "; ".join(row.phones or []),
+                    row.linkedin_url,
+                    row.github_url,
+                    row.crm_status,
+                    "; ".join(tags.get(candidate_id, [])),
+                    row.source,
+                    row.created_at,
+                    history.first_contacted_at if history else None,
+                    history.last_emailed_at if history else None,
+                    history.last_reply_at if history else None,
+                    history.outbound_count if history else 0,
+                    history.inbound_count if history else 0,
+                    row.id,
+                )
+            )
+
+    filename = f"contacts-{utcnow():%Y-%m-%d}.csv"
+    return Response(
+        # A BOM, so Excel reads the file as UTF-8 rather than mangling every
+        # accented name into the system codepage.
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Lets the page say how many rows it got without parsing the file.
+            "X-Row-Count": str(len(ordered_ids)),
+            "Access-Control-Expose-Headers": "X-Row-Count",
+        },
+    )
 
 
 def _with_tags(db: Session, candidate: Candidate) -> CandidateOut:

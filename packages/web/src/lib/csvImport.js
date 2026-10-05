@@ -20,8 +20,28 @@
 // column after the first comma -- which shows up as emails landing in the
 // wrong field rather than as an error.
 export function parseDelimited(text, { delimiter = '' } = {}) {
-  const body = stripBom(text ?? '');
-  if (!body.trim()) return { headers: [], rows: [] };
+  const { header, cells } = parseTable(text, { delimiter });
+  const headers = header.map((h) => h.trim());
+  const rows = cells.map((row) => {
+    const record = {};
+    headers.forEach((name, index) => {
+      record[name] = (row[index] ?? '').trim();
+    });
+    return record;
+  });
+  return { headers, rows };
+}
+
+// The same parse, without folding rows into records keyed by header. The
+// duplicate check writes the recruiter's own file back out, and a record keyed
+// by header loses a repeated column name and every untrimmed cell -- the file
+// that comes back would not be the file that went in. `delimiter` and `bom`
+// are reported so the output can be written the same way.
+export function parseTable(text, { delimiter = '' } = {}) {
+  const raw = text ?? '';
+  const bom = raw.charCodeAt(0) === 0xfeff;
+  const body = stripBom(raw);
+  if (!body.trim()) return { header: [], cells: [], delimiter: delimiter || ',', bom };
   const sep = delimiter || sniffDelimiter(body);
 
   const table = [];
@@ -78,16 +98,8 @@ export function parseDelimited(text, { delimiter = '' } = {}) {
   row.push(field);
   if (row.some((cell) => cell !== '')) table.push(row);
 
-  const [headerRow = [], ...dataRows] = table;
-  const headers = headerRow.map((h) => h.trim());
-  const rows = dataRows.map((cells) => {
-    const record = {};
-    headers.forEach((header, index) => {
-      record[header] = (cells[index] ?? '').trim();
-    });
-    return record;
-  });
-  return { headers, rows };
+  const [header = [], ...cells] = table;
+  return { header, cells, delimiter: sep, bom };
 }
 
 function stripBom(text) {

@@ -296,6 +296,8 @@ export function ContactsPage() {
   // which unmounts the moment the selection clears.
   const [bulkNote, setBulkNote] = useState('');
   const [adding, setAdding] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
   const lastIndex = useRef(null);
 
   // The params as they are now, not as they were in the render that scheduled
@@ -390,6 +392,21 @@ export function ContactsPage() {
     setSelectionIsIdsOnly(true);
   }
 
+  // The whole matching set, not the page: the server runs the same filters
+  // as the count above the grid, so the file holds exactly that many rows.
+  async function exportAll() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      await api.exportContacts({ ...totalParams, sort, dir }, `contacts-${view.id}-${stamp}.csv`);
+    } catch (caught) {
+      setExportError(caught);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   function clearSelection(note = '') {
     setSelected(new Map());
     setSelectionIsIdsOnly(false);
@@ -411,11 +428,31 @@ export function ContactsPage() {
             : view.blurb
         }
         actions={
-          <button type="button" onClick={() => setAdding(true)} data-testid="add-contact">
-            Add contact
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            {/* Not on the tray or duplicates views: those are panels of their
+                own, not a list of contacts this route could write out. */}
+            {!view.panel ? (
+              <button
+                type="button"
+                className="ghost"
+                disabled={exporting || !count || holdForProject}
+                title="Download every contact in this view as CSV, not just this page"
+                onClick={exportAll}
+                data-testid="export-all"
+              >
+                {exporting
+                  ? 'Exporting…'
+                  : `Export ${count != null ? `${count.toLocaleString()} ` : ''}to CSV`}
+              </button>
+            ) : null}
+            <button type="button" onClick={() => setAdding(true)} data-testid="add-contact">
+              Add contact
+            </button>
+          </div>
         }
       />
+
+      <ErrorBox error={exportError} />
 
       {adding ? (
         <AddContactModal

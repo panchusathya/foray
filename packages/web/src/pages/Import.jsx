@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
-import { Badge, Empty, ErrorBox, PageHeader, Stat } from '../components/common.jsx';
+import { DuplicateCheck } from '../components/DuplicateCheck.jsx';
+import { Badge, Empty, ErrorBox, PageHeader, Stat, ViewTabs } from '../components/common.jsx';
 import { api } from '../lib/api.js';
 import {
   IMPORT_STATE_KEY,
@@ -97,7 +98,42 @@ function EmailCell({ row }) {
   );
 }
 
+const IMPORT_TABS = [
+  {
+    id: 'import',
+    label: 'Import to sequence',
+    subtitle: 'Upload a sourcing export, pick who to take, and enroll them in a sequence.',
+  },
+  {
+    id: 'duplicates',
+    label: 'Check for duplicates',
+    subtitle:
+      'Check any list against your contacts and download it without the people already in them. '
+      + 'Nothing is imported.',
+  },
+];
+
 export function ImportPage() {
+  const [searchParams] = useSearchParams();
+  const tab = IMPORT_TABS.find((t) => t.id === searchParams.get('view')) ?? IMPORT_TABS[0];
+  return (
+    <div className="stack">
+      <PageHeader title="Import from CSV" subtitle={tab.subtitle} />
+      <ViewTabs views={IMPORT_TABS} activeId={tab.id} basePath="/import" />
+      {/* Both stay mounted, hidden rather than unmounted: flipping to the other
+          tab and back must not throw away a file somebody has been working
+          through. */}
+      <div hidden={tab.id !== 'import'}>
+        <ImportToSequence />
+      </div>
+      <div hidden={tab.id !== 'duplicates'}>
+        <DuplicateCheck />
+      </div>
+    </div>
+  );
+}
+
+function ImportToSequence() {
   const [fileName, setFileName] = useState('');
   const [parseError, setParseError] = useState('');
   const [columns, setColumns] = useState({});
@@ -418,11 +454,6 @@ export function ImportPage() {
 
   return (
     <div className="stack">
-      <PageHeader
-        title="Import from CSV"
-        subtitle="Upload a sourcing export, pick who to take, and enroll them in a sequence."
-      />
-
       <div className="card stack">
         <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <input

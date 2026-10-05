@@ -1112,6 +1112,25 @@ and duplicate-check points below. Non-obvious points:
   `0`: `normalize_candidate` only computes it from experiences when it arrives
   as `None`.
 
+### Check for duplicates and the full export
+
+- **"Check for duplicates" (Import page, `?view=duplicates`) writes nothing.**
+  It takes any file, guesses which columns are LinkedIn / email / name /
+  company (`lib/dupeCheck.js`, every guess overridable), asks the same
+  `POST /v1/imports/known` the importer does, and hands the recruiter's own
+  file back minus the matches. The output is written from `parseTable`'s raw
+  cells, not `parseDelimited`'s records -- records collapse a repeated header
+  and trim every cell, so the file would not be the file that went in.
+- **With no column named for it, only a whole-cell address or profile URL
+  counts.** A notes cell reading "referred by bob@acme.com" must not make the
+  row Bob, and an email match is a strong one that removes the row by default.
+- **`GET /v1/candidates/export` is uncapped and runs `_candidate_query`**, so
+  the file holds exactly the number in the page header. It is built in memory
+  rather than streamed: a streamed body reads the session after the handler
+  returns, and whether that session is still open has changed between FastAPI
+  releases. Cells get a formula guard that exempts phone-shaped values -- a
+  leading `+` is a number, not a formula.
+
 ## Apply by link (`messaging/apply_link.py` + `jobmatch/ingest_url.py`)
 
 A candidate texts a job URL; the product texts back a filled application to

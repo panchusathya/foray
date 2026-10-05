@@ -186,6 +186,10 @@ export const api = {
   contactsCount: (params = {}) => request(`/v1/candidates/count?${contactParams(params)}`),
   // Ids only, capped: feeds "select all matching" without pulling rows.
   contactIds: (params = {}) => request(`/v1/candidates/ids?${contactParams(params)}`),
+  // Every row the same filters match, as a CSV download. Uncapped, unlike
+  // contactIds: a file has no rows to render or act on one at a time.
+  exportContacts: (params = {}, filename = 'contacts.csv') =>
+    downloadFile(`/v1/candidates/export?${contactParams(params)}`, filename),
 
   listDiscovered: (params = {}) => request(`/v1/crm/discovered?${contactParams(params)}`),
   discoveredCount: (params = {}) =>

@@ -47,26 +47,28 @@ class TestAddTracking:
 
 
 class TestTheSendPath:
-    def test_tracking_on_by_default(self, session, outreach_fixture, mailbox):
+    def test_untouched_sends_no_pixel_and_the_real_link(self, session, outreach_fixture, mailbox):
+        """Off by default: these go out from a person's own mailbox, and the
+        pixel and the redirect are what make them read as bulk mail."""
         _link_step(session, outreach_fixture["sequence"])
-        html = _send_one(session, outreach_fixture, mailbox)
-        assert "/t/o/" in html
-        assert "/t/c/" in html
-
-    def test_switched_off_sends_no_pixel_and_the_real_link(
-        self, session, outreach_fixture, mailbox
-    ):
-        sequence = outreach_fixture["sequence"]
-        _link_step(session, sequence)
-        sequence.track_opens = False
-        sequence.track_clicks = False
-        session.commit()
 
         html = _send_one(session, outreach_fixture, mailbox)
 
         assert "/t/o/" not in html and "<img" not in html
         assert "/t/c/" not in html
         assert 'href="https://example.com/role"' in html
+
+    def test_switched_on_tracks(self, session, outreach_fixture, mailbox):
+        sequence = outreach_fixture["sequence"]
+        _link_step(session, sequence)
+        sequence.track_opens = True
+        sequence.track_clicks = True
+        session.commit()
+
+        html = _send_one(session, outreach_fixture, mailbox)
+
+        assert "/t/o/" in html
+        assert "/t/c/" in html
 
 
 class TestTheApi:
@@ -75,33 +77,42 @@ class TestTheApi:
         headers = account["headers"]
         response = client.patch(
             f"/v1/sequences/{sequence_id}",
-            json={"track_opens": False, "track_clicks": False},
+            json={"track_opens": True, "track_clicks": True},
             headers=headers,
         )
         assert response.status_code == 200, response.text
-        assert response.json()["track_opens"] is False
+        assert response.json()["track_opens"] is True
 
         clone = client.post(f"/v1/sequences/{sequence_id}/clone", json={}, headers=headers)
         assert clone.status_code == 201, clone.text
-        assert clone.json()["track_opens"] is False
-        assert clone.json()["track_clicks"] is False
+        assert clone.json()["track_opens"] is True
+        assert clone.json()["track_clicks"] is True
 
-    def test_new_sequences_track_by_default(self, session, outreach_fixture):
+    def test_new_sequences_do_not_track(self, client, account, session, outreach_fixture):
         sequence = Sequence(org_id=outreach_fixture["sequence"].org_id, name="x")
         session.add(sequence)
         session.add(SequenceStep(sequence=sequence, step_order=0, body_template="hi"))
         session.commit()
-        assert sequence.track_opens is True and sequence.track_clicks is True
+        assert sequence.track_opens is False and sequence.track_clicks is False
+
+        created = client.post(
+            "/v1/sequences",
+            json={"name": "y", "steps": [{"subject_template": "Hi", "body_template": "hi"}]},
+            headers=account["headers"],
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["track_opens"] is False
+        assert created.json()["track_clicks"] is False
 
     def test_the_spam_score_follows_the_switches(self, client, account):
         step = {"subject_template": "Role", "body_template": BODY}
         on = client.post(
-            "/v1/sequences/spam-check", json={"steps": [step]}, headers=account["headers"]
+            "/v1/sequences/spam-check",
+            json={"steps": [step], "track_opens": True, "track_clicks": True},
+            headers=account["headers"],
         ).json()["results"][0]
         off = client.post(
-            "/v1/sequences/spam-check",
-            json={"steps": [step], "track_opens": False, "track_clicks": False},
-            headers=account["headers"],
+            "/v1/sequences/spam-check", json={"steps": [step]}, headers=account["headers"]
         ).json()["results"][0]
 
         assert on["delivery_score"] > 0

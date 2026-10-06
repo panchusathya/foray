@@ -796,8 +796,8 @@ class SequenceIn(BaseModel):
     steps: list[SequenceStepIn] = Field(min_length=1)
     personalize: bool = True
     stop_on_reply: bool = True
-    track_opens: bool = True
-    track_clicks: bool = True
+    track_opens: bool = False
+    track_clicks: bool = False
     from_email: str = ""
     from_name: str = ""
     # Left unset, a payload carrying a mailbox_id is taken to mean "send from
@@ -832,8 +832,8 @@ class SequenceOut(BaseModel):
     status: str
     personalize: bool
     stop_on_reply: bool
-    track_opens: bool = True
-    track_clicks: bool = True
+    track_opens: bool = False
+    track_clicks: bool = False
     from_email: str
     from_name: str
     sender_mode: str
@@ -1121,8 +1121,8 @@ class SpamCheckRequest(BaseModel):
     steps: list[SpamCheckStep] = Field(default_factory=list, max_length=20)
     # The sequence's tracking switches, so the delivery findings match what
     # will actually be sent.
-    track_opens: bool = True
-    track_clicks: bool = True
+    track_opens: bool = False
+    track_clicks: bool = False
 
 
 class SpamCheckResponse(BaseModel):

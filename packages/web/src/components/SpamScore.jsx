@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 const LABEL = { low: 'Low', medium: 'Medium', high: 'High' };
 
-export function useSpamCheck(steps, { delay = 500, trackOpens = true, trackClicks = true } = {}) {
+export function useSpamCheck(steps, { delay = 500, trackOpens = false, trackClicks = false } = {}) {
   const [results, setResults] = useState([]);
   const request = useRef(0);
   const payload = JSON.stringify({

@@ -269,7 +269,8 @@ class TestSequenceRun:
         email = mailbox.outbox[0]
         assert "<strong>us</strong>" in email.html_body
         assert "this role" in email.html_body
-        assert "/t/c/" in email.html_body
+        # Tracking is off by default, so the link goes out as written.
+        assert 'href="https://jobs.example.com/role"' in email.html_body
         assert "script" not in email.html_body
         assert "alert" not in email.html_body
         assert "<strong>" not in email.text_body

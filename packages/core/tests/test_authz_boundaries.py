@@ -329,6 +329,8 @@ class TestClickRedirect:
             '<p>Hi {{ first_name }},</p>'
             '<p><a href="https://jobs.example.com/role">the role</a></p>'
         )
+        # Off by default; this test is about the links a tracked send mints.
+        outreach_fixture["sequence"].track_clicks = True
         session.flush()
 
         message = self._message(session, account, outreach_fixture, mailbox)

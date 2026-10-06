@@ -500,8 +500,8 @@ export function SequenceEditorPage() {
   // Read inside the reload effect, which must not see a stale `dirty`.
   const dirtyRef = useRef(false);
   const spam = useSpamCheck(steps, {
-    trackOpens: meta?.track_opens ?? true,
-    trackClicks: meta?.track_clicks ?? true,
+    trackOpens: meta?.track_opens ?? false,
+    trackClicks: meta?.track_clicks ?? false,
   });
 
   useEffect(() => {
@@ -515,8 +515,8 @@ export function SequenceEditorPage() {
       name: sequence.data.name,
       personalize: sequence.data.personalize,
       stop_on_reply: sequence.data.stop_on_reply,
-      track_opens: sequence.data.track_opens ?? true,
-      track_clicks: sequence.data.track_clicks ?? true,
+      track_opens: sequence.data.track_opens ?? false,
+      track_clicks: sequence.data.track_clicks ?? false,
       from_email: sequence.data.from_email,
       from_name: sequence.data.from_name,
       sender_mode: sequence.data.sender_mode,

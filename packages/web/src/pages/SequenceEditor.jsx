@@ -1149,6 +1149,7 @@ export function SequenceEditorPage() {
                 canReenrol={canReenrol}
                 onReenrol={setReenrolling}
                 reenrollingId={reenrolling?.id}
+                stepCount={steps.length}
               />
             ) : (
               <Empty>Nobody enrolled yet — use “Add people” to enrol candidates.</Empty>

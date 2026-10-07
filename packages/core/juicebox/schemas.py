@@ -147,6 +147,9 @@ class InFlightList(BaseModel):
     # Stopped-from-the-outbox rows a re-enrol could bring back, whatever view
     # this page is showing -- so the live view can point at the cancelled one.
     cancelled_total: int = 0
+    # Rows per step (0-based) in this view before any step filter, for the
+    # step picker.
+    step_counts: dict[int, int] = Field(default_factory=dict)
 
 
 class InFlightCancelIn(BaseModel):

@@ -64,6 +64,7 @@ npx playwright install chromium
 | `auth.spec.js` | login, bad password, logout |
 | `pipeline.spec.js` | duplicate adds collapse, one candidate across projects, the board stays a tracker, outreach-driven stages need an explicit override |
 | `sequences.spec.js` | the enrol picker, already-enrolled exclusion, enrol idempotency, the no-email warning, the paused banner, step editing blocked mid-flight, unsaved edits surviving a pause |
+| `outbox-bulk.spec.js` | select-all-matching covers every page of the Outbox and survives paging, the bulk bar stays in view, the step picker and its counts, a bulk stop over a whole filtered set, and the sequence enrolment list split by step (writes screenshots to `test-results/outbox-bulk-artifact/`) |
 | `sourcing.spec.js` | contactable filter, and that a guessed address never reaches the UI |
 | `contacts-grid.spec.js` | the CRM grid renders and sorts, the preset views select the right population (going cold, sourced pool vs CRM), view state survives reload and the back button, and the name cell carries the address without widening the table |
 | `contacts-bulk.spec.js` | the bulk bar appears only with a selection, select-page and clear, add-to-project reporting an outcome that outlives the cleared selection, the no-email enrol warning, and that a select-all-matching selection cannot be exported |

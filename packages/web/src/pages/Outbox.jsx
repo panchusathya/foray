@@ -25,6 +25,8 @@ import { useAsync } from '../lib/useAsync.js';
 
 const byId = (row) => row.enrollment_id;
 const PAGE_SIZE = 100;
+// The listing's own ceiling per request; "select all" walks the pages.
+const FETCH_ALL_PAGE = 500;
 
 // Starting widths in px; each column can be dragged wider or narrower.
 const COLUMN_WIDTHS = {
@@ -90,6 +92,8 @@ export function OutboxPage() {
   const [state, setState] = useState('');
   // Empty means every sequence; otherwise only these.
   const [sequenceIds, setSequenceIds] = useState([]);
+  // '' for every step, else the 0-based step the row is about to send.
+  const [step, setStep] = useState('');
   const [selected, setSelected] = useState(new Map());
   const [busy, setBusy] = useState('');
   const [note, setNote] = useState('');
@@ -108,6 +112,7 @@ export function OutboxPage() {
   const params = {
     state: state || undefined,
     sequence_id: sequenceIds.length ? sequenceIds : undefined,
+    step: step === '' ? undefined : Number(step),
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   };
@@ -116,17 +121,23 @@ export function OutboxPage() {
   const data = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
   const cancelledTotal = list.data?.cancelled_total ?? 0;
+  const stepCounts = list.data?.step_counts ?? {};
   const viewingCancelled = state === 'cancelled';
   const pageSelected = countOnPage(selected, data, byId);
 
+  // A new filter is a new set of rows, so the selection goes; turning the
+  // page is not -- a selection built across pages has to survive it.
+  const filterKey = JSON.stringify([state, sequenceIds, step]);
   useEffect(() => {
     setSelected(new Map());
     setReenrolling(null);
+  }, [filterKey]);
+  useEffect(() => {
     lastIndex.current = null;
   }, [key]);
 
   // A filter change starts again at the first page.
-  useEffect(() => setPage(0), [state, sequenceIds]);
+  useEffect(() => setPage(0), [state, sequenceIds, step]);
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   function onPick(row, index, event) {
@@ -136,6 +147,27 @@ export function OutboxPage() {
       setSelected(toggleOne(selected, row, byId));
     }
     lastIndex.current = index;
+  }
+
+  // Every row the filters match, across all pages, into the selection --
+  // so a bulk move, skip or stop covers the whole set rather than the 100
+  // rows on screen.
+  async function selectAllMatching() {
+    setBusy('select-all');
+    setError(null);
+    try {
+      const all = [];
+      for (let offset = 0; offset < total; offset += FETCH_ALL_PAGE) {
+        const chunk = await api.listInFlight({ ...params, limit: FETCH_ALL_PAGE, offset });
+        all.push(...(chunk.rows ?? []));
+        if (!chunk.rows?.length) break;
+      }
+      setSelected(new Map(all.map((row) => [byId(row), row])));
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setBusy('');
+    }
   }
 
   async function changePriority(value) {
@@ -283,6 +315,26 @@ export function OutboxPage() {
             }))}
           />
         </div>
+        <label className="row small" style={{ gap: 6 }} title="Which step each email is">
+          Step
+          <select
+            value={step}
+            data-testid="outbox-step"
+            onChange={(event) => setStep(event.target.value)}
+          >
+            <option value="">All steps</option>
+            {/* Keep the chosen step listed even when nothing is left in it. */}
+            {[...new Set([...Object.keys(stepCounts), ...(step === '' ? [] : [step])])]
+              .map(Number)
+              .sort((a, b) => a - b)
+              .map((index) => (
+                <option key={index} value={String(index)}>
+                  Step {index + 1}
+                  {index === 0 ? ' (first email)' : ''} · {(stepCounts[index] ?? 0).toLocaleString()}
+                </option>
+              ))}
+          </select>
+        </label>
         <label
           className="row small"
           style={{ gap: 6 }}
@@ -321,9 +373,24 @@ export function OutboxPage() {
       </div>
 
       {selected.size ? (
-        <div className="card row spread wrap" data-testid="outbox-actions" style={{ gap: 10 }}>
-          <span className="badge accent" data-testid="outbox-selected">
-            {selected.size} selected
+        <div className="card row spread wrap outbox-actions" data-testid="outbox-actions" style={{ gap: 10 }}>
+          <span className="row" style={{ gap: 8 }}>
+            <span className="badge accent" data-testid="outbox-selected">
+              {selected.size.toLocaleString()} selected
+            </span>
+            {selected.size < total ? (
+              <button
+                type="button"
+                className="tiny ghost"
+                disabled={!!busy}
+                onClick={selectAllMatching}
+                data-testid="outbox-select-all"
+              >
+                {busy === 'select-all' ? 'Selecting…' : `Select all ${total.toLocaleString()} matching`}
+              </button>
+            ) : total > data.length ? (
+              <span className="muted small">All {total.toLocaleString()} matching, across every page</span>
+            ) : null}
           </span>
           <span className="row" style={{ gap: 8 }}>
             {resumable.length ? (

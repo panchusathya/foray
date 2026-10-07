@@ -317,6 +317,7 @@ export const api = {
     }
     if (params.limit != null) query.set('limit', String(params.limit));
     if (params.offset != null) query.set('offset', String(params.offset));
+    if (params.step != null) query.set('step', String(params.step));
     const suffix = query.toString();
     return request(`/v1/outreach/in-flight${suffix ? `?${suffix}` : ''}`);
   },

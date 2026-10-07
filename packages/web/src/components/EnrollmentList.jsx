@@ -5,6 +5,10 @@
 // summary -- counts by status, each one a filter -- and the rows sit in their
 // own scrolling box with a search. It starts collapsed once there are more
 // than COLLAPSE_FROM people; whatever the recruiter last chose is remembered.
+//
+// A second row of chips splits the same people by how far they have got:
+// nothing sent yet, step 1 sent, step 2 sent... It narrows together with the
+// status chips, so "active, step 1 sent" is one click on each.
 import { useMemo, useState } from 'react';
 
 const COLLAPSE_FROM = 10;
@@ -19,6 +23,16 @@ const STATUS_TONE = {
   bounced: 'miss',
   failed: 'miss',
 };
+
+// current_step counts the steps already sent, so it is the progress bucket.
+function progressOf(row, stepCount) {
+  const sent = Math.max(0, row.current_step ?? 0);
+  return stepCount ? Math.min(sent, stepCount) : sent;
+}
+
+function progressLabel(sent) {
+  return sent === 0 ? 'Not sent yet' : `Step ${sent} sent`;
+}
 
 function remembered() {
   try {
@@ -37,9 +51,18 @@ function remember(open) {
   }
 }
 
-export function EnrollmentList({ enrollments, trailer, canReenrol, onReenrol, reenrollingId }) {
+export function EnrollmentList({
+  enrollments,
+  trailer,
+  canReenrol,
+  onReenrol,
+  reenrollingId,
+  stepCount = 0,
+}) {
   const [openChoice, setOpenChoice] = useState(remembered);
   const [status, setStatus] = useState('');
+  // '' for any progress, else the number of steps sent.
+  const [progress, setProgress] = useState('');
   const [query, setQuery] = useState('');
   const open = openChoice ?? enrollments.length <= COLLAPSE_FROM;
 
@@ -54,9 +77,30 @@ export function EnrollmentList({ enrollments, trailer, canReenrol, onReenrol, re
   ];
   const sentAny = enrollments.filter((row) => row.current_step > 0).length;
 
+  // Counted within the status chosen above, so the numbers add up to what
+  // that chip says.
+  const progressCounts = useMemo(() => {
+    const out = new Map();
+    for (const row of enrollments) {
+      if (status && row.status !== status) continue;
+      const key = progressOf(row, stepCount);
+      out.set(key, (out.get(key) ?? 0) + 1);
+    }
+    return out;
+  }, [enrollments, status, stepCount]);
+  // Every step of the sequence gets a chip, empty or not, so a step nobody
+  // has reached yet reads as zero rather than missing.
+  const progressKeys = [
+    ...new Set([
+      ...Array.from({ length: stepCount + 1 }, (_, i) => i),
+      ...progressCounts.keys(),
+    ]),
+  ].sort((a, b) => a - b);
+
   const needle = query.trim().toLowerCase();
   const shown = enrollments.filter((row) => {
     if (status && row.status !== status) return false;
+    if (progress !== '' && progressOf(row, stepCount) !== progress) return false;
     if (!needle) return true;
     const name = (row.candidate?.full_name ?? row.candidate_id ?? '').toLowerCase();
     return name.includes(needle);
@@ -69,6 +113,11 @@ export function EnrollmentList({ enrollments, trailer, canReenrol, onReenrol, re
 
   function pick(next) {
     setStatus((current) => (current === next ? '' : next));
+    if (!open) toggle(true);
+  }
+
+  function pickProgress(next) {
+    setProgress((current) => (current === next ? '' : next));
     if (!open) toggle(true);
   }
 
@@ -99,6 +148,28 @@ export function EnrollmentList({ enrollments, trailer, canReenrol, onReenrol, re
               title={status === s ? 'Show everyone' : `Show only ${s}`}
             >
               {s} <strong>{counts[s].toLocaleString()}</strong>
+            </button>
+          ))}
+        </span>
+        <span className="row wrap enrol-progress" style={{ gap: 6 }} data-testid="enrollment-progress">
+          <span className="muted small">Progress</span>
+          {progressKeys.map((sent) => (
+            <button
+              key={sent}
+              type="button"
+              className={`enrol-chip${sent === 0 ? ' partial' : ''}${progress === sent ? ' on' : ''}`}
+              aria-pressed={progress === sent}
+              onClick={() => pickProgress(sent)}
+              title={
+                progress === sent
+                  ? 'Show every step'
+                  : sent === 0
+                    ? 'Show only people who have not been sent anything yet'
+                    : `Show only people whose last email was step ${sent}`
+              }
+              data-testid="enrollment-progress-chip"
+            >
+              {progressLabel(sent)} <strong>{(progressCounts.get(sent) ?? 0).toLocaleString()}</strong>
             </button>
           ))}
         </span>

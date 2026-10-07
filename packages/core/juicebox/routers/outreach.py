@@ -676,21 +676,25 @@ def list_in_flight_rows(
     sequence_id: list[str] | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    # 0-based: the step each row is about to send.
+    step: int | None = Query(default=None, ge=0),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> InFlightList:
-    total, rows = list_in_flight(
+    total, rows, step_counts = list_in_flight(
         db,
         org_id=principal.org_id,
         state=state,
         sequence_id=sequence_id,
         limit=limit,
         offset=offset,
+        step=step,
     )
     return InFlightList(
         total=total,
         rows=[InFlightRow.model_validate(row) for row in rows],
         cancelled_total=cancelled_count(db, org_id=principal.org_id, sequence_id=sequence_id),
+        step_counts=step_counts,
     )
 
 

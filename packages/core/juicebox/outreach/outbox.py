@@ -380,7 +380,14 @@ def list_in_flight(
     sequence_id: SequenceFilter = None,
     limit: int = 100,
     offset: int = 0,
-) -> tuple[int, list[InFlightItem]]:
+    step: int | None = None,
+) -> tuple[int, list[InFlightItem], dict[int, int]]:
+    """(total, one page of rows, rows per step).
+
+    ``step`` is the 0-based step the row is about to send. The per-step counts
+    are taken before that filter, so the picker can show every step's size
+    whichever one is chosen.
+    """
     # Cancelled rows are a population of their own, not a state of the live
     # one: nothing about them is about to send. They share the listing so the
     # page has one grid, but the default view stays "what is going out".
@@ -390,7 +397,12 @@ def list_in_flight(
         rows = collect_in_flight(db, org_id=org_id, now=now, sequence_id=sequence_id)
         if state:
             rows = [row for row in rows if row.state == state]
-    return len(rows), rows[offset : offset + limit]
+    step_counts: dict[int, int] = {}
+    for row in rows:
+        step_counts[row.step] = step_counts.get(row.step, 0) + 1
+    if step is not None:
+        rows = [row for row in rows if row.step == step]
+    return len(rows), rows[offset : offset + limit], dict(sorted(step_counts.items()))
 
 
 def held_count(db: Session, *, org_id: str, now: datetime | None = None) -> int:

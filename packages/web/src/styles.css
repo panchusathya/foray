@@ -1591,6 +1591,9 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
 .enrol-chip.miss { color: var(--miss); border-color: var(--miss-border); }
 .enrol-chip.accent { color: var(--accent); }
 .enrol-chip.on { background: var(--tint); box-shadow: inset 0 0 0 1px currentColor; }
+/* Progress chips start their own line under the status chips. */
+.enrol-progress { flex-basis: 100%; }
+.enrol-progress .enrol-chip { text-transform: none; }
 .enrol-scroll {
   max-height: 440px; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
@@ -1621,3 +1624,13 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
 }
 .day-chip.on { color: var(--accent); background: var(--tint); border-color: var(--accent); }
 .day-chip:disabled { opacity: 0.5; }
+
+/* The Outbox's bulk bar stays in view while rows far down the list are
+   ticked; above the table it scrolled away and read as "no bulk actions". */
+.outbox-actions {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.12);
+}
+

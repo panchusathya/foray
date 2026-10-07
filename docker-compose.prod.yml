@@ -111,6 +111,10 @@ x-app-env: &app_env
   # Only mailboxes with thread sync on produce drafts.
   INBOX_DRAFTING_ENABLED: ${INBOX_DRAFTING_ENABLED:-false}
   OUTREACH_DAILY_CAP: ${OUTREACH_DAILY_CAP:-200}
+  # Skip an address whose stored reach score is below this (0 = off).
+  # Unscored addresses always pass. 41 skips Juicebox's "risky" (40) and
+  # "undeliverable" (0) verdicts and keeps "deliverable" (90).
+  FORAY_MIN_REACH_SCORE: ${FORAY_MIN_REACH_SCORE:-0}
   MS_CLIENT_ID: ${MS_CLIENT_ID:-}
   MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
   MS_TENANT_ID: ${MS_TENANT_ID:-organizations}

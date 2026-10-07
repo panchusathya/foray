@@ -45,7 +45,11 @@ function MessageRow({ message }) {
           <Badge>
             {message.source === 'sequence' ? 'sequence' : providerLabel(message.source)}
           </Badge>
-          {message.status === 'failed' ? <Badge tone="partial">failed</Badge> : null}
+          {message.status === 'failed' ? (
+            <Badge tone="partial">
+              {message.error ? `not sent · ${message.error}` : 'failed'}
+            </Badge>
+          ) : null}
           {message.attachment_count ? <span className="muted">📎</span> : null}
         </span>
         <span className="muted small">{when(message.sent_at || message.created_at)}</span>

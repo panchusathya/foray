@@ -9,6 +9,9 @@ dependencies = [
     "sqlalchemy>=2.0",
     "pydantic>=2.7",
     "email-validator>=2.1",
+    # MX lookups for the free address checks (outreach/address_check.py).
+    # Already pulled in by email-validator; listed because we import it.
+    "dnspython>=2.6",
     "python-multipart>=0.0.9",
     # Reads an .xlsx a recruiter uploads; see routers/imports.py. CSV needs
     # nothing -- that is parsed in the browser.

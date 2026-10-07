@@ -90,6 +90,20 @@ def sqlite_schema_template(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def no_real_dns(monkeypatch):
+    """The free address checks resolve MX records once the reach floor is on.
+    The suite never touches the network: every lookup answers "could not
+    tell", which never holds anyone. test_address_check drives the real
+    lookup against a fake resolver."""
+    from juicebox.outreach import address_check
+
+    monkeypatch.setattr(address_check, "_lookup", lambda domain: None)
+    address_check.reset_caches()
+    yield
+    address_check.reset_caches()
+
+
+@pytest.fixture(autouse=True)
 def isolated_environment(tmp_path, monkeypatch, sqlite_schema_template):
     """Every test gets its own database, no model calls and a memory mailbox."""
     if TEST_DATABASE_URL:

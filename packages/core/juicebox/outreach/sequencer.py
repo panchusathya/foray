@@ -1095,13 +1095,20 @@ def _email_reach_scores(candidate: Candidate) -> dict:
     return merged
 
 
-def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None]:
+def _sendable_address(
+    candidate: Candidate, floor: int, check=None
+) -> tuple[str, str | None]:
     """First address that clears the reach-score floor, preserving list order.
 
     The floor skips; it does not re-rank. Unscored addresses (no ``email_reach``
     entry under any namespace in ``raw``) pass, because the gate only applies
     when we actually scored them. Returns ``(address, error)``; ``error`` is
     ``reach_score_below_floor`` when every scored address is below ``floor``.
+
+    ``check`` (``address_check.make_checker``) adds the free checks: it turns
+    an address and its stored score into an effective one, so a dead domain
+    or an old ISP address is skipped like a low score. When every address is
+    held that way, ``error`` is ``address_check:<why>`` for the first one.
     """
     emails = [normalize_email(raw or "") for raw in (candidate.emails or [])]
     emails = [addr for addr in emails if addr]
@@ -1111,13 +1118,24 @@ def _sendable_address(candidate: Candidate, floor: int) -> tuple[str, str | None
         return emails[0], None
     scores = _email_reach_scores(candidate)
     saw_score = False
+    held: str | None = None
     for addr in emails:
         score = _reach_score_for(addr, scores)
+        if check is not None:
+            verdict = check(addr, score)
+            # A verdict with a reason is the check's own (a stored score
+            # comes back without one); say why rather than "score too low".
+            if verdict.score is not None and verdict.score < floor and verdict.reason:
+                held = held or f"address_check:{verdict.reason}"
+                continue
+            score = verdict.score
         if score is None:
             return addr, None
         saw_score = True
         if score >= floor:
             return addr, None
+    if held is not None:
+        return "", held
     if saw_score:
         return "", "reach_score_below_floor"
     return emails[0], None
@@ -1209,7 +1227,12 @@ def send_step(
     if existing is not None and existing.status == "failed" and existing.error == "suppressed":
         return existing
 
-    to_address, reach_error = _sendable_address(candidate, settings.min_reach_score)
+    checker = None
+    if settings.min_reach_score > 0:
+        from .address_check import make_checker
+
+        checker = make_checker(db, sequence.org_id, now)
+    to_address, reach_error = _sendable_address(candidate, settings.min_reach_score, checker)
     if to_address and is_suppressed(db, org_id=sequence.org_id, email=to_address):
         if dry_run:
             return _preview_message(
@@ -1375,6 +1398,10 @@ def send_step(
         if reach_error == "reach_score_below_floor":
             message.error = "reach_score_below_floor"
             _finish_enrollment(enrollment, "stopped", "reach_score_below_floor")
+        elif reach_error and reach_error.startswith("address_check:"):
+            # Why, in words, on the message; the enrolment carries the kind.
+            message.error = reach_error.split(":", 1)[1]
+            _finish_enrollment(enrollment, "stopped", "address_check")
         else:
             message.error = "no email address on file"
             _finish_enrollment(enrollment, "stopped", "missing_email")

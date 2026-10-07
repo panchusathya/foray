@@ -1131,6 +1131,26 @@ and duplicate-check points below. Non-obvious points:
   releases. Cells get a formula guard that exempts phone-shaped values -- a
   leading `+` is a number, not a formula.
 
+## Free address checks (`packages/core/juicebox/outreach/address_check.py`)
+
+- **No verifier, by decision.** A paid verification API was turned down and
+  the VM cannot reach port 25, so the checks are DNS plus this org's own
+  history, mapped onto the reach-score scale so `FORAY_MIN_REACH_SCORE` is the
+  one switch (0 = off, including the lookups; prod runs 41).
+- **Hard facts beat a stored score; a stored score beats a guess.** A typo of
+  a big provider or a domain that cannot receive mail is held even if
+  something scored it; an old ISP domain or a learned bad domain is held only
+  when nothing scored the address. Our own DNS failing never holds anyone.
+- **Delivered once is proven.** An address sent to more than a day ago with
+  no bounce is never held by a guess, so a follow-up is not stopped by the
+  rule its first email already passed.
+- **A held person is stopped, not deferred** (`stopped_reason =
+  "address_check"`, the why on `Message.error`), the same way a low score
+  always was: waiting would not change the address.
+- **The suite never resolves DNS.** `conftest.no_real_dns` stubs the lookup
+  for every test; `test_address_check.py` drives the real one against a fake
+  resolver.
+
 ## Apply by link (`messaging/apply_link.py` + `jobmatch/ingest_url.py`)
 
 A candidate texts a job URL; the product texts back a filled application to

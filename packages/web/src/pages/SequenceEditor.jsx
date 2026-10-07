@@ -139,6 +139,9 @@ const STOP_REASON_LABELS = {
   suppressed: 'suppressed',
   missing_email: 'no email',
   reach_score_below_floor: 'reach score too low',
+  // The free address checks (outreach/address_check.py): a dead or typo'd
+  // domain, an old ISP address, or a domain that keeps bouncing.
+  address_check: 'held: address likely to bounce',
   candidate_deleted: 'candidate deleted',
   replied_elsewhere: 'replied in another sequence',
   // The one stop a recruiter can undo: see canReenrol and the row's button.

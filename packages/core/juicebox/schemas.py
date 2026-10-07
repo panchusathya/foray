@@ -986,6 +986,9 @@ class MessageOut(BaseModel):
     clicked_at: datetime | None
     replied_at: datetime | None
     reply_intent: str
+    # Why a send did not go ("old ISP address (aol.com)", "no email address
+    # on file"); empty for everything that went.
+    error: str = ""
 
 
 class ThreadOut(BaseModel):

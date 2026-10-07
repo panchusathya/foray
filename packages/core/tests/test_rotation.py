@@ -353,6 +353,34 @@ class TestTheGapIsPerDomain:
 
         assert resolved.deferred and resolved.reason == "spacing"
 
+    def test_a_future_stamp_does_not_hold_the_domain(self, session, pool, outreach_fixture):
+        """A manual reply filed with a timestamp hours ahead (Zoho's local-time
+        sentDateInGMT) must not stop every other mailbox on the domain until
+        then. Prod lost the afternoon's sends to exactly this."""
+        from juicebox.outreach.rotation import mailbox_gap_wait
+
+        alpha, bravo, _charlie = pool["connections"]
+        now = utcnow()
+        session.add(
+            Message(
+                org_id=bravo.org_id,
+                candidate_id=outreach_fixture["candidates"][0].id,
+                direction="outbound",
+                status="sent",
+                mailbox_id=bravo.id,
+                sent_at=now + timedelta(hours=7),
+            )
+        )
+        session.commit()
+
+        assert mailbox_gap_wait(session, alpha, now) is None
+        assert not resolve_sender(session, pool["sequence"], now=now).deferred
+
+        # A real send a moment ago still starts the gap.
+        bravo.last_sent_at = now - timedelta(seconds=5)
+        session.commit()
+        assert mailbox_gap_wait(session, alpha, now) is not None
+
     def test_the_orgs_own_gap_wins_and_off_means_off(self, session, pool):
         from juicebox.models import Org
         from juicebox.outreach.rotation import mailbox_gap_wait

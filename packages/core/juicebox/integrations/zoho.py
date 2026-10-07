@@ -207,6 +207,24 @@ def _epoch_ms(raw) -> datetime | None:
     return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
+def _sent_time(payload: dict) -> datetime | None:
+    """When a message was sent, never later than Zoho stored it.
+
+    ``sentDateInGMT`` is not GMT for mail composed in Zoho: it runs ahead by
+    the account's UTC offset (seven hours on a Pacific account in summer),
+    while ``receivedTime`` -- when the message landed in the folder -- is a true
+    epoch. A manual reply stamped seven hours in the future pinned the sending
+    domain's gap clock there and stopped every sequence mailbox on the domain
+    for the rest of the day. A message cannot leave after it was filed, so the
+    earlier of the two wins.
+    """
+    received = _epoch_ms(payload.get("receivedTime"))
+    sent = _epoch_ms(payload.get("sentDateInGMT") or payload.get("sentTime"))
+    if sent is None or (received is not None and received < sent):
+        return received
+    return sent
+
+
 def _unescape(raw):
     """Undo Zoho's HTML escaping of recipient fields.
 
@@ -434,7 +452,7 @@ def to_event(
     decided the message was worth a content fetch.
     """
     received = _epoch_ms(payload.get("receivedTime"))
-    sent = _epoch_ms(payload.get("sentDateInGMT") or payload.get("sentTime"))
+    sent = _sent_time(payload)
     return MailboxEvent(
         native_id=str(payload.get("messageId") or ""),
         from_address=_one_address(payload.get("fromAddress")),
@@ -731,7 +749,7 @@ class ZohoProvider:
         records: list[SweepRecord] = []
         reached_window_end = len(rows) < _PAGE_LIMIT
         for payload in rows:
-            when = _epoch_ms(payload.get("sentDateInGMT") or payload.get("receivedTime"))
+            when = _sent_time(payload)
             if when is not None and when < since:
                 reached_window_end = True
                 break

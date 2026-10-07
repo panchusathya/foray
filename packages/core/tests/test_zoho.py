@@ -393,6 +393,25 @@ class TestEventParsing:
         assert event.received_at is not None
         assert event.received_at.year == 2023
 
+    def test_a_sent_time_ahead_of_filing_is_clamped_to_it(self):
+        """Zoho's sentDateInGMT on mail composed in Zoho runs ahead by the
+        account's UTC offset; prod saw +7h on every Pacific account. Trusted,
+        one manual reply pinned the domain's gap clock seven hours out."""
+        filed = 1_791_309_356_456  # receivedTime, a true epoch
+        row = {**_row(received_ms=filed), "sentDateInGMT": str(filed + 7 * 3600 * 1000)}
+
+        event = zoho.to_event(row)
+
+        assert event.sent_at == event.received_at
+        assert event.occurred_at.timestamp() == filed / 1000
+
+    def test_an_honest_sent_time_is_kept(self):
+        """Mail from outside is stamped by its sender before Zoho files it."""
+        filed = 1_791_309_356_456
+        row = {**_row(received_ms=filed), "sentDateInGMT": str(filed - 2000)}
+
+        assert zoho.to_event(row).sent_at.timestamp() == (filed - 2000) / 1000
+
     def test_a_draft_is_marked_as_one(self):
         """A draft ingested as a reply would stop a live sequence."""
         assert zoho.to_event(_row(mode="draft")).is_draft

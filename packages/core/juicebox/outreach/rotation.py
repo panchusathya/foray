@@ -85,22 +85,31 @@ def domain_mailboxes(db: Session, org_id: str, domain: str) -> list[MailboxConne
     return [row for row in rows if domain_of(row.address) == domain]
 
 
-def domain_last_sent_at(db: Session, org_id: str, domain: str) -> datetime | None:
-    """The newest automated send from any mailbox on this domain."""
+def domain_last_sent_at(
+    db: Session, org_id: str, domain: str, now: datetime | None = None
+) -> datetime | None:
+    """The newest automated send from any mailbox on this domain.
+
+    With ``now``, a stamp later than now is ignored. Every mailbox on the
+    domain waits on this one clock, so a single message filed with a future
+    timestamp (a provider reporting local time as UTC, say) would hold all of
+    them until that moment -- which is how one manual reply stopped twenty
+    mailboxes for six hours. Something that has not happened yet cannot have
+    started a gap.
+    """
     boxes = domain_mailboxes(db, org_id, domain)
     if not boxes:
         return None
-    stamped = max((v for v in (_aware(b.last_sent_at) for b in boxes) if v is not None), default=None)
-    recorded = _aware(
-        db.scalar(
-            select(func.max(Message.sent_at)).where(
-                Message.mailbox_id.in_([b.id for b in boxes]),
-                Message.direction == "outbound",
-                Message.status == "sent",
-            )
-        )
+    stamps = [_aware(b.last_sent_at) for b in boxes]
+    query = select(func.max(Message.sent_at)).where(
+        Message.mailbox_id.in_([b.id for b in boxes]),
+        Message.direction == "outbound",
+        Message.status == "sent",
     )
-    return max((v for v in (stamped, recorded) if v is not None), default=None)
+    if now is not None:
+        query = query.where(Message.sent_at <= now)
+    stamps.append(_aware(db.scalar(query)))
+    return max((v for v in stamps if v is not None and (now is None or v <= now)), default=None)
 
 
 def mailbox_gap_wait(
@@ -116,7 +125,7 @@ def mailbox_gap_wait(
     if high <= 0:
         return None
     domain = domain_of(connection.address)
-    last = domain_last_sent_at(db, connection.org_id, domain)
+    last = domain_last_sent_at(db, connection.org_id, domain, now)
     if last is None:
         return None
     opens = last + send_gap(domain, int(last.timestamp()), low=low, high=high)

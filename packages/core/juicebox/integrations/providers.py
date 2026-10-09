@@ -54,7 +54,7 @@ class MailboxEvent:
     body: str = ""
     body_is_html: bool = False
     to_addresses: tuple[str, ...] = ()
-    # Graph conversationId | Zoho threadId. Same role: groups a thread.
+    # Graph conversationId | Zoho threadId | Gmail threadId. Same role: groups a thread.
     thread_id: str = ""
     # RFC 5322 Message-ID of this message, and of the one it answers.
     rfc_message_id: str = ""
@@ -228,9 +228,11 @@ _providers: dict[str, MailProvider] = {}
 
 
 def _load_defaults() -> None:
+    from .gmail import GmailProvider
     from .microsoft import MicrosoftProvider
     from .zoho import ZohoProvider
 
+    _providers["gmail"] = GmailProvider()
     _providers["microsoft"] = MicrosoftProvider()
     _providers["zoho"] = ZohoProvider()
 

@@ -223,6 +223,17 @@ extra (`.venv/bin/python -m pip install -e "packages/core[postgres]"`) and set
   reply-draft lookup, the sent-items guard and a partial unique index all read
   it. A provider that cannot supply its own message id cannot be idempotent, so
   a send that comes back without one fails rather than reporting success.
+- **Gmail (`integrations/gmail.py`) threads on Gmail's thread id, not the
+  parent's message id.** The sequencer hands every provider the parent's
+  native *message* id; Gmail files a reply into a thread only when the send
+  names the `threadId` and carries In-Reply-To/References, so the adapter
+  looks the thread up (a failed lookup sends unthreaded rather than not at
+  all). It also reads back the Message-ID Gmail stored after each send,
+  refuses a connect where the person unticked a scope on Google's granular
+  consent screen, and catches up by date when a history id has expired --
+  re-baselining there would skip the gap for good. Times come from
+  `internalDate`, never the Date header. Credentials are `GMAIL_CLIENT_ID` /
+  `GMAIL_CLIENT_SECRET`, never the candidate connector's: this client sends.
 - **Running out of send capacity is not an error.** `process_enrollment` returns
   `"deferred"`, which requeues the same permanent idempotency key. Raising
   parks the job; advancing `next_send_at` makes the requeue return `"skipped"`,

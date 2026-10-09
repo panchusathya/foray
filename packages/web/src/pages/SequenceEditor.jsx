@@ -487,6 +487,10 @@ export function SequenceEditorPage() {
   const previewRequest = useRef(0);
   const previewKey = useRef('');
   const [previewCandidate, setPreviewCandidate] = useState('');
+  // '' = whichever mailbox would send next; otherwise render as this one.
+  const [previewMailbox, setPreviewMailbox] = useState('');
+  // A full (model-writing) preview is in flight; the automatic ones are quiet.
+  const [previewMode, setPreviewMode] = useState('fast');
   const [picking, setPicking] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
   const [enrollError, setEnrollError] = useState(null);
@@ -565,6 +569,63 @@ export function SequenceEditorPage() {
     () => steps.map((step, index) => ({ index, found: malformedInStep(step) })).filter((s) => s.found.length),
     [steps],
   );
+
+  // Every preview hook sits above the early returns below: a hook that runs
+  // only once the sequence has loaded changes the hook count between renders
+  // and React throws.
+  // Who to preview against: this sequence's own enrolled people first (with
+  // their enrolment, so a follow-up reads its real thread), then a sample of
+  // the CRM so a brand-new sequence still has someone to render for.
+  const previewPeople = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const enrollment of enrollments.data ?? []) {
+      if (!enrollment.candidate_id || seen.has(enrollment.candidate_id)) continue;
+      seen.add(enrollment.candidate_id);
+      out.push({
+        id: enrollment.candidate_id,
+        name: enrollment.candidate?.full_name ?? enrollment.candidate_id,
+        enrollmentId: enrollment.id,
+      });
+      if (out.length >= 100) break;
+    }
+    for (const candidate of candidates.data ?? []) {
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      out.push({ id: candidate.id, name: candidate.full_name, enrollmentId: null });
+    }
+    return out;
+  }, [enrollments.data, candidates.data]);
+
+  // The mailboxes this sequence can send from, per the editor's current
+  // settings -- each signs off with its own name, so each is worth seeing.
+  const senderOptions = useMemo(() => {
+    if (!meta) return [];
+    const active = (mailboxes.data?.connections ?? []).filter(
+      (connection) => connection.status === 'active' && connection.send_enabled,
+    );
+    if (meta.sender_mode === 'fixed' && meta.mailbox_id) {
+      return active.filter((connection) => connection.id === meta.mailbox_id);
+    }
+    const chosen = meta.mailbox_ids ?? [];
+    return active.filter((connection) => !chosen.length || chosen.includes(connection.id));
+  }, [mailboxes.data, meta]);
+  const previewAs =
+    previewMailbox && senderOptions.some((c) => c.id === previewMailbox) ? previewMailbox : '';
+
+  // Refresh on its own whenever what is being previewed changes -- the step,
+  // the person, the mailbox, or the text (after a short pause in typing).
+  // These are model-free; the Preview button is what writes AI parts.
+  const draftText = steps[selected]
+    ? JSON.stringify([steps[selected].subject_template, steps[selected].body_template])
+    : '';
+  useEffect(() => {
+    if (!sequence.data || !previewPeople.length) return undefined;
+    const timer = setTimeout(() => runPreview({ fast: true }), stepsDirty ? 700 : 0);
+    return () => clearTimeout(timer);
+    // runPreview reads the latest state when it fires; these are its triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, previewCandidate, previewAs, draftText, previewPeople.length, sequence.data]);
 
   if (sequence.loading || !meta) return <Loading label="Loading sequence…" />;
   if (sequence.error) return <ErrorBox error={sequence.error} />;
@@ -694,25 +755,36 @@ export function SequenceEditorPage() {
     }
   }
 
-  async function runPreview() {
-    const candidateId = previewCandidate || candidates.data?.[0]?.id;
-    if (!candidateId) {
-      setError(new Error('No candidates to preview against'));
+  async function runPreview({ fast = false } = {}) {
+    const person = previewPeople.find((p) => p.id === previewCandidate) ?? previewPeople[0];
+    if (!person) {
+      if (!fast) setError(new Error('No candidates to preview against'));
       return;
     }
-    // Previewing the same candidate and step twice should not re-render, let
-    // alone re-request: the server may have to write copy for it.
-    const key = `${candidateId}:${selected}`;
+    // The editor's unsaved text for this step rides along, so the preview
+    // follows typing instead of waiting for a save.
+    const current = steps[selected];
+    const draft =
+      stepsDirty && current
+        ? { subject_template: current.subject_template, body_template: current.body_template }
+        : {};
+    // The same preview twice should not re-render, let alone re-request: a
+    // full one may have the server write copy for it.
+    const key = JSON.stringify([person.id, selected, previewAs, fast, draft]);
     if (previewKey.current === key && preview) return;
-    if (previewing) return;
 
     const seq = (previewRequest.current += 1);
-    setError(null);
+    if (!fast) setError(null);
     setPreviewing(true);
+    setPreviewMode(fast ? 'fast' : 'full');
     try {
       const result = await api.previewSequence(sequenceId, {
-        candidate_id: candidateId,
+        candidate_id: person.id,
         step_order: selected,
+        enrollment_id: person.enrollmentId || undefined,
+        mailbox_id: previewAs || undefined,
+        fast,
+        ...draft,
       });
       // A slower earlier request must not overwrite a newer one.
       if (previewRequest.current !== seq) return;
@@ -724,6 +796,7 @@ export function SequenceEditorPage() {
       if (previewRequest.current === seq) setPreviewing(false);
     }
   }
+
 
   const step = steps[selected] ?? steps[0];
   // What a follow-up will go out as. Mirrors reply_subject() on the send side,
@@ -979,15 +1052,36 @@ export function SequenceEditorPage() {
           <div className="card stack">
             <div className="spread">
               <strong className="small">Preview &amp; test — step {selected + 1}</strong>
-              <div className="row">
+              <div className="row wrap">
                 <select
-                  style={{ width: 220 }}
+                  style={{ width: 200 }}
+                  aria-label="Preview as this person"
+                  data-testid="preview-person"
                   value={previewCandidate}
                   onChange={(event) => setPreviewCandidate(event.target.value)}
                 >
-                  {(candidates.data ?? []).map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.full_name}
+                  {previewPeople.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name}
+                      {person.enrollmentId ? '' : ' (not enrolled)'}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  style={{ width: 210 }}
+                  aria-label="Send as this mailbox"
+                  data-testid="preview-sender"
+                  value={previewAs}
+                  onChange={(event) => setPreviewMailbox(event.target.value)}
+                >
+                  <option value="">
+                    {senderOptions.length > 1 ? 'Next mailbox in rotation' : 'Sending mailbox'}
+                  </option>
+                  {senderOptions.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.display_name
+                        ? `${connection.display_name} <${connection.address}>`
+                        : connection.address}
                     </option>
                   ))}
                 </select>
@@ -995,16 +1089,41 @@ export function SequenceEditorPage() {
                   type="button"
                   className="tiny"
                   data-testid="preview-button"
-                  disabled={dirty || previewing}
-                  onClick={runPreview}
+                  disabled={previewing && previewMode === 'full'}
+                  onClick={() => runPreview({ fast: false })}
+                  title="Render this step in full, including any AI-written parts"
                 >
-                  {previewing ? 'Previewing…' : 'Preview'}
+                  {previewing && previewMode === 'full' ? 'Previewing…' : 'Preview'}
                 </button>
               </div>
             </div>
-            {dirty ? <div className="muted small">Save your changes to preview them.</div> : null}
+            {stepsDirty ? (
+              <div className="muted small" data-testid="preview-unsaved">
+                Showing your unsaved edits
+                {previewing && previewMode === 'fast' ? ' — updating…' : '.'}
+              </div>
+            ) : null}
             {preview ? (
               <>
+                <div className="small" data-testid="preview-from">
+                  <span className="muted">From </span>
+                  {preview.sender_email
+                    ? `${preview.sender_name} <${preview.sender_email}>`
+                    : `${preview.sender_name || 'the default sender'} (no mailbox connected)`}
+                  {!previewAs && senderOptions.length > 1 ? (
+                    <span className="muted">
+                      {' '}
+                      · rotates across {senderOptions.length} mailboxes; pick one above to see its
+                      sign-off
+                    </span>
+                  ) : null}
+                </div>
+                {preview.ai_status === 'skipped' ? (
+                  <div className="card small" data-testid="ai-skipped-banner">
+                    AI-written parts show as [AI: …] placeholders while you edit. Click Preview to
+                    have them written.
+                  </div>
+                ) : null}
                 {preview.warnings?.length ? (
                   <div className="card small" data-testid="preview-warnings">
                     This step will not send: {preview.warnings.join(', ')}{' '}

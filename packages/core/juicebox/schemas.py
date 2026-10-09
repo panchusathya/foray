@@ -1071,6 +1071,17 @@ class PreviewRequest(BaseModel):
     # A later step's {{ai: ...}} follow-up reads the thread; previewing against
     # a real enrollment shows it with that thread instead of reading like step 1.
     enrollment_id: str | None = None
+    # Render as this mailbox instead of whichever would send next, so the
+    # recruiter can see each signature a rotating sequence will produce.
+    mailbox_id: str | None = None
+    # The editor's unsaved text for the step being previewed. Rendered, never
+    # stored: a preview must not be a way to save.
+    subject_template: str | None = None
+    body_template: str | None = None
+    # No model calls: {{ai:}} parts show as markers and model-written
+    # variables fall back to their plain values. The editor uses this for the
+    # previews it refreshes on its own, so typing never runs up model calls.
+    fast: bool = False
 
 
 class PreviewResponse(BaseModel):
@@ -1084,8 +1095,9 @@ class PreviewResponse(BaseModel):
     sender_email: str = ""
     sender_name: str = ""
     # off: no directives in the step · resolved: model wrote them ·
-    # unavailable: directives present but no model — body shows [AI: ...] markers.
-    ai_status: Literal["off", "resolved", "unavailable"] = "off"
+    # unavailable: directives present but no model — body shows [AI: ...] markers ·
+    # skipped: a fast (no-model) preview left the markers in on purpose.
+    ai_status: Literal["off", "resolved", "unavailable", "skipped"] = "off"
     # Placeholders the renderer cannot parse, verbatim (e.g. "{{First name}}").
     # The body above shows them as the candidate would see them — as raw braces
     # — so the warning is what tells the recruiter that is a bug, not a choice.

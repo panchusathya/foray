@@ -373,6 +373,30 @@ def build_message_content(
     return subject, body, context, fragments
 
 
+def preview_step_view(step: SequenceStep, draft: dict | None):
+    """The step as the editor currently has it, without touching the saved row.
+
+    A detached copy rather than setting attributes on ``step``: the preview
+    route commits on the way out, so an edited ORM object would quietly save
+    whatever the recruiter had typed -- the same trap the dry-run send fell
+    into when CommittingRoute committed a preview.
+    """
+    if not draft:
+        return step
+    from types import SimpleNamespace
+
+    subject = draft.get("subject_template")
+    body = draft.get("body_template")
+    return SimpleNamespace(
+        id=step.id,
+        sequence_id=step.sequence_id,
+        step_order=step.step_order,
+        send_timezone=getattr(step, "send_timezone", ""),
+        subject_template=step.subject_template if subject is None else subject,
+        body_template=step.body_template if body is None else body,
+    )
+
+
 def preview_step(
     db: Session,
     *,
@@ -380,9 +404,16 @@ def preview_step(
     candidate: Candidate,
     step_order: int = 0,
     enrollment: Enrollment | None = None,
+    connection=None,
+    draft: dict | None = None,
 ) -> tuple[str, str, dict]:
     """Preview honours directives too; the router decides how to present an
     unresolvable one (banner + placeholder rather than a 500).
+
+    ``connection`` renders as that mailbox rather than whichever would send
+    next. ``draft`` (``subject_template`` / ``body_template``) previews the
+    editor's unsaved text for the step, through ``preview_step_view`` -- a
+    read-only stand-in, so nothing the preview renders can be written back.
 
     ``strict=False`` below is deliberate: a preview must show what would
     actually go out, and for a malformed placeholder that is the raw braces.
@@ -392,11 +423,14 @@ def preview_step(
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
     if not steps:
         raise ValueError("sequence has no steps")
-    step = next((s for s in steps if s.step_order == step_order), steps[0])
+    step = preview_step_view(
+        next((s for s in steps if s.step_order == step_order), steps[0]), draft
+    )
     # Render as the mailbox that would actually send this, or the signature in
     # the preview is not the signature the candidate gets -- which is the whole
     # point of previewing.
-    connection = preview_connection(db, sequence, enrollment)
+    if connection is None:
+        connection = preview_connection(db, sequence, enrollment)
     subject, body, context, _ = build_message_content(
         db,
         sequence=sequence,
@@ -406,7 +440,7 @@ def preview_step(
         connection=connection,
         strict=False,
     )
-    if step is not steps[0]:
+    if step.step_order != steps[0].step_order:
         # Follow-ups inherit the first step's line -- show the recruiter the
         # subject the candidate will actually see, not one this step's own
         # (now hidden, possibly stale) template would have produced.

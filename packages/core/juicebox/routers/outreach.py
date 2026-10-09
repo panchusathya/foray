@@ -35,6 +35,7 @@ from ..outreach.sequencer import (
     find_message_for_reply,
     move_in_line,
     preview_step,
+    preview_step_view,
     process_enrollment,
     recent_human_replies,
     record_reply,
@@ -461,9 +462,19 @@ def preview(
                 Enrollment.sequence_id == sequence.id,
             )
         )
+    connection = None
+    if payload.mailbox_id:
+        connection = db.get(MailboxConnection, payload.mailbox_id)
+        if connection is None or connection.org_id != principal.org_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
+    draft = None
+    if payload.subject_template is not None or payload.body_template is not None:
+        draft = {"subject_template": payload.subject_template, "body_template": payload.body_template}
     ai_status = "off"
     steps = sorted(sequence.steps, key=lambda s: s.step_order)
-    step = next((s for s in steps if s.step_order == payload.step_order), steps[0] if steps else None)
+    saved = next((s for s in steps if s.step_order == payload.step_order), steps[0] if steps else None)
+    # Everything below reads the step as the editor has it, unsaved text and all.
+    step = preview_step_view(saved, draft) if saved is not None else None
     has_directives = bool(
         step
         and templates.used_directives(f"{step.subject_template or ''}\n{step.body_template or ''}")
@@ -476,45 +487,58 @@ def preview(
         if step
         else []
     )
-    try:
-        subject, body, context = preview_step(
-            db,
-            sequence=sequence,
-            candidate=candidate,
-            step_order=payload.step_order,
-            enrollment=enrollment,
-        )
-        if has_directives:
-            ai_status = "resolved"
-    except LLMUnavailable:
-        # A preview must inform, not fail: show the directive as a visible
-        # marker so the recruiter sees where AI text will go once a model is
-        # available. Sending still fails closed — this leniency is preview-only.
+    def marked() -> tuple[str, str, dict]:
+        """The step rendered with no model at all: directives as visible
+        markers, model-written variables at their plain fallbacks."""
         context = personalize(candidate, None, use_llm=False)
         # Rebuilt from scratch, so re-add the sender and date variables or the
-        # fallback preview signs off with nothing.
+        # preview signs off with nothing.
         context = {
             **context,
             **sender_context(
-                preview_connection(db, sequence, enrollment),
+                connection or preview_connection(db, sequence, enrollment),
                 sequence,
                 fallback_name=get_settings().outreach_from_name,
             ),
             **suggested_date_context(db, enrollment=enrollment, step=step, now=utcnow()),
         }
-        # Follow-ups take the first step's line here too, or the degraded
-        # preview would show a blank subject for every step whose own box the
-        # editor no longer offers.
-        subject_source = steps[0] if steps and step is not steps[0] else step
+        # Follow-ups take the first step's line here too, or the preview would
+        # show a blank subject for every step whose own box the editor no
+        # longer offers.
+        is_follow_up = bool(steps) and step.step_order != steps[0].step_order
+        subject_source = steps[0] if is_follow_up else step
         subject = templates.render(
             templates.mark_directives(subject_source.subject_template or ""), context
         ).strip()
-        if subject_source is not step:
+        if is_follow_up:
             subject = reply_subject(subject)
-        body = templates.render(
-            templates.mark_directives(step.body_template or ""), context
-        ).strip()
-        ai_status = "unavailable"
+        body = templates.render(templates.mark_directives(step.body_template or ""), context).strip()
+        return subject, body, context
+
+    if payload.fast:
+        # The editor's own refreshes: never a model call, so typing and
+        # clicking around cost nothing. The Preview button runs the full path.
+        subject, body, context = marked()
+        ai_status = "skipped" if has_directives else "off"
+    else:
+        try:
+            subject, body, context = preview_step(
+                db,
+                sequence=sequence,
+                candidate=candidate,
+                step_order=payload.step_order,
+                enrollment=enrollment,
+                connection=connection,
+                draft=draft,
+            )
+            if has_directives:
+                ai_status = "resolved"
+        except LLMUnavailable:
+            # A preview must inform, not fail: show the directive as a visible
+            # marker so the recruiter sees where AI text will go once a model is
+            # available. Sending still fails closed — this leniency is preview-only.
+            subject, body, context = marked()
+            ai_status = "unavailable"
     # The context carries whichever mailbox preview_step rendered as, so the
     # response can name it rather than leaving the recruiter to trust that the
     # signature in front of them is the one the candidate will get.

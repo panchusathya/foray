@@ -475,6 +475,12 @@ export const MAIL_PROVIDERS = {
       'Add Zoho mailboxes to spread sending volume across more addresses without leaning on one reputation.',
     envVars: ['ZOHO_CLIENT_ID', 'ZOHO_CLIENT_SECRET'],
   },
+  gmail: {
+    label: 'Gmail',
+    blurb:
+      'Send sequences from Gmail or Google Workspace mailboxes, with replies synced back like every other mailbox.',
+    envVars: ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET'],
+  },
 };
 
 export function providerLabel(provider) {

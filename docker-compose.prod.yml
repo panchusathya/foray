@@ -122,6 +122,9 @@ x-app-env: &app_env
   ZOHO_CLIENT_ID: ${ZOHO_CLIENT_ID:-}
   ZOHO_CLIENT_SECRET: ${ZOHO_CLIENT_SECRET:-}
   ZOHO_REDIRECT_URI: ${ZOHO_REDIRECT_URI:-}
+  GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+  GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+  GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-}
   # Candidate connect-your-apps OAuth (read-only, thread-scoped grants).
   # Deliberately separate credentials from the recruiter mailbox apps above.
   GOOGLE_CONNECT_CLIENT_ID: ${GOOGLE_CONNECT_CLIENT_ID:-}

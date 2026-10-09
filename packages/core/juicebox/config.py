@@ -342,6 +342,17 @@ class Settings:
         default_factory=lambda: _env("ZOHO_ACCOUNTS_DOMAIN", "https://accounts.zoho.com")
     )
 
+    # --- integrations: Gmail / Google Workspace ------------------------------
+    # A "Web application" OAuth client in Google Cloud with the Gmail API
+    # enabled. Its own credentials, never the candidate connector's below: this
+    # one can send. For Workspace mailboxes, make the consent screen Internal to
+    # that Workspace -- an External app in Testing mode expires refresh tokens
+    # after 7 days, which disconnects every sending mailbox weekly.
+    gmail_client_id: str = field(default_factory=lambda: _env("GMAIL_CLIENT_ID", ""))
+    gmail_client_secret: str = field(default_factory=lambda: _env("GMAIL_CLIENT_SECRET", ""))
+    # Defaults to {BASE_URL}/v1/integrations/gmail/callback.
+    gmail_redirect_uri: str = field(default_factory=lambda: _env("GMAIL_REDIRECT_URI", ""))
+
     # --- candidate connectors (Gmail / Outlook / GitHub) --------------------
     # Candidate-side OAuth apps, deliberately distinct credentials from the
     # recruiter-side integrations above and the portal sign-in below: a

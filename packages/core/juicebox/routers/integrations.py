@@ -1,4 +1,4 @@
-"""Connect external mailboxes (Microsoft Graph / Outlook, Zoho Mail).
+"""Connect external mailboxes (Microsoft Graph / Outlook, Zoho Mail, Gmail).
 
 The callback is unauthenticated by necessity — the browser arrives from the
 provider's login page — so it carries a short-lived signed state token minted
@@ -60,6 +60,7 @@ _STATE_TTL_SECONDS = 600
 _CREDENTIAL_VARS = {
     "microsoft": "MS_CLIENT_ID and MS_CLIENT_SECRET",
     "zoho": "ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET",
+    "gmail": "GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET",
 }
 
 

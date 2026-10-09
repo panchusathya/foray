@@ -93,7 +93,7 @@ class TestProviderRegistry:
         """Falling back to Microsoft here would connect the wrong kind of
         mailbox and then send from it."""
         response = client.post(
-            "/v1/integrations/gmail/connect", headers=account["headers"]
+            "/v1/integrations/yahoo/connect", headers=account["headers"]
         )
         assert response.status_code == 404
 

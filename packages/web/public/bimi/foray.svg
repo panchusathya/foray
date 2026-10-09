@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg version="1.2" baseProfile="tiny-ps" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Foray</title>
+  <rect x="0" y="0" width="512" height="512" fill="#ffffff"/>
+  <rect x="106" y="106" width="120" height="120" rx="24" ry="24" fill="#7159cb"/>
+  <rect x="286" y="106" width="120" height="120" rx="24" ry="24" fill="#b4a8e4"/>
+  <rect x="106" y="286" width="120" height="120" rx="24" ry="24" fill="#c3b9e9"/>
+  <rect x="286" y="286" width="120" height="120" rx="24" ry="24" fill="#e9a846"/>
+</svg>

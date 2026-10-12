@@ -185,17 +185,20 @@ def queue_test_now(db: Session, connection: MailboxConnection, now: datetime) ->
         # Said out loud: "no room in the cap" would send someone to raise a
         # cap on a mailbox that is switched off or disconnected.
         return {"queued": 0, "seeds": len(seeds), "room": 0, "reason": off}
-    else:
-        waiting = int(
-            db.scalar(
-                select(func.count(SeedTest.id)).where(
-                    SeedTest.mailbox_id == connection.id, SeedTest.status == "queued"
-                )
+    waiting = set(
+        db.scalars(
+            select(SeedTest.seed_id).where(
+                SeedTest.mailbox_id == connection.id, SeedTest.status == "queued"
             )
-            or 0
         )
-        room = max(0, remaining_capacity(db, connection=connection, now=now) - waiting)
-    chosen = _seed_order(db, connection, seeds, now)[:room]
+    )
+    room = max(0, remaining_capacity(db, connection=connection, now=now) - len(waiting))
+    # A seed that already has a test on its way from this mailbox would only
+    # give a second reading of the same thing, for another slot of the cap.
+    fresh = [s for s in seeds if s.id not in waiting]
+    if seeds and not fresh:
+        return {"queued": 0, "seeds": len(seeds), "room": room, "reason": "already_queued"}
+    chosen = _seed_order(db, connection, fresh, now)[:room]
     stamp = int(now.timestamp())
     for seed in chosen:
         queue_test(

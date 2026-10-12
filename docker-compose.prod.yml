@@ -125,6 +125,11 @@ x-app-env: &app_env
   GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
   GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
   GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-}
+  # Deliverability seeds: Yahoo sign-in (Google seeds reuse the Gmail app above).
+  YAHOO_CLIENT_ID: ${YAHOO_CLIENT_ID:-}
+  YAHOO_CLIENT_SECRET: ${YAHOO_CLIENT_SECRET:-}
+  YAHOO_SEED_REDIRECT_URI: ${YAHOO_SEED_REDIRECT_URI:-}
+  DELIVERABILITY_DKIM_SELECTORS: ${DELIVERABILITY_DKIM_SELECTORS:-}
   # Candidate connect-your-apps OAuth (read-only, thread-scoped grants).
   # Deliberately separate credentials from the recruiter mailbox apps above.
   GOOGLE_CONNECT_CLIENT_ID: ${GOOGLE_CONNECT_CLIENT_ID:-}

@@ -108,7 +108,8 @@ class ImapReader:
         host: str,
         port: int,
         username: str,
-        password: str,
+        password: str = "",
+        access_token: str = "",
         factory=None,
         timeout: int = _TIMEOUT,
     ) -> None:
@@ -116,6 +117,10 @@ class ImapReader:
         self.port = port
         self.username = username
         self._password = password
+        # An OAuth bearer token (Yahoo seeds). It is sent with AUTHENTICATE
+        # XOAUTH2, never LOGIN: a token is not a password, and a server that
+        # logs failed LOGINs would be logging a live credential.
+        self.access_token = access_token
         self._factory = factory or (
             lambda h, p, timeout=None: imaplib.IMAP4_SSL(h, p, timeout=timeout)
         )
@@ -133,9 +138,16 @@ class ImapReader:
                 f"Could not reach {self.host}:{self.port} ({type(exc).__name__})"
             ) from None
         try:
-            self._conn.login(self.username, self._password)
+            if self.access_token:
+                self._xoauth2()
+            else:
+                self._conn.login(self.username, self._password)
         except imaplib.IMAP4.error:
             self._safe_logout()
+            if self.access_token:
+                raise SeedReadError(
+                    f"The mail server refused the sign-in for {self.username}: reconnect this seed"
+                ) from None
             raise SeedReadError(
                 f"Could not sign in to {self.username}: check the address and app password"
             ) from None
@@ -152,6 +164,20 @@ class ImapReader:
     def __exit__(self, *exc) -> bool:
         self._safe_logout()
         return False
+
+    def _xoauth2(self) -> None:
+        sasl = f"user={self.username}\x01auth=Bearer {self.access_token}\x01\x01".encode()
+        sent = []
+
+        def answer(_challenge: bytes) -> bytes:
+            # On failure the server sends a JSON error as a second challenge
+            # and expects an empty reply before it says NO.
+            if sent:
+                return b""
+            sent.append(True)
+            return sasl
+
+        self._conn.authenticate("XOAUTH2", answer)
 
     def _safe_logout(self) -> None:
         if self._conn is None:
@@ -307,6 +333,10 @@ def _arrival(prefix: bytes) -> datetime | None:
 def _default_reader(seed):
     from ..integrations.crypto import decrypt_json
 
+    if seed.kind in ("gmail_api", "imap_oauth"):
+        from .seed_oauth import reader_for_oauth_seed
+
+        return reader_for_oauth_seed(seed)
     if seed.kind != "imap":
         raise SeedReadError(f"{seed.kind} seeds are not supported yet")
     try:

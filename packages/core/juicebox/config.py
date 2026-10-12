@@ -322,6 +322,14 @@ class Settings:
     deliverability_dkim_selectors: str = field(
         default_factory=lambda: _env("DELIVERABILITY_DKIM_SELECTORS", "")
     )
+    # Yahoo sign-in for seed inboxes (deliverability/seed_oauth.py): a Yahoo
+    # developer app with Mail read permission. Empty = the Connect with Yahoo
+    # button says it is not configured. Google seeds reuse GMAIL_CLIENT_ID.
+    yahoo_client_id: str = field(default_factory=lambda: _env("YAHOO_CLIENT_ID", ""))
+    yahoo_client_secret: str = field(default_factory=lambda: _env("YAHOO_CLIENT_SECRET", ""))
+    yahoo_seed_redirect_uri: str = field(
+        default_factory=lambda: _env("YAHOO_SEED_REDIRECT_URI", "")
+    )
 
     # --- integrations: Microsoft Graph (Outlook) ---------------------------
     # Azure app registration (single-tenant). Empty client id = not configured;

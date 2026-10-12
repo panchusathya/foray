@@ -276,6 +276,28 @@ class TestCadence:
         jobs = session.query(Job).filter(Job.kind == "deliverability.seed_send").all()
         assert len(jobs) == 1
 
+    def test_pressing_test_now_twice_never_queues_the_same_seed_twice(self, session, setup):
+        # Found on prod: two presses queued 5 tests per mailbox against 3
+        # seeds, spending the whole daily cap on duplicate readings.
+        first = queue_test_now(session, setup["connection"], setup["now"])
+        session.commit()
+        second = queue_test_now(
+            session, setup["connection"], setup["now"] + timedelta(seconds=30)
+        )
+        session.commit()
+        assert first["queued"] == 2
+        assert second["queued"] == 0
+        assert second.get("reason") == "already_queued"
+        queued = session.query(SeedTest).filter(SeedTest.status == "queued").all()
+        assert sorted(t.seed_id for t in queued) == sorted(s.id for s in setup["seeds"])
+
+    def test_test_now_after_a_seed_was_read_may_test_it_again(self, session, setup):
+        queue_test_now(session, setup["connection"], setup["now"])
+        session.query(SeedTest).update({"status": "inbox"})
+        session.commit()
+        again = queue_test_now(session, setup["connection"], setup["now"] + timedelta(hours=1))
+        assert again["queued"] == 2
+
 
 class FakeReader:
     def __init__(self, answer=None, error=None):

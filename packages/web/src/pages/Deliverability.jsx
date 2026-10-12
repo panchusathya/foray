@@ -447,6 +447,8 @@ function MailboxRow({ mailbox, reload, setError, setNote }) {
     try {
       const result = await api.seedTestNow(mailbox.id);
       if (!result.seeds) setNote('Add a seed inbox first.');
+      else if (result.reason === 'already_queued')
+        setNote(`${mailbox.address} already has a test on its way to every seed; nothing new queued.`);
       else if (result.reason) setNote(`${mailbox.address} cannot send right now (${OFF_REASONS[result.reason] ?? result.reason}); nothing queued.`);
       else if (!result.room) setNote(`${mailbox.address} has no room left in its daily cap; nothing queued.`);
       else setNote(`Queued ${result.queued} test${result.queued === 1 ? '' : 's'} from ${mailbox.address}.`);

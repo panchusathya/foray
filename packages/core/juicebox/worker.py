@@ -28,7 +28,9 @@ from .jobs import (
     KIND_CRM_DISCOVERY,
     KIND_CRM_DISCOVERY_IMPORT,
     KIND_CRM_DISCOVERY_ONE,
+    KIND_DELIVERABILITY_TICK,
     KIND_DOC_PARSE,
+    KIND_DOMAIN_CHECK,
     KIND_INBOX_DRAFT,
     KIND_INTAKE_ATTACHMENT,
     KIND_INTAKE_EXTRACT,
@@ -53,6 +55,8 @@ from .jobs import (
     KIND_PROFILE_INGEST,
     KIND_PROFILE_RESUME,
     KIND_REPLY_DRAFT,
+    KIND_SEED_CHECK,
+    KIND_SEED_SEND,
     KIND_THREAD_NOTIFY,
     claim,
     enqueue,
@@ -103,6 +107,18 @@ def ensure_ticks(db: Session, *, now=None) -> int:
                 org_id=org.id,
                 kind=KIND_MAILBOX_SYNC,
                 idempotency_key=f"{KIND_MAILBOX_SYNC}:{org.id}:{int(now.timestamp())}",
+                payload={"org_id": org.id},
+                run_at=now,
+            )
+            created += 1
+        if _org_has_active_mailbox(db, org.id) and not has_open_job(
+            db, org_id=org.id, kind=KIND_DELIVERABILITY_TICK
+        ):
+            enqueue(
+                db,
+                org_id=org.id,
+                kind=KIND_DELIVERABILITY_TICK,
+                idempotency_key=f"{KIND_DELIVERABILITY_TICK}:{org.id}:{int(now.timestamp())}",
                 payload={"org_id": org.id},
                 run_at=now,
             )
@@ -370,6 +386,102 @@ def _handle_mailbox_sync(db: Session, job: Job, now) -> dict[str, Any]:
             run_at=run_at,
         )
     return {"mailboxes": queued}
+
+
+DELIVERABILITY_TICK_SECONDS = 600
+
+
+def _handle_deliverability_tick(db: Session, job: Job, now) -> dict[str, Any]:
+    """Queue due seed tests, look in seeds with tests waiting, refresh DNS.
+
+    Measurement only: nothing here changes how outreach is sent.
+    """
+    from .deliverability.overview import stale_domains
+    from .deliverability.probes import queue_due, seeds_to_check
+
+    org_id = job.payload.get("org_id") or job.org_id
+    org = db.get(Org, org_id)
+    if org is None:
+        return {"skipped": "org gone"}
+    queued = queue_due(db, org, now)
+    bucket = int(now.timestamp() // DELIVERABILITY_TICK_SECONDS)
+    hour = int(now.timestamp() // 3600)
+    checks = 0
+    for seed in seeds_to_check(db, org_id, now):
+        # A seed that refused our login is retried hourly, not every tick:
+        # hammering a provider with a bad app password gets the account locked.
+        slot = hour if seed.status == "error" else bucket
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_SEED_CHECK,
+            idempotency_key=f"{KIND_SEED_CHECK}:{seed.id}:{seed.status}:{slot}",
+            payload={"org_id": org_id, "seed_id": seed.id},
+            run_at=now,
+        )
+        checks += 1
+    day = now.date().isoformat()
+    domains = stale_domains(db, org_id, now)
+    for domain in domains:
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_DOMAIN_CHECK,
+            idempotency_key=f"{KIND_DOMAIN_CHECK}:{org_id}:{domain}:{day}",
+            payload={"org_id": org_id, "domain": domain},
+            run_at=now,
+        )
+    if _org_has_active_mailbox(db, org_id):
+        run_at = now + timedelta(seconds=DELIVERABILITY_TICK_SECONDS)
+        enqueue(
+            db,
+            org_id=org_id,
+            kind=KIND_DELIVERABILITY_TICK,
+            idempotency_key=f"{KIND_DELIVERABILITY_TICK}:{org_id}:{int(run_at.timestamp())}",
+            payload={"org_id": org_id},
+            run_at=run_at,
+        )
+    return {"queued_tests": queued, "seed_checks": checks, "domain_checks": len(domains)}
+
+
+def _handle_seed_send(db: Session, job: Job, now) -> dict[str, Any]:
+    from .deliverability.probes import send_seed_test
+    from .models import SeedInbox
+
+    connection = db.get(MailboxConnection, job.payload.get("mailbox_id", ""))
+    seed = db.get(SeedInbox, job.payload.get("seed_id", ""))
+    if connection is None or seed is None or connection.org_id != job.org_id:
+        return {"skipped": "mailbox or seed gone"}
+    result = send_seed_test(
+        db, connection=connection, seed=seed, now=now, key=job.payload.get("key", "")
+    )
+    if result["status"] == "deferred":
+        return {"defer": True, "defer_until": result["defer_until"], "reason": result["reason"]}
+    if result["status"] == "failed":
+        # The row stays "failed", which send_seed_test does not treat as sent,
+        # so the retry sends rather than returning early.
+        raise RuntimeError(f"seed send failed: {result.get('error', '')}")
+    return result
+
+
+def _handle_seed_check(db: Session, job: Job, now) -> dict[str, Any]:
+    from .deliverability.probes import check_seed
+    from .models import SeedInbox
+
+    seed = db.get(SeedInbox, job.payload.get("seed_id", ""))
+    if seed is None or seed.org_id != job.org_id:
+        return {"skipped": "seed gone"}
+    return check_seed(db, seed, now)
+
+
+def _handle_domain_check(db: Session, job: Job, now) -> dict[str, Any]:
+    from .deliverability.overview import refresh_domain
+
+    domain = job.payload.get("domain", "")
+    if not domain:
+        return {"skipped": "no domain"}
+    row = refresh_domain(db, job.org_id, domain, now)
+    return {"domain": domain, "checked_at": row.checked_at.isoformat()}
 
 
 def _handle_mailbox_sync_one(db: Session, job: Job, now) -> dict[str, Any]:
@@ -1687,6 +1799,10 @@ HANDLERS = {
     KIND_MAILBOX_SYNC: _handle_mailbox_sync,
     KIND_MAILBOX_SYNC_ONE: _handle_mailbox_sync_one,
     KIND_MAILBOX_BACKFILL: _handle_mailbox_backfill,
+    KIND_DELIVERABILITY_TICK: _handle_deliverability_tick,
+    KIND_SEED_SEND: _handle_seed_send,
+    KIND_SEED_CHECK: _handle_seed_check,
+    KIND_DOMAIN_CHECK: _handle_domain_check,
     KIND_REPLY_DRAFT: _handle_reply_draft,
     KIND_INBOX_DRAFT: _handle_inbox_draft,
     KIND_JOBS_PARSE: _handle_jobs_parse,

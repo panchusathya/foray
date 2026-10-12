@@ -97,6 +97,12 @@ class Org(Base, TimestampMixin):
     last_mail_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # How often each sending mailbox re-sends one of its real emails to a seed
+    # inbox (deliverability/probes.py). 0 switches scheduled tests off; "Test
+    # now" still works.
+    seed_test_interval_hours: Mapped[int] = mapped_column(
+        Integer, default=24, server_default="24"
+    )
 
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
@@ -881,6 +887,92 @@ class MailboxConnection(Base, TimestampMixin):
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class SeedInbox(Base, TimestampMixin):
+    """An inbox we own that seed tests are sent to, read to see where they land.
+
+    Never a sending mailbox and never a candidate. Read-only by design: the
+    reader opens folders with EXAMINE and peeks bodies, because moving a test
+    out of spam would train that provider's filter and skew every later test.
+    ``secret_blob`` holds the IMAP app password (or OAuth tokens), encrypted.
+    """
+
+    __tablename__ = "seed_inboxes"
+    __table_args__ = (UniqueConstraint("org_id", "address", name="uq_seed_inbox_org_address"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sdi"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    address: Mapped[str] = mapped_column(String(255))
+    # imap | outlook
+    kind: Mapped[str] = mapped_column(String(20), default="imap")
+    # gmail | yahoo | outlook | other -- which filter this seed samples.
+    provider_label: Mapped[str] = mapped_column(String(20), default="other")
+    imap_host: Mapped[str] = mapped_column(String(255), default="")
+    imap_port: Mapped[int] = mapped_column(Integer, default=993)
+    username: Mapped[str] = mapped_column(String(255), default="")
+    secret_blob: Mapped[str] = mapped_column(Text, default="")
+    # active | paused | error
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    error: Mapped[str] = mapped_column(Text, default="")
+    # Whether the last successful read could see a spam folder at all.
+    spam_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class SeedTest(Base, TimestampMixin):
+    """One copy of a real email, sent from one mailbox to one seed inbox.
+
+    Deliberately not a ``Message``: there is no candidate behind it, and a row
+    there would surface in the Outbox, the reply flow and the timeline. It
+    does count against the sending mailbox's daily cap (rotation.py reads this
+    table too), because a seed send spends the same reputation.
+    """
+
+    __tablename__ = "seed_tests"
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_key", name="uq_seed_test_job_key"),
+        Index("ix_seed_tests_mailbox_sent", "mailbox_id", "sent_at"),
+        Index("ix_seed_tests_seed_status", "seed_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("sdt"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    mailbox_id: Mapped[str] = mapped_column(
+        ForeignKey("mailbox_connections.id", ondelete="CASCADE")
+    )
+    seed_id: Mapped[str] = mapped_column(ForeignKey("seed_inboxes.id", ondelete="CASCADE"))
+    # The send job's idempotency key: a retried job finds this row instead of
+    # sending a second copy.
+    job_key: Mapped[str] = mapped_column(String(200))
+    source_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    from_address: Mapped[str] = mapped_column(String(255), default="")
+    internet_message_id: Mapped[str] = mapped_column(String(300), default="")
+    # queued | sent | failed | inbox | other_tab | spam | missing
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    # Where exactly: "INBOX", "Bulk", "promotions", "Other".
+    folder: Mapped[str] = mapped_column(String(120), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DomainCheck(Base, TimestampMixin):
+    """The latest DNS / blocklist read of one sending domain."""
+
+    __tablename__ = "domain_checks"
+    __table_args__ = (UniqueConstraint("org_id", "domain", name="uq_domain_check_org_domain"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("dmc"))
+    org_id: Mapped[str] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"), index=True)
+    domain: Mapped[str] = mapped_column(String(255))
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ReplyDraft(Base, TimestampMixin):

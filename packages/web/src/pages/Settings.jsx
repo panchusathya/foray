@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Badge, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
 import { SendingPace } from '../components/SendingPace.jsx';
@@ -261,6 +262,11 @@ export function SettingsPage() {
       <PageHeader
         title="Settings"
         subtitle="Sending mailboxes. Outreach goes out as you, from your own addresses."
+        actions={
+          <Link className="dl-nav-link" to="/deliverability" data-testid="deliverability-link">
+            Deliverability →
+          </Link>
+        }
       />
       <ErrorBox error={error} />
       {syncNote ? <div className="card small">{syncNote}</div> : null}

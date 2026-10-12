@@ -1634,3 +1634,38 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
   box-shadow: 0 4px 14px rgb(0 0 0 / 0.12);
 }
 
+
+/* ---- Deliverability (pages/Deliverability.jsx) ---- */
+.dl-nav-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent-light);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.dl-nav-link:hover { border-color: var(--accent); }
+.dl-domain { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 18px; }
+.dl-figure .value { font-family: var(--display); font-size: 24px; font-weight: 700; }
+.dl-figure .label { font-size: 12.5px; color: var(--muted); }
+.dl-figure .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.dl-wrap { padding: 0; overflow-x: auto; }
+.dl-table { width: 100%; min-width: 760px; table-layout: auto; }
+.dl-table td .small { white-space: normal; }
+.dl-table td { vertical-align: top; }
+.dl-actions { white-space: nowrap; text-align: right; }
+.dl-error { color: var(--miss); }
+.dl-reasons { max-width: 260px; }
+.dl-subject { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-port { width: 90px; }
+.dl-spark { display: block; }
+.dl-spark rect { fill: var(--accent); opacity: 0.75; }
+.dl-spark circle { fill: var(--muted); }
+.dl-seed-form input[type='email'],
+.dl-seed-form input[type='password'],
+.dl-seed-form input[type='text'] { min-width: 200px; flex: 1 1 200px; }
+.dl-seed-form select { width: auto; flex: 0 0 auto; }

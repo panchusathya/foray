@@ -317,6 +317,11 @@ class Settings:
     # measured reach_score distribution is known). Unscored addresses are
     # never blocked; only a stored score below the floor is.
     min_reach_score: int = field(default_factory=lambda: _env_int("FORAY_MIN_REACH_SCORE", 0))
+    # DKIM selectors the Deliverability page looks up per sending domain,
+    # comma-separated. Empty tries the common ones (zmail, google, selector1..).
+    deliverability_dkim_selectors: str = field(
+        default_factory=lambda: _env("DELIVERABILITY_DKIM_SELECTORS", "")
+    )
 
     # --- integrations: Microsoft Graph (Outlook) ---------------------------
     # Azure app registration (single-tenant). Empty client id = not configured;

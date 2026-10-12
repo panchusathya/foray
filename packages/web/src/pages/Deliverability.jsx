@@ -590,14 +590,9 @@ export function DeliverabilityPage() {
         title="Deliverability"
         subtitle="Where outreach lands, per domain and per mailbox. Measurement only: nothing here pauses or slows sending."
         actions={
-          <>
-            <Link className="tiny-link" to="/settings">
-              ← Settings
-            </Link>
-            <button type="button" className="tiny" onClick={recheck} disabled={rechecking} data-testid="recheck-dns">
-              {rechecking ? 'Checking DNS…' : 'Recheck DNS'}
-            </button>
-          </>
+          <button type="button" className="tiny" onClick={recheck} disabled={rechecking} data-testid="recheck-dns">
+            {rechecking ? 'Checking DNS…' : 'Recheck DNS'}
+          </button>
         }
       />
       <ErrorBox error={error || overview.error} />

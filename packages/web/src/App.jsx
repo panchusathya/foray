@@ -64,6 +64,11 @@ const NAV_SECTIONS = [
     heading: 'Clients',
     items: [{ to: '/clients', label: 'Client dashboards' }],
   },
+  {
+    // Whether the email is reaching anyone: seed tests, inbox health, DNS.
+    heading: 'Sending',
+    items: [{ to: '/deliverability', label: 'Deliverability' }],
+  },
 ];
 
 function NavItem({ to, label, end }) {
@@ -259,7 +264,11 @@ export function App() {
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/clients/:clientId" element={<ClientDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/settings/deliverability" element={<DeliverabilityPage />} />
+          <Route path="/deliverability" element={<DeliverabilityPage />} />
+          <Route
+            path="/settings/deliverability"
+            element={<Navigate to="/deliverability" replace />}
+          />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Shell>

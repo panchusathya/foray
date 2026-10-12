@@ -31,7 +31,7 @@ test.describe('deliverability', () => {
     await page.goto('/settings');
     await page.getByTestId('deliverability-link').click();
 
-    await expect(page).toHaveURL(/\/settings\/deliverability$/);
+    await expect(page).toHaveURL(/\/deliverability$/);
     await expect(page.getByRole('heading', { name: 'Deliverability' })).toBeVisible();
     await expect(page.getByText('Measurement only', { exact: false })).toBeVisible();
     await expect(page.getByTestId('seed-empty')).toBeVisible();
@@ -41,10 +41,36 @@ test.describe('deliverability', () => {
     await page.screenshot({ path: path.join(ARTIFACT_DIR, '01-empty.png'), fullPage: true });
   });
 
+  test('the sidebar has it, and the old Settings address still lands there', async ({
+    page,
+    request,
+  }) => {
+    const org = await createOrg(request, 'deliv-nav');
+    await login(page, org.email);
+    await page.goto('/');
+
+    const sending = page.locator('.sidebar .sidebar-section', { hasText: 'SENDING' });
+    const link = sending.getByRole('link', { name: 'Deliverability', exact: true });
+    await expect(link).toBeVisible();
+    await link.click();
+    await expect(page).toHaveURL(/\/deliverability$/);
+    await expect(link).toHaveClass(/active/);
+    await expect(page.getByTestId('seed-card')).toBeVisible();
+    // Its own destination, not a Settings sub-page: Settings must not light up.
+    await expect(
+      page.locator('.sidebar-account').getByRole('link', { name: 'Settings' }),
+    ).not.toHaveClass(/active/);
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, '00-sidebar.png') });
+
+    await page.goto('/settings/deliverability');
+    await expect(page).toHaveURL(/\/deliverability$/);
+    await expect(page.getByRole('heading', { name: 'Deliverability' })).toBeVisible();
+  });
+
   test('a seed that cannot sign in is refused and not saved', async ({ page, request }) => {
     const org = await createOrg(request, 'deliv-seed');
     await login(page, org.email);
-    await page.goto('/settings/deliverability');
+    await page.goto('/deliverability');
 
     // Gmail first: the form explains app passwords, and asks for no host.
     await expect(page.getByTestId('seed-form')).toContainText('app password');
@@ -76,7 +102,7 @@ test.describe('deliverability', () => {
   test('the seed test schedule is saved', async ({ page, request }) => {
     const org = await createOrg(request, 'deliv-schedule');
     await login(page, org.email);
-    await page.goto('/settings/deliverability');
+    await page.goto('/deliverability');
 
     const select = page.getByTestId('interval-select');
     await expect(select).toHaveValue('24');

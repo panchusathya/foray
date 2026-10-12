@@ -263,7 +263,7 @@ export function SettingsPage() {
         title="Settings"
         subtitle="Sending mailboxes. Outreach goes out as you, from your own addresses."
         actions={
-          <Link className="dl-nav-link" to="/settings/deliverability" data-testid="deliverability-link">
+          <Link className="dl-nav-link" to="/deliverability" data-testid="deliverability-link">
             Deliverability →
           </Link>
         }

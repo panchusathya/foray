@@ -10,18 +10,28 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..deliverability import seed_oauth
 from ..deliverability import seeds as seeds_module
 from ..deliverability.overview import build_overview, custom_domains, refresh_domain, seed_out
 from ..deliverability.probes import INTERVALS, check_seed, queue_test_now
 from ..deliverability.seeds import IMAP_PRESETS, SeedReadError
-from ..deps import CommittingRoute, Principal, get_db, get_principal, require_write
+from ..deps import (
+    OAUTH_STATE_ROLE,
+    CommittingRoute,
+    Principal,
+    get_db,
+    get_principal,
+    require_write,
+)
 from ..integrations.crypto import encrypt_json
 from ..models import MailboxConnection, Org, SeedInbox, record_event, utcnow
+from ..security import TokenError, create_access_token, decode_access_token
 
 router = APIRouter(
     route_class=CommittingRoute, prefix="/v1/deliverability", tags=["deliverability"]
@@ -61,7 +71,79 @@ def _seed_or_404(db: Session, seed_id: str, principal: Principal) -> SeedInbox:
 
 @router.get("")
 def overview(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)) -> dict:
-    return build_overview(db, _org(db, principal), utcnow())
+    body = build_overview(db, _org(db, principal), utcnow())
+    body["oauth"] = {
+        name: {
+            "configured": seed_oauth.is_configured(name),
+            "credential_vars": meta.credential_vars,
+            "redirect_uri": seed_oauth.redirect_uri(name),
+        }
+        for name, meta in seed_oauth.PROVIDERS.items()
+    }
+    return body
+
+
+@router.post("/seeds/oauth/{provider}/connect")
+def start_seed_oauth(provider: str, principal: Principal = Depends(require_write)) -> dict:
+    """Begin a Google / Yahoo sign-in for a seed (no app password needed)."""
+    if provider not in seed_oauth.PROVIDERS:
+        raise HTTPException(status_code=404, detail=f"Unknown seed provider {provider!r}")
+    if not seed_oauth.is_configured(provider):
+        raise HTTPException(
+            status_code=503,
+            detail=f"{seed_oauth.PROVIDERS[provider].label} sign-in is not configured; "
+            f"set {seed_oauth.PROVIDERS[provider].credential_vars}",
+        )
+    if not principal.user_id:
+        raise HTTPException(
+            status_code=403, detail="Connect a seed from a logged-in user session, not an API key"
+        )
+    state = create_access_token(
+        subject=principal.user_id,
+        org_id=principal.org_id,
+        role=OAUTH_STATE_ROLE,
+        ttl_seconds=600,
+        # "provider" is the callback the state is valid at (Google seeds come
+        # back through the Gmail mailbox callback); "purpose" keeps a seed
+        # consent from ever becoming a sending mailbox.
+        extra={
+            "provider": "gmail" if provider == "google" else provider,
+            "purpose": "seed",
+            "seed_provider": provider,
+        },
+    )
+    return {"auth_url": seed_oauth.authorize_url(provider, state)}
+
+
+@router.get("/seeds/{seed_provider}/callback", include_in_schema=False)
+def seed_oauth_callback(
+    seed_provider: str,
+    code: str = Query(default=""),
+    state: str = Query(default=""),
+    error: str = Query(default=""),
+    error_description: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    from .integrations import _callback_page
+
+    if seed_provider not in seed_oauth.PROVIDERS:
+        raise HTTPException(status_code=404, detail="Unknown seed provider")
+    if error:
+        return _callback_page(
+            "Connection cancelled", error_description or "Access was not granted."
+        )
+    try:
+        payload = decode_access_token(state)
+        if payload.get("role") != OAUTH_STATE_ROLE:
+            raise TokenError("wrong token type")
+        if payload.get("purpose") != "seed" or payload.get("seed_provider") != seed_provider:
+            raise TokenError("state was not minted for this seed sign-in")
+    except TokenError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid state: {exc}") from exc
+    _ok, title, body = seed_oauth.complete_connect(
+        db, provider=seed_provider, org_id=payload["org"], code=code
+    )
+    return _callback_page(title, body)
 
 
 @router.patch("/settings")
@@ -106,7 +188,10 @@ def add_seed(
         raise HTTPException(status_code=409, detail=f"{address} is already a seed inbox")
     if db.scalar(
         select(MailboxConnection.id).where(
-            MailboxConnection.org_id == principal.org_id, MailboxConnection.address == address
+            MailboxConnection.org_id == principal.org_id,
+            MailboxConnection.address == address,
+            # A disconnected sending mailbox is just an inbox now.
+            MailboxConnection.status != "revoked",
         )
     ):
         raise HTTPException(

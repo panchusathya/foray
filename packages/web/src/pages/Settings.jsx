@@ -47,6 +47,7 @@ export function SettingsPage() {
   const [activity, setActivity] = useState([]);
   const [syncing, setSyncing] = useState('');
   const [caps, setCaps] = useState({});
+  const [showRevoked, setShowRevoked] = useState(false);
 
   // The OAuth consent happens in another tab; refresh when the user comes back.
   useEffect(() => {
@@ -253,6 +254,11 @@ export function SettingsPage() {
   const data = status.data;
   const providers = data?.providers ?? [];
   const connections = data?.connections ?? [];
+  // A disconnected mailbox keeps its row -- the conversations it sent are
+  // pinned to it and threaded off its message ids -- but it has nothing left
+  // to configure, so it stays out of the list unless asked for.
+  const revoked = connections.filter((c) => c.status === 'revoked');
+  const shown = showRevoked ? connections : connections.filter((c) => c.status !== 'revoked');
   const poolCapacity = connections
     .filter((c) => c.status === 'active' && c.send_enabled)
     .reduce((total, c) => total + c.daily_send_cap, 0);
@@ -376,9 +382,9 @@ export function SettingsPage() {
               ) : null}
             </div>
 
-            {connections.length ? (
+            {shown.length ? (
               <div className="stack">
-                {connections.map((connection) => (
+                {shown.map((connection) => (
                   <div className="stack" style={{ gap: 4 }} key={connection.id}>
                     <div className="spread">
                       <div>
@@ -508,6 +514,18 @@ export function SettingsPage() {
             ) : (
               <div className="small muted">No mailbox connected yet.</div>
             )}
+            {revoked.length ? (
+              <button
+                type="button"
+                className="tiny ghost"
+                data-testid="toggle-revoked"
+                onClick={() => setShowRevoked((value) => !value)}
+              >
+                {showRevoked
+                  ? 'Hide disconnected mailboxes'
+                  : `Show ${revoked.length} disconnected mailbox${revoked.length === 1 ? '' : 'es'}`}
+              </button>
+            ) : null}
           </div>
         </>
       ) : null}

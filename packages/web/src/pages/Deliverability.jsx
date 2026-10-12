@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Empty, ErrorBox, Loading, PageHeader } from '../components/common.jsx';
@@ -186,7 +186,63 @@ function SeedForm({ onAdded }) {
   );
 }
 
-function Seeds({ seeds, reload, setError }) {
+/**
+ * Sign in with Google / Yahoo instead of typing an app password -- a new
+ * account often cannot make one yet. The consent opens in a new tab; the page
+ * reloads when you come back to it.
+ */
+function OauthConnect({ oauth, setError }) {
+  const providers = [
+    { name: 'google', label: 'Connect a Gmail seed with Google' },
+    { name: 'yahoo', label: 'Connect a Yahoo seed with Yahoo' },
+  ];
+  async function connect(name) {
+    setError(null);
+    try {
+      const { auth_url: authUrl } = await api.seedOauthConnect(name);
+      window.open(authUrl, '_blank', 'noopener');
+    } catch (err) {
+      setError(err);
+    }
+  }
+  const missing = providers.filter((p) => oauth && !oauth[p.name]?.configured);
+  return (
+    <div className="stack dl-oauth" data-testid="seed-oauth">
+      <div className="row wrap">
+        {providers.map((p) => (
+          <button
+            key={p.name}
+            type="button"
+            className="primary"
+            disabled={!oauth?.[p.name]?.configured}
+            title={oauth?.[p.name]?.configured ? '' : `Needs ${oauth?.[p.name]?.credential_vars}`}
+            onClick={() => connect(p.name)}
+            data-testid={`seed-oauth-${p.name}`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="small muted">
+        Read-only sign-in, no app password needed. Or add a seed with an app password below.
+        {missing.map((p) => (
+          <span key={p.name}>
+            {' '}
+            {p.name === 'google' ? 'Google' : 'Yahoo'} sign-in needs <code>{oauth[p.name].credential_vars}</code>
+            {p.name === 'yahoo' ? (
+              <>
+                {' '}and a Yahoo app whose redirect URI is <code>{oauth.yahoo.redirect_uri}</code>
+              </>
+            ) : null}
+            .
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Seeds({ seeds, oauth, reload, setError }) {
   const [busy, setBusy] = useState('');
 
   async function act(seed, fn) {
@@ -293,6 +349,7 @@ function Seeds({ seeds, reload, setError }) {
           scheduled run, or press Test now on any mailbox below.
         </div>
       )}
+      <OauthConnect oauth={oauth} setError={setError} />
       <SeedForm onAdded={reload} />
     </div>
   );
@@ -566,6 +623,13 @@ function RecentTests({ tests }) {
 
 export function DeliverabilityPage() {
   const overview = useAsync(() => api.deliverability(), []);
+  // A Google / Yahoo sign-in happens in another tab; show the new seed on return.
+  useEffect(() => {
+    const onFocus = () => overview.reload();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [error, setError] = useState(null);
   const [note, setNote] = useState('');
   const [rechecking, setRechecking] = useState(false);
@@ -604,7 +668,7 @@ export function DeliverabilityPage() {
       {overview.loading && !data ? <Loading /> : null}
       {data ? (
         <>
-          <Seeds seeds={data.seeds} reload={overview.reload} setError={setError} />
+          <Seeds seeds={data.seeds} oauth={data.oauth} reload={overview.reload} setError={setError} />
           <Schedule settings={data.settings} reload={overview.reload} setError={setError} />
           {data.domains.length ? (
             data.domains.map((domain) => (

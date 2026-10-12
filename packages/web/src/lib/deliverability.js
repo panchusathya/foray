@@ -33,8 +33,8 @@ export const INTERVALS = [
 ];
 
 export const SEED_PROVIDERS = [
-  { value: 'gmail', label: 'Gmail', help: 'Turn on 2-Step Verification, then make an app password at myaccount.google.com/apppasswords.' },
-  { value: 'yahoo', label: 'Yahoo', help: 'Account security → Generate app password.' },
+  { value: 'gmail', label: 'Gmail', help: 'Turn on 2-Step Verification, then make an app password at myaccount.google.com/apppasswords. New account with no app passwords? Use Connect with Google above.' },
+  { value: 'yahoo', label: 'Yahoo', help: 'Account security → Generate app password, or use Connect with Yahoo above.' },
   { value: 'other', label: 'Other (IMAP)', help: 'Any inbox that offers IMAP. Outlook.com is not supported yet.' },
 ];
 

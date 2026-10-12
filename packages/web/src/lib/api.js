@@ -365,6 +365,8 @@ export const api = {
   deliverabilitySettings: (payload) =>
     request('/v1/deliverability/settings', { method: 'PATCH', body: payload }),
   seedAdd: (payload) => request('/v1/deliverability/seeds', { method: 'POST', body: payload }),
+  seedOauthConnect: (provider) =>
+    request(`/v1/deliverability/seeds/oauth/${provider}/connect`, { method: 'POST' }),
   seedUpdate: (seedId, payload) =>
     request(`/v1/deliverability/seeds/${seedId}`, { method: 'PATCH', body: payload }),
   seedCheck: (seedId) => request(`/v1/deliverability/seeds/${seedId}/check`, { method: 'POST' }),

@@ -217,6 +217,17 @@ def oauth_callback(
         ) from exc
 
     org_id, user_id = payload["org"], payload["sub"]
+    if payload.get("purpose") == "seed":
+        # A seed inbox signing in through the Gmail callback Google already
+        # knows about. Branch before the mailbox exchange: that one insists on
+        # send scopes a read-only seed never asks for, and must never create a
+        # sending mailbox out of a seed consent.
+        from ..deliverability.seed_oauth import complete_connect
+
+        if provider_name != "gmail" or payload.get("seed_provider") != "google":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state")
+        _ok, title, body = complete_connect(db, provider="google", org_id=org_id, code=code)
+        return _callback_page(title, body)
     try:
         # The whole query string goes through: Zoho reports the data centre
         # this mailbox belongs to as an extra callback param, and the token

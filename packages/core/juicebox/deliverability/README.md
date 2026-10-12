@@ -67,6 +67,41 @@ throttles or re-routes a send; step 2 acts on what this records.
     login is an error on the form, not a row that fails forever in the
     background.
 
+### Gmail seeds connected with Google sign-in (no app password)
+22. **It asks for more than it reads.** A seed needs `gmail.readonly` and
+    nothing else; asking for send/compose on an inbox we only read is a
+    permission we would never use. And a consent where the person unticked
+    `gmail.readonly` must be refused, not saved as a seed that can see nothing.
+23. **A seed connect turns into a sending mailbox, or the reverse.** Both go
+    through the one registered Gmail callback, so the signed state carries the
+    purpose; a seed connect must never create a `MailboxConnection`, and a
+    mailbox connect never a seed.
+24. **The address is typed, not proven.** The seed's address is the Google
+    account's own (userinfo), so a test cannot be aimed at an inbox the
+    reader is not signed in to.
+25. **An expired or revoked sign-in reads as "missing".** A failed refresh is a
+    read error on the seed ("reconnect it"), never a placement.
+26. **A refreshed token is thrown away.** Refreshed access tokens are written
+    back to the seed, and a reconnect that returns no refresh token keeps the
+    stored one -- otherwise the seed dies at the next refresh.
+27. **The reader writes.** Only GETs; `gmail.readonly` could not modify
+    anyway, and the reader should not try.
+28. **Spam is invisible to search.** Gmail search skips Spam and Trash unless
+    asked; every search passes `includeSpamTrash=true`.
+29. **A revoked sending mailbox can never become a seed.** Only an *active*
+    sending mailbox is refused; a disconnected one is just an inbox now.
+
+### Yahoo seeds connected with Yahoo sign-in
+Yahoo has no public mail REST API, so a Yahoo seed signs in with OAuth
+(`mail-r`, read only) and the same IMAP reader authenticates with that token
+(SASL XOAUTH2) instead of an app password. Items 22-27 apply unchanged, plus:
+30. **The token goes in as a password.** XOAUTH2 is `AUTHENTICATE`, never
+    `LOGIN`; sending the bearer token to LOGIN fails, or worse, gets logged
+    by a server as a password attempt.
+31. **Yahoo's callback is not Google's.** Yahoo needs its own registered
+    redirect (`/v1/deliverability/seeds/yahoo/callback`); a state minted for
+    one provider or for a mailbox connect is refused there.
+
 ### Signals and checks
 17. **Young cohorts read as bad mailboxes.** Reply rate counts people first
     emailed at least 3 days ago; weekly series are by first-send week.

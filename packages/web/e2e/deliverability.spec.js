@@ -99,6 +99,33 @@ test.describe('deliverability', () => {
     expect((await overview.json()).seeds).toEqual([]);
   });
 
+  test('seeds can be connected with Google or Yahoo sign-in instead of an app password', async ({
+    page,
+    request,
+  }) => {
+    const org = await createOrg(request, 'deliv-oauth');
+    await login(page, org.email);
+    await page.goto('/deliverability');
+
+    const google = page.getByTestId('seed-oauth-google');
+    const yahoo = page.getByTestId('seed-oauth-yahoo');
+    await expect(google).toBeVisible();
+    await expect(yahoo).toBeVisible();
+    await expect(page.getByTestId('seed-oauth')).toContainText('no app password needed');
+    // A dev / staging stack without provider credentials: the buttons are
+    // there, disabled, and say which settings would switch them on.
+    if (await yahoo.isDisabled()) {
+      await expect(page.locator('code', { hasText: 'YAHOO_CLIENT_ID' })).toBeVisible();
+      await expect(page.locator('code', { hasText: '/v1/deliverability/seeds/yahoo/callback' })).toBeVisible();
+    }
+    if (await google.isDisabled()) {
+      await expect(page.locator('code', { hasText: 'GMAIL_CLIENT_ID' })).toBeVisible();
+    }
+    await page.getByTestId('seed-card').screenshot({
+      path: path.join(ARTIFACT_DIR, '05-seed-oauth.png'),
+    });
+  });
+
   test('the seed test schedule is saved', async ({ page, request }) => {
     const org = await createOrg(request, 'deliv-schedule');
     await login(page, org.email);

@@ -160,6 +160,14 @@ KIND_APP_SUBMIT_VERIFY = "application.submit.verify"
 # many times the webhook retries or the turn re-runs.
 KIND_APPLY_LINK = "application.from_link"
 
+# Deliverability measurement (deliverability/). The tick queues due seed tests,
+# looks in seeds that have tests waiting, and refreshes stale domain checks.
+# A seed send obeys the same rails as an outreach send and defers the same way.
+KIND_DELIVERABILITY_TICK = "deliverability.tick"
+KIND_SEED_SEND = "deliverability.seed_send"
+KIND_SEED_CHECK = "deliverability.seed_check"
+KIND_DOMAIN_CHECK = "deliverability.domain_check"
+
 OPEN_STATUSES = ("queued", "running")
 
 

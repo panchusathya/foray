@@ -360,6 +360,19 @@ export const api = {
       body: payload,
     }),
 
+  // Deliverability: seed inboxes, seed tests, per-domain inbox health.
+  deliverability: () => request('/v1/deliverability'),
+  deliverabilitySettings: (payload) =>
+    request('/v1/deliverability/settings', { method: 'PATCH', body: payload }),
+  seedAdd: (payload) => request('/v1/deliverability/seeds', { method: 'POST', body: payload }),
+  seedUpdate: (seedId, payload) =>
+    request(`/v1/deliverability/seeds/${seedId}`, { method: 'PATCH', body: payload }),
+  seedCheck: (seedId) => request(`/v1/deliverability/seeds/${seedId}/check`, { method: 'POST' }),
+  seedRemove: (seedId) => request(`/v1/deliverability/seeds/${seedId}`, { method: 'DELETE' }),
+  seedTestNow: (mailboxId) =>
+    request(`/v1/deliverability/mailboxes/${mailboxId}/test`, { method: 'POST' }),
+  domainsRecheck: () => request('/v1/deliverability/domains/recheck', { method: 'POST' }),
+
   // Applications: the candidate-side pursuit of one posting. The candidate
   // drives most of these from the portal; this is the recruiter's window on
   // the same rows.

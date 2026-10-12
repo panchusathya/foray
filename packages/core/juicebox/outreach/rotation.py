@@ -198,16 +198,35 @@ def eligible_mailboxes(
     ]
 
 
+def _seed_sends_since(db: Session, mailbox_id: str, since: datetime) -> list[datetime]:
+    """Seed tests this mailbox sent since ``since`` (deliverability/probes.py).
+
+    They spend the same reputation as a real send, so they hold cap slots too.
+    """
+    from ..deliverability.probes import SENT_STATUSES
+    from ..models import SeedTest
+
+    return list(
+        db.scalars(
+            select(SeedTest.sent_at).where(
+                SeedTest.mailbox_id == mailbox_id,
+                SeedTest.status.in_(SENT_STATUSES),
+                SeedTest.sent_at >= since,
+            )
+        )
+    )
+
+
 def sent_in_window(db: Session, *, mailbox_id: str, now: datetime) -> int:
     """Sends actually accepted by the provider in the last WINDOW_HOURS.
 
     Counts status "sent" only: a queued row has not consumed reputation and a
-    failed one never left, so neither should hold a slot.
+    failed one never left, so neither should hold a slot. Seed tests count.
     """
     if not mailbox_id:
         return 0
     since = now - timedelta(hours=WINDOW_HOURS)
-    return int(
+    real = int(
         db.scalar(
             select(func.count(Message.id)).where(
                 Message.mailbox_id == mailbox_id,
@@ -218,6 +237,7 @@ def sent_in_window(db: Session, *, mailbox_id: str, now: datetime) -> int:
         )
         or 0
     )
+    return real + len(_seed_sends_since(db, mailbox_id, since))
 
 
 def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> datetime:
@@ -242,6 +262,7 @@ def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> da
             .order_by(Message.sent_at.asc())
         )
     )
+    rows = sorted(rows + _seed_sends_since(db, connection.id, since), key=lambda v: _aware(v))
     if len(rows) < cap or not rows:
         return now
     # Room opens when enough of the oldest sends have left the window that

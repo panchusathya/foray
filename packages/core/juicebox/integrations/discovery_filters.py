@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..enrich.normalize import clean_emails
-from ..models import MailboxConnection, User
+from ..models import MailboxConnection, SeedInbox, User
 
 # Never a person.
 HARD_REJECT_PREFIXES = (
@@ -97,7 +97,10 @@ def own_addresses(db: Session, *, org_id: str) -> set[str]:
         select(MailboxConnection.address).where(MailboxConnection.org_id == org_id)
     ).all()
     users = db.scalars(select(User.email).where(User.org_id == org_id)).all()
-    return {(a or "").strip().lower() for a in [*mailboxes, *users] if a}
+    # Seed inboxes receive a copy of our outreach every day; a sweep of Sent
+    # would otherwise stage them as people we have been emailing.
+    seeds = db.scalars(select(SeedInbox.address).where(SeedInbox.org_id == org_id)).all()
+    return {(a or "").strip().lower() for a in [*mailboxes, *users, *seeds] if a}
 
 
 def internal_domains(db: Session, *, org_id: str, configured: list[str] | None = None) -> set[str]:

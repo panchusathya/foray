@@ -23,6 +23,7 @@ import { SearchPage } from './pages/Search.jsx';
 import { SequenceEditorPage } from './pages/SequenceEditor.jsx';
 import { SourcingPage } from './pages/Sourcing.jsx';
 import { SequencesPage } from './pages/Sequences.jsx';
+import { DeliverabilityPage } from './pages/Deliverability.jsx';
 import { SettingsPage } from './pages/Settings.jsx';
 import { IntakePage } from './pages/Intake.jsx';
 
@@ -258,6 +259,7 @@ export function App() {
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/clients/:clientId" element={<ClientDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/deliverability" element={<DeliverabilityPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Shell>

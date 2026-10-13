@@ -18,6 +18,7 @@ from ..outreach.rotation import domain_of
 from .dns_checks import is_consumer_domain, run_check
 from .health import domain_health, mailbox_health
 from .signals import MailboxSignals, mailbox_signals, recent_weeks
+from .warmup import effective_cap, warmup_state
 
 SEED_WINDOW = timedelta(days=7)
 DOMAIN_CHECK_MAX_AGE = timedelta(hours=24)
@@ -207,6 +208,8 @@ def build_overview(db: Session, org: Org, now: datetime) -> dict:
                     "status": mailbox.status,
                     "send_enabled": mailbox.send_enabled,
                     "daily_send_cap": mailbox.daily_send_cap,
+                    "effective_cap": effective_cap(mailbox, now),
+                    "warmup": warmup_state(mailbox, now),
                     "connected_at": _iso(mailbox.created_at),
                     "health": health,
                     "seed": seed,

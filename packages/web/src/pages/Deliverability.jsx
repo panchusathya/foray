@@ -499,7 +499,14 @@ function MailboxRow({ mailbox, reload, setError, setNote }) {
       </td>
       <td className="num">{pct(mailbox.bounce_rate_14d)}</td>
       <td className="num">{mailbox.blocks_14d}</td>
-      <td className="num">{mailbox.daily_send_cap}</td>
+      <td className="num" data-testid="mailbox-cap">
+        {mailbox.effective_cap ?? mailbox.daily_send_cap}
+        {mailbox.warmup?.active ? (
+          <div className="small muted" title={`Full ${mailbox.daily_send_cap}/day from ${mailbox.warmup.full_on}`}>
+            warming, day {mailbox.warmup.day + 1}
+          </div>
+        ) : null}
+      </td>
       <td>
         <button type="button" className="tiny" disabled={busy} onClick={testNow} data-testid="test-now">
           Test now

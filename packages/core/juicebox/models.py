@@ -869,6 +869,13 @@ class MailboxConnection(Base, TimestampMixin):
     # than unlimited -- "stop using this one" is what a zero cap means.
     send_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     daily_send_cap: Mapped[int] = mapped_column(Integer, default=40)
+    # Set when this connection is first created (deliverability/warmup.py):
+    # while warming, daily_send_cap is the ceiling and the cap in force follows
+    # a ramp from this day. Null means not warming -- every mailbox connected
+    # before warm-up existed, and any whose warm-up was ended by hand.
+    warmup_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Opt-in for copying candidate correspondence (manual Outlook mail, both
     # directions) into the CRM timeline. Off by default: connecting a mailbox
     # for sending must not silently start retaining its contents.

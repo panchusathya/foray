@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..deliverability.warmup import effective_cap
 from ..models import MailboxConnection, Message
 
 WINDOW_HOURS = 24
@@ -248,8 +249,10 @@ def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> da
     blocked sends polling once a minute starves the worker and, worse, sat at
     the front of the line while sends that could go waited behind them.
     """
-    cap = max(connection.daily_send_cap, 0)
+    cap = effective_cap(connection, now)
     since = now - timedelta(hours=WINDOW_HOURS)
+    if cap <= 0:
+        return now + timedelta(hours=WINDOW_HOURS)
     rows = list(
         db.scalars(
             select(Message.sent_at)
@@ -274,21 +277,23 @@ def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> da
 
 
 def remaining_capacity(db: Session, *, connection: MailboxConnection, now: datetime) -> int:
-    return max(0, connection.daily_send_cap - sent_in_window(db, mailbox_id=connection.id, now=now))
+    cap = effective_cap(connection, now)
+    return max(0, cap - sent_in_window(db, mailbox_id=connection.id, now=now))
 
 
 def is_over_cap(db: Session, *, connection: MailboxConnection, now: datetime) -> bool:
     return remaining_capacity(db, connection=connection, now=now) <= 0
 
 
-def pool_capacity(db: Session, *, org_id: str) -> int:
+def pool_capacity(db: Session, *, org_id: str, now: datetime | None = None) -> int:
     """The org's combined daily headroom, used to lift the org-wide cap.
 
     Without this, five mailboxes capped at 40 each sit under a 200-send org cap
     and the pool silently defers everything the moment it is fully used --
     rotation that unlocks nothing.
     """
-    return sum(row.daily_send_cap for row in eligible_mailboxes(db, org_id=org_id))
+    now = now or datetime.now(UTC)
+    return sum(effective_cap(row, now) for row in eligible_mailboxes(db, org_id=org_id))
 
 
 def pick_mailbox(
@@ -311,10 +316,11 @@ def pick_mailbox(
     for connection in eligible_mailboxes(db, org_id=org_id, only=only):
         if exclude and connection.id in exclude:
             continue
+        cap = effective_cap(connection, now)
         used = sent_in_window(db, mailbox_id=connection.id, now=now)
-        if used >= connection.daily_send_cap:
+        if cap <= 0 or used >= cap:
             continue
-        load = used / connection.daily_send_cap
+        load = used / cap
         if best is None or load < best_load:
             best, best_load = connection, load
     return best

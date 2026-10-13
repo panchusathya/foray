@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..deliverability.warmup import effective_cap, warmup_state
 from ..deps import (
     OAUTH_STATE_ROLE,
     CommittingRoute,
@@ -103,6 +104,14 @@ def _require_active(connection: MailboxConnection) -> None:
         )
 
 
+def _connection_out(db: Session, row: MailboxConnection, now) -> MailboxConnectionOut:
+    out = MailboxConnectionOut.model_validate(row)
+    out.sent_last_24h = sent_in_window(db, mailbox_id=row.id, now=now)
+    out.effective_cap = effective_cap(row, now)
+    out.warmup = warmup_state(row, now)
+    return out
+
+
 @router.get("/mailboxes", response_model=MailboxIntegrationOut)
 def list_mailboxes(
     principal: Principal = Depends(get_principal), db: Session = Depends(get_db)
@@ -120,9 +129,7 @@ def list_mailboxes(
     ).all()
     connections = []
     for row in rows:
-        out = MailboxConnectionOut.model_validate(row)
-        out.sent_last_24h = sent_in_window(db, mailbox_id=row.id, now=now)
-        connections.append(out)
+        connections.append(_connection_out(db, row, now))
     providers = []
     for name in provider_names():
         provider = get_provider(name)
@@ -249,7 +256,12 @@ def oauth_callback(
         )
     )
     if connection is None:
-        connection = MailboxConnection(org_id=org_id, address=result.address)
+        # A brand-new sender ramps up to its cap (deliverability/warmup.py). A
+        # reconnect of an existing row keeps whatever state it had: re-consent
+        # must not throttle a seasoned mailbox back to two emails a day.
+        connection = MailboxConnection(
+            org_id=org_id, address=result.address, warmup_started_at=utcnow()
+        )
         db.add(connection)
     connection.provider = provider_name
     connection.user_id = user_id
@@ -396,6 +408,10 @@ def set_sending(
         connection.send_enabled = payload.send_enabled
     if payload.daily_send_cap is not None:
         connection.daily_send_cap = payload.daily_send_cap
+    if payload.warmup is True and connection.warmup_started_at is None:
+        connection.warmup_started_at = utcnow()
+    elif payload.warmup is False:
+        connection.warmup_started_at = None
     db.flush()
     record_event(
         db,
@@ -407,11 +423,10 @@ def set_sending(
         payload={
             "send_enabled": connection.send_enabled,
             "daily_send_cap": connection.daily_send_cap,
+            "warmup": connection.warmup_started_at is not None,
         },
     )
-    out = MailboxConnectionOut.model_validate(connection)
-    out.sent_last_24h = sent_in_window(db, mailbox_id=connection.id, now=utcnow())
-    return out
+    return _connection_out(db, connection, utcnow())
 
 
 def _import_scope(db: Session, *, org_id: str) -> int:

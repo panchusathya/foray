@@ -375,7 +375,8 @@ function SenderPicker({ meta, setMeta, mailboxes }) {
   // anyone reopening the sequence. Ticking every box stores it that way again.
   const chosen = meta.mailbox_ids ?? [];
   const rotating = active.filter((c) => !chosen.length || chosen.includes(c.id));
-  const capacity = rotating.reduce((total, c) => total + c.daily_send_cap, 0);
+  // Today's cap: a warming mailbox counts at its ramp, not its ceiling.
+  const capacity = rotating.reduce((total, c) => total + (c.effective_cap ?? c.daily_send_cap), 0);
 
   function toggle(id) {
     const on = new Set(rotating.map((c) => c.id));
@@ -439,7 +440,9 @@ function SenderPicker({ meta, setMeta, mailboxes }) {
                 key={connection.id}
                 className="row"
                 style={{ alignItems: 'center', gap: 6 }}
-                title={`${providerLabel(connection.provider)} · ${connection.daily_send_cap}/24h`}
+                title={`${providerLabel(connection.provider)} · ${connection.effective_cap ?? connection.daily_send_cap}/24h${
+                  connection.warmup?.active ? ` (warming up to ${connection.daily_send_cap})` : ''
+                }`}
               >
                 <input
                   type="checkbox"

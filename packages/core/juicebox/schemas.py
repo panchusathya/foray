@@ -182,6 +182,12 @@ class MailboxConnectionOut(BaseModel):
     # Rolling 24h volume, computed per row by the list endpoint. Sent here so
     # the settings page can show "12 / 40" without a query per mailbox.
     sent_last_24h: int = 0
+    # Warm-up (deliverability/warmup.py): daily_send_cap is the ceiling and
+    # effective_cap is what is in force today. warmup = {active, day,
+    # cap_today, full_on}.
+    warmup_started_at: datetime | None = None
+    effective_cap: int = 0
+    warmup: dict = Field(default_factory=dict)
 
 
 class MailboxProviderOut(BaseModel):
@@ -205,6 +211,8 @@ class MailboxSendingPatch(BaseModel):
     send_enabled: bool | None = None
     # 0 means "stop using this mailbox", not "unlimited".
     daily_send_cap: int | None = Field(default=None, ge=0, le=10_000)
+    # True starts a warm-up (kept if one is already running), False ends it.
+    warmup: bool | None = None
 
 
 class ReplyDraftOut(BaseModel):

@@ -33,7 +33,7 @@ test.describe('deliverability', () => {
 
     await expect(page).toHaveURL(/\/deliverability$/);
     await expect(page.getByRole('heading', { name: 'Deliverability' })).toBeVisible();
-    await expect(page.getByText('Measurement only', { exact: false })).toBeVisible();
+    await expect(page.getByText('unless auto-throttle is switched on', { exact: false })).toBeVisible();
     await expect(page.getByTestId('seed-empty')).toBeVisible();
     await expect(page.getByTestId('no-mailboxes')).toBeVisible();
     // Nothing to show yet means no recent-tests table, not an empty one.
@@ -123,6 +123,24 @@ test.describe('deliverability', () => {
     }
     await page.getByTestId('seed-card').screenshot({
       path: path.join(ARTIFACT_DIR, '05-seed-oauth.png'),
+    });
+  });
+
+  test('auto-throttle starts in watch mode and the choice is saved', async ({ page, request }) => {
+    const org = await createOrg(request, 'deliv-throttle');
+    await login(page, org.email);
+    await page.goto('/deliverability');
+
+    const mode = page.getByTestId('throttle-mode');
+    // Watch is the default: nothing changes until someone turns it on.
+    await expect(mode).toHaveValue('watch');
+    await expect(page.getByTestId('throttle-card')).toContainText('never moved to');
+    await mode.selectOption('off');
+    await expect(mode).toBeEnabled();
+    await page.reload();
+    await expect(page.getByTestId('throttle-mode')).toHaveValue('off');
+    await page.getByTestId('throttle-card').screenshot({
+      path: path.join(ARTIFACT_DIR, '06-throttle-mode.png'),
     });
   });
 

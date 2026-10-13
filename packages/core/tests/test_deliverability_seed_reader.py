@@ -290,6 +290,45 @@ class TestTheSeedIsNeverTouched:
         assert server.logged_out
 
 
+class TestArchived:
+    """Failure 37: found on prod, 18 of 21 tests "missing" that sat in All Mail."""
+
+    def test_archived_by_a_filter_is_delivered_not_missing(self):
+        server = FakeImap(
+            {
+                "INBOX": ([], []),
+                "[Gmail]/All Mail": (["\\HasNoChildren", "\\All"], [_msg()]),
+                "[Gmail]/Spam": (["\\HasNoChildren", "\\Junk"], []),
+            },
+            gmail=True,
+        )
+        with _reader(server) as reader:
+            result = reader.find(_probe())
+        assert (result.found, result.placement, result.folder) == (True, "other_tab", "archived")
+
+    def test_spam_still_wins_over_all_mail(self):
+        # Gmail keeps spam out of All Mail, but a server that lists it in both
+        # must still report spam: the junk folder is asked first.
+        server = FakeImap(
+            {
+                "INBOX": ([], []),
+                "[Gmail]/All Mail": (["\\All"], [_msg()]),
+                "[Gmail]/Spam": (["\\Junk"], [_msg()]),
+            },
+            gmail=True,
+        )
+        with _reader(server) as reader:
+            assert reader.find(_probe()).placement == "spam"
+
+    def test_all_mail_is_opened_read_only_too(self):
+        server = FakeImap(
+            {"INBOX": ([], []), "[Gmail]/All Mail": (["\\All"], [_msg()])}, gmail=True
+        )
+        with _reader(server) as reader:
+            reader.find(_probe())
+        assert ("[Gmail]/All Mail", True) in server.select_calls
+
+
 class TestBadSeeds:
     def test_a_seed_without_a_spam_folder_still_reports_inbox_hits(self):
         server = FakeImap({"INBOX": ([], [_msg()])})

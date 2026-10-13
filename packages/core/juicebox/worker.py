@@ -403,6 +403,11 @@ def _handle_deliverability_tick(db: Session, job: Job, now) -> dict[str, Any]:
     org = db.get(Org, org_id)
     if org is None:
         return {"skipped": "org gone"}
+    # Throttle before queueing tests: a mailbox that just went to rest must
+    # not be handed a seed test in the same pass.
+    from .deliverability.throttle import apply as apply_throttle
+
+    throttled = apply_throttle(db, org, now)
     queued = queue_due(db, org, now)
     bucket = int(now.timestamp() // DELIVERABILITY_TICK_SECONDS)
     hour = int(now.timestamp() // 3600)
@@ -441,7 +446,12 @@ def _handle_deliverability_tick(db: Session, job: Job, now) -> dict[str, Any]:
             payload={"org_id": org_id},
             run_at=run_at,
         )
-    return {"queued_tests": queued, "seed_checks": checks, "domain_checks": len(domains)}
+    return {
+        "queued_tests": queued,
+        "seed_checks": checks,
+        "domain_checks": len(domains),
+        "throttle_changes": [f"{d.address}: {d.from_state}->{d.state}" for d in throttled],
+    }
 
 
 def _handle_seed_send(db: Session, job: Job, now) -> dict[str, Any]:

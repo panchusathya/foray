@@ -374,6 +374,8 @@ export const api = {
   seedTestNow: (mailboxId) =>
     request(`/v1/deliverability/mailboxes/${mailboxId}/test`, { method: 'POST' }),
   domainsRecheck: () => request('/v1/deliverability/domains/recheck', { method: 'POST' }),
+  clearThrottle: (mailboxId) =>
+    request(`/v1/deliverability/mailboxes/${mailboxId}/clear-throttle`, { method: 'POST' }),
 
   // Applications: the candidate-side pursuit of one posting. The candidate
   // drives most of these from the portal; this is the recruiter's window on

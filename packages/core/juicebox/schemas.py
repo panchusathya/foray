@@ -188,6 +188,9 @@ class MailboxConnectionOut(BaseModel):
     warmup_started_at: datetime | None = None
     effective_cap: int = 0
     warmup: dict = Field(default_factory=dict)
+    # Auto-throttle (deliverability/throttle.py): ok | throttled | resting.
+    throttle_state: str = "ok"
+    rest_until: datetime | None = None
 
 
 class MailboxProviderOut(BaseModel):

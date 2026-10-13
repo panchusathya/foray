@@ -522,6 +522,18 @@ export function SettingsPage() {
                     ) : null}
                     {connection.status === 'active' ? (
                       <div className="row wrap small muted" data-testid="mailbox-warmup">
+                        {connection.throttle_state && connection.throttle_state !== 'ok' ? (
+                          <Link
+                            to="/deliverability"
+                            className={`badge ${connection.throttle_state === 'resting' ? 'miss' : 'partial'}`}
+                            data-testid="mailbox-throttle"
+                            title="Seed tests landed in spam; see Deliverability"
+                          >
+                            {connection.throttle_state === 'resting'
+                              ? `Resting until ${new Date(connection.rest_until).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric' })}`
+                              : 'Throttled: no new conversations'}
+                          </Link>
+                        ) : null}
                         {connection.warmup?.active ? (
                           <>
                             <span className="badge partial">Warming up</span>

@@ -18,6 +18,7 @@ from ..outreach.rotation import domain_of
 from .dns_checks import is_consumer_domain, run_check
 from .health import domain_health, mailbox_health
 from .signals import MailboxSignals, mailbox_signals, recent_weeks
+from .throttle import plan as plan_throttle
 from .warmup import effective_cap, warmup_state
 
 SEED_WINDOW = timedelta(days=7)
@@ -139,6 +140,11 @@ def seed_out(seed: SeedInbox, tests_7d: int = 0) -> dict:
 def build_overview(db: Session, org: Org, now: datetime) -> dict:
     mailboxes = sending_mailboxes(db, org.id)
     signals = mailbox_signals(db, org.id, now)
+    # What the throttle would change right now: in watch mode this is the
+    # whole point; in on mode it is what the next pass will apply.
+    pending = plan_throttle(db, org, now)
+    would = {d.mailbox_id: d.state for d in pending}
+    would_reason = {d.mailbox_id: d.reason for d in pending}
     counts = _seed_counts(db, org.id, now)
     weeks = recent_weeks(now)
     seeds = list(
@@ -209,6 +215,14 @@ def build_overview(db: Session, org: Org, now: datetime) -> dict:
                     "send_enabled": mailbox.send_enabled,
                     "daily_send_cap": mailbox.daily_send_cap,
                     "effective_cap": effective_cap(mailbox, now),
+                    "throttle": {
+                        "state": mailbox.throttle_state or "ok",
+                        "reason": mailbox.throttle_reason,
+                        "since": _iso(mailbox.throttle_changed_at),
+                        "rest_until": _iso(mailbox.rest_until),
+                        "would": would.get(mailbox.id),
+                        "would_reason": would_reason.get(mailbox.id, ""),
+                    },
                     "warmup": warmup_state(mailbox, now),
                     "connected_at": _iso(mailbox.created_at),
                     "health": health,
@@ -259,7 +273,10 @@ def build_overview(db: Session, org: Org, now: datetime) -> dict:
         )
     )
     return {
-        "settings": {"seed_test_interval_hours": org.seed_test_interval_hours},
+        "settings": {
+            "seed_test_interval_hours": org.seed_test_interval_hours,
+            "auto_throttle": org.auto_throttle or "watch",
+        },
         "seeds": [seed_out(s, seed_tests_7d.get(s.id, 0)) for s in seeds],
         "domains": domains,
         "recent_tests": [_test_out(t, mailbox_names, seed_names) for t in recent],

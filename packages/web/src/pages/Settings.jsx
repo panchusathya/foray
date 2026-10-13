@@ -149,6 +149,18 @@ export function SettingsPage() {
     }
   }
 
+  // Warm-up: a new mailbox ramps up to its cap. Ending it sends at the full
+  // cap from now on; starting it restarts the ramp from today.
+  async function setWarmup(connection, on) {
+    setError(null);
+    try {
+      await api.mailboxSending(connection.id, { warmup: on });
+      status.reload();
+    } catch (caught) {
+      setError(caught);
+    }
+  }
+
   async function saveCap(connection) {
     const raw = caps[connection.id];
     if (raw === undefined) return;
@@ -261,7 +273,7 @@ export function SettingsPage() {
   const shown = showRevoked ? connections : connections.filter((c) => c.status !== 'revoked');
   const poolCapacity = connections
     .filter((c) => c.status === 'active' && c.send_enabled)
-    .reduce((total, c) => total + c.daily_send_cap, 0);
+    .reduce((total, c) => total + (c.effective_cap ?? c.daily_send_cap), 0);
 
   return (
     <div className="stack">
@@ -471,7 +483,7 @@ export function SettingsPage() {
                         style={{ alignItems: 'center' }}
                         data-testid="mailbox-sending-controls"
                       >
-                        <span>Daily cap</span>
+                        <span>{connection.warmup?.active ? 'Daily cap (after warm-up)' : 'Daily cap'}</span>
                         <input
                           type="number"
                           min="0"
@@ -495,7 +507,7 @@ export function SettingsPage() {
                         <span>
                           {connection.sent_last_24h} sent in the last 24h
                           {connection.daily_send_cap > 0
-                            ? ` of ${connection.daily_send_cap}`
+                            ? ` of ${connection.effective_cap ?? connection.daily_send_cap}`
                             : ' · cap 0, this mailbox is paused'}
                         </span>
                         <button
@@ -506,6 +518,49 @@ export function SettingsPage() {
                         >
                           {connection.send_enabled ? 'Sending: on' : 'Sending: off'}
                         </button>
+                      </div>
+                    ) : null}
+                    {connection.status === 'active' ? (
+                      <div className="row wrap small muted" data-testid="mailbox-warmup">
+                        {connection.warmup?.active ? (
+                          <>
+                            <span className="badge partial">Warming up</span>
+                            <span>
+                              Day {connection.warmup.day + 1}: {connection.warmup.cap_today}/day today,
+                              full {connection.daily_send_cap}/day from{' '}
+                              {new Date(`${connection.warmup.full_on}T00:00:00`).toLocaleDateString(undefined, {
+                                month: 'short',
+                                day: 'numeric',
+                              })}
+                            </span>
+                            <button
+                              type="button"
+                              className="tiny ghost"
+                              data-testid="warmup-end"
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    `End warm-up for ${connection.address}? It will send up to ${connection.daily_send_cap} a day from now on.`,
+                                  )
+                                ) {
+                                  setWarmup(connection, false);
+                                }
+                              }}
+                            >
+                              End warm-up
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="tiny ghost"
+                            data-testid="warmup-start"
+                            onClick={() => setWarmup(connection, true)}
+                            title="Start at 2 a day and ramp up to the daily cap over the coming weeks"
+                          >
+                            Start warm-up
+                          </button>
+                        )}
                       </div>
                     ) : null}
                   </div>

@@ -102,6 +102,29 @@ Yahoo has no public mail REST API, so a Yahoo seed signs in with OAuth
     redirect (`/v1/deliverability/seeds/yahoo/callback`); a state minted for
     one provider or for a mailbox connect is refused there.
 
+### Warm-up for newly connected mailboxes (step 2, first part)
+The cap a person sets becomes the *ceiling*; while a mailbox is warming, the
+cap in force today follows a ramp from the day it was connected (2/day the
+first week, then 4, 7, 10, 15, 20, 25, then +5 a week) until it reaches the
+ceiling. Computed from `warmup_started_at` on every read, so no job has to run
+for it to advance.
+32. **A new mailbox sends its full cap on day one.** Rotation hands the next
+    send to the least-used mailbox, so a fresh one at the default 40 fills
+    first -- 40 cold emails from a domain with no history. A newly created
+    connection starts warming automatically.
+33. **A reconnect restarts the ramp.** Re-consenting a seasoned mailbox (token
+    refresh, scope change) must not throttle it back to 2/day; only a newly
+    created row starts warming.
+34. **One reader of the cap forgets the ramp.** Picking a mailbox, its
+    remaining room, when it next frees up, the pool's capacity and a seed
+    test's room all go through `effective_cap`; any path that reads
+    `daily_send_cap` directly would send at the ceiling.
+35. **Raising the cap skips the ramp.** The cap is the ceiling; the ramp still
+    applies. Lowering it below today's ramp wins (min of the two), and 0
+    still means "send nothing".
+36. **It never visibly ends.** Once the ramp reaches the ceiling the mailbox
+    reports warm-up complete and the cap in force is simply the cap.
+
 ### Signals and checks
 17. **Young cohorts read as bad mailboxes.** Reply rate counts people first
     emailed at least 3 days ago; weekly series are by first-send week.

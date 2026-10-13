@@ -397,6 +397,60 @@ function Schedule({ settings, reload, setError }) {
   );
 }
 
+/**
+ * Auto-throttle mode. Watch is the default: the table below shows what it
+ * would do (dashed chips) and nothing changes until it is switched on.
+ */
+function ThrottleMode({ settings, pendingCount, reload, setError }) {
+  const [saving, setSaving] = useState(false);
+  async function change(event) {
+    const next = event.target.value;
+    if (
+      next === 'on' &&
+      pendingCount &&
+      !window.confirm(
+        `Turning this on applies ${pendingCount} change${pendingCount === 1 ? '' : 's'} on the next pass (within 10 minutes). Continue?`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api.deliverabilitySettings({ auto_throttle: next });
+      reload();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="card spread" data-testid="throttle-card">
+      <div>
+        <strong>Auto-throttle</strong>
+        <div className="small muted">
+          When seed tests land in spam, take the mailbox off new conversations and halve its cap
+          (a quarter not delivered, or one policy block), or rest it for 3 days and then warm it
+          back up (half not delivered, or two blocks). Its existing threads are never moved to
+          another address. Decided from seed tests and blocks only, never reply rate.
+        </div>
+      </div>
+      <select
+        value={settings.auto_throttle ?? 'watch'}
+        onChange={change}
+        disabled={saving}
+        data-testid="throttle-mode"
+        aria-label="Auto-throttle mode"
+      >
+        <option value="off">Off</option>
+        <option value="watch">Watch only (show, change nothing)</option>
+        <option value="on">On</option>
+      </select>
+    </div>
+  );
+}
+
 function Checks({ checks, checkedAt }) {
   if (!checks) {
     return <div className="small muted">DNS not checked yet — it runs within a few minutes of a mailbox sending.</div>;
@@ -439,6 +493,48 @@ function Checks({ checks, checkedAt }) {
   );
 }
 
+const THROTTLE = {
+  throttled: { text: 'Throttled', tone: 'partial', what: 'no new conversations, half cap' },
+  resting: { text: 'Resting', tone: 'miss', what: 'sending nothing' },
+  ok: { text: 'Back to normal', tone: 'strong', what: '' },
+};
+
+function ThrottleCell({ mailbox, reload, setError }) {
+  const t = mailbox.throttle ?? {};
+  async function clear() {
+    if (!window.confirm(`Clear the throttle on ${mailbox.address}? It goes back to normal sending now.`)) return;
+    setError(null);
+    try {
+      await api.clearThrottle(mailbox.id);
+      reload();
+    } catch (err) {
+      setError(err);
+    }
+  }
+  return (
+    <div className="stack dl-throttle" style={{ gap: 2 }}>
+      {t.state && t.state !== 'ok' ? (
+        <div data-testid="throttle-state">
+          <Tag tone={THROTTLE[t.state]?.tone}>{THROTTLE[t.state]?.text ?? t.state}</Tag>{' '}
+          <span className="small muted">
+            {t.state === 'resting' && t.rest_until ? `until ${when(t.rest_until)}` : THROTTLE[t.state]?.what}
+          </span>
+          {t.reason ? <div className="small muted dl-reasons">{t.reason}</div> : null}
+          <button type="button" className="tiny ghost" onClick={clear} data-testid="throttle-clear">
+            Clear
+          </button>
+        </div>
+      ) : null}
+      {t.would ? (
+        <div data-testid="throttle-would" className="small">
+          <span className="badge dl-would">Would {t.would === 'ok' ? 'restore' : t.would === 'resting' ? 'rest' : 'throttle'}</span>{' '}
+          <span className="muted">{t.would_reason}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MailboxRow({ mailbox, reload, setError, setNote }) {
   const [busy, setBusy] = useState(false);
   async function testNow() {
@@ -474,6 +570,7 @@ function MailboxRow({ mailbox, reload, setError, setNote }) {
         {mailbox.health?.reasons?.length ? (
           <div className="small muted dl-reasons">{mailbox.health.reasons[0]}</div>
         ) : null}
+        <ThrottleCell mailbox={mailbox} reload={reload} setError={setError} />
       </td>
       <td className="small" title={`inbox ${mailbox.seed.inbox}, other tab ${mailbox.seed.other_tab}, spam ${mailbox.seed.spam}, missing ${mailbox.seed.missing}, waiting ${mailbox.seed.pending}`}>
         {seedSummary(mailbox.seed)}
@@ -661,7 +758,7 @@ export function DeliverabilityPage() {
     <div className="stack" data-testid="deliverability-page">
       <PageHeader
         title="Deliverability"
-        subtitle="Where outreach lands, per domain and per mailbox. Measurement only: nothing here pauses or slows sending."
+        subtitle="Where outreach lands, per domain and per mailbox. Nothing here slows sending unless auto-throttle is switched on."
         actions={
           <button type="button" className="tiny" onClick={recheck} disabled={rechecking} data-testid="recheck-dns">
             {rechecking ? 'Checking DNS…' : 'Recheck DNS'}
@@ -679,6 +776,12 @@ export function DeliverabilityPage() {
         <>
           <Seeds seeds={data.seeds} oauth={data.oauth} reload={overview.reload} setError={setError} />
           <Schedule settings={data.settings} reload={overview.reload} setError={setError} />
+          <ThrottleMode
+            settings={data.settings}
+            pendingCount={data.domains.flatMap((d) => d.mailboxes).filter((m) => m.throttle?.would).length}
+            reload={overview.reload}
+            setError={setError}
+          />
           {data.domains.length ? (
             data.domains.map((domain) => (
               <DomainCard

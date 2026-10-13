@@ -185,17 +185,32 @@ def active_mailboxes(
 
 
 def eligible_mailboxes(
-    db: Session, *, org_id: str, only: list[str] | None = None
+    db: Session,
+    *,
+    org_id: str,
+    only: list[str] | None = None,
+    include_throttled: bool = False,
 ) -> list[MailboxConnection]:
     """Mailboxes that could send, ignoring how much they have sent already.
 
     Ordered by id so the pick is deterministic when utilisation ties, which is
     what makes the rotation testable.
+
+    This is the pool *new conversations* are dealt from, so a mailbox the
+    auto-throttle has taken off new conversations (throttled or resting) is
+    left out. Its existing threads do not come through here -- they are
+    pinned, and go straight to their own mailbox. ``include_throttled`` is for
+    the callers that are not starting conversations: seed tests (a throttled
+    mailbox must keep being tested, or it can never show it recovered) and the
+    pool's capacity.
     """
     return [
         row
         for row in active_mailboxes(db, org_id=org_id, only=only)
-        if row.send_enabled and row.daily_send_cap > 0 and _can_send_via(row.provider)
+        if row.send_enabled
+        and row.daily_send_cap > 0
+        and _can_send_via(row.provider)
+        and (include_throttled or (row.throttle_state or "ok") == "ok")
     ]
 
 
@@ -252,6 +267,10 @@ def frees_at(db: Session, *, connection: MailboxConnection, now: datetime) -> da
     cap = effective_cap(connection, now)
     since = now - timedelta(hours=WINDOW_HOURS)
     if cap <= 0:
+        rest_until = _aware(getattr(connection, "rest_until", None))
+        if getattr(connection, "throttle_state", "ok") == "resting" and rest_until:
+            # Resting: room comes back when the rest ends, not a day from now.
+            return max(now, rest_until)
         return now + timedelta(hours=WINDOW_HOURS)
     rows = list(
         db.scalars(
@@ -293,7 +312,10 @@ def pool_capacity(db: Session, *, org_id: str, now: datetime | None = None) -> i
     rotation that unlocks nothing.
     """
     now = now or datetime.now(UTC)
-    return sum(effective_cap(row, now) for row in eligible_mailboxes(db, org_id=org_id))
+    return sum(
+        effective_cap(row, now)
+        for row in eligible_mailboxes(db, org_id=org_id, include_throttled=True)
+    )
 
 
 def pick_mailbox(

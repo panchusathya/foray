@@ -52,7 +52,8 @@ class SeedPatch(BaseModel):
 
 
 class SettingsPatch(BaseModel):
-    seed_test_interval_hours: int
+    seed_test_interval_hours: int | None = None
+    auto_throttle: Literal["off", "watch", "on"] | None = None
 
 
 def _org(db: Session, principal: Principal) -> Org:
@@ -152,14 +153,29 @@ def update_settings(
     principal: Principal = Depends(require_write),
     db: Session = Depends(get_db),
 ) -> dict:
-    if body.seed_test_interval_hours not in INTERVALS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"seed_test_interval_hours must be one of {list(INTERVALS)}",
-        )
     org = _org(db, principal)
-    org.seed_test_interval_hours = body.seed_test_interval_hours
-    return {"seed_test_interval_hours": org.seed_test_interval_hours}
+    if body.seed_test_interval_hours is not None:
+        if body.seed_test_interval_hours not in INTERVALS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"seed_test_interval_hours must be one of {list(INTERVALS)}",
+            )
+        org.seed_test_interval_hours = body.seed_test_interval_hours
+    if body.auto_throttle is not None and body.auto_throttle != org.auto_throttle:
+        record_event(
+            db,
+            org_id=org.id,
+            type="deliverability.auto_throttle",
+            subject_type="org",
+            subject_id=org.id,
+            actor_id=principal.user_id,
+            payload={"from": org.auto_throttle, "to": body.auto_throttle},
+        )
+        org.auto_throttle = body.auto_throttle
+    return {
+        "seed_test_interval_hours": org.seed_test_interval_hours,
+        "auto_throttle": org.auto_throttle,
+    }
 
 
 @router.post("/seeds", status_code=status.HTTP_201_CREATED)
@@ -278,6 +294,35 @@ def test_mailbox_now(
     if connection is None or connection.org_id != principal.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
     return queue_test_now(db, connection, utcnow())
+
+
+@router.post("/mailboxes/{mailbox_id}/clear-throttle")
+def clear_throttle(
+    mailbox_id: str,
+    principal: Principal = Depends(require_write),
+    db: Session = Depends(get_db),
+) -> dict:
+    """A person overrides the throttle: back to ok, starting a fresh evidence
+    window so the results that tripped it no longer count."""
+    from ..deliverability.throttle import Decision, set_state
+
+    connection = db.get(MailboxConnection, mailbox_id)
+    if connection is None or connection.org_id != principal.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
+    set_state(
+        db,
+        connection,
+        Decision(
+            mailbox_id=connection.id,
+            address=connection.address,
+            from_state=connection.throttle_state or "ok",
+            state="ok",
+            reason="cleared by hand",
+        ),
+        utcnow(),
+        actor_id=principal.user_id,
+    )
+    return {"throttle_state": connection.throttle_state}
 
 
 @router.post("/domains/recheck")

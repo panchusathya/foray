@@ -59,8 +59,10 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-def mailbox_off_reason(connection: MailboxConnection) -> str | None:
+def mailbox_off_reason(connection: MailboxConnection, now: datetime | None = None) -> str | None:
+    from ..models import utcnow
     from ..outreach.rotation import _can_send_via
+    from .throttle import is_resting
 
     if connection.status != "active":
         return "mailbox_inactive"
@@ -70,6 +72,10 @@ def mailbox_off_reason(connection: MailboxConnection) -> str | None:
         return "capped_off"
     if not _can_send_via(connection.provider):
         return "provider_unconfigured"
+    if is_resting(connection, now or utcnow()):
+        # Resting sends nothing at all, seed tests included; a throttled
+        # mailbox is still tested -- that is how it shows it recovered.
+        return "resting"
     return None
 
 
@@ -119,7 +125,9 @@ def due_tests(db: Session, org: Org, now: datetime) -> list[tuple[MailboxConnect
         return []
     since = now - timedelta(hours=interval)
     out = []
-    for connection in eligible_mailboxes(db, org_id=org.id):
+    for connection in eligible_mailboxes(db, org_id=org.id, include_throttled=True):
+        if mailbox_off_reason(connection, now):
+            continue
         recent = db.scalar(
             select(SeedTest.id).where(
                 SeedTest.mailbox_id == connection.id, SeedTest.created_at > since
@@ -180,7 +188,7 @@ def queue_test_now(db: Session, connection: MailboxConnection, now: datetime) ->
     from ..outreach.rotation import remaining_capacity
 
     seeds = active_seeds(db, connection.org_id)
-    off = mailbox_off_reason(connection)
+    off = mailbox_off_reason(connection, now)
     if off:
         # Said out loud: "no room in the cap" would send someone to raise a
         # cap on a mailbox that is switched off or disconnected.
@@ -328,7 +336,7 @@ def send_seed_test(
 
     if seed.status != "active":
         return skip("seed_inactive")
-    reason = mailbox_off_reason(connection)
+    reason = mailbox_off_reason(connection, now)
     if reason:
         return skip(reason)
     org = db.get(Org, connection.org_id)

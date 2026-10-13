@@ -1669,3 +1669,5 @@ button.password-toggle:hover:not(:disabled) { color: var(--text); background: va
 .dl-seed-form input[type='password'],
 .dl-seed-form input[type='text'] { min-width: 200px; flex: 1 1 200px; }
 .dl-seed-form select { width: auto; flex: 0 0 auto; }
+.dl-would { border-style: dashed; color: var(--muted); background: transparent; }
+.dl-throttle button.tiny { margin-left: 4px; padding: 1px 8px; }

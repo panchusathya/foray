@@ -158,6 +158,7 @@ class ImapReader:
             ) from None
         caps = getattr(self._conn, "capabilities", ()) or ()
         self.gmail = any(str(c).upper() == "X-GM-EXT-1" for c in caps)
+        self._all_folder = None
         self._spam_folder = self._find_spam_folder()
         return self
 
@@ -199,7 +200,7 @@ class ImapReader:
             return None
         if status != "OK":
             return None
-        named = None
+        named = flagged = None
         for line in lines or []:
             if not isinstance(line, bytes):
                 continue
@@ -212,11 +213,14 @@ class ImapReader:
                 name = name[1:-1]
             if "\\noselect" in flags:
                 continue
-            if "\\junk" in flags:
-                return name
+            if "\\all" in flags and self._all_folder is None:
+                # Gmail's All Mail: where a filter-archived message lives.
+                self._all_folder = name
+            if "\\junk" in flags and flagged is None:
+                flagged = name
             if named is None and name.lower() in _SPAM_NAMES:
                 named = name
-        return named
+        return flagged or named
 
     def _open(self, folder: str) -> bool:
         try:
@@ -314,6 +318,12 @@ class ImapReader:
             found, _ = self._locate(probe)
             if found:
                 return Placement(found=True, placement="spam", folder=self._spam_folder)
+        # Delivered, then archived by a filter or the seed's owner: not in the
+        # inbox, but not spam either (failure 37).
+        if self._all_folder and self._open(self._all_folder):
+            found, _ = self._locate(probe)
+            if found:
+                return Placement(found=True, placement="other_tab", folder="archived")
         return Placement(found=False)
 
 

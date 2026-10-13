@@ -103,6 +103,9 @@ class Org(Base, TimestampMixin):
     seed_test_interval_hours: Mapped[int] = mapped_column(
         Integer, default=24, server_default="24"
     )
+    # off | watch (show what it would do, change nothing) | on. Watch is the
+    # default so turning it on is a decision made after seeing it.
+    auto_throttle: Mapped[str] = mapped_column(String(8), default="watch", server_default="watch")
 
     users: Mapped[list[User]] = relationship(back_populates="org", cascade="all, delete-orphan")
 
@@ -876,6 +879,16 @@ class MailboxConnection(Base, TimestampMixin):
     warmup_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Auto-throttle (deliverability/throttle.py), decided from seed results:
+    # ok | throttled (no new conversations, half cap) | resting (cap 0 until
+    # rest_until, then warm-up again). throttle_changed_at bounds the evidence:
+    # only results after the last change count, so a state cannot hold itself.
+    throttle_state: Mapped[str] = mapped_column(String(16), default="ok", server_default="ok")
+    throttle_reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    throttle_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rest_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Opt-in for copying candidate correspondence (manual Outlook mail, both
     # directions) into the CRM timeline. Off by default: connecting a mailbox
     # for sending must not silently start retaining its contents.

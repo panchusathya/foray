@@ -58,12 +58,23 @@ def warmup_day(connection, now: datetime) -> int | None:
 
 
 def effective_cap(connection, now: datetime) -> int:
-    """The cap in force right now. Every reader of the cap goes through here."""
+    """The cap in force right now. Every reader of the cap goes through here.
+
+    Warm-up first (the ramp), then the auto-throttle (throttle.py): a resting
+    mailbox sends nothing until its rest ends, a throttled one half of what it
+    otherwise could -- rounded up, so a warming mailbox at 2/day keeps 1.
+    """
     ceiling = max(int(connection.daily_send_cap or 0), 0)
     day = warmup_day(connection, now)
-    if day is None:
-        return ceiling
-    return min(ceiling, ramp_cap(day))
+    cap = ceiling if day is None else min(ceiling, ramp_cap(day))
+    state = getattr(connection, "throttle_state", "ok") or "ok"
+    if state == "resting":
+        until = _aware(getattr(connection, "rest_until", None))
+        if until is not None and _aware(now) < until:
+            return 0
+    elif state == "throttled" and cap > 0:
+        return -(-cap // 2)
+    return cap
 
 
 def _first_day_at(ceiling: int) -> int | None:

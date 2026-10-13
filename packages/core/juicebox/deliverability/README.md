@@ -102,6 +102,13 @@ Yahoo has no public mail REST API, so a Yahoo seed signs in with OAuth
     redirect (`/v1/deliverability/seeds/yahoo/callback`); a state minted for
     one provider or for a mailbox connect is refused there.
 
+### Found on prod, 2026-10-13
+37. **Archived reads as missing.** A seed whose filter (or owner) archives
+    mail had 18 of 21 tests reported `missing` while every one sat in All
+    Mail. Delivered-but-archived is not spam: after INBOX and spam, the IMAP
+    reader looks in the `\All` folder and reports `other_tab` / `archived`,
+    the same answer the Gmail API reader already gave.
+
 ### Warm-up for newly connected mailboxes (step 2, first part)
 The cap a person sets becomes the *ceiling*; while a mailbox is warming, the
 cap in force today follows a ramp from the day it was connected (2/day the
@@ -124,6 +131,35 @@ for it to advance.
     still means "send nothing".
 36. **It never visibly ends.** Once the ramp reaches the ceiling the mailbox
     reports warm-up complete and the cap in force is simply the cap.
+
+### Auto-throttle (step 2, second part)
+Each mailbox is `ok`, `throttled` (no new conversations, half its cap for the
+follow-ups it already owns) or `resting` (sends nothing for 3 days, then
+re-enters through warm-up). Decided from seed results and policy blocks only --
+hard evidence, not reply rate. An org setting chooses `off`, `watch` (show what
+it would do, change nothing -- the default, so turning it on is a decision made
+after seeing it) or `on`.
+38. **It acts on a reader bug.** Item 37 made 18 delivered tests look missing;
+    a throttle built on that would have rested good mailboxes. Delivered
+    anywhere (inbox, a tab, archived) is not bad; only spam and genuinely
+    missing are.
+39. **It acts on too little.** Fewer than 3 results since the last change is
+    no evidence, whatever they say.
+40. **It flaps, or never lets go.** Evidence is counted only since the
+    mailbox's last state change, so the spam that put it in a state cannot
+    keep it there forever, and a recovery needs 3 fresh clean results.
+41. **A throttled mailbox can never prove it recovered.** It keeps receiving
+    scheduled seed tests (inside its halved cap); only new conversations stop.
+42. **Throttled strands its conversations.** Follow-ups pinned to it still
+    send, within the halved cap. Resting holds them until the rest ends --
+    they wait, they are never moved to another address (the thread rule).
+43. **Every mailbox throttled sends from the wrong identity.** An empty
+    rotation defers, as a capped-out pool always has; it never falls back to
+    the global provider.
+44. **Rest ends straight back at full volume.** Leaving rest restarts the
+    warm-up ramp from 2/day.
+45. **It surprises someone.** Watch is the default; every change is an event
+    and shows on the page with its reason; a person can clear it by hand.
 
 ### Signals and checks
 17. **Young cohorts read as bad mailboxes.** Reply rate counts people first

@@ -1,4 +1,4 @@
-# Juicebox
+# Foray
 
 An AI recruiting stack: describe who you want to hire in plain English, get a
 ranked shortlist **with the evidence behind every score**, push people into a
